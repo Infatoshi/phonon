@@ -18,7 +18,7 @@ final class AppDataTests: XCTestCase {
 
     func testSettingsMigrationAndSaveAddsNativeControls() throws {
         try Data(
-            #"{"schema_version":1,"streaming":true,"local_history":true,"screen_context":false,"microphone_priority":["Yeti","MacBook Pro Microphone"]}"#.utf8
+            #"{"schema_version":1,"streaming":true,"local_history":true,"screen_context":false,"microphone_priority":["USB Microphone","MacBook"]}"#.utf8
         ).write(to: directory.appendingPathComponent("settings.json"))
 
         let store = NativeAppStore(supportDirectory: directory)

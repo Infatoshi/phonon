@@ -29,7 +29,7 @@ struct NativeSettings: Codable, Equatable {
         streaming: Bool = true,
         localHistory: Bool = true,
         screenContext: Bool = true,
-        microphonePriority: [String] = ["Yeti", "MacBook Pro Microphone"],
+        microphonePriority: [String] = [],
         instantMic: Bool = true,
         shortcutMode: String = "both"
     ) {
@@ -49,7 +49,7 @@ struct NativeSettings: Codable, Equatable {
         localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? true
         screenContext = try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? true
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
-            ?? ["Yeti", "MacBook Pro Microphone"]
+            ?? []
         instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? true
         shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "both"
     }

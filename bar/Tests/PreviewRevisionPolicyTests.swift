@@ -63,12 +63,12 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         let settings = try JSONDecoder().decode(
             BarSettings.self,
             from: Data(
-                #"{"streaming":true,"screen_context":false,"microphone_priority":["Yeti","MacBook Pro Microphone"]}"#.utf8)
+                #"{"streaming":true,"screen_context":false,"microphone_priority":["USB Microphone","MacBook"]}"#.utf8)
         )
 
         XCTAssertEqual(settings.streaming, true)
         XCTAssertEqual(settings.screenContext, false)
-        XCTAssertEqual(settings.microphonePriority, ["Yeti", "MacBook Pro Microphone"])
+        XCTAssertEqual(settings.microphonePriority, ["USB Microphone", "MacBook"])
     }
 
     func testMicrophonePriorityAvoidsDefaultBluetoothInput() throws {
@@ -78,21 +78,21 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         ]
 
         let selected = MicrophonePriorityResolver.resolve(
-            devices: devices, priorities: ["Yeti", "MacBook Pro Microphone"])
+            devices: devices, priorities: ["USB Microphone", "MacBook"])
 
         XCTAssertEqual(selected?.name, "MacBook Pro Microphone")
     }
 
-    func testMicrophonePriorityPrefersYetiWhenConnected() throws {
+    func testMicrophonePriorityPrefersExternalMicrophoneWhenConnected() throws {
         let devices = [
             AudioInputDevice(id: 1, name: "MacBook Pro Microphone", isDefault: true),
-            AudioInputDevice(id: 2, name: "Yeti Stereo Microphone", isDefault: false),
+            AudioInputDevice(id: 2, name: "USB Microphone", isDefault: false),
         ]
 
         let selected = MicrophonePriorityResolver.resolve(
-            devices: devices, priorities: ["Yeti", "MacBook Pro Microphone"])
+            devices: devices, priorities: ["USB Microphone", "MacBook"])
 
-        XCTAssertEqual(selected?.name, "Yeti Stereo Microphone")
+        XCTAssertEqual(selected?.name, "USB Microphone")
     }
 
     func testAcousticPreviewCannotCollapse() {

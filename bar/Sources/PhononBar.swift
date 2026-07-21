@@ -340,7 +340,7 @@ struct BarSettings: Decodable {
     }
 
     static func microphonePriorities() -> [String] {
-        load()?.microphonePriority ?? ["Yeti", "MacBook Pro Microphone"]
+        load()?.microphonePriority ?? []
     }
 
     static func setStreamingEnabled(_ enabled: Bool) {
@@ -711,7 +711,6 @@ final class EngineClient {
         }
         for c in [
             NSString(string: "~/.local/bin/phonon").expandingTildeInPath,
-            "/Users/infatoshi/.local/bin/phonon",
         ] where FileManager.default.isExecutableFile(atPath: c) {
             return c
         }

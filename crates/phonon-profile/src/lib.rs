@@ -278,7 +278,7 @@ fn parse_kernel_profile(stderr: &str, top: usize) -> Result<KernelProfileReport>
     });
     kernels.truncate(top.max(1));
     Ok(KernelProfileReport {
-        metric: "CPU time encoding literal MLX Metal dispatches; GPU per-kernel counters are unavailable on this M4 Max".into(),
+        metric: "CPU time encoding literal MLX Metal dispatches; GPU per-kernel counters are unavailable through this profiler".into(),
         total_invocations,
         unique_kernels,
         kernels,

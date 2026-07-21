@@ -91,9 +91,7 @@ Screenshots are discarded immediately. The engine uses OCR only to rank
 dictionary candidates already relevant to the spoken transcript; it sends
 confirmed terms, not the full screen text, into the Fluid correction prompt.
 
-### Floating bar (the Wispr feel)
-
-Lifted from the parked Phonon menubar app (`anvil:~/phonon/macos` → `MiniRecorderPanel`):
+### Floating bar
 
 - One bottom-anchored capsule that expands itself; no spawned overlay or inner waveform
 - Warm voice-responsive fill while listening; the same capsule breathes while processing
@@ -110,11 +108,10 @@ and paired corpus used by the engine and CLI. Model status exposes parallel
 weight loading, startup smoke tests, TTFT, and speculative throughput. The
 menubar `ϕ` remains available as a compact shortcut while the app is running.
 
-The native app uses the active microphone priority list. Yeti is
-priority 1 and MacBook Pro Microphone is priority 2; availability is refreshed
-before each recording, so Yeti takes over automatically when connected. The
-bar menu shows the mic selected by Auto. This keeps AirPods available for music
-output without opening their microphone and forcing Bluetooth headset mode.
+The native app uses a configurable microphone priority list. Availability is
+refreshed before each recording, so a preferred external microphone can take
+over automatically when connected. The bar menu shows the microphone selected
+by Auto.
 
 ## Layout
 
