@@ -602,7 +602,14 @@ pub fn set_intended_transcript(id: &str, intended: &str) -> Result<RecordingMeta
 
 pub fn extract_transcript_payload(output: &str) -> &str {
     let Some(start) = output.find("<transcript>") else {
-        return output.trim();
+        let trimmed = output.trim();
+        if trimmed.contains("<phonon_dictionary")
+            || trimmed.contains("</phonon_dictionary>")
+            || trimmed.contains("canonical_terms:")
+        {
+            return "";
+        }
+        return trimmed;
     };
     let content_start = start + "<transcript>".len();
     let remaining = &output[content_start..];
@@ -622,9 +629,11 @@ pub fn safe_polish_output(
     let polished_words = normalized_words(&polished_corrected.text);
     let collapsed =
         polished.trim().is_empty() || (source_words.len() > 1 && polished_words.len() <= 1);
+    let implausible_expansion = polished_words.len() > source_words.len().saturating_mul(2) + 8
+        || polished.len() > source.len().saturating_mul(4) + 64;
     let meaning_only_deletion = source_words.len().saturating_sub(polished_words.len()) <= 2
         && deletes_meaningful_words_only(&source_words, &polished_words);
-    if collapsed || meaning_only_deletion {
+    if collapsed || implausible_expansion || meaning_only_deletion {
         source_corrected
     } else {
         polished_corrected
@@ -958,6 +967,33 @@ mod tests {
             "<phonon_dictionary>terms</phonon_dictionary>\n<transcript>\nUse vLLM.\n</transcript>";
         assert_eq!(extract_transcript_payload(output), "Use vLLM.");
         assert_eq!(extract_transcript_payload("Use CUDA."), "Use CUDA.");
+        assert_eq!(
+            extract_transcript_payload("<phonon_dictionary>\ncanonical_terms: CUDA"),
+            ""
+        );
+    }
+
+    #[test]
+    fn safe_polish_rejects_dictionary_envelopes_and_implausible_expansion() {
+        let dictionary = DictionaryFile::default();
+        assert_eq!(
+            safe_polish_output(
+                &dictionary,
+                "Can you hear me?",
+                "<phonon_dictionary>\ncanonical_terms: CUDA, cuDNN"
+            )
+            .text,
+            "Can you hear me?"
+        );
+        assert_eq!(
+            safe_polish_output(
+                &dictionary,
+                "Okay.",
+                "This response expanded into far too many unrelated words and should never be inserted into the focused application."
+            )
+            .text,
+            "Okay."
+        );
     }
 
     #[test]

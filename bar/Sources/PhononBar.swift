@@ -224,6 +224,19 @@ enum PreviewRevisionPolicy {
             && wordCount(polished) >= wordCount(source)
     }
 
+    static func safeFinalText(source: String, candidate: String) -> String {
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return source }
+        let sourceWords = wordCount(source)
+        let candidateWords = wordCount(trimmed)
+        let looksLikeEnvelope = trimmed.contains("<phonon_dictionary")
+            || trimmed.contains("</phonon_dictionary>")
+            || trimmed.contains("canonical_terms:")
+        let expandedTooFar = candidateWords > sourceWords * 2 + 8
+            || trimmed.count > source.count * 4 + 64
+        return looksLikeEnvelope || expandedTooFar ? source : trimmed
+    }
+
     private static func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
     }
@@ -1628,8 +1641,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     e2eTrace?.llmTokensPerSecond = ev["tok_s"] as? Double
                 }
                 let text = ev["text"] as? String ?? rawText
-                let out = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let final = out.isEmpty ? rawText : out
+                let final = PreviewRevisionPolicy.safeFinalText(source: rawText, candidate: text)
                 processing = false
                 if !final.isEmpty {
                     setPreview(final, stage: "Inserted")
