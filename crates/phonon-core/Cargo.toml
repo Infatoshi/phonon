@@ -1,0 +1,13 @@
+[package]
+name = "phonon-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+phonon-asr = { path = "../phonon-asr" }
+phonon-audio = { path = "../phonon-audio" }
+phonon-llm = { path = "../phonon-llm" }
+serde.workspace = true
+serde_json.workspace = true

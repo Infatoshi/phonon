@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: taiki-e/install-action@nextest
+      - uses: astral-sh/setup-uv@v6
+      - run: cargo fmt --all -- --check
+      - run: cargo nextest run --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: PYTHONPATH=. uv run --with pytest --with numpy pytest
+      - run: uv run ruff check .
+      - run: swift test --package-path bar
+
+  website:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test

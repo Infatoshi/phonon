@@ -1,0 +1,52 @@
+[
+  {
+    "id": "cuda-phonetic",
+    "raw": "Run the kudo kernel benchmark again.",
+    "intended": "Run the CUDA kernel benchmark again."
+  },
+  {
+    "id": "vllm-spoken",
+    "raw": "Compare the v llm server against the baseline.",
+    "intended": "Compare the vLLM server against the baseline."
+  },
+  {
+    "id": "blackwell-spoken",
+    "raw": "Profile this on the black well GPU.",
+    "intended": "Profile this on the Blackwell GPU."
+  },
+  {
+    "id": "rtx-pro-phonetic",
+    "raw": "Run it on the rgx pro 6000.",
+    "intended": "Run it on the RTX Pro 6000."
+  },
+  {
+    "id": "kimi-k2-phonetic",
+    "raw": "Test the prompt with kimmy k2.",
+    "intended": "Test the prompt with Kimi K2."
+  },
+  {
+    "id": "pufferlib-split",
+    "raw": "Use puffer lib for the environment loop.",
+    "intended": "Use Pufferlib for the environment loop."
+  },
+  {
+    "id": "h100-spoken",
+    "raw": "Move the job to an h one hundred.",
+    "intended": "Move the job to an H100."
+  },
+  {
+    "id": "b200-spoken",
+    "raw": "Request a b two hundred for the sweep.",
+    "intended": "Request a B200 for the sweep."
+  },
+  {
+    "id": "flashattention-spoken",
+    "raw": "Replace the attention path with flash attention.",
+    "intended": "Replace the attention path with FlashAttention."
+  },
+  {
+    "id": "sm120-spoken",
+    "raw": "Compile this for sm 120.",
+    "intended": "Compile this for SM120."
+  }
+]

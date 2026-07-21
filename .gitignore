@@ -1,0 +1,11 @@
+/target/
+/bar/.build/
+/bar/dist/
+/ref/
+/.pytest_cache/
+/.ruff_cache/
+**/__pycache__/
+*.profraw
+.DS_Store
+.env
+.env.*
