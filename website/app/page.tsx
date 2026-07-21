@@ -42,18 +42,6 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="product shell" aria-label="Phonon app preview">
-        <div className="window-glow" />
-        <Image
-          className="app-shot"
-          src="/phonon-app.png"
-          alt="Phonon showing voice typing speed, microphone priority, permissions, and activity"
-          width={1600}
-          height={1162}
-          priority
-        />
-      </section>
-
       <section className="feature-grid shell" aria-label="Features">
         {features.map((feature, index) => (
           <article className="feature" key={feature.title}>

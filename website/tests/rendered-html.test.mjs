@@ -19,6 +19,6 @@ test("renders the Phonon landing page", async () => {
     "install command should appear above the macOS download row",
   );
   assert.doesNotMatch(html, /being prepared|Release in preparation/);
-  assert.match(html, /phonon-app\.png/);
+  assert.doesNotMatch(html, /phonon-app\.png|MacBook Pro Microphone|328 voice WPM/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

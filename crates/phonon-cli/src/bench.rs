@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_CLIPS: &[&str] = &[
     "numba cuda use nvidia binding for tdt decoding on the three oh nine oh",
     "open the qwen three point five four b four bit model with m l x",
-    "ssh into anvil and check nvidia smi on the blackwell",
+    "check nvidia smi on the blackwell server",
     "fix the typo in train polish lora and re run the eval",
     "push the branch and open a draft p r against main",
 ];

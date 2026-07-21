@@ -426,7 +426,7 @@ fn default_true() -> bool {
 }
 
 fn default_microphone_priority() -> Vec<String> {
-    vec!["Yeti".into(), "MacBook Pro Microphone".into()]
+    Vec::new()
 }
 
 fn default_shortcut_mode() -> String {
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn older_settings_gain_native_app_defaults() {
         let settings: SettingsFile = serde_json::from_str(
-            r#"{"schema_version":1,"streaming":true,"local_history":true,"screen_context":true,"microphone_priority":["Yeti"]}"#,
+            r#"{"schema_version":1,"streaming":true,"local_history":true,"screen_context":true,"microphone_priority":["USB Microphone"]}"#,
         )
         .unwrap();
         assert!(settings.instant_mic);

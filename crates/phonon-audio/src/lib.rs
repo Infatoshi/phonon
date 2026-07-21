@@ -27,7 +27,7 @@ pub struct MicrophoneSelection {
     pub selected_device: Option<String>,
 }
 
-const DEFAULT_MICROPHONE_PRIORITY: &[&str] = &["Yeti", "MacBook Pro Microphone"];
+const DEFAULT_MICROPHONE_PRIORITY: &[&str] = &[];
 
 #[derive(Debug, Deserialize)]
 struct AudioSettings {
@@ -304,31 +304,10 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_yeti_keeps_priority_one_and_macbook_is_selected() {
-        let selection =
-            resolve_from_names(&["soundcore Space 2".into(), "MacBook Pro Microphone".into()]);
-        assert_eq!(selection.devices[0].priority, 1);
-        assert_eq!(selection.devices[0].label, "Yeti");
-        assert!(!selection.devices[0].available());
-        assert_eq!(
-            selection.selected_device.as_deref(),
-            Some("MacBook Pro Microphone")
-        );
-        assert!(selection.devices[1].selected);
-    }
-
-    #[test]
-    fn yeti_wins_when_it_becomes_available() {
-        let selection = resolve_from_names(&[
-            "MacBook Pro Microphone".into(),
-            "Yeti Stereo Microphone".into(),
-        ]);
-        assert_eq!(
-            selection.selected_device.as_deref(),
-            Some("Yeti Stereo Microphone")
-        );
-        assert!(selection.devices[0].selected);
-        assert!(!selection.devices[1].selected);
+    fn microphone_priority_is_unconfigured_by_default() {
+        let selection = resolve_from_names(&["Built-in Microphone".into()]);
+        assert!(selection.devices.is_empty());
+        assert!(selection.selected_device.is_none());
     }
 
     #[test]
