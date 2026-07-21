@@ -12,6 +12,12 @@ test("renders the Phonon landing page", async () => {
   assert.match(html, /Local by design/);
   assert.match(html, /Available now\./);
   assert.match(html, /brew install infatoshi\/phonon\/phonon/);
+  assert.match(html, /Copy Homebrew install command/);
+  assert.ok(
+    html.indexOf("brew install infatoshi/phonon/phonon") <
+      html.indexOf("Get Phonon for macOS"),
+    "install command should appear above the macOS download row",
+  );
   assert.doesNotMatch(html, /being prepared|Release in preparation/);
   assert.match(html, /phonon-app\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);

@@ -1,4 +1,5 @@
 import Image from "next/image";
+import InstallCommand from "./InstallCommand";
 
 const features = [
   {
@@ -34,11 +35,11 @@ export default function Home() {
         <p className="hero-copy">
           Voice typing that runs on your Mac, understands your vocabulary, and stays out of your way.
         </p>
+        <InstallCommand />
         <div className="hero-actions">
           <a className="button primary" href="#release">Get Phonon for macOS</a>
           <span className="platform">Apple silicon · macOS 14+</span>
         </div>
-        <code className="install-command">brew install infatoshi/phonon/phonon</code>
       </section>
 
       <section className="product shell" aria-label="Phonon app preview">
@@ -81,7 +82,7 @@ export default function Home() {
             Install the open-source macOS app with Homebrew. Phonon builds locally, downloads its open model weights
             on first launch, and keeps dictation data on your Mac.
           </p>
-          <code className="install-command release-command">brew install infatoshi/phonon/phonon</code>
+          <InstallCommand release />
         </div>
         <div className="release-state" aria-label="Release status">
           <span className="status-dot" />

@@ -71,17 +71,34 @@ a { color: inherit; text-decoration: none; }
 .button.primary:hover { transform: translateY(-2px); background: #ff6b35; }
 .platform { color: var(--dim); font-size: 13px; }
 .install-command {
-  display: table;
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 14px;
   margin-top: 18px;
-  padding: 12px 14px;
+  padding: 7px 7px 7px 14px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: rgba(23, 16, 13, 0.82);
   color: var(--warm);
   font-family: var(--font-geist-mono), monospace;
   font-size: 13px;
-  user-select: all;
 }
+.install-command code { user-select: all; }
+.install-command button {
+  appearance: none;
+  min-width: 66px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(246, 160, 68, 0.28);
+  border-radius: 7px;
+  background: rgba(246, 160, 68, 0.1);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.install-command button:hover { background: rgba(246, 160, 68, 0.18); }
+.install-command button:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; }
 .release-command { margin-top: 24px; }
 
 .product { position: relative; }
@@ -135,7 +152,8 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 520px) {
   .nav-links { display: none; }
   .hero-actions { align-items: flex-start; flex-direction: column; }
-  .install-command { max-width: 100%; overflow-x: auto; white-space: nowrap; }
+  .install-command { width: 100%; max-width: 100%; justify-content: space-between; white-space: nowrap; }
+  .install-command code { overflow-x: auto; }
   .button { width: 100%; }
   .app-shot { border-radius: 12px; }
   .pipeline i { display: none; }
