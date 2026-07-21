@@ -10,7 +10,9 @@ test("renders the Phonon landing page", async () => {
   assert.match(html, /Open-source voice typing/);
   assert.doesNotMatch(html, /Open-source voice typing for Mac/);
   assert.match(html, /Local by design/);
-  assert.match(html, /Release in preparation/);
+  assert.match(html, /Available now\./);
+  assert.match(html, /brew install infatoshi\/phonon\/phonon/);
+  assert.doesNotMatch(html, /being prepared|Release in preparation/);
   assert.match(html, /phonon-app\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });

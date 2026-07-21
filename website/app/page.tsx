@@ -38,6 +38,7 @@ export default function Home() {
           <a className="button primary" href="#release">Get Phonon for macOS</a>
           <span className="platform">Apple silicon · macOS 14+</span>
         </div>
+        <code className="install-command">brew install infatoshi/phonon/phonon</code>
       </section>
 
       <section className="product shell" aria-label="Phonon app preview">
@@ -75,16 +76,17 @@ export default function Home() {
       <section className="release shell" id="release">
         <div>
           <p className="section-label">macOS release</p>
-          <h2>The public build is being prepared.</h2>
+          <h2>Available now.</h2>
           <p>
-            Phonon is open source and in alpha while its local model runtime is packaged and the app is notarized.
-            The first download will be a signed macOS installer, followed by a Homebrew cask.
+            Install the open-source macOS app with Homebrew. Phonon builds locally, downloads its open model weights
+            on first launch, and keeps dictation data on your Mac.
           </p>
+          <code className="install-command release-command">brew install infatoshi/phonon/phonon</code>
         </div>
         <div className="release-state" aria-label="Release status">
           <span className="status-dot" />
           <div>
-            <strong>Release in preparation</strong>
+            <strong>Public release</strong>
             <span>No cloud account required</span>
           </div>
         </div>

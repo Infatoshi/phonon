@@ -55,7 +55,7 @@ impl AsrSidecar {
         if !script.is_file() {
             bail!("missing {}", script.display());
         }
-        let uv = which::which("uv").context("uv not found")?;
+        let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
         let started = Instant::now();
         let mut child = Command::new(uv)
             .args(["run", "--with", "parakeet-mlx", "python"])
@@ -141,6 +141,15 @@ impl AsrSidecar {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn resolve_uv() -> Option<std::path::PathBuf> {
+    which::which("uv").ok().or_else(|| {
+        ["/opt/homebrew/bin/uv", "/usr/local/bin/uv"]
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .find(|path| path.is_file())
+    })
 }
 
 impl Drop for AsrSidecar {
