@@ -653,6 +653,11 @@ final class EngineClient {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: phonon)
         p.arguments = ["engine"]
+        var environment = ProcessInfo.processInfo.environment
+        if let resources = Bundle.main.resourcePath {
+            environment["PHONON_ROOT"] = resources
+        }
+        p.environment = environment
         let inPipe = Pipe()
         let outPipe = Pipe()
         p.standardInput = inPipe
@@ -683,6 +688,13 @@ final class EngineClient {
     private func resolvePhonon() -> String {
         if let env = ProcessInfo.processInfo.environment["PHONON_BIN"], !env.isEmpty {
             return env
+        }
+        if let bundled = Bundle.main.builtInPlugInsURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("Helpers/phonon").path,
+            FileManager.default.isExecutableFile(atPath: bundled)
+        {
+            return bundled
         }
         for c in [
             NSString(string: "~/.local/bin/phonon").expandingTildeInPath,

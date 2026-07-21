@@ -1,37 +1,33 @@
 # Distribution
 
-Phonon is distributed as a small notarized macOS application. Model weights are
-not embedded in the DMG. The app downloads and verifies them on first launch,
-then stores them under `~/Library/Application Support/Phonon/Models`.
+Phonon's public release is installed from source through its Homebrew tap. Model
+weights are not stored in the repository; the app downloads the open Parakeet
+weights on first launch. This source-built route works before a Developer ID
+binary release is available.
 
 ## Runtime layout
 
-- The signed app bundle contains the native Swift UI, the Rust engine, prompts,
-  the startup audio fixture, and open inference runtimes.
+- The app bundle contains the native Swift UI, Rust engine, ASR sidecar, prompt,
+  and startup audio fixture.
 - ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v2` model. It is public,
   ungated, CC-BY-4.0, and approximately 2.47 GB.
-- Correction uses `ALTICDEV/FLUID-1/model-Q4_K_M.gguf`. It is public, ungated,
-  AGPL-3.0, and approximately 2.50 GB.
-- The Fluid-1 GGUF runs through an open llama.cpp-based runtime. Production
-  Phonon must not depend on `/Applications/FluidVoice.app` or its private MLX
-  provider helper.
-- Downloads are content-addressed and SHA-256 verified before activation.
-- Model licenses and attribution are shown before download and retained in the
-  installed model directory.
+- Deterministic dictionary correction is always available. Fluid-1 correction
+  is optional until its public runtime integration replaces the development-only
+  FluidVoice helper.
+- Production Phonon does not redistribute FluidVoice or its private MLX helper.
 
 This requires no Phonon file-storage service. Hugging Face hosts the upstream
-weights, GitHub Releases hosts versioned Phonon DMGs, and Vercel hosts the
-static website.
+weights, GitHub hosts tagged source releases, and Vercel hosts the static website.
 
-## Release sequence
+## Release channels
 
-1. Bundle the Rust engine and all small runtime resources inside `Phonon.app`.
-2. Replace the checkout-relative paths and installed FluidVoice helper lookup.
-3. Add first-launch model download, verification, progress, and resumability.
-4. Sign with a Developer ID Application certificate.
-5. Notarize and staple the app, then build and notarize the DMG.
-6. Publish the DMG and checksum to GitHub Releases.
-7. Publish a Homebrew cask pointing at the immutable GitHub release asset.
+- Available now: `brew install infatoshi/phonon/phonon` builds the tagged source,
+  installs the self-contained app, and uses the open Parakeet runtime.
+- The bundled engine and small runtime resources do not depend on a checkout.
+- The open release falls back to deterministic dictionary correction when the
+  optional Fluid-1 runtime is unavailable.
+- Later: a Developer ID-signed and notarized DMG/cask can provide a prebuilt
+  binary while retaining the same local model-download design.
 
 ## Apple distribution requirement
 

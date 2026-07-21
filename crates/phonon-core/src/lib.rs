@@ -96,14 +96,15 @@ impl Engine {
     pub fn start(root: &Path) -> Result<Self> {
         let asr = AsrSidecar::spawn(root)?;
         let polisher = PolishSidecar::spawn(root)?;
+        let open_asr_only = polisher.is_none();
         let mtp_missing = !fluid_drafter_dir().is_dir();
 
         Ok(Self {
             asr,
             polisher,
             asr_ready: false,
-            fluid_ready: false,
-            mtp_ready: false,
+            fluid_ready: open_asr_only,
+            mtp_ready: open_asr_only,
             mtp_missing,
             root: root.to_path_buf(),
             started: Instant::now(),
@@ -478,7 +479,30 @@ impl Engine {
         id: Option<&str>,
     ) -> Result<()> {
         let Some(polisher) = self.polisher.as_mut() else {
-            bail!("polish not available");
+            let corrected = safe_polish_output(&self.dictionary, text, text);
+            let screen_context_terms = self.dictionary.screen_confirmed_terms(text, screen_text);
+            if let Some(recording_id) = id.and_then(|request_id| self.recording_ids.get(request_id))
+            {
+                update_recording_final(
+                    recording_id,
+                    &corrected.text,
+                    corrected.applied.clone(),
+                    screen_context_terms,
+                    data::LlmMetadata {
+                        latency_ms: 0.0,
+                        ttft_ms: 0.0,
+                        tokens_per_second: 0.0,
+                    },
+                )?;
+            }
+            self.pending_events.push(EngineEvent::PolishResult {
+                id: id.map(str::to_string),
+                text: corrected.text,
+                latency_ms: 0.0,
+                ttft_ms: 0.0,
+                tok_s: 0.0,
+            });
+            return Ok(());
         };
         if !self.fluid_ready {
             bail!("fluid-1 not ready yet");
@@ -616,9 +640,16 @@ pub fn run_engine_serve() -> Result<()> {
         emit(&json!({
             "type": "stream",
             "name": "fluid-1",
-            "state": "missing",
-            "pct": 0.0,
-            "msg": "fluid-1 not installed"
+            "state": "ready",
+            "pct": 1.0,
+            "msg": "open ASR release · deterministic dictionary active"
+        }));
+        emit(&json!({
+            "type": "stream",
+            "name": "mtp",
+            "state": "ready",
+            "pct": 1.0,
+            "msg": "optional speculative correction not installed"
         }));
     }
 

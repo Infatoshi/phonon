@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://phonon.sh"),
   title: "Phonon — Fast, local voice typing",
   description:
-    "Fast, local, simple voice typing that understands your vocabulary and runs on your Mac.",
+    "Fast, local, sovereign voice typing that understands your vocabulary and runs on your Mac.",
   icons: {
     icon: "/phonon-icon.png",
     apple: "/phonon-icon.png",

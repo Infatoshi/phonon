@@ -23,6 +23,9 @@ pub fn polish_prompt(root: &Path) -> PathBuf {
 }
 
 pub fn fluid1_paths() -> Option<(PathBuf, PathBuf, Option<PathBuf>)> {
+    if std::env::var_os("PHONON_DISABLE_LLM").is_some() {
+        return None;
+    }
     let helper = fluid_helper();
     let model = fluid_model_dir();
     if !(helper.is_file() && model.is_dir()) {

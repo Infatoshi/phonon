@@ -1,12 +1,19 @@
 # Phonon
 
-Open-source voice typing for macOS. Fast, local, and simple.
+Open-source voice typing for macOS. Fast, local, and sovereign.
 
 [Website](https://phonon.sh) · [Distribution plan](DISTRIBUTION.md)
 
-> Alpha: the source currently runs against a local development checkout. The
-> public DMG will follow the self-contained runtime and notarization work in
-> `DISTRIBUTION.md`.
+## Install
+
+```bash
+brew install infatoshi/phonon/phonon
+phonon
+```
+
+The Homebrew release builds the app locally and downloads the open Parakeet
+weights on first launch. A Developer ID-notarized binary release can follow
+without changing the open-source install path.
 
 ## Pipeline
 

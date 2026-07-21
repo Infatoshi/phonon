@@ -3,6 +3,11 @@
 use std::path::PathBuf;
 
 pub fn project_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("PHONON_ROOT").map(PathBuf::from) {
+        if root.join("sidecar/asr_server.py").is_file() {
+            return root;
+        }
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest.join("../..");
     if workspace.join("sidecar/asr_server.py").is_file() {

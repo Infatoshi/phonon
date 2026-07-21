@@ -1,8 +1,7 @@
 # Third-party models and runtimes
 
-Phonon does not commit model weights to this repository. Release builds download
-the selected artifacts directly from their upstream hosts and verify SHA-256
-before use.
+Phonon does not commit model weights to this repository. The public release
+downloads Parakeet directly from its upstream Hugging Face repository.
 
 ## Parakeet TDT 0.6B v2
 
@@ -22,14 +21,14 @@ before use.
 - SHA-256: `619dca002c4a2bf683311a6084c75ba31ab610b9b352720f9ead9e9bceac7590`
 
 FluidVoice itself is GPL-3.0, but its release-only `fluid-intelligence-mlx`
-provider is not present in the public FluidVoice source. Phonon release builds
-must use the public Fluid-1 GGUF through an independently bundled open runtime;
-they must not depend on or redistribute FluidVoice's installed private helper.
+provider is not present in the public FluidVoice source. Phonon does not
+redistribute that helper. Fluid-1 is documented here for the optional correction
+integration; it is not downloaded by the baseline Homebrew release.
 
 ## llama.cpp
 
 - Source: <https://github.com/ggml-org/llama.cpp>
 - License: MIT
 
-The final binary attribution bundle must include the exact notices for every
-runtime revision shipped in that release.
+If llama.cpp is added to a future binary release, its exact revision and notice
+must be included in that release.
