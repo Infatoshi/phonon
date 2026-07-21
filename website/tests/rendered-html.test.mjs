@@ -5,9 +5,10 @@ import test from "node:test";
 test("renders the Phonon landing page", async () => {
   const html = await readFile(new URL("../.next/server/app/index.html", import.meta.url), "utf8");
 
-  assert.match(html, /<title>Phonon — Open-source voice typing for Mac<\/title>/i);
-  assert.match(html, /Fast\. Local\./);
+  assert.match(html, /<title>Phonon — Fast, local voice typing<\/title>/i);
+  assert.match(html, /Fast\. Local\.<br\/>Sovereignty\./);
   assert.match(html, /Open-source voice typing/);
+  assert.doesNotMatch(html, /Open-source voice typing for Mac/);
   assert.match(html, /Local by design/);
   assert.match(html, /Release in preparation/);
   assert.match(html, /phonon-app\.png/);

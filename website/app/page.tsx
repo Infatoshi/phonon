@@ -30,8 +30,7 @@ export default function Home() {
       </nav>
 
       <section className="hero shell" id="top">
-        <div className="eyebrow"><span /> Open-source voice typing for Mac</div>
-        <h1>Fast. Local.<br />Simple.</h1>
+        <h1>Fast. Local.<br />Sovereignty.</h1>
         <p className="hero-copy">
           Voice typing that runs on your Mac, understands your vocabulary, and stays out of your way.
         </p>

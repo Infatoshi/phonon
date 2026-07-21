@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://phonon.sh"),
-  title: "Phonon — Open-source voice typing for Mac",
+  title: "Phonon — Fast, local voice typing",
   description:
     "Fast, local, simple voice typing that understands your vocabulary and runs on your Mac.",
   icons: {
@@ -22,8 +22,8 @@ export const metadata: Metadata = {
     apple: "/phonon-icon.png",
   },
   openGraph: {
-    title: "Phonon — Fast. Local. Simple.",
-    description: "Open-source voice typing for Mac.",
+    title: "Phonon — Fast. Local. Sovereignty.",
+    description: "Voice typing that runs on your Mac and keeps your words yours.",
     type: "website",
     url: "https://phonon.sh",
   },
