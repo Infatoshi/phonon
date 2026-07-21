@@ -3,6 +3,22 @@ import XCTest
 @testable import PhononBar
 
 final class PreviewRevisionPolicyTests: XCTestCase {
+    func testFinalInsertionRejectsDictionaryEnvelopeAndRunawayExpansion() {
+        XCTAssertEqual(
+            PreviewRevisionPolicy.safeFinalText(
+                source: "Can you hear me?",
+                candidate: "<phonon_dictionary>\ncanonical_terms: CUDA, cuDNN"
+            ),
+            "Can you hear me?"
+        )
+        XCTAssertEqual(
+            PreviewRevisionPolicy.safeFinalText(
+                source: "Okay.",
+                candidate: "This response expanded into far too many unrelated words and should never be inserted into the focused application."
+            ),
+            "Okay."
+        )
+    }
     func testShortcutModeFiltersOnlyTheDisabledTrigger() {
         XCTAssertTrue(ShortcutPolicy.allows(mode: "both", source: "right-option"))
         XCTAssertTrue(ShortcutPolicy.allows(mode: "both", source: "control-space"))
