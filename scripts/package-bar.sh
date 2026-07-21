@@ -7,8 +7,8 @@ bar_dir="$project_dir/bar"
 app_path="$bar_dir/dist/Phonon.app"
 
 cargo build --release --package phonon-cli --bin phonon --manifest-path "$project_dir/Cargo.toml"
-swift build -c release --package-path "$bar_dir"
-bin_dir=$(swift build -c release --package-path "$bar_dir" --show-bin-path)
+swift build --disable-sandbox -c release --package-path "$bar_dir"
+bin_dir=$(swift build --disable-sandbox -c release --package-path "$bar_dir" --show-bin-path)
 
 staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/phonon-app.XXXXXX")
 trap 'rm -rf "$staging_dir"' EXIT
