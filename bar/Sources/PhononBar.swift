@@ -1290,6 +1290,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var isRecording = false
     private var optionDown = false
     private var eventTap: CFMachPort?
+    private var eventTapSource: CFRunLoopSource?
     private var toggleHotKey: EventHotKeyRef?
     private var toggleHandler: EventHandlerRef?
     private var enginesReady = false
@@ -1320,6 +1321,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         appStore.onMicrophonePermissionGranted = { [weak self] in
             self?.warmMicrophoneIfAuthorized()
+        }
+        appStore.onPermissionsRefresh = { [weak self] in
+            self?.refreshPermissionDependentServices()
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
         setupPanel()
@@ -2099,6 +2103,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func installHotkey() {
+        if let eventTap, CFMachPortIsValid(eventTap) {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            appStore.inputMonitoringAvailable = CGEvent.tapIsEnabled(tap: eventTap)
+            return
+        }
         let mask = 1 << CGEventType.flagsChanged.rawValue
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon else { return Unmanaged.passUnretained(event) }
@@ -2131,8 +2140,34 @@ final class AppController: NSObject, NSApplicationDelegate {
         eventTap = tap
         appStore.inputMonitoringAvailable = true
         let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        eventTapSource = src
         CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func refreshPermissionDependentServices() {
+        warmMicrophoneIfAuthorized()
+        guard CGPreflightListenEventAccess() else {
+            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
+            appStore.inputMonitoringAvailable = false
+            return
+        }
+        if let eventTap, CFMachPortIsValid(eventTap) {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            appStore.inputMonitoringAvailable = CGEvent.tapIsEnabled(tap: eventTap)
+            return
+        }
+        removeEventTap()
+        installHotkey()
+    }
+
+    private func removeEventTap() {
+        if let eventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
+        }
+        if let eventTap { CFMachPortInvalidate(eventTap) }
+        eventTapSource = nil
+        eventTap = nil
     }
 
     nonisolated private func handleCGEvent(type: CGEventType, event: CGEvent) {
@@ -2177,6 +2212,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         screenContextTask?.cancel()
         engine.shutdown()
         recorder.stop(writeFile: false)
+        removeEventTap()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

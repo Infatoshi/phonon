@@ -173,4 +173,15 @@ final class AppDataTests: XCTestCase {
             XCTAssertEqual(store.microphoneStatusText, "Needs access")
         }
     }
+
+    func testPermissionRefreshRechecksInputMonitoringAndNotifiesServices() {
+        let store = NativeAppStore(supportDirectory: directory)
+        var callbackCount = 0
+        store.onPermissionsRefresh = { callbackCount += 1 }
+
+        store.refreshPermissions()
+
+        XCTAssertEqual(callbackCount, 1)
+        XCTAssertEqual(store.inputMonitoringAvailable, CGPreflightListenEventAccess())
+    }
 }

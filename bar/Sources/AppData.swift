@@ -251,6 +251,7 @@ final class NativeAppStore: ObservableObject {
     @Published var lastError: String?
     var onDictionaryChanged: (() -> Void)?
     var onMicrophonePermissionGranted: (() -> Void)?
+    var onPermissionsRefresh: (() -> Void)?
 
     private let fileManager: FileManager
     private let supportDirectory: URL
@@ -405,6 +406,8 @@ final class NativeAppStore: ObservableObject {
     var screenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }
 
     func refreshPermissions() {
+        inputMonitoringAvailable = CGPreflightListenEventAccess()
+        onPermissionsRefresh?()
         objectWillChange.send()
     }
 
