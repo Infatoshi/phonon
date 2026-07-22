@@ -37,7 +37,12 @@ export default function Home() {
         </p>
         <InstallCommand />
         <div className="hero-actions">
-          <a className="button primary" href="#release">Get Phonon for macOS</a>
+          <a
+            className="button primary"
+            href="https://github.com/Infatoshi/phonon/releases/latest/download/Phonon.dmg"
+          >
+            Get Phonon for macOS
+          </a>
           <span className="platform">Apple silicon · macOS 14+</span>
         </div>
       </section>
@@ -67,8 +72,8 @@ export default function Home() {
           <p className="section-label">macOS release</p>
           <h2>Available now.</h2>
           <p>
-            Install the open-source macOS app with Homebrew. Phonon builds locally, downloads its open model weights
-            on first launch, and keeps dictation data on your Mac.
+            Install the signed and notarized macOS app with Homebrew or download the DMG directly. Phonon downloads
+            its open model weights on first launch and keeps dictation data on your Mac.
           </p>
           <InstallCommand release />
         </div>

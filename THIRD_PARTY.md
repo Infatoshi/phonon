@@ -3,6 +3,15 @@
 Phonon does not commit model weights to this repository. The public release
 downloads Parakeet directly from its upstream Hugging Face repository.
 
+## uv
+
+- Source: <https://github.com/astral-sh/uv>
+- License: Apache-2.0 OR MIT
+
+The signed DMG bundles the arm64 `uv` executable so a clean Mac can create the
+local Python environment used by Parakeet. Model weights and Python packages are
+still downloaded into the user's normal caches on first launch.
+
 ## Parakeet TDT 0.6B v2
 
 - Source: <https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2>

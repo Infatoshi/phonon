@@ -289,8 +289,7 @@ fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
     if !script.is_file() {
         bail!("missing {}", script.display());
     }
-    let script = root.join("sidecar/asr_server.py");
-    let uv = which::which("uv").context("uv not found")?;
+    let uv = crate::resolve_runtime_tool("uv").context("uv not found")?;
     let mut child = Command::new(uv)
         .args([
             "run",
