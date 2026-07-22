@@ -7,13 +7,14 @@ Open-source voice typing for macOS. Fast, local, and sovereign.
 ## Install
 
 ```bash
-brew install infatoshi/phonon/phonon
+brew install --cask infatoshi/phonon/phonon
 phonon
 ```
 
-The Homebrew release builds the app locally and downloads the open Parakeet
-weights on first launch. A Developer ID-notarized binary release can follow
-without changing the open-source install path.
+The cask installs the Developer ID-signed and notarized app. Phonon downloads
+the open Parakeet weights on first launch. Tagged releases also include the DMG
+for direct installation. To build locally instead, use
+`brew install --formula infatoshi/phonon/phonon`.
 
 ## Pipeline
 

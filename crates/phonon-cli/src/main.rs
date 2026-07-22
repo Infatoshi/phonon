@@ -16,6 +16,16 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::Command;
 
+pub(crate) fn resolve_runtime_tool(name: &str) -> Option<PathBuf> {
+    let bundled = std::env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .map(|directory| directory.join(name))
+            .filter(|path| path.is_file())
+    });
+    bundled.or_else(|| which::which(name).ok())
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "phonon",
@@ -381,6 +391,20 @@ fn build_bar() -> Result<()> {
 }
 
 fn run_bar(rebuild: bool) -> Result<()> {
+    if let Some(app) = bundled_app() {
+        if rebuild {
+            bail!("the installed app cannot rebuild itself; reinstall Phonon instead");
+        }
+        let status = Command::new("open")
+            .arg(&app)
+            .status()
+            .with_context(|| format!("open {}", app.display()))?;
+        if !status.success() {
+            bail!("open {} failed with {status}", app.display());
+        }
+        return Ok(());
+    }
+
     let bin = bar_bin();
     if rebuild || !bin.is_file() {
         eprintln!("building signed Phonon.app…");
@@ -402,4 +426,13 @@ fn run_bar(rebuild: bool) -> Result<()> {
         bail!("PhononBar exited with {status}");
     }
     Ok(())
+}
+
+fn bundled_app() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let contents = executable.parent()?.parent()?;
+    let app = contents.parent()?.to_path_buf();
+    (app.extension().and_then(|value| value.to_str()) == Some("app")
+        && contents.join("MacOS/PhononBar").is_file())
+    .then_some(app)
 }

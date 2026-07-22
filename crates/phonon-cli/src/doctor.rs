@@ -19,17 +19,25 @@ pub fn run_doctor() -> Result<()> {
         "prompts/polish_v1.txt",
         root.join("prompts/polish_v1.txt").is_file(),
     );
-    check(
-        "bar/Package.swift",
-        root.join("bar/Package.swift").is_file(),
-    );
-    check(
-        "signed bar app (bar/dist/Phonon.app)",
-        root.join("bar/dist/Phonon.app/Contents/MacOS/PhononBar")
-            .is_file(),
-    );
-    check("uv", which::which("uv").is_ok());
-    check("rec (SoX)", which::which("rec").is_ok());
+    let installed_app = root
+        .parent()
+        .map(|contents| contents.join("MacOS/PhononBar"))
+        .filter(|binary| binary.is_file());
+    if installed_app.is_some() {
+        check("native macOS app", true);
+    } else {
+        check(
+            "bar/Package.swift",
+            root.join("bar/Package.swift").is_file(),
+        );
+        check(
+            "signed bar app (bar/dist/Phonon.app)",
+            root.join("bar/dist/Phonon.app/Contents/MacOS/PhononBar")
+                .is_file(),
+        );
+    }
+    check("uv", crate::resolve_runtime_tool("uv").is_some());
+    check("terminal recording (SoX)", which::which("rec").is_ok());
     check("pbcopy", which::which("pbcopy").is_ok());
     check("swift", which::which("swift").is_ok());
 

@@ -8,6 +8,16 @@ pub fn project_root() -> PathBuf {
             return root;
         }
     }
+    if let Some(resources) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .and_then(|helpers| helpers.parent().map(PathBuf::from))
+        .map(|contents| contents.join("Resources"))
+        .filter(|resources| resources.join("sidecar/asr_server.py").is_file())
+    {
+        return resources;
+    }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest.join("../..");
     if workspace.join("sidecar/asr_server.py").is_file() {

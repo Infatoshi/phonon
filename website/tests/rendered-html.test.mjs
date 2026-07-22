@@ -11,10 +11,11 @@ test("renders the Phonon landing page", async () => {
   assert.doesNotMatch(html, /Open-source voice typing for Mac/);
   assert.match(html, /Local by design/);
   assert.match(html, /Available now\./);
-  assert.match(html, /brew install infatoshi\/phonon\/phonon/);
+  assert.match(html, /brew install --cask infatoshi\/phonon\/phonon/);
+  assert.match(html, /releases\/latest\/download\/Phonon\.dmg/);
   assert.match(html, /Copy Homebrew install command/);
   assert.ok(
-    html.indexOf("brew install infatoshi/phonon/phonon") <
+    html.indexOf("brew install --cask infatoshi/phonon/phonon") <
       html.indexOf("Get Phonon for macOS"),
     "install command should appear above the macOS download row",
   );

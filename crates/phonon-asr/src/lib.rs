@@ -144,7 +144,13 @@ impl AsrSidecar {
 }
 
 fn resolve_uv() -> Option<std::path::PathBuf> {
-    which::which("uv").ok().or_else(|| {
+    let bundled = std::env::current_exe().ok().and_then(|executable| {
+        executable
+            .parent()
+            .map(|directory| directory.join("uv"))
+            .filter(|path| path.is_file())
+    });
+    bundled.or_else(|| which::which("uv").ok()).or_else(|| {
         ["/opt/homebrew/bin/uv", "/usr/local/bin/uv"]
             .into_iter()
             .map(std::path::PathBuf::from)
