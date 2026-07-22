@@ -238,6 +238,40 @@ enum PhononDataPaths {
     }
 }
 
+enum PermissionGuide: String, Identifiable {
+    case inputMonitoring
+    case screenRecording
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .inputMonitoring: return "Allow Input Monitoring"
+        case .screenRecording: return "Allow Screen Recording"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .inputMonitoring:
+            return "Turn on Phonon so the hold-to-talk shortcut works everywhere."
+        case .screenRecording:
+            return "Turn on Phonon so local screen context can improve technical terms."
+        }
+    }
+
+    var manualInstructions: String {
+        "Click + in System Settings, type Phonon, press Return, then turn Phonon on."
+    }
+
+    var pane: PrivacyPane {
+        switch self {
+        case .inputMonitoring: return .inputMonitoring
+        case .screenRecording: return .screenRecording
+        }
+    }
+}
+
 @MainActor
 final class NativeAppStore: ObservableObject {
     @Published private(set) var settings = NativeSettings()
@@ -248,6 +282,7 @@ final class NativeAppStore: ObservableObject {
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
     @Published var inputMonitoringAvailable = false
+    @Published var permissionGuide: PermissionGuide?
     @Published var lastError: String?
     var onDictionaryChanged: (() -> Void)?
     var onMicrophonePermissionGranted: (() -> Void)?
@@ -404,6 +439,34 @@ final class NativeAppStore: ObservableObject {
 
     var accessibilityPermission: Bool { AXIsProcessTrusted() }
     var screenRecordingPermission: Bool { CGPreflightScreenCaptureAccess() }
+
+    var inputMonitoringActionTitle: String {
+        inputMonitoringAvailable ? "Settings" : "Request Access"
+    }
+
+    var screenRecordingActionTitle: String {
+        screenRecordingPermission ? "Settings" : "Request Access"
+    }
+
+    func performInputMonitoringPermissionAction() {
+        guard !CGPreflightListenEventAccess() else {
+            NSWorkspace.shared.open(PrivacyPane.inputMonitoring.settingsURL)
+            return
+        }
+        let granted = CGRequestListenEventAccess()
+        refreshPermissions()
+        if !granted { permissionGuide = .inputMonitoring }
+    }
+
+    func performScreenRecordingPermissionAction() {
+        guard !CGPreflightScreenCaptureAccess() else {
+            NSWorkspace.shared.open(PrivacyPane.screenRecording.settingsURL)
+            return
+        }
+        let granted = CGRequestScreenCaptureAccess()
+        refreshPermissions()
+        if !granted { permissionGuide = .screenRecording }
+    }
 
     func refreshPermissions() {
         inputMonitoringAvailable = CGPreflightListenEventAccess()

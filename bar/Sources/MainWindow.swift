@@ -116,6 +116,12 @@ struct PhononMainView: View {
         } message: {
             Text(store.lastError ?? "Unknown error")
         }
+        .sheet(item: $store.permissionGuide) { guide in
+            PermissionGuideView(guide: guide) {
+                store.permissionGuide = nil
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     private var detailView: AnyView {
@@ -576,16 +582,69 @@ struct PermissionSummary: View {
                     action: { openPrivacy(.accessibility) })
                 PermissionRow(
                     name: "Input Monitoring", granted: store.inputMonitoringAvailable,
-                    action: { openPrivacy(.inputMonitoring) })
+                    actionTitle: store.inputMonitoringActionTitle,
+                    action: { store.performInputMonitoringPermissionAction() })
                 PermissionRow(
                     name: "Screen Recording", granted: store.screenRecordingPermission,
-                    action: { openPrivacy(.screenRecording) })
+                    actionTitle: store.screenRecordingActionTitle,
+                    action: { store.performScreenRecordingPermissionAction() })
             }
         }
     }
 
     private func openPrivacy(_ pane: PrivacyPane) {
         NSWorkspace.shared.open(pane.settingsURL)
+    }
+}
+
+struct PermissionGuideView: View {
+    let guide: PermissionGuide
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(guide.title)
+                .font(.title2.bold())
+            Text(guide.detail)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 14) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundleURL.path))
+                    .resizable()
+                    .frame(width: 58, height: 58)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Phonon.app").font(.headline)
+                    Text("Installed in Applications and ready to add in System Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+
+            Text(guide.manualInstructions)
+                .font(.headline)
+            Text("After enabling Phonon, quit it completely before reopening so macOS applies the permission.")
+                .font(.callout)
+
+            HStack {
+                Button("Open Applications") {
+                    NSWorkspace.shared.open(
+                        URL(fileURLWithPath: "/Applications", isDirectory: true))
+                }
+                Spacer()
+                Button("Open System Settings") {
+                    NSWorkspace.shared.open(guide.pane.settingsURL)
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Quit Phonon", action: onDone)
+            }
+        }
+        .padding(24)
+        .frame(width: 540)
+        .background(EmberTheme.background)
+        .foregroundStyle(EmberTheme.text)
+        .preferredColorScheme(.dark)
     }
 }
 

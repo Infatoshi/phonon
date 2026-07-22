@@ -154,6 +154,16 @@ final class AppDataTests: XCTestCase {
         }
     }
 
+    func testManualPermissionGuidesTargetTheCorrectPrivacyPanes() {
+        XCTAssertEqual(PermissionGuide.inputMonitoring.pane, .inputMonitoring)
+        XCTAssertEqual(PermissionGuide.screenRecording.pane, .screenRecording)
+        XCTAssertTrue(PermissionGuide.inputMonitoring.detail.contains("shortcut"))
+        XCTAssertTrue(PermissionGuide.screenRecording.detail.contains("screen context"))
+        XCTAssertEqual(
+            PermissionGuide.inputMonitoring.manualInstructions,
+            "Click + in System Settings, type Phonon, press Return, then turn Phonon on.")
+    }
+
     func testMicrophonePermissionPresentationMatchesTCCState() {
         let store = NativeAppStore(supportDirectory: directory)
         switch store.microphoneAuthorizationStatus {
