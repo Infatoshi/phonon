@@ -1,8 +1,18 @@
 import XCTest
+import Carbon.HIToolbox
 
 @testable import PhononBar
 
 final class PreviewRevisionPolicyTests: XCTestCase {
+    func testTyperUsesCommandPasteEvents() throws {
+        let (down, up) = try XCTUnwrap(Typer.makePasteEvents())
+
+        XCTAssertEqual(down.getIntegerValueField(.keyboardEventKeycode), Int64(kVK_ANSI_V))
+        XCTAssertEqual(up.getIntegerValueField(.keyboardEventKeycode), Int64(kVK_ANSI_V))
+        XCTAssertTrue(down.flags.contains(.maskCommand))
+        XCTAssertTrue(up.flags.contains(.maskCommand))
+    }
+
     func testFinalInsertionRejectsDictionaryEnvelopeAndRunawayExpansion() {
         XCTAssertEqual(
             PreviewRevisionPolicy.safeFinalText(
