@@ -22,12 +22,12 @@ for direct installation. To build locally instead, use
 mic → Parakeet ASR → auto fluid-1 polish (+ Gemma MTP) → clipboard / type
 ```
 
-The current development runtime loads three weight streams in parallel:
+The runtime requires and loads three weight streams in parallel:
 **asr ∥ fluid-1 ∥ mtp**. The
 single startup loader reaches 100% only after Parakeet transcribes the bundled
-fixture and fluid-1 completes a representative request through the MTP drafter.
-The first user dictation therefore never pays the generic or first-request
-warmup path.
+fixture through batch and streaming ASR, that transcript passes through Fluid
+and the MTP drafter, and a representative technical correction succeeds. Phonon
+does not expose an ASR-only mode.
 
 ## Build from source
 

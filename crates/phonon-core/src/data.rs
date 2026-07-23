@@ -171,8 +171,7 @@ impl DictionaryFile {
         for (spoken, canonical) in &phonetic_matches {
             pre_corrected = replace_ascii_phrase(&pre_corrected, spoken, canonical).0;
         }
-        let terms = self
-            .entries
+        let terms = likely_entries
             .iter()
             .filter(|entry| entry.replacement.is_none())
             .map(|entry| entry.canonical())
@@ -181,8 +180,7 @@ impl DictionaryFile {
             .iter()
             .map(|entry| entry.canonical())
             .collect::<Vec<_>>();
-        let replacements = self
-            .entries
+        let replacements = likely_entries
             .iter()
             .filter_map(|entry| {
                 entry
@@ -1072,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn polish_input_always_contains_the_complete_dictionary() {
+    fn polish_input_considers_the_complete_dictionary_but_sends_only_relevant_terms() {
         let dictionary = DictionaryFile {
             entries: vec![
                 entry("cuBLAS", None),
@@ -1091,7 +1089,8 @@ mod tests {
         assert!(relevant.contains(&"cuDNN"));
 
         let input = dictionary.prepare_polish_input(transcript);
-        assert!(input.contains("canonical_terms: cuBLAS, cuDNN, unrelated"));
+        assert!(input.contains("canonical_terms: cuBLAS, cuDNN"));
+        assert!(!input.contains("unrelated"));
         assert!(input.contains("likely_terms: cuBLAS, cuDNN"));
         assert!(input.contains("phonetic_matches: koo bloss => cuBLAS; koo dnn => cuDNN"));
         assert!(input.contains(

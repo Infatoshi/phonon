@@ -11,9 +11,8 @@ notarized DMG for direct installation.
   runtime, ASR sidecar, prompt, and startup audio fixture.
 - ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v2` model. It is public,
   ungated, CC-BY-4.0, and approximately 2.47 GB.
-- Deterministic dictionary correction is always available. Fluid-1 correction
-  is optional until its public runtime integration replaces the development-only
-  FluidVoice helper.
+- Fluid-1 correction and its speculative drafter are required. A release must
+  bundle or install an open compatible runtime before it can be published.
 - Production Phonon does not redistribute FluidVoice or its private MLX helper.
 
 This requires no Phonon file-storage service. Hugging Face hosts the upstream
@@ -21,13 +20,11 @@ weights, GitHub hosts tagged source releases, and Vercel hosts the static websit
 
 ## Release channels
 
-- Available now: `brew install --cask infatoshi/phonon/phonon` installs the
-  signed and notarized app. `brew install --formula infatoshi/phonon/phonon`
-  remains available for a local source build.
+- The next public build remains blocked until the open correction runtime is
+  bundled; ASR-only fallback is not a supported release mode.
 - GitHub releases include a signed, notarized `Phonon.dmg` for direct download.
 - The bundled engine and small runtime resources do not depend on a checkout.
-- The open release falls back to deterministic dictionary correction when the
-  optional Fluid-1 runtime is unavailable.
+- Missing Fluid or MTP weights are a startup failure, not a degraded mode.
 - The DMG retains the same local model-download design and does not bundle model
   weights or user data.
 
