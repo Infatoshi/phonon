@@ -48,14 +48,15 @@ enum Commands {
     },
     /// Long-lived warm engines (JSONL stdin/stdout). Used by `phonon bar`.
     Engine,
-    /// Profile all three weight streams (asr / fluid-1 / mtp).
+    /// Profile both shipped weight streams (asr / llm).
     Bench {
         #[arg(short = 'n', long, default_value_t = 5)]
         iters: usize,
         #[arg(long)]
         text: Option<String>,
+        /// Also measure the old fluid-1 helper, when installed.
         #[arg(long)]
-        no_mtp: bool,
+        baseline: bool,
         #[arg(long)]
         skip_cold: bool,
         #[arg(long)]
@@ -63,7 +64,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Check uv / SoX / fluid-1 models / project files / bar binary.
+    /// Check uv / SoX / correction model / project files / bar binary.
     Doctor,
     /// Profile Phonon, from model internals to real keyboard-to-insertion latency.
     Profile {
@@ -191,14 +192,14 @@ fn main() -> Result<()> {
         Commands::Bench {
             iters,
             text,
-            no_mtp,
+            baseline,
             skip_cold,
             wav,
             json,
         } => bench::run_bench(bench::BenchArgs {
             iters,
             text,
-            no_mtp,
+            baseline,
             skip_cold,
             json,
             wav,
