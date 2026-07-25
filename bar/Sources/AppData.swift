@@ -6,6 +6,12 @@ import ScreenCaptureKit
 import ServiceManagement
 
 struct NativeSettings: Codable, Equatable {
+    /// Schema 2 made screen OCR and recording retention opt-in. Schema 1 files
+    /// keep the values their owner already saw in Settings.
+    static let currentSchemaVersion = 2
+    /// 0 keeps recordings until they are deleted by hand.
+    static let keepRecordingsForever = 0
+
     var schemaVersion: Int
     var streaming: Bool
     var localHistory: Bool
@@ -13,6 +19,8 @@ struct NativeSettings: Codable, Equatable {
     var microphonePriority: [String]
     var instantMic: Bool
     var shortcutMode: String
+    var privacyChoiceMade: Bool
+    var historyRetentionDays: Int
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -22,16 +30,20 @@ struct NativeSettings: Codable, Equatable {
         case microphonePriority = "microphone_priority"
         case instantMic = "instant_mic"
         case shortcutMode = "shortcut_mode"
+        case privacyChoiceMade = "privacy_choice_made"
+        case historyRetentionDays = "history_retention_days"
     }
 
     init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = NativeSettings.currentSchemaVersion,
         streaming: Bool = true,
-        localHistory: Bool = true,
-        screenContext: Bool = true,
+        localHistory: Bool = false,
+        screenContext: Bool = false,
         microphonePriority: [String] = [],
         instantMic: Bool = true,
-        shortcutMode: String = "both"
+        shortcutMode: String = "both",
+        privacyChoiceMade: Bool = false,
+        historyRetentionDays: Int = NativeSettings.keepRecordingsForever
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -40,18 +52,31 @@ struct NativeSettings: Codable, Equatable {
         self.microphonePriority = microphonePriority
         self.instantMic = instantMic
         self.shortcutMode = shortcutMode
+        self.privacyChoiceMade = privacyChoiceMade
+        self.historyRetentionDays = historyRetentionDays
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        let storedSchema = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        schemaVersion = storedSchema
         streaming = try values.decodeIfPresent(Bool.self, forKey: .streaming) ?? true
-        localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? true
-        screenContext = try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? true
+        // Before schema 2 both defaulted to on, so an absent key on an existing
+        // install means the owner was running with it enabled.
+        let legacyDefault = storedSchema < 2
+        localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? legacyDefault
+        screenContext =
+            try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? legacyDefault
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
             ?? []
         instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? true
         shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "both"
+        // An existing install already chose these in Settings; do not re-prompt.
+        privacyChoiceMade =
+            try values.decodeIfPresent(Bool.self, forKey: .privacyChoiceMade) ?? legacyDefault
+        historyRetentionDays =
+            try values.decodeIfPresent(Int.self, forKey: .historyRetentionDays)
+            ?? NativeSettings.keepRecordingsForever
     }
 }
 
@@ -307,7 +332,7 @@ final class NativeAppStore: ObservableObject {
     func updateSettings(_ mutate: (inout NativeSettings) -> Void) {
         var updated = settings
         mutate(&updated)
-        updated.schemaVersion = 1
+        updated.schemaVersion = NativeSettings.currentSchemaVersion
         settings = updated
         do {
             try writeJSON(updated, to: settingsURL)
@@ -370,6 +395,45 @@ final class NativeAppStore: ObservableObject {
         } catch {
             lastError = "Could not save intended transcription: \(error.localizedDescription)"
         }
+    }
+
+    var needsPrivacyChoice: Bool { !settings.privacyChoiceMade }
+
+    /// Record the first-run answer for the two settings that retain data.
+    func recordPrivacyChoice(localHistory: Bool, screenContext: Bool) {
+        updateSettings {
+            $0.localHistory = localHistory
+            $0.screenContext = screenContext
+            $0.privacyChoiceMade = true
+        }
+    }
+
+    func clearAllHistory() {
+        var failure: String?
+        for item in history {
+            do {
+                _ = try fileManager.trashItem(at: item.directoryURL, resultingItemURL: nil)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+        loadHistory()
+        lastError = failure.map { "Could not clear every recording: \($0)" }
+    }
+
+    /// Trash recordings older than the retention window. Never runs when the
+    /// window is "keep forever", which is the default for every install.
+    func pruneExpiredRecordings(now: Date = Date()) {
+        let days = settings.historyRetentionDays
+        guard days > NativeSettings.keepRecordingsForever else { return }
+        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
+        var removed = false
+        for item in history where item.date < cutoff {
+            if (try? fileManager.trashItem(at: item.directoryURL, resultingItemURL: nil)) != nil {
+                removed = true
+            }
+        }
+        if removed { loadHistory() }
     }
 
     func trashRecording(itemID: String) {

@@ -37,6 +37,73 @@ final class AppDataTests: XCTestCase {
         XCTAssertFalse(saved.screenContext)
     }
 
+    func testFreshInstallKeepsRetainingFeaturesOffUntilAsked() throws {
+        let store = NativeAppStore(supportDirectory: directory)
+        XCTAssertFalse(store.settings.localHistory)
+        XCTAssertFalse(store.settings.screenContext)
+        XCTAssertTrue(store.needsPrivacyChoice)
+        XCTAssertEqual(
+            store.settings.historyRetentionDays, NativeSettings.keepRecordingsForever)
+
+        store.recordPrivacyChoice(localHistory: true, screenContext: false)
+        XCTAssertFalse(store.needsPrivacyChoice)
+        let saved = try JSONDecoder().decode(
+            NativeSettings.self,
+            from: Data(contentsOf: directory.appendingPathComponent("settings.json")))
+        XCTAssertTrue(saved.localHistory)
+        XCTAssertFalse(saved.screenContext)
+        XCTAssertEqual(saved.schemaVersion, NativeSettings.currentSchemaVersion)
+    }
+
+    func testExistingInstallKeepsItsChoicesAndIsNotReprompted() throws {
+        try Data(#"{"schema_version":1,"streaming":true,"screen_context":true}"#.utf8)
+            .write(to: directory.appendingPathComponent("settings.json"))
+
+        let store = NativeAppStore(supportDirectory: directory)
+        XCTAssertTrue(store.settings.screenContext)
+        // Absent before schema 2 meant enabled, so it must not silently flip off.
+        XCTAssertTrue(store.settings.localHistory)
+        XCTAssertFalse(store.needsPrivacyChoice)
+    }
+
+    func testRetentionOnlyPrunesPastTheChosenWindow() throws {
+        let now = Date()
+        for (name, ageDays) in [("old", 40.0), ("recent", 2.0)] {
+            let recording = directory.appendingPathComponent("Corpus/\(name)", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: recording, withIntermediateDirectories: true)
+            let created = UInt64(now.addingTimeInterval(-ageDays * 86_400).timeIntervalSince1970 * 1_000)
+            try Data(
+                """
+                {"id":"\(name)","created_at_unix_ms":\(created),"raw_transcript":"x"}
+                """.utf8
+            ).write(to: recording.appendingPathComponent("metadata.json"))
+        }
+
+        let store = NativeAppStore(supportDirectory: directory)
+        XCTAssertEqual(store.history.count, 2)
+
+        // Default window keeps everything.
+        store.pruneExpiredRecordings(now: now)
+        XCTAssertEqual(store.history.count, 2)
+
+        store.updateSettings { $0.historyRetentionDays = 30 }
+        store.pruneExpiredRecordings(now: now)
+        XCTAssertEqual(store.history.map(\.id), ["recent"])
+    }
+
+    func testClearAllHistoryEmptiesTheCorpus() throws {
+        let recording = directory.appendingPathComponent("Corpus/one", isDirectory: true)
+        try FileManager.default.createDirectory(at: recording, withIntermediateDirectories: true)
+        try Data(#"{"id":"one","created_at_unix_ms":1000,"raw_transcript":"x"}"#.utf8)
+            .write(to: recording.appendingPathComponent("metadata.json"))
+
+        let store = NativeAppStore(supportDirectory: directory)
+        XCTAssertEqual(store.history.count, 1)
+        store.clearAllHistory()
+        XCTAssertTrue(store.history.isEmpty)
+    }
+
     func testDictionaryAddEditAndRemoveRoundTrips() throws {
         try Data(#"{"schema_version":1,"updated_at_unix_ms":1,"entries":[]}"#.utf8)
             .write(to: directory.appendingPathComponent("dictionary.json"))
