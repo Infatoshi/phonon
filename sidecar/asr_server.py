@@ -25,6 +25,58 @@ def decode_pcm16(encoded: str):
     return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
 
+def read_wav(path: str, sample_rate: int):
+    """Decode a 16-bit PCM WAV to mono float samples at `sample_rate`.
+
+    parakeet-mlx decodes audio by shelling out to ffmpeg, which a Mac without
+    developer tooling does not have. Phonon records its own WAVs, so decode them
+    here with the standard library and leave ffmpeg for formats we do not write.
+    Returns None when the file is not 16-bit PCM, so the caller can fall back.
+    """
+    import numpy as np
+
+    with wave.open(path, "rb") as wav:
+        if wav.getsampwidth() != 2:
+            return None
+        channels = wav.getnchannels()
+        frames = wav.readframes(wav.getnframes())
+        rate = wav.getframerate()
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    if rate != sample_rate and samples.size:
+        # Linear resample. Phonon records at the model's rate, so this only runs
+        # for imported audio, where exactness matters less than working at all.
+        duration = samples.size / rate
+        target = np.linspace(
+            0.0, duration, num=int(duration * sample_rate), endpoint=False
+        )
+        source = np.arange(samples.size, dtype=np.float32) / rate
+        samples = np.interp(target, source, samples).astype(np.float32)
+    return samples
+
+
+def transcribe_file(model, path: str):
+    """Batch transcription without an ffmpeg dependency where possible."""
+    import mlx.core as mx
+
+    rate = model.preprocessor_config.sample_rate
+    samples = None
+    if path.lower().endswith(".wav"):
+        try:
+            samples = read_wav(path, rate)
+        except (wave.Error, EOFError):
+            samples = None
+    if samples is None:
+        # Not something we can decode ourselves; parakeet-mlx will use ffmpeg,
+        # and its own error says so plainly when ffmpeg is absent.
+        return model.transcribe(path)
+    from parakeet_mlx.audio import get_logmel
+
+    mel = get_logmel(mx.array(samples, dtype=mx.bfloat16), model.preprocessor_config)
+    return model.generate(mel)[0]
+
+
 def main() -> None:
     model_id = "mlx-community/parakeet-tdt-0.6b-v2"
     revision = None
@@ -222,7 +274,7 @@ def main() -> None:
             )
             t1 = time.perf_counter()
             try:
-                result = model.transcribe(path)
+                result = transcribe_file(model, path)
                 text = getattr(result, "text", None)
                 if text is None:
                     text = str(result)

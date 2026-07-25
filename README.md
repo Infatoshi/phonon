@@ -11,10 +11,11 @@ brew install --cask infatoshi/phonon/phonon
 phonon
 ```
 
-The cask installs the Developer ID-signed and notarized app. Phonon downloads
-the open Parakeet and Gemma weights on first launch, both pinned to exact
-revisions. Tagged releases also include the DMG
-for direct installation. To build locally instead, use
+The cask installs the Developer ID-signed and notarized app. On first launch
+Phonon downloads the open Parakeet and Gemma weights, both pinned to exact
+revisions, which is about 5.6 GB and the one slow start. Everything after that
+is local and offline. Tagged releases also include the DMG for direct
+installation. To build locally instead, use
 `brew install --formula infatoshi/phonon/phonon`.
 
 ## Pipeline
