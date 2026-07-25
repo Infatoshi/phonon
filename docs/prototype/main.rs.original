@@ -1,0 +1,664 @@
+use gpui::{
+    App, Application, Bounds, Context, MouseButton, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rgb, size,
+};
+
+const BG: u32 = 0x0b0d10;
+const SIDEBAR: u32 = 0x101318;
+const PANEL: u32 = 0x15191f;
+const PANEL_RAISED: u32 = 0x1a2027;
+const BORDER: u32 = 0x29313a;
+const TEXT: u32 = 0xf3f5f7;
+const MUTED: u32 = 0x8c96a3;
+const ACCENT: u32 = 0x51d6d1;
+const ACCENT_DARK: u32 = 0x173b3e;
+const GREEN: u32 = 0x63d392;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Page {
+    #[default]
+    Home,
+    History,
+    Dictionary,
+    Settings,
+}
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::History => "History",
+            Self::Dictionary => "Dictionary",
+            Self::Settings => "Settings",
+        }
+    }
+}
+
+struct PhononApp {
+    page: Page,
+    context_enabled: bool,
+}
+
+impl PhononApp {
+    fn new() -> Self {
+        Self {
+            page: Page::Home,
+            context_enabled: true,
+        }
+    }
+
+    fn navigate(&mut self, page: Page, cx: &mut Context<Self>) {
+        self.page = page;
+        cx.notify();
+    }
+
+    fn nav_item(
+        &self,
+        id: &'static str,
+        symbol: &'static str,
+        label: &'static str,
+        page: Page,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = self.page == page;
+        div()
+            .id(id)
+            .h(px(42.0))
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_3()
+            .rounded_lg()
+            .cursor_pointer()
+            .text_color(rgb(if selected { TEXT } else { MUTED }))
+            .bg(rgb(if selected { PANEL_RAISED } else { SIDEBAR }))
+            .hover(|style| style.bg(rgb(PANEL_RAISED)).text_color(rgb(TEXT)))
+            .on_click(cx.listener(move |this, _, _, cx| this.navigate(page, cx)))
+            .child(
+                div()
+                    .w(px(24.0))
+                    .text_center()
+                    .text_color(rgb(if selected { ACCENT } else { MUTED }))
+                    .child(symbol),
+            )
+            .child(label)
+    }
+
+    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(216.0))
+            .h_full()
+            .p_3()
+            .flex()
+            .flex_col()
+            .bg(rgb(SIDEBAR))
+            .border_r_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .h(px(66.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .size(px(34.0))
+                            .rounded_lg()
+                            .bg(rgb(ACCENT))
+                            .text_color(rgb(BG))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child("P"),
+                    )
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Phonon"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(self.nav_item("home", "◉", "Home", Page::Home, cx))
+                    .child(self.nav_item("history", "◷", "History", Page::History, cx))
+                    .child(self.nav_item("dictionary", "Aa", "Dictionary", Page::Dictionary, cx)),
+            )
+            .child(div().flex_1())
+            .child(self.nav_item("settings", "⚙", "Settings", Page::Settings, cx))
+    }
+
+    fn top_bar(&self) -> impl IntoElement {
+        div()
+            .h(px(66.0))
+            .px_6()
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(self.page.title()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(rgb(MUTED))
+                    .child(div().size(px(7.0)).rounded_full().bg(rgb(GREEN)))
+                    .child("Ready")
+                    .child(
+                        div()
+                            .ml_2()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(rgb(PANEL_RAISED))
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .child("⌃  Space"),
+                    ),
+            )
+    }
+
+    fn status_chip(text: &'static str) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_full()
+            .bg(rgb(ACCENT_DARK))
+            .text_color(rgb(ACCENT))
+            .text_xs()
+            .child(text)
+    }
+
+    fn home(&self) -> impl IntoElement {
+        div()
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .h(px(294.0))
+                    .rounded_xl()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .flex()
+                    .child(
+                        div()
+                            .flex_1()
+                            .p_7()
+                            .flex()
+                            .flex_col()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(Self::status_chip("LOCAL"))
+                                    .child(Self::status_chip("CONTEXT READY")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_3xl()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child("Talk naturally."),
+                                    )
+                                    .child(
+                                        div()
+                                            .max_w(px(420.0))
+                                            .text_color(rgb(MUTED))
+                                            .text_lg()
+                                            .child(
+                                                "Correct yourself mid-sentence. Phonon keeps your meaning, not the false starts.",
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(MUTED))
+                                    .child("Press ⌃ Space anywhere to start"),
+                            )
+                    )
+                    .child(
+                        div()
+                            .w(px(300.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .size(px(150.0))
+                                    .rounded_full()
+                                    .bg(rgb(ACCENT_DARK))
+                                    .border_1()
+                                    .border_color(rgb(ACCENT))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .size(px(92.0))
+                                            .rounded_full()
+                                            .bg(rgb(ACCENT))
+                                            .text_color(rgb(BG))
+                                            .text_3xl()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child("●"),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_5()
+                    .child(self.recent_card())
+                    .child(self.context_card()),
+            )
+    }
+
+    fn recent_card(&self) -> impl IntoElement {
+        div()
+            .flex_1()
+            .rounded_xl()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Recent"),
+                    )
+                    .child(div().text_sm().text_color(rgb(ACCENT)).child("View all")),
+            )
+            .child(Self::history_row(
+                "2 min ago",
+                "Move the context note below the opening paragraph.",
+            ))
+            .child(Self::history_row(
+                "18 min ago",
+                "The local model handles the cleanup automatically.",
+            ))
+            .child(Self::history_row(
+                "Yesterday",
+                "Send the revised benchmark summary before lunch.",
+            ))
+    }
+
+    fn context_card(&self) -> impl IntoElement {
+        div()
+            .w(px(300.0))
+            .rounded_xl()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Screen context"),
+                    )
+                    .child(Self::status_chip(if self.context_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    })),
+            )
+            .child(
+                div()
+                    .text_color(rgb(MUTED))
+                    .child("Reads text from only the active window while you dictate."),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .rounded_lg()
+                    .bg(rgb(PANEL_RAISED))
+                    .p_3()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().size(px(9.0)).rounded_full().bg(rgb(GREEN)))
+                    .child(
+                        div().flex().flex_col().child("Active app").child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(MUTED))
+                                .child("Available when listening"),
+                        ),
+                    ),
+            )
+    }
+
+    fn history_row(time: &'static str, text: &'static str) -> impl IntoElement {
+        div()
+            .py_3()
+            .border_t_1()
+            .border_color(rgb(BORDER))
+            .flex()
+            .gap_4()
+            .child(
+                div()
+                    .w(px(76.0))
+                    .text_sm()
+                    .text_color(rgb(MUTED))
+                    .child(time),
+            )
+            .child(div().flex_1().child(text))
+    }
+
+    fn history(&self) -> impl IntoElement {
+        div()
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .h(px(44.0))
+                    .px_4()
+                    .rounded_lg()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .text_color(rgb(MUTED))
+                    .child("⌕")
+                    .child("Search your words"),
+            )
+            .child(
+                div()
+                    .rounded_xl()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .p_5()
+                    .child(Self::history_row(
+                        "2 min ago",
+                        "Move the context note below the opening paragraph.",
+                    ))
+                    .child(Self::history_row(
+                        "18 min ago",
+                        "The local model handles the cleanup automatically.",
+                    ))
+                    .child(Self::history_row(
+                        "Yesterday",
+                        "Send the revised benchmark summary before lunch.",
+                    ))
+                    .child(Self::history_row(
+                        "Friday",
+                        "The screen context should be active-window only.",
+                    )),
+            )
+    }
+
+    fn dictionary(&self) -> impl IntoElement {
+        div()
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .rounded_xl()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Teach Phonon a word"),
+                    )
+                    .child(
+                        div().flex().gap_2().child(Self::status_chip("TERM")).child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded_full()
+                                .bg(rgb(PANEL_RAISED))
+                                .text_color(rgb(MUTED))
+                                .text_xs()
+                                .child("REPLACEMENT"),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .h(px(46.0))
+                            .px_4()
+                            .rounded_lg()
+                            .bg(rgb(BG))
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .flex()
+                            .items_center()
+                            .text_color(rgb(MUTED))
+                            .child("Type a name, product, or technical term"),
+                    ),
+            )
+            .child(
+                div()
+                    .rounded_xl()
+                    .bg(rgb(PANEL))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(Self::dictionary_row("Gemma 4", "Term"))
+                    .child(Self::dictionary_row("Phonon", "Term"))
+                    .child(Self::dictionary_row(
+                        "black well → Blackwell",
+                        "Replacement",
+                    ))
+                    .child(Self::dictionary_row("v l l m → vLLM", "Replacement")),
+            )
+    }
+
+    fn dictionary_row(word: &'static str, kind: &'static str) -> impl IntoElement {
+        div()
+            .h(px(54.0))
+            .px_2()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(word)
+            .child(div().text_sm().text_color(rgb(MUTED)).child(kind))
+    }
+
+    fn setting_row(
+        label: &'static str,
+        detail: &'static str,
+        value: &'static str,
+    ) -> impl IntoElement {
+        div()
+            .min_h(px(70.0))
+            .py_3()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(label)
+                    .child(div().text_sm().text_color(rgb(MUTED)).child(detail)),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(rgb(PANEL_RAISED))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .text_sm()
+                    .child(value),
+            )
+    }
+
+    fn settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().p_6().flex().justify_center().child(
+            div()
+                .w_full()
+                .max_w(px(760.0))
+                .rounded_xl()
+                .bg(rgb(PANEL))
+                .border_1()
+                .border_color(rgb(BORDER))
+                .p_5()
+                .flex()
+                .flex_col()
+                .child(Self::setting_row(
+                    "Shortcut",
+                    "Press once to start, again to finish",
+                    "⌃  Space",
+                ))
+                .child(
+                    div()
+                        .id("context-toggle")
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.context_enabled = !this.context_enabled;
+                                cx.notify();
+                            }),
+                        )
+                        .child(Self::setting_row(
+                            "Active-screen context",
+                            "Uses local OCR from only the focused window",
+                            if self.context_enabled { "On" } else { "Off" },
+                        )),
+                )
+                .child(Self::setting_row(
+                    "Local history",
+                    "Keep final transcriptions on this Mac",
+                    "On",
+                ))
+                .child(Self::setting_row(
+                    "Microphone",
+                    "Input used for dictation",
+                    "System default",
+                ))
+                .child(Self::setting_row(
+                    "Launch at login",
+                    "Keep Phonon ready in the menu bar",
+                    "On",
+                )),
+        )
+    }
+}
+
+impl Render for PhononApp {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = match self.page {
+            Page::Home => div().child(self.home()),
+            Page::History => div().child(self.history()),
+            Page::Dictionary => div().child(self.dictionary()),
+            Page::Settings => div().child(self.settings(cx)),
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .bg(rgb(BG))
+            .text_color(rgb(TEXT))
+            .text_base()
+            .child(self.sidebar(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(self.top_bar())
+                    .child(div().flex_1().overflow_hidden().child(content)),
+            )
+    }
+}
+
+fn main() {
+    Application::new().run(|cx: &mut App| {
+        let bounds = Bounds::centered(None, size(px(1120.0), px(760.0)), cx);
+
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            },
+            |_window, cx| cx.new(|_| PhononApp::new()),
+        )
+        .expect("open Phonon window");
+
+        cx.activate(true);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_is_intentionally_small() {
+        let pages = [Page::Home, Page::History, Page::Dictionary, Page::Settings];
+        assert_eq!(
+            pages.map(Page::title),
+            ["Home", "History", "Dictionary", "Settings"]
+        );
+    }
+
+    #[test]
+    fn context_is_an_intelligent_default() {
+        assert!(PhononApp::new().context_enabled);
+    }
+}
