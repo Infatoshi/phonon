@@ -1,0 +1,86 @@
+[
+  {
+    "id": "filler-leading",
+    "class": "filler",
+    "raw": "Um so I think we should rerun the sweep tonight.",
+    "intended": "So I think we should rerun the sweep tonight."
+  },
+  {
+    "id": "filler-stall-only",
+    "class": "filler",
+    "raw": "Uh testing, testing, can you hear me?",
+    "intended": "Testing, testing, can you hear me?"
+  },
+  {
+    "id": "restart-single",
+    "class": "self-correction",
+    "raw": "Let's use the H100 no wait let's use the B200 for this run.",
+    "intended": "Let's use the B200 for this run."
+  },
+  {
+    "id": "restart-mid-sentence",
+    "class": "self-correction",
+    "raw": "Push the branch to I mean merge the branch into main.",
+    "intended": "Merge the branch into main."
+  },
+  {
+    "id": "no-edit-plain",
+    "class": "preservation",
+    "raw": "The build finished and all the tests passed.",
+    "intended": "The build finished and all the tests passed."
+  },
+  {
+    "id": "no-edit-technical",
+    "class": "preservation",
+    "raw": "Compile the CUDA kernel for SM120 and profile it.",
+    "intended": "Compile the CUDA kernel for SM120 and profile it."
+  },
+  {
+    "id": "preserve-articles",
+    "class": "preservation",
+    "raw": "Request a B200 for the sweep and keep a spare node.",
+    "intended": "Request a B200 for the sweep and keep a spare node."
+  },
+  {
+    "id": "preserve-profile-verb",
+    "class": "false-replacement",
+    "raw": "Profile this on the Blackwell GPU.",
+    "intended": "Profile this on the Blackwell GPU."
+  },
+  {
+    "id": "preserve-unrelated-word",
+    "class": "false-replacement",
+    "raw": "The kernel is fine but the launch config is wrong.",
+    "intended": "The kernel is fine but the launch config is wrong."
+  },
+  {
+    "id": "punctuation-question",
+    "class": "punctuation",
+    "raw": "did the notarization step actually pass",
+    "intended": "Did the notarization step actually pass?"
+  },
+  {
+    "id": "punctuation-two-sentences",
+    "class": "punctuation",
+    "raw": "the download finished then the checksum failed",
+    "intended": "The download finished, then the checksum failed."
+  },
+  {
+    "id": "multi-entity-keep",
+    "class": "preservation",
+    "raw": "Compare vLLM against SGLang on the RTX Pro 6000.",
+    "intended": "Compare vLLM against SGLang on the RTX Pro 6000."
+  },
+  {
+    "id": "term-repair-with-filler",
+    "class": "filler",
+    "raw": "Uh run the koo bloss benchmark again please.",
+    "intended": "Run the cuBLAS benchmark again please."
+  },
+  {
+    "id": "long-sentence-keep",
+    "class": "preservation",
+    "raw": "If the first pass is slow we should check whether the prompt is being rebuilt on every request.",
+    "intended": "If the first pass is slow we should check whether the prompt is being rebuilt on every request."
+  }
+]

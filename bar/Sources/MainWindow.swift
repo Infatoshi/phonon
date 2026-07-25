@@ -41,6 +41,7 @@ struct PhononMainView: View {
     let onSettingsChanged: () -> Void
     let onShowModelStatus: () -> Void
     @State private var page: NativeAppPage = .home
+    @State private var showPrivacyChoice = false
 
     init(
         store: NativeAppStore,
@@ -115,6 +116,22 @@ struct PhononMainView: View {
             Button("OK") { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "Unknown error")
+        }
+        .sheet(item: $store.permissionGuide) { guide in
+            PermissionGuideView(guide: guide) {
+                store.permissionGuide = nil
+                NSApp.terminate(nil)
+            }
+        }
+        .sheet(isPresented: $showPrivacyChoice) {
+            PrivacyChoiceView(store: store) {
+                showPrivacyChoice = false
+                onSettingsChanged()
+            }
+        }
+        .onAppear {
+            showPrivacyChoice = store.needsPrivacyChoice
+            store.pruneExpiredRecordings()
         }
     }
 
@@ -468,6 +485,7 @@ struct SettingsView: View {
     @ObservedObject var store: NativeAppStore
     let onSettingsChanged: () -> Void
     let onShowModelStatus: () -> Void
+    @State private var confirmClearHistory = false
 
     var body: some View {
         ScrollView {
@@ -496,6 +514,35 @@ struct SettingsView: View {
                         detail: "Keep CoreAudio warm for near-instant key-to-recording latency.",
                         isOn: settingBinding(\.instantMic)
                     )
+                }
+
+                SettingsSection("Stored recordings") {
+                    Picker("Keep recordings for", selection: Binding(
+                        get: { store.settings.historyRetentionDays },
+                        set: { value in
+                            store.updateSettings { $0.historyRetentionDays = value }
+                            store.pruneExpiredRecordings()
+                            onSettingsChanged()
+                        }
+                    )) {
+                        Text("Until I delete them").tag(NativeSettings.keepRecordingsForever)
+                        Text("7 days").tag(7)
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                    }
+                    .pickerStyle(.menu)
+                    Divider()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Clear all history")
+                            Text("Move every stored recording and transcript to the Trash.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Clear") { confirmClearHistory = true }
+                            .disabled(store.history.isEmpty)
+                    }
                 }
 
                 SettingsSection("Shortcut") {
@@ -540,6 +587,14 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .onAppear { store.refreshPermissions() }
+        .alert("Clear all history?", isPresented: $confirmClearHistory) {
+            Button("Cancel", role: .cancel) {}
+            Button("Move to Trash", role: .destructive) { store.clearAllHistory() }
+        } message: {
+            Text(
+                "\(store.history.count) recordings and their transcripts go to the Trash. This cannot be undone from Phonon."
+            )
+        }
     }
 
     private func settingBinding(_ keyPath: WritableKeyPath<NativeSettings, Bool>) -> Binding<Bool> {
@@ -576,16 +631,125 @@ struct PermissionSummary: View {
                     action: { openPrivacy(.accessibility) })
                 PermissionRow(
                     name: "Input Monitoring", granted: store.inputMonitoringAvailable,
-                    action: { openPrivacy(.inputMonitoring) })
+                    actionTitle: store.inputMonitoringActionTitle,
+                    action: { store.performInputMonitoringPermissionAction() })
                 PermissionRow(
                     name: "Screen Recording", granted: store.screenRecordingPermission,
-                    action: { openPrivacy(.screenRecording) })
+                    actionTitle: store.screenRecordingActionTitle,
+                    action: { store.performScreenRecordingPermissionAction() })
             }
         }
     }
 
     private func openPrivacy(_ pane: PrivacyPane) {
         NSWorkspace.shared.open(pane.settingsURL)
+    }
+}
+
+/// First run only. Both switches retain data, so neither is on until asked.
+struct PrivacyChoiceView: View {
+    @ObservedObject var store: NativeAppStore
+    let onDone: () -> Void
+    @State private var localHistory = false
+    @State private var screenContext = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("What Phonon may keep")
+                .font(.title2.bold())
+            Text(
+                "Dictation runs entirely on this Mac either way. These two features store or read more than the transcript, so they start off."
+            )
+            .foregroundStyle(.secondary)
+
+            VStack(spacing: 0) {
+                ToggleRow(
+                    title: "Keep recordings and transcripts",
+                    detail:
+                        "Save the paired WAV and text after insertion so History, the dictionary, and accuracy work have something to learn from.",
+                    isOn: $localHistory
+                )
+                Divider()
+                ToggleRow(
+                    title: "Read the active window",
+                    detail:
+                        "Run local OCR on the frontmost window to spell technical terms correctly. Nothing leaves the Mac.",
+                    isOn: $screenContext
+                )
+            }
+            .padding(14)
+            .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+
+            Text("Both can be changed any time in Settings, and History has a Clear all button.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Continue") {
+                    store.recordPrivacyChoice(
+                        localHistory: localHistory, screenContext: screenContext)
+                    onDone()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 540)
+        .background(EmberTheme.background)
+        .foregroundStyle(EmberTheme.text)
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct PermissionGuideView: View {
+    let guide: PermissionGuide
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(guide.title)
+                .font(.title2.bold())
+            Text(guide.detail)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 14) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: Bundle.main.bundleURL.path))
+                    .resizable()
+                    .frame(width: 58, height: 58)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Phonon.app").font(.headline)
+                    Text("Installed in Applications and ready to add in System Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+
+            Text(guide.manualInstructions)
+                .font(.headline)
+            Text("After enabling Phonon, quit it completely before reopening so macOS applies the permission.")
+                .font(.callout)
+
+            HStack {
+                Button("Open Applications") {
+                    NSWorkspace.shared.open(
+                        URL(fileURLWithPath: "/Applications", isDirectory: true))
+                }
+                Spacer()
+                Button("Open System Settings") {
+                    NSWorkspace.shared.open(guide.pane.settingsURL)
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Quit Phonon", action: onDone)
+            }
+        }
+        .padding(24)
+        .frame(width: 540)
+        .background(EmberTheme.background)
+        .foregroundStyle(EmberTheme.text)
+        .preferredColorScheme(.dark)
     }
 }
 

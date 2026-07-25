@@ -3,7 +3,10 @@
 use anyhow::Result;
 use phonon_core::data::{list_recordings, DictionaryFile, SettingsFile};
 use phonon_core::project_root;
-use phonon_llm::{fluid1_available, fluid_drafter_dir, fluid_helper, fluid_model_dir};
+use phonon_llm::{
+    fluid1_available, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
+    POLISH_RUNTIME_REQUIREMENT,
+};
 
 pub fn run_doctor() -> Result<()> {
     let root = project_root();
@@ -16,8 +19,18 @@ pub fn run_doctor() -> Result<()> {
         root.join("sidecar/asr_server.py").is_file(),
     );
     check(
-        "prompts/polish_v1.txt",
-        root.join("prompts/polish_v1.txt").is_file(),
+        "sidecar/polish_server.py",
+        root.join("sidecar/polish_server.py").is_file(),
+    );
+    check(
+        "prompts/polish_v2.txt",
+        root.join("prompts/polish_v2.txt").is_file(),
+    );
+    // Without this list the phonetic guard cannot tell an ordinary English word
+    // from a technical term, so retrieval turns itself off rather than guess.
+    check(
+        "assets/english_words.txt (phonetic guard)",
+        root.join("assets/english_words.txt").is_file(),
     );
     let installed_app = root
         .parent()
@@ -37,35 +50,43 @@ pub fn run_doctor() -> Result<()> {
         );
     }
     check("uv", crate::resolve_runtime_tool("uv").is_some());
-    check("terminal recording (SoX)", which::which("rec").is_ok());
+    // The native app records through CoreAudio. SoX only backs `phonon` runs
+    // from a terminal, so a fresh Mac without it is not a broken install.
+    optional(
+        "terminal recording (SoX, optional)",
+        which::which("rec").is_ok(),
+    );
     check("pbcopy", which::which("pbcopy").is_ok());
     check("swift", which::which("swift").is_ok());
 
-    let helper = fluid_helper();
-    let model = fluid_model_dir();
-    let drafter = fluid_drafter_dir();
     check(
-        &format!("fluid-intelligence-mlx ({})", helper.display()),
-        helper.is_file(),
+        "required correction stage installed",
+        polish_available(&root),
     );
-    check(
-        &format!("fluid-1 model ({})", model.display()),
-        model.is_dir(),
+    println!(
+        "  correction model: {POLISH_MODEL_ID}@{}",
+        &POLISH_MODEL_REVISION[..7]
     );
-    check(
-        &format!("MTP drafter ({})", drafter.display()),
-        drafter.is_dir(),
+    println!("  correction runtime: {POLISH_RUNTIME_REQUIREMENT}");
+    println!(
+        "  fluid-1 baseline (developer comparison only): {}",
+        if fluid1_available() {
+            "installed"
+        } else {
+            "absent"
+        }
     );
-    check("fluid-1 polish usable", fluid1_available());
 
     let dictionary = DictionaryFile::load();
     let dictionary_count = dictionary
         .as_ref()
         .map(|value| value.entries.len())
         .unwrap_or(0);
+    // Entries are earned by use; empty is correct on a fresh install. Only a
+    // dictionary that fails to load is a problem.
     check(
         &format!("JSON dictionary ({dictionary_count} entries)"),
-        dictionary.is_ok() && dictionary_count > 0,
+        dictionary.is_ok(),
     );
     check("JSON settings", SettingsFile::load_or_create().is_ok());
     let recordings = list_recordings();
@@ -89,5 +110,11 @@ pub fn run_doctor() -> Result<()> {
 
 fn check(label: &str, ok: bool) {
     let mark = if ok { "ok  " } else { "MISS" };
+    println!("  [{mark}] {label}");
+}
+
+/// Something whose absence is fine, so it never reads as a failed install.
+fn optional(label: &str, present: bool) {
+    let mark = if present { "ok  " } else { "  - " };
     println!("  [{mark}] {label}");
 }

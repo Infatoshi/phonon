@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use phonon_llm::{
-    fluid_drafter_dir, fluid_helper, fluid_model_dir, timing_from_resp, RunTiming, ServeJson,
+    fluid1_available, fluid_drafter_dir, fluid_helper, fluid_model_dir, timing_from_resp,
+    RunTiming, ServeJson,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,8 +16,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct LlmProfileConfig {
     pub input_words: Vec<usize>,
     pub steady_iterations: usize,
-    pub include_plain: bool,
-    pub include_mtp: bool,
+    /// The shipped correction stage. On by default; this is what users run.
+    pub include_shipped: bool,
+    /// The old fluid-1 helper, with and without its MTP drafter. Developer
+    /// comparison only, and silently skipped when FluidVoice is absent.
+    pub include_fluid_baseline: bool,
 }
 
 impl Default for LlmProfileConfig {
@@ -24,8 +28,8 @@ impl Default for LlmProfileConfig {
         Self {
             input_words: vec![8, 32, 128, 256],
             steady_iterations: 3,
-            include_plain: true,
-            include_mtp: true,
+            include_shipped: true,
+            include_fluid_baseline: false,
         }
     }
 }
@@ -174,7 +178,7 @@ fn profile_kernels_in_temp(
             .arg(drafter)
             .args(["--draft-block-size", "6"]);
     }
-    let prompt = root.join("prompts/polish_v1.txt");
+    let prompt = root.join("prompts/polish_v2.txt");
     if prompt.is_file() {
         command.arg("--system-prompt-file").arg(prompt);
     }
@@ -465,18 +469,24 @@ fn optional_median(values: Vec<f64>) -> Option<f64> {
 
 pub fn profile_llm(root: &Path, config: &LlmProfileConfig) -> Result<LlmProfileReport> {
     let mut rows = Vec::new();
-    let mut modes = Vec::new();
-    if config.include_plain {
-        modes.push(("fluid-1", false));
+    let mut modes: Vec<(&str, Option<bool>)> = Vec::new();
+    if config.include_shipped {
+        modes.push(("llm", None));
     }
-    if config.include_mtp && fluid_drafter_dir().is_dir() {
-        modes.push(("fluid-1+mtp", true));
+    if config.include_fluid_baseline && fluid1_available() {
+        modes.push(("fluid-1", Some(false)));
+        if fluid_drafter_dir().is_dir() {
+            modes.push(("fluid-1+mtp", Some(true)));
+        }
     }
 
-    for (mode, use_mtp) in modes {
+    for (mode, fluid_mtp) in modes {
         for &input_words in &config.input_words {
             let input = profile_input(input_words);
-            let mut serve = ServeJson::spawn(root, use_mtp)?;
+            let mut serve = match fluid_mtp {
+                None => ServeJson::spawn(root)?,
+                Some(use_mtp) => ServeJson::spawn_fluid(root, use_mtp)?,
+            };
             let (warmup, _) = serve.warmup()?;
             // Pay first-request graph/shape specialization before collecting
             // any profile samples. Application readiness follows the same rule.

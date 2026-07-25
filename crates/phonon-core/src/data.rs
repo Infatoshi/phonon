@@ -171,8 +171,7 @@ impl DictionaryFile {
         for (spoken, canonical) in &phonetic_matches {
             pre_corrected = replace_ascii_phrase(&pre_corrected, spoken, canonical).0;
         }
-        let terms = self
-            .entries
+        let terms = likely_entries
             .iter()
             .filter(|entry| entry.replacement.is_none())
             .map(|entry| entry.canonical())
@@ -181,8 +180,7 @@ impl DictionaryFile {
             .iter()
             .map(|entry| entry.canonical())
             .collect::<Vec<_>>();
-        let replacements = self
-            .entries
+        let replacements = likely_entries
             .iter()
             .filter_map(|entry| {
                 entry
@@ -212,6 +210,12 @@ impl DictionaryFile {
         )
     }
 
+    /// Phonetic pre-correction is deliberately blind to meaning: it matches on a
+    /// vowel-free consonant skeleton, so `please` and `pallas`, or `profile` and
+    /// `prefill`, are indistinguishable. Guessing is only acceptable on tokens
+    /// the speech model is unlikely to have got right in the first place, so an
+    /// ordinary English word is never replaced. A term the user actually taught
+    /// is an exact replacement and does not come through here.
     fn phonetic_matches(&self, transcript: &str) -> Vec<(String, String)> {
         let mut by_key: BTreeMap<String, Option<String>> = BTreeMap::new();
         for entry in &self.entries {
@@ -252,6 +256,9 @@ impl DictionaryFile {
                     continue;
                 };
                 if normalize(canonical) == spoken {
+                    continue;
+                }
+                if is_ordinary_english(&spoken) {
                     continue;
                 }
                 occupied[start..start + window_len].fill(true);
@@ -739,6 +746,78 @@ fn plausibly_same_word(left: &str, right: &str) -> bool {
     levenshtein(left, right) <= allowed
 }
 
+/// Webster's Second word list shipped with the app (`assets/english_words.txt`).
+/// Loaded once; an install missing the file falls back to no phonetic guessing,
+/// which is the safe direction — a missed term repair beats a corrupted word.
+fn english_words() -> &'static std::collections::HashSet<String> {
+    static WORDS: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    WORDS.get_or_init(|| {
+        let path = crate::paths::project_root().join("assets/english_words.txt");
+        fs::read_to_string(path)
+            .map(|text| {
+                text.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Whether every word of `phrase` is ordinary English, allowing for the common
+/// inflections the base word list omits.
+fn is_ordinary_english(phrase: &str) -> bool {
+    let words = english_words();
+    if words.is_empty() {
+        // No list available: treat everything as ordinary so nothing is guessed.
+        return true;
+    }
+    let mut any = false;
+    for word in phrase.split_whitespace() {
+        any = true;
+        if !is_ordinary_english_word(words, word) {
+            return false;
+        }
+    }
+    any
+}
+
+fn is_ordinary_english_word(words: &std::collections::HashSet<String>, word: &str) -> bool {
+    let word = word.to_lowercase();
+    if words.contains(&word) {
+        return true;
+    }
+    for suffix in ["s", "es", "ed", "d", "ing", "ly", "er", "ers", "est"] {
+        if let Some(stem) = word.strip_suffix(suffix) {
+            if stem.len() < 3 {
+                continue;
+            }
+            if words.contains(stem) {
+                return true;
+            }
+            // running -> run, stopped -> stop
+            if let Some(shortened) = stem.strip_suffix(stem.chars().last().unwrap_or(' ')) {
+                if shortened.len() >= 3 && words.contains(shortened) {
+                    return true;
+                }
+            }
+            // making -> make, filed -> file
+            if words.contains(&format!("{stem}e")) {
+                return true;
+            }
+            // carries -> carry
+            if let Some(without_i) = stem.strip_suffix('i') {
+                if without_i.len() >= 3 && words.contains(&format!("{without_i}y")) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn phonetic_key(value: &str) -> String {
     let mut output = String::new();
     for character in normalize(value)
@@ -1072,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn polish_input_always_contains_the_complete_dictionary() {
+    fn polish_input_considers_the_complete_dictionary_but_sends_only_relevant_terms() {
         let dictionary = DictionaryFile {
             entries: vec![
                 entry("cuBLAS", None),
@@ -1091,7 +1170,8 @@ mod tests {
         assert!(relevant.contains(&"cuDNN"));
 
         let input = dictionary.prepare_polish_input(transcript);
-        assert!(input.contains("canonical_terms: cuBLAS, cuDNN, unrelated"));
+        assert!(input.contains("canonical_terms: cuBLAS, cuDNN"));
+        assert!(!input.contains("unrelated"));
         assert!(input.contains("likely_terms: cuBLAS, cuDNN"));
         assert!(input.contains("phonetic_matches: koo bloss => cuBLAS; koo dnn => cuDNN"));
         assert!(input.contains(

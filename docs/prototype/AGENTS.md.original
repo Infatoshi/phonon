@@ -1,0 +1,19 @@
+# Home
+
+Home: Mac-native - no Anvil dependency; this folder is the source of truth.
+
+# Commands
+
+- Build: `cargo build`
+- Run: `cargo run`
+- Build and open the macOS bundle: `just app`
+- Test: `cargo nextest run`
+- Format: `cargo fmt --check`
+- Lint: `cargo clippy --all-targets --all-features -- -D warnings`
+
+# Constraints
+
+- Keep the product surface to Home, History, Dictionary, and compact Settings.
+- Gemma refinement is a built-in pipeline stage, never a user-facing provider or prompt system.
+- Context capture is active-window-only and must degrade gracefully when permission is absent.
+- This proof of concept is GPUI-native. Do not introduce a webview.

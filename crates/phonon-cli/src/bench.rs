@@ -1,15 +1,18 @@
-//! Bench all three weight streams + end-to-end polish latency.
+//! Bench both shipped weight streams + end-to-end polish latency.
 //!
 //! Streams:
-//!   1. asr      — Parakeet load + optional wav transcribe
-//!   2. fluid-1  — target LLM cold/warm TTFT/ITL (no MTP)
-//!   3. mtp      — same path with Gemma MTP speculative head (TTFT/ITL + accept)
+//!   1. asr — Parakeet load + optional wav transcribe
+//!   2. llm — the shipped correction stage, cold load then warm TTFT/ITL
+//!
+//! `--baseline` adds the old fluid-1 helper, with and without its MTP drafter,
+//! for developer comparison. It is skipped when FluidVoice is not installed, so
+//! a plain `phonon bench` measures only what ships.
 
 use anyhow::{bail, Context, Result};
 use phonon_core::project_root;
 use phonon_llm::{
-    cold_run, fluid1_available, fluid1_paths, fluid_drafter_dir, fluid_helper, fluid_model_dir,
-    timing_from_resp, RunTiming, ServeJson,
+    cold_run, fluid1_available, fluid1_paths, fluid_drafter_dir, timing_from_resp, RunTiming,
+    ServeJson, POLISH_MODEL_ID,
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -28,7 +31,8 @@ const DEFAULT_CLIPS: &[&str] = &[
 pub struct BenchArgs {
     pub iters: usize,
     pub text: Option<String>,
-    pub no_mtp: bool,
+    /// Also measure the fluid-1 helper, when installed.
+    pub baseline: bool,
     pub skip_cold: bool,
     pub json: bool,
     /// Optional wav for ASR stream timing. If missing, only measures ASR load.
@@ -70,13 +74,13 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
             &root,
             &clips,
             iters,
-            !args.no_mtp,
+            args.baseline,
             args.skip_cold,
             args.wav.as_deref(),
         );
     }
 
-    println!("phonon bench — three weight streams");
+    println!("phonon bench — two weight streams");
     println!("root={}", root.display());
     println!();
 
@@ -103,18 +107,49 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
     }
     println!();
 
-    if !fluid1_available() {
-        println!("== stream 2/3: fluid-1 + mtp ==");
-        println!(
-            "  SKIP — fluid-1 missing\n  helper: {}\n  model:  {}",
-            fluid_helper().display(),
-            fluid_model_dir().display()
-        );
+    // ─── 2. shipped correction stage ──────────────────────────
+    println!("== stream 2: llm ({POLISH_MODEL_ID}) ==");
+    if !args.skip_cold {
+        match bench_llm_cold(&root, &clips[0]) {
+            Ok((load_ms, first)) => println!(
+                "  cold: load={load_ms:.0}ms  first_request={:.0}ms  ttft={:.0}ms  tok/s={:.0}",
+                first.wall_ms, first.ttft_ms, first.tok_s
+            ),
+            Err(e) => println!("  cold FAIL: {e:#}"),
+        }
+    }
+    match bench_llm_warm(&root, &clips, iters) {
+        Ok((warmup_ms, timings)) => {
+            println!("  warmup_ms={warmup_ms:.0}");
+            for (i, t) in timings.iter().enumerate() {
+                println!(
+                    "  iter{i}: wall={:.0}ms  ttft={:.0}ms  itl={:.1}ms  tok/s={:.0}  tokens={}",
+                    t.wall_ms, t.ttft_ms, t.itl_ms, t.tok_s, t.tokens
+                );
+            }
+            print_steady_summary("llm", &timings);
+        }
+        Err(e) => println!("  FAIL: {e:#}"),
+    }
+    println!();
+
+    if !args.baseline {
+        println!("== e2e picture (dictation path) ==");
+        println!("  boot: asr load ∥ llm load  (parallel in native app)");
+        println!("  request: record → asr.transcribe → auto polish (warm llm)");
+        println!("  polish always-on; no manual step");
+        println!("  pass --baseline to also measure the old fluid-1 helper");
         return Ok(());
     }
 
-    // ─── 2. fluid-1 without MTP ───────────────────────────────
-    println!("== stream 2: fluid-1 (target LLM, no MTP) ==");
+    if !fluid1_available() {
+        println!("== baseline: fluid-1 + mtp ==");
+        println!("  SKIP — FluidVoice not installed (developer comparison only)");
+        return Ok(());
+    }
+
+    // ─── baseline: fluid-1 without MTP ────────────────────────
+    println!("== baseline: fluid-1 (developer comparison, no MTP) ==");
     if !args.skip_cold {
         let cold = cold_run(&root, &clips[0], false)?;
         let lat = cold.latency_ms.unwrap_or(cold.wall_ms);
@@ -138,7 +173,7 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
         println!("  out: {}", cold.output);
     }
     {
-        let mut serve = ServeJson::spawn(&root, false)?;
+        let mut serve = ServeJson::spawn_fluid(&root, false)?;
         let (wu, _) = serve.warmup()?;
         println!(
             "  warmup_ms={:.0}  (fluid-1 weights only)",
@@ -160,12 +195,10 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
     }
     println!();
 
-    // ─── 3. MTP speculative head ──────────────────────────────
-    println!("== stream 3: mtp (gemma-4-E2B speculative decoder head) ==");
+    // ─── baseline: MTP speculative head ───────────────────────
+    println!("== baseline: fluid-1 + mtp (gemma-4-E2B speculative decoder head) ==");
     let has_drafter = fluid1_paths().map(|(_, _, d)| d.is_some()).unwrap_or(false);
-    if args.no_mtp {
-        println!("  SKIP — --no-mtp");
-    } else if !has_drafter {
+    if !has_drafter {
         println!(
             "  SKIP — drafter missing at {}",
             fluid_drafter_dir().display()
@@ -192,7 +225,7 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
                 cold.tokens_per_second.unwrap_or(0.0)
             );
         }
-        let mut serve = ServeJson::spawn(&root, true)?;
+        let mut serve = ServeJson::spawn_fluid(&root, true)?;
         let (wu, wu_resp) = serve.warmup()?;
         let msg = wu_resp
             .status
@@ -235,11 +268,39 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
 
     println!();
     println!("== e2e picture (dictation path) ==");
-    println!("  boot: asr load ∥ fluid-1 load ∥ mtp load  (parallel in native app)");
-    println!("  request: record → asr.transcribe → auto polish (warm fluid-1+mtp)");
+    println!("  boot: asr load ∥ llm load  (parallel in native app)");
+    println!("  request: record → asr.transcribe → auto polish (warm llm)");
     println!("  polish always-on; no manual step");
 
     Ok(())
+}
+
+/// Fresh sidecar process: weight load, then the first request against it.
+fn bench_llm_cold(root: &Path, clip: &str) -> Result<(f64, RunTiming)> {
+    let mut serve = ServeJson::spawn(root)?;
+    let (load, resp) = serve.warmup()?;
+    if !resp.ok {
+        bail!("warmup failed: {:?}", resp.error);
+    }
+    let (wall, resp) = serve.run_text(clip)?;
+    let timing = timing_from_resp(wall, &resp)?;
+    serve.shutdown();
+    Ok((load.as_secs_f64() * 1000.0, timing))
+}
+
+fn bench_llm_warm(root: &Path, clips: &[String], iters: usize) -> Result<(f64, Vec<RunTiming>)> {
+    let mut serve = ServeJson::spawn(root)?;
+    let (warmup, resp) = serve.warmup()?;
+    if !resp.ok {
+        bail!("warmup failed: {:?}", resp.error);
+    }
+    let mut timings = Vec::new();
+    for i in 0..iters {
+        let (wall, resp) = serve.run_text(&clips[i % clips.len()])?;
+        timings.push(timing_from_resp(wall, &resp)?);
+    }
+    serve.shutdown();
+    Ok((warmup.as_secs_f64() * 1000.0, timings))
 }
 
 fn print_steady_summary(label: &str, timings: &[RunTiming]) {
@@ -293,8 +354,10 @@ fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
     let mut child = Command::new(uv)
         .args([
             "run",
+            "--python",
+            phonon_asr::PYTHON_REQUIREMENT,
             "--with",
-            "parakeet-mlx",
+            phonon_asr::ASR_RUNTIME_REQUIREMENT,
             "python",
             script.to_str().unwrap(),
         ])
@@ -415,7 +478,7 @@ fn run_bench_json(
     root: &Path,
     clips: &[String],
     iters: usize,
-    use_mtp: bool,
+    baseline: bool,
     skip_cold: bool,
     wav: Option<&Path>,
 ) -> Result<()> {
@@ -438,7 +501,49 @@ fn run_bench_json(
         }
     }
 
-    if fluid1_available() {
+    if !skip_cold {
+        match bench_llm_cold(root, &clips[0]) {
+            Ok((load_ms, first)) => {
+                out.insert(
+                    "llm_cold".into(),
+                    json!({
+                        "model": POLISH_MODEL_ID,
+                        "load_ms": load_ms,
+                        "first_request_ms": first.wall_ms,
+                        "ttft_ms": first.ttft_ms,
+                        "tok_s": first.tok_s,
+                        "tokens": first.tokens,
+                    }),
+                );
+            }
+            Err(e) => {
+                out.insert("llm_cold".into(), json!({"error": format!("{e:#}")}));
+            }
+        }
+    }
+    match bench_llm_warm(root, clips, iters) {
+        Ok((warmup_ms, timings)) => {
+            out.insert(
+                "llm_warm".into(),
+                json!({
+                    "model": POLISH_MODEL_ID,
+                    "warmup_ms": warmup_ms,
+                    "runs": timings.iter().map(|t| json!({
+                        "wall_ms": t.wall_ms,
+                        "ttft_ms": t.ttft_ms,
+                        "itl_ms": t.itl_ms,
+                        "tok_s": t.tok_s,
+                        "tokens": t.tokens,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
+        }
+        Err(e) => {
+            out.insert("llm_warm".into(), json!({"error": format!("{e:#}")}));
+        }
+    }
+
+    if baseline && fluid1_available() {
         if !skip_cold {
             let cold = cold_run(root, &clips[0], false)?;
             out.insert(
@@ -452,7 +557,7 @@ fn run_bench_json(
                 }),
             );
         }
-        let mut serve = ServeJson::spawn(root, false)?;
+        let mut serve = ServeJson::spawn_fluid(root, false)?;
         let (wu, _) = serve.warmup()?;
         let mut runs = Vec::new();
         for i in 0..iters {
@@ -475,7 +580,7 @@ fn run_bench_json(
             }),
         );
 
-        if use_mtp && fluid_drafter_dir().is_dir() {
+        if fluid_drafter_dir().is_dir() {
             if !skip_cold {
                 let cold = cold_run(root, &clips[0], true)?;
                 out.insert(
@@ -487,7 +592,7 @@ fn run_bench_json(
                     }),
                 );
             }
-            let mut serve = ServeJson::spawn(root, true)?;
+            let mut serve = ServeJson::spawn_fluid(root, true)?;
             let (wu, _) = serve.warmup()?;
             let mut runs = Vec::new();
             for i in 0..iters {

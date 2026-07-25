@@ -25,11 +25,69 @@ def decode_pcm16(encoded: str):
     return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
 
+def read_wav(path: str, sample_rate: int):
+    """Decode a 16-bit PCM WAV to mono float samples at `sample_rate`.
+
+    parakeet-mlx decodes audio by shelling out to ffmpeg, which a Mac without
+    developer tooling does not have. Phonon records its own WAVs, so decode them
+    here with the standard library and leave ffmpeg for formats we do not write.
+    Returns None when the file is not 16-bit PCM, so the caller can fall back.
+    """
+    import numpy as np
+
+    with wave.open(path, "rb") as wav:
+        if wav.getsampwidth() != 2:
+            return None
+        channels = wav.getnchannels()
+        frames = wav.readframes(wav.getnframes())
+        rate = wav.getframerate()
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    if rate != sample_rate and samples.size:
+        # Linear resample. Phonon records at the model's rate, so this only runs
+        # for imported audio, where exactness matters less than working at all.
+        duration = samples.size / rate
+        target = np.linspace(
+            0.0, duration, num=int(duration * sample_rate), endpoint=False
+        )
+        source = np.arange(samples.size, dtype=np.float32) / rate
+        samples = np.interp(target, source, samples).astype(np.float32)
+    return samples
+
+
+def transcribe_file(model, path: str):
+    """Batch transcription without an ffmpeg dependency where possible."""
+    import mlx.core as mx
+
+    rate = model.preprocessor_config.sample_rate
+    samples = None
+    if path.lower().endswith(".wav"):
+        try:
+            samples = read_wav(path, rate)
+        except (wave.Error, EOFError):
+            samples = None
+    if samples is None:
+        # Not something we can decode ourselves; parakeet-mlx will use ffmpeg,
+        # and its own error says so plainly when ffmpeg is absent.
+        return model.transcribe(path)
+    from parakeet_mlx.audio import get_logmel
+
+    # float32, matching what parakeet-mlx's own loader hands the preprocessor.
+    # bfloat16 changes the FFT layout and the mel matmul fails on shape.
+    mel = get_logmel(mx.array(samples, dtype=mx.float32), model.preprocessor_config)
+    return model.generate(mel)[0]
+
+
 def main() -> None:
     model_id = "mlx-community/parakeet-tdt-0.6b-v2"
-    for i, a in enumerate(sys.argv[1:]):
-        if a == "--model" and i + 2 <= len(sys.argv[1:]):
-            model_id = sys.argv[i + 2]
+    revision = None
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--model" and i + 1 < len(args):
+            model_id = args[i + 1]
+        elif a == "--revision" and i + 1 < len(args):
+            revision = args[i + 1]
 
     emit(
         {
@@ -55,7 +113,14 @@ def main() -> None:
     )
     t0 = time.perf_counter()
     try:
-        model = from_pretrained(model_id)
+        # parakeet_mlx has no revision argument, so pin by resolving the exact
+        # snapshot first and loading it from disk.
+        source = model_id
+        if revision:
+            from huggingface_hub import snapshot_download
+
+            source = snapshot_download(model_id, revision=revision)
+        model = from_pretrained(source)
     except Exception as e:
         emit({"type": "error", "msg": f"load failed: {e}"})
         traceback.print_exc(file=sys.stderr)
@@ -171,7 +236,9 @@ def main() -> None:
                         or wav.getsampwidth() != 2
                         or wav.getframerate() != 16_000
                     ):
-                        raise ValueError("startup WAV must be mono 16-bit PCM at 16 kHz")
+                        raise ValueError(
+                            "startup WAV must be mono 16-bit PCM at 16 kHz"
+                        )
                     audio = decode_pcm16(
                         base64.b64encode(wav.readframes(wav.getnframes())).decode()
                     )
@@ -209,7 +276,7 @@ def main() -> None:
             )
             t1 = time.perf_counter()
             try:
-                result = model.transcribe(path)
+                result = transcribe_file(model, path)
                 text = getattr(result, "text", None)
                 if text is None:
                     text = str(result)

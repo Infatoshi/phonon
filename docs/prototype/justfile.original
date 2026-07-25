@@ -1,0 +1,16 @@
+set shell := ["zsh", "-cu"]
+
+run:
+    cargo run
+
+app:
+    cargo build
+    mkdir -p target/PhononPrototype.app/Contents/MacOS target/PhononPrototype.app/Contents/Resources
+    cp target/debug/phonon target/PhononPrototype.app/Contents/MacOS/phonon
+    cp packaging/Info.plist target/PhononPrototype.app/Contents/Info.plist
+    open target/PhononPrototype.app
+
+check:
+    cargo fmt --check
+    cargo clippy --all-targets --all-features -- -D warnings
+    cargo nextest run

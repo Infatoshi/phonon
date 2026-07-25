@@ -93,8 +93,7 @@ struct ModelLoadStream: Identifiable {
 final class ModelStartupState: ObservableObject {
     @Published private(set) var streams = [
         ModelLoadStream(id: "asr", title: "Speech"),
-        ModelLoadStream(id: "fluid-1", title: "Language model"),
-        ModelLoadStream(id: "mtp", title: "Speculative decoder"),
+        ModelLoadStream(id: "llm", title: "Correction model"),
     ]
     @Published private(set) var ready = false
 
@@ -1068,28 +1067,51 @@ final class MicRecorder {
 // MARK: - Typer
 
 enum Typer {
-    static func emit(_ text: String) throws {
+    @MainActor
+    static func emit(_ text: String, target: NSRunningApplication?) throws {
         guard !text.isEmpty else { return }
         guard AXIsProcessTrusted() else {
             throw NSError(
                 domain: "PhononBar", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Grant Accessibility to PhononBar"])
         }
-        let utf16 = Array(text.utf16)
-        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-        else { return }
-        let chunk = 32
-        var i = 0
-        while i < utf16.count {
-            let end = min(i + chunk, utf16.count)
-            var slice = Array(utf16[i..<end])
-            down.keyboardSetUnicodeString(stringLength: slice.count, unicodeString: &slice)
-            up.keyboardSetUnicodeString(stringLength: slice.count, unicodeString: &slice)
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
-            i = end
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            throw NSError(
+                domain: "PhononBar", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Could not copy dictation to the pasteboard"])
         }
+
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == ownPID,
+            let target, !target.isTerminated
+        {
+            target.activate()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        guard let (down, up) = makePasteEvents() else {
+            throw NSError(
+                domain: "PhononBar", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Could not create paste keyboard events"])
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
+    static func makePasteEvents() -> (CGEvent, CGEvent)? {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard
+            let down = CGEvent(
+                keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
+            let up = CGEvent(
+                keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
+        else { return nil }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        return (down, up)
     }
 }
 
@@ -1290,6 +1312,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var isRecording = false
     private var optionDown = false
     private var eventTap: CFMachPort?
+    private var eventTapSource: CFRunLoopSource?
     private var toggleHotKey: EventHotKeyRef?
     private var toggleHandler: EventHandlerRef?
     private var enginesReady = false
@@ -1312,6 +1335,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var engineRestartWork: DispatchWorkItem?
     private var terminating = false
     private var activeWavPath: String?
+    private var insertionTarget: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1320,6 +1344,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         appStore.onMicrophonePermissionGranted = { [weak self] in
             self?.warmMicrophoneIfAuthorized()
+        }
+        appStore.onPermissionsRefresh = { [weak self] in
+            self?.refreshPermissionDependentServices()
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
         setupPanel()
@@ -1647,7 +1674,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     e2eTrace?.insertionStartedNs = DispatchTime.now().uptimeNanoseconds
                     var insertionSucceeded = false
                     do {
-                        try Typer.emit(final)
+                        try Typer.emit(final, target: insertionTarget)
                         insertionSucceeded = true
                     } catch {
                         NSLog("phonon insertion failed: \(error.localizedDescription)")
@@ -1660,8 +1687,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                         E2EProfileStore.append(record)
                     }
                     e2eTrace = nil
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(final, forType: .string)
                     finishRecordingRetention()
                     hideAfter(state.streamingPreviewEnabled ? 0.55 : 0)
                 } else {
@@ -1855,6 +1880,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             processing = false
         }
         guard !isRecording else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+            frontmost.processIdentifier != ownPID
+        {
+            insertionTarget = frontmost
+        } else {
+            insertionTarget = nil
+        }
         activeWavPath = nil
         pass += 1
         activeId = "p\(pass)"
@@ -2099,6 +2132,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func installHotkey() {
+        if let eventTap, CFMachPortIsValid(eventTap) {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            appStore.inputMonitoringAvailable = CGEvent.tapIsEnabled(tap: eventTap)
+            return
+        }
         let mask = 1 << CGEventType.flagsChanged.rawValue
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon else { return Unmanaged.passUnretained(event) }
@@ -2131,8 +2169,34 @@ final class AppController: NSObject, NSApplicationDelegate {
         eventTap = tap
         appStore.inputMonitoringAvailable = true
         let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        eventTapSource = src
         CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func refreshPermissionDependentServices() {
+        warmMicrophoneIfAuthorized()
+        guard CGPreflightListenEventAccess() else {
+            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
+            appStore.inputMonitoringAvailable = false
+            return
+        }
+        if let eventTap, CFMachPortIsValid(eventTap) {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            appStore.inputMonitoringAvailable = CGEvent.tapIsEnabled(tap: eventTap)
+            return
+        }
+        removeEventTap()
+        installHotkey()
+    }
+
+    private func removeEventTap() {
+        if let eventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
+        }
+        if let eventTap { CFMachPortInvalidate(eventTap) }
+        eventTapSource = nil
+        eventTap = nil
     }
 
     nonisolated private func handleCGEvent(type: CGEventType, event: CGEvent) {
@@ -2177,6 +2241,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         screenContextTask?.cancel()
         engine.shutdown()
         recorder.stop(writeFile: false)
+        removeEventTap()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

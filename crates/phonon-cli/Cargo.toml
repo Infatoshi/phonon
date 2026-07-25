@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
+phonon-asr = { path = "../phonon-asr" }
 phonon-core = { path = "../phonon-core" }
 phonon-llm = { path = "../phonon-llm" }
 phonon-profile = { path = "../phonon-profile" }

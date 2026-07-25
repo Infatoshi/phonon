@@ -228,7 +228,7 @@ pub fn evaluate_dictionary(root: &Path, fixtures: &Path, json: bool) -> Result<(
     )
     .with_context(|| format!("parse {}", fixtures.display()))?;
     let dictionary = DictionaryFile::load()?;
-    let mut helper = ServeJson::spawn(root, true)?;
+    let mut helper = ServeJson::spawn(root)?;
     let (_, warmup) = helper.warmup()?;
     if !warmup.ok {
         bail!("LLM warmup failed: {:?}", warmup.error);
