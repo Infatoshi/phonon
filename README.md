@@ -12,22 +12,26 @@ phonon
 ```
 
 The cask installs the Developer ID-signed and notarized app. Phonon downloads
-the open Parakeet weights on first launch. Tagged releases also include the DMG
+the open Parakeet and Gemma weights on first launch, both pinned to exact
+revisions. Tagged releases also include the DMG
 for direct installation. To build locally instead, use
 `brew install --formula infatoshi/phonon/phonon`.
 
 ## Pipeline
 
 ```
-mic → Parakeet ASR → auto fluid-1 polish (+ Gemma MTP) → clipboard / type
+mic → Parakeet ASR → dictionary retrieval → Gemma correction → clipboard / type
 ```
 
-The runtime requires and loads three weight streams in parallel:
-**asr ∥ fluid-1 ∥ mtp**. The
-single startup loader reaches 100% only after Parakeet transcribes the bundled
-fixture through batch and streaming ASR, that transcript passes through Fluid
-and the MTP drafter, and a representative technical correction succeeds. Phonon
-does not expose an ASR-only mode.
+The runtime requires and loads two weight streams in parallel:
+**asr ∥ llm**. The single startup loader reaches 100% only after Parakeet
+transcribes the bundled fixture through batch and streaming ASR, that transcript
+survives a round trip through the correction model, and a representative
+technical correction succeeds. Phonon does not expose an ASR-only mode.
+
+The correction stage is `sidecar/polish_server.py`: `mlx-community/gemma-4-e2b-it-4bit`
+on `mlx-lm`, run locally through `uv`. It is a pipeline stage, not a provider
+setting, and there is no way to point it at a remote model.
 
 ## Build from source
 
@@ -56,7 +60,13 @@ phonon stats             # local words, sessions, speaking time, dictionary fixe
 
 ## Local data and correction loop
 
-Every native-app recording is retained as a paired corpus item:
+Nothing is retained until you say so. On first launch the app asks once whether
+to keep local history and whether to use active-window context; both start off,
+and declining leaves dictation fully working. Settings carries the retention
+window (keep until deleted, or 7 / 30 / 90 days) and a clear-everything button.
+
+With local history on, every native-app recording is retained as a paired corpus
+item:
 
 ```text
 ~/Library/Application Support/Phonon/
@@ -73,7 +83,7 @@ transcript, dictionary changes, source, duration, and LLM timings. Useful loops:
 
 Before ASR, an adaptive audio gate requires sustained speech-like energy above
 the clip's measured noise floor. Clips without speech remain in the corpus with
-`speech_detected: false`, skip Parakeet and Fluid entirely, and produce no text.
+`speech_detected: false`, skip Parakeet and the correction model entirely, and produce no text.
 
 ```bash
 phonon dictionary import-wispr
@@ -90,7 +100,7 @@ When `screen_context` is enabled in `settings.json`, the floating bar captures
 each visible display once at recording start and runs local macOS Vision OCR.
 Screenshots are discarded immediately. The engine uses OCR only to rank
 dictionary candidates already relevant to the spoken transcript; it sends
-confirmed terms, not the full screen text, into the Fluid correction prompt.
+confirmed terms, not the full screen text, into the correction prompt.
 
 ### Floating bar
 
@@ -119,13 +129,15 @@ by Auto.
 ```
 crates/phonon-audio/   recording and audio file ownership
 crates/phonon-asr/     Parakeet sidecar lifecycle + protocol
-crates/phonon-llm/     Fluid/MTP lifecycle + benchmark client
+crates/phonon-llm/     correction sidecar lifecycle + benchmark client
 crates/phonon-profile/ literal Metal dispatch, LLM phase, and E2E profilers
 crates/phonon-core/    pipeline coordination + engine events
 crates/phonon-cli/     commands, doctor, bench, bar launcher
 bar/                   SwiftPM native Home/History/Dictionary/Settings app + floating pill
 sidecar/asr_server.py
-prompts/polish_v1.txt
+sidecar/polish_server.py
+assets/english_words.txt
+prompts/polish_v2.txt
 ```
 
 ## License

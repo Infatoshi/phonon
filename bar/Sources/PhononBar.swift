@@ -93,8 +93,7 @@ struct ModelLoadStream: Identifiable {
 final class ModelStartupState: ObservableObject {
     @Published private(set) var streams = [
         ModelLoadStream(id: "asr", title: "Speech"),
-        ModelLoadStream(id: "fluid-1", title: "Language model"),
-        ModelLoadStream(id: "mtp", title: "Speculative decoder"),
+        ModelLoadStream(id: "llm", title: "Correction model"),
     ]
     @Published private(set) var ready = false
 

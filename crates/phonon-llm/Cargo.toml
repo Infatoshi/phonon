@@ -8,3 +8,4 @@ publish.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+phonon-asr = { path = "../phonon-asr" }

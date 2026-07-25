@@ -174,7 +174,7 @@ fn profile_kernels_in_temp(
             .arg(drafter)
             .args(["--draft-block-size", "6"]);
     }
-    let prompt = root.join("prompts/polish_v1.txt");
+    let prompt = root.join("prompts/polish_v2.txt");
     if prompt.is_file() {
         command.arg("--system-prompt-file").arg(prompt);
     }

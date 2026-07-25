@@ -1,4 +1,4 @@
-//! Shared warm engines: Parakeet ASR + fluid-1/MTP polish over JSONL.
+//! Shared warm engines: Parakeet ASR + local correction model over JSONL.
 //!
 //! Protocol (stdin/stdout, one JSON object per line):
 //!   {"cmd":"status"}
@@ -8,7 +8,7 @@
 //!   {"cmd":"shutdown"}
 //!
 //! Events (stdout):
-//!   {"type":"stream","name":"asr|fluid-1|mtp","state":"loading|ready|error|missing","pct":0.5,"msg":"...","load_ms":123}
+//!   {"type":"stream","name":"asr|llm","state":"loading|ready|error","pct":0.5,"msg":"...","load_ms":123}
 //!   {"type":"ready"}  — all required streams ready
 //!   {"type":"result","kind":"asr|polish","id":"...","text":"...","seconds":0.1,"latency_ms":70,"ttft_ms":30,"tok_s":200}
 //!   {"type":"error","id":"...","msg":"..."}
@@ -20,7 +20,7 @@ use anyhow::{bail, Context, Result};
 pub use paths::project_root;
 use phonon_asr::{AsrEvent, AsrSidecar};
 use phonon_audio::wav_has_speech;
-use phonon_llm::{fluid1_available, fluid_drafter_dir, PolishEvent, PolishSidecar};
+use phonon_llm::{polish_available, PolishEvent, PolishSidecar};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -70,9 +70,7 @@ pub struct Engine {
     asr: AsrSidecar,
     polisher: Option<PolishSidecar>,
     asr_ready: bool,
-    fluid_ready: bool,
-    mtp_ready: bool,
-    mtp_missing: bool,
+    llm_ready: bool,
     root: std::path::PathBuf,
     started: Instant,
     /// FIFO of polish requests (serve-json returns in order).
@@ -98,23 +96,18 @@ struct PolishRequest {
 
 impl Engine {
     pub fn start(root: &Path) -> Result<Self> {
-        if !fluid1_available() {
-            bail!("the required local correction model is not installed");
-        }
-        if !fluid_drafter_dir().is_dir() {
-            bail!("the required speculative correction drafter is not installed");
+        if !polish_available(root) {
+            bail!("the required local correction runtime is missing from this install");
         }
         let asr = AsrSidecar::spawn(root)?;
         let polisher = PolishSidecar::spawn(root)?
-            .context("the required local correction model is not installed")?;
+            .context("the required local correction runtime could not start")?;
 
         Ok(Self {
             asr,
             polisher: Some(polisher),
             asr_ready: false,
-            fluid_ready: false,
-            mtp_ready: false,
-            mtp_missing: false,
+            llm_ready: false,
             root: root.to_path_buf(),
             started: Instant::now(),
             polish_requests: Vec::new(),
@@ -132,7 +125,7 @@ impl Engine {
     }
 
     pub fn stacks_ready(&self) -> bool {
-        self.asr_ready && self.fluid_ready && self.mtp_ready
+        self.asr_ready && self.llm_ready
     }
 
     pub fn poll(&mut self) -> Vec<EngineEvent> {
@@ -250,46 +243,24 @@ impl Engine {
         if let Some(polisher) = self.polisher.as_mut() {
             for event in polisher.poll() {
                 match event {
-                    PolishEvent::Ready {
-                        msg,
-                        has_mtp,
-                        load_ms,
-                    } => {
+                    PolishEvent::Ready { msg, load_ms } => {
                         out.push(EngineEvent::Stream {
-                            name: "fluid-1".into(),
+                            name: "llm".into(),
                             state: "loading".into(),
                             pct: 0.78,
                             msg: format!("weights loaded · {msg}; compiling demo request"),
                             load_ms: Some(load_ms),
                         });
-                        if has_mtp {
-                            out.push(EngineEvent::Stream {
-                                name: "mtp".into(),
-                                state: "loading".into(),
-                                pct: 0.82,
-                                msg: "MTP loaded; capturing representative shape".into(),
-                                load_ms: Some(load_ms),
-                            });
-                            self.polish_requests.push(PolishRequest {
+                        self.polish_requests.push(PolishRequest {
+                            id: Some(STARTUP_LLM_PRIME_ID.into()),
+                            source_text: STARTUP_LLM_PRIME_TEXT.into(),
+                            screen_context_terms: Vec::new(),
+                        });
+                        if let Err(error) = polisher.polish(STARTUP_LLM_PRIME_TEXT) {
+                            self.polish_requests.pop();
+                            out.push(EngineEvent::Error {
                                 id: Some(STARTUP_LLM_PRIME_ID.into()),
-                                source_text: STARTUP_LLM_PRIME_TEXT.into(),
-                                screen_context_terms: Vec::new(),
-                            });
-                            if let Err(error) = polisher.polish(STARTUP_LLM_PRIME_TEXT) {
-                                self.polish_requests.pop();
-                                out.push(EngineEvent::Error {
-                                    id: Some(STARTUP_LLM_PRIME_ID.into()),
-                                    msg: format!("LLM startup prime failed: {error:#}"),
-                                });
-                            }
-                        } else {
-                            self.mtp_missing = true;
-                            out.push(EngineEvent::Stream {
-                                name: "mtp".into(),
-                                state: "missing".into(),
-                                pct: 0.0,
-                                msg: "no drafter".into(),
-                                load_ms: None,
+                                msg: format!("LLM startup prime failed: {error:#}"),
                             });
                         }
                     }
@@ -314,7 +285,7 @@ impl Engine {
                                 self.llm_primed = true;
                                 self.llm_primed_at = Some(Instant::now());
                                 out.push(EngineEvent::Stream {
-                                    name: "fluid-1".into(),
+                                    name: "llm".into(),
                                     state: "loading".into(),
                                     pct: 0.9,
                                     msg: "base graph primed; waiting for speech warmup".into(),
@@ -322,7 +293,7 @@ impl Engine {
                                 });
                             } else {
                                 out.push(EngineEvent::Stream {
-                                    name: "mtp".into(),
+                                    name: "llm".into(),
                                     state: "error".into(),
                                     pct: 0.85,
                                     msg: format!("prime output mismatch: {text:?}"),
@@ -330,10 +301,11 @@ impl Engine {
                                 });
                             }
                         } else if id.as_deref() == Some(STARTUP_LLM_AUDIO_ID) {
-                            if llm_audio_smoke_passed(&text) {
+                            let spoken = self.startup_asr_text.clone().unwrap_or_default();
+                            if llm_audio_smoke_passed(&spoken, &text) {
                                 self.startup_audio_demo_passed = true;
                                 out.push(EngineEvent::Stream {
-                                    name: "fluid-1".into(),
+                                    name: "llm".into(),
                                     state: "loading".into(),
                                     pct: 0.94,
                                     msg: "startup.wav passed through ASR and correction".into(),
@@ -341,7 +313,7 @@ impl Engine {
                                 });
                             } else {
                                 out.push(EngineEvent::Stream {
-                                    name: "fluid-1".into(),
+                                    name: "llm".into(),
                                     state: "error".into(),
                                     pct: 0.94,
                                     msg: format!("end-to-end audio demo mismatch: {text:?}"),
@@ -350,26 +322,20 @@ impl Engine {
                             }
                         } else if id.as_deref() == Some(STARTUP_LLM_ID) {
                             if llm_smoke_passed(&text) {
-                                self.fluid_ready = true;
-                                self.mtp_ready = true;
+                                self.llm_ready = true;
                                 let startup_ms = self.started.elapsed().as_secs_f64() * 1000.0;
                                 out.push(EngineEvent::Stream {
-                                    name: "fluid-1".into(),
+                                    name: "llm".into(),
                                     state: "ready".into(),
                                     pct: 1.0,
-                                    msg: format!("demo passed · TTFT {ttft_ms:.0}ms"),
-                                    load_ms: Some(startup_ms),
-                                });
-                                out.push(EngineEvent::Stream {
-                                    name: "mtp".into(),
-                                    state: "ready".into(),
-                                    pct: 1.0,
-                                    msg: format!("speculative demo passed · {tok_s:.0} tok/s"),
+                                    msg: format!(
+                                        "demo passed · TTFT {ttft_ms:.0}ms · {tok_s:.0} tok/s"
+                                    ),
                                     load_ms: Some(startup_ms),
                                 });
                             } else {
                                 out.push(EngineEvent::Stream {
-                                    name: "mtp".into(),
+                                    name: "llm".into(),
                                     state: "error".into(),
                                     pct: 0.9,
                                     msg: format!("demo output mismatch: {text:?}"),
@@ -430,7 +396,7 @@ impl Engine {
                     .clone()
                     .unwrap_or_else(|| "Hello Fluid Voice.".into());
                 out.push(EngineEvent::Stream {
-                    name: "fluid-1".into(),
+                    name: "llm".into(),
                     state: "loading".into(),
                     pct: 0.92,
                     msg: "running startup.wav through the correction model".into(),
@@ -453,7 +419,7 @@ impl Engine {
             if self.startup_audio_demo_passed && !self.startup_dictionary_demo_sent {
                 self.startup_dictionary_demo_sent = true;
                 out.push(EngineEvent::Stream {
-                    name: "fluid-1".into(),
+                    name: "llm".into(),
                     state: "loading".into(),
                     pct: 0.94,
                     msg: "running full dictionary correction demo".into(),
@@ -536,8 +502,8 @@ impl Engine {
         let Some(polisher) = self.polisher.as_mut() else {
             bail!("the required local correction model is unavailable");
         };
-        if !self.fluid_ready {
-            bail!("fluid-1 not ready yet");
+        if !self.llm_ready {
+            bail!("the correction model is not ready yet");
         }
         let input = self
             .dictionary
@@ -624,8 +590,19 @@ fn llm_smoke_passed(text: &str) -> bool {
         .all(|expected| words.iter().any(|word| word == expected))
 }
 
-fn llm_audio_smoke_passed(text: &str) -> bool {
-    asr_smoke_passed(data::extract_transcript_payload(text))
+/// The audio demo proves the recorded WAV reached the correction stage and came
+/// back as a usable sentence. It deliberately does not assert which words the
+/// dictionary chose: a term like `FluidAudio` is a legitimate rewrite of the
+/// fixture, and the gate must not depend on the user's installed vocabulary.
+fn llm_audio_smoke_passed(asr_text: &str, corrected: &str) -> bool {
+    let spoken = normalized_words(asr_text);
+    let corrected = normalized_words(data::extract_transcript_payload(corrected));
+    if spoken.is_empty() || corrected.is_empty() {
+        return false;
+    }
+    // Catches both the one-word collapse and a runaway expansion.
+    let floor = spoken.len().saturating_sub(1).max(1);
+    corrected.len() >= floor && corrected.len() <= spoken.len() + 2
 }
 
 fn llm_prime_passed(text: &str) -> bool {
@@ -649,17 +626,10 @@ pub fn run_engine_serve() -> Result<()> {
     }));
     emit(&json!({
         "type": "stream",
-        "name": "fluid-1",
+        "name": "llm",
         "state": "loading",
         "pct": 0.05,
-        "msg": "starting fluid-1"
-    }));
-    emit(&json!({
-        "type": "stream",
-        "name": "mtp",
-        "state": "loading",
-        "pct": 0.05,
-        "msg": "starting MTP"
+        "msg": "starting the correction model"
     }));
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
@@ -704,8 +674,7 @@ pub fn run_engine_serve() -> Result<()> {
                         emit(&json!({
                             "type": "status",
                             "asr_ready": eng.asr_ready,
-                            "fluid_ready": eng.fluid_ready,
-                            "mtp_ready": eng.mtp_ready,
+                            "llm_ready": eng.llm_ready,
                             "stacks_ready": eng.stacks_ready(),
                         }));
                     }
@@ -849,8 +818,18 @@ mod tests {
         assert!(asr_smoke_passed("Hello, Fluid Voice."));
         assert!(asr_smoke_passed("Hello Flamid Voice."));
         assert!(!asr_smoke_passed("Hello."));
-        assert!(llm_audio_smoke_passed("Hello, Fluid Voice."));
+        assert!(llm_audio_smoke_passed(
+            "Hello Flamid Voice.",
+            "Hello FluidAudio Voice."
+        ));
+        assert!(!llm_audio_smoke_passed("Hello Flamid Voice.", "Hello."));
+        assert!(!llm_audio_smoke_passed("Hello Flamid Voice.", ""));
         assert!(!llm_audio_smoke_passed(
+            "Hello Flamid Voice.",
+            "Hello Fluid Voice, and here is a great deal of invented extra content."
+        ));
+        assert!(!llm_audio_smoke_passed(
+            "Hello Flamid Voice.",
             "<phonon_dictionary>\ncanonical_terms: Hello, Fluid Voice"
         ));
         assert!(llm_smoke_passed(

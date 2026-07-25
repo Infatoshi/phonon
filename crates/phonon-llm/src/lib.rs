@@ -1,19 +1,24 @@
-//! fluid-1 polish via FluidVoice's fluid-intelligence-mlx helper.
+//! Transcript correction over a pinned local MLX model (`sidecar/polish_server.py`).
 //!
-//! Protocol (undocumented but stable on installed binary):
-//!   serve-json --model-dir …  [ --mtp-drafter-dir … ]
+//! Protocol:
 //!   stdin JSONL:
 //!     {"command":"warmup"}
 //!     {"command":"run","inputText":"…"}
 //!     {"command":"status"}
 //!     {"command":"shutdown"}
 //!   stdout JSONL responses with diagnostics.
+//!
+//! `ServeJson` still speaks to the old FluidVoice helper; it exists only so
+//! `phonon bench` / `phonon profile` can compare against that baseline locally.
 
 mod paths;
 
 use anyhow::{bail, Context, Result};
-use paths::polish_prompt;
-pub use paths::{fluid1_available, fluid1_paths, fluid_drafter_dir, fluid_helper, fluid_model_dir};
+pub use paths::{
+    fluid1_available, fluid1_paths, fluid_drafter_dir, fluid_helper, fluid_model_dir,
+    polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION, POLISH_RUNTIME_REQUIREMENT,
+};
+use paths::{polish_prompt, polish_script};
 use serde::Deserialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -286,7 +291,6 @@ pub fn timing_from_resp(wall: Duration, resp: &ServeJsonResp) -> Result<RunTimin
 pub enum PolishEvent {
     Ready {
         msg: String,
-        has_mtp: bool,
         load_ms: f64,
     },
     Result {
@@ -308,10 +312,40 @@ pub struct PolishSidecar {
 
 impl PolishSidecar {
     pub fn spawn(root: &Path) -> Result<Option<Self>> {
-        let Some((helper, model, drafter)) = fluid1_paths() else {
+        let script = polish_script(root);
+        let prompt = polish_prompt(root);
+        if !(script.is_file() && prompt.is_file()) {
             return Ok(None);
-        };
-        let has_mtp = drafter.is_some();
+        }
+        // Developer escape hatch for measuring the shipped model against the old
+        // fluid-1 helper on identical inputs. Never set in a shipped build.
+        if std::env::var("PHONON_POLISH_BACKEND").as_deref() == Ok("fluid") {
+            return Self::spawn_fluid_baseline(root).map(Some);
+        }
+        let uv = phonon_asr::resolve_uv().context("uv not found; install it with Homebrew")?;
+        // Overridable for developer model comparisons only; unset in shipped builds.
+        let model =
+            std::env::var("PHONON_POLISH_MODEL").unwrap_or_else(|_| POLISH_MODEL_ID.to_string());
+        let revision = std::env::var("PHONON_POLISH_REVISION")
+            .unwrap_or_else(|_| POLISH_MODEL_REVISION.to_string());
+        let mut command = Command::new(uv);
+        command
+            .args(["run", "--with", POLISH_RUNTIME_REQUIREMENT, "python"])
+            .arg(&script)
+            .args(["--model", &model, "--revision", &revision])
+            .arg("--system-prompt-file")
+            .arg(&prompt)
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        Self::attach(command.spawn().context("spawn polish")?).map(Some)
+    }
+
+    /// fluid-1 helper, for developer comparison only. See `PHONON_POLISH_BACKEND`.
+    fn spawn_fluid_baseline(root: &Path) -> Result<Self> {
+        let (helper, model, drafter) =
+            fluid1_paths().context("fluid-1 baseline requested but not installed")?;
         let mut command = Command::new(helper);
         command
             .arg("serve-json")
@@ -327,11 +361,11 @@ impl PolishSidecar {
                 .arg("--draft-block-size")
                 .arg("6");
         }
-        let prompt = polish_prompt(root);
-        if prompt.is_file() {
-            command.arg("--system-prompt-file").arg(prompt);
-        }
-        let mut child = command.spawn().context("spawn polish")?;
+        command.arg("--system-prompt-file").arg(polish_prompt(root));
+        Self::attach(command.spawn().context("spawn fluid-1 baseline")?)
+    }
+
+    fn attach(mut child: Child) -> Result<Self> {
         let stdout = child.stdout.take().context("polish stdout")?;
         let mut stdin = child.stdin.take().context("polish stdin")?;
         let started = Instant::now();
@@ -359,7 +393,6 @@ impl PolishSidecar {
                 {
                     PolishEvent::Ready {
                         msg: message.status.and_then(|x| x.message).unwrap_or_default(),
-                        has_mtp,
                         load_ms: started.elapsed().as_secs_f64() * 1000.0,
                     }
                 } else {
@@ -370,7 +403,7 @@ impl PolishSidecar {
                 }
             }
         });
-        Ok(Some(Self { child, stdin, rx }))
+        Ok(Self { child, stdin, rx })
     }
 
     pub fn poll(&self) -> Vec<PolishEvent> {

@@ -48,12 +48,12 @@ final class PreviewRevisionPolicyTests: XCTestCase {
             name: "asr", state: "loading", progress: 0.3, detail: "late stale update",
             loadMs: nil)
         state.apply(
-            name: "fluid-1", state: "ready", progress: 1, detail: "demo passed",
+            name: "llm", state: "ready", progress: 1, detail: "demo passed",
             loadMs: 2_400)
 
         XCTAssertEqual(state.streams[0].progress, 0.8)
         XCTAssertEqual(state.streams[1].state, "Ready")
-        XCTAssertEqual(state.progress, 0.6, accuracy: 0.0001)
+        XCTAssertEqual(state.progress, 0.9, accuracy: 0.0001)
         state.markReady()
         XCTAssertTrue(state.ready)
     }

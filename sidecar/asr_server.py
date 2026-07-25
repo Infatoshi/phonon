@@ -27,9 +27,13 @@ def decode_pcm16(encoded: str):
 
 def main() -> None:
     model_id = "mlx-community/parakeet-tdt-0.6b-v2"
-    for i, a in enumerate(sys.argv[1:]):
-        if a == "--model" and i + 2 <= len(sys.argv[1:]):
-            model_id = sys.argv[i + 2]
+    revision = None
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--model" and i + 1 < len(args):
+            model_id = args[i + 1]
+        elif a == "--revision" and i + 1 < len(args):
+            revision = args[i + 1]
 
     emit(
         {
@@ -55,7 +59,14 @@ def main() -> None:
     )
     t0 = time.perf_counter()
     try:
-        model = from_pretrained(model_id)
+        # parakeet_mlx has no revision argument, so pin by resolving the exact
+        # snapshot first and loading it from disk.
+        source = model_id
+        if revision:
+            from huggingface_hub import snapshot_download
+
+            source = snapshot_download(model_id, revision=revision)
+        model = from_pretrained(source)
     except Exception as e:
         emit({"type": "error", "msg": f"load failed: {e}"})
         traceback.print_exc(file=sys.stderr)
@@ -171,7 +182,9 @@ def main() -> None:
                         or wav.getsampwidth() != 2
                         or wav.getframerate() != 16_000
                     ):
-                        raise ValueError("startup WAV must be mono 16-bit PCM at 16 kHz")
+                        raise ValueError(
+                            "startup WAV must be mono 16-bit PCM at 16 kHz"
+                        )
                     audio = decode_pcm16(
                         base64.b64encode(wav.readframes(wav.getnframes())).decode()
                     )

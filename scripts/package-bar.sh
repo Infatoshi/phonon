@@ -26,8 +26,10 @@ if [[ -z "$uv_bin" || ! -x "$uv_bin" ]]; then
 fi
 cp -L "$uv_bin" "$staged_app/Contents/Helpers/uv"
 cp "$project_dir/sidecar/asr_server.py" "$staged_app/Contents/Resources/sidecar/asr_server.py"
+cp "$project_dir/sidecar/polish_server.py" "$staged_app/Contents/Resources/sidecar/polish_server.py"
 cp "$project_dir/assets/startup.wav" "$staged_app/Contents/Resources/assets/startup.wav"
-cp "$project_dir/prompts/polish_v1.txt" "$staged_app/Contents/Resources/prompts/polish_v1.txt"
+cp "$project_dir/assets/english_words.txt" "$staged_app/Contents/Resources/assets/english_words.txt"
+cp "$project_dir/prompts/polish_v2.txt" "$staged_app/Contents/Resources/prompts/polish_v2.txt"
 cp "$project_dir/third_party/uv/LICENSE-APACHE" "$project_dir/third_party/uv/LICENSE-MIT" \
 	"$staged_app/Contents/Resources/licenses/uv/"
 "$script_dir/make-app-icon.sh" "$staged_app/Contents/Resources/Phonon.icns"

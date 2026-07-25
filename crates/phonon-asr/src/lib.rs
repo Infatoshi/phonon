@@ -8,6 +8,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Instant;
 
+/// Pinned ASR model and runtime. Exact revisions so an upstream release cannot
+/// change what shipped users run.
+pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
+pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
+pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
+
 #[derive(Debug, Deserialize)]
 struct SidecarMsg {
     #[serde(rename = "type")]
@@ -58,8 +64,9 @@ impl AsrSidecar {
         let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
         let started = Instant::now();
         let mut child = Command::new(uv)
-            .args(["run", "--with", "parakeet-mlx", "python"])
+            .args(["run", "--with", ASR_RUNTIME_REQUIREMENT, "python"])
             .arg(&script)
+            .args(["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION])
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -143,7 +150,7 @@ impl AsrSidecar {
     }
 }
 
-fn resolve_uv() -> Option<std::path::PathBuf> {
+pub fn resolve_uv() -> Option<std::path::PathBuf> {
     let bundled = std::env::current_exe().ok().and_then(|executable| {
         executable
             .parent()

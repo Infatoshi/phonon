@@ -3,7 +3,10 @@
 use anyhow::Result;
 use phonon_core::data::{list_recordings, DictionaryFile, SettingsFile};
 use phonon_core::project_root;
-use phonon_llm::{fluid1_available, fluid_drafter_dir, fluid_helper, fluid_model_dir};
+use phonon_llm::{
+    fluid1_available, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
+    POLISH_RUNTIME_REQUIREMENT,
+};
 
 pub fn run_doctor() -> Result<()> {
     let root = project_root();
@@ -16,8 +19,18 @@ pub fn run_doctor() -> Result<()> {
         root.join("sidecar/asr_server.py").is_file(),
     );
     check(
-        "prompts/polish_v1.txt",
-        root.join("prompts/polish_v1.txt").is_file(),
+        "sidecar/polish_server.py",
+        root.join("sidecar/polish_server.py").is_file(),
+    );
+    check(
+        "prompts/polish_v2.txt",
+        root.join("prompts/polish_v2.txt").is_file(),
+    );
+    // Without this list the phonetic guard cannot tell an ordinary English word
+    // from a technical term, so retrieval turns itself off rather than guess.
+    check(
+        "assets/english_words.txt (phonetic guard)",
+        root.join("assets/english_words.txt").is_file(),
     );
     let installed_app = root
         .parent()
@@ -41,22 +54,23 @@ pub fn run_doctor() -> Result<()> {
     check("pbcopy", which::which("pbcopy").is_ok());
     check("swift", which::which("swift").is_ok());
 
-    let helper = fluid_helper();
-    let model = fluid_model_dir();
-    let drafter = fluid_drafter_dir();
     check(
-        &format!("fluid-intelligence-mlx ({})", helper.display()),
-        helper.is_file(),
+        "required correction stage installed",
+        polish_available(&root),
     );
-    check(
-        &format!("fluid-1 model ({})", model.display()),
-        model.is_dir(),
+    println!(
+        "  correction model: {POLISH_MODEL_ID}@{}",
+        &POLISH_MODEL_REVISION[..7]
     );
-    check(
-        &format!("MTP drafter ({})", drafter.display()),
-        drafter.is_dir(),
+    println!("  correction runtime: {POLISH_RUNTIME_REQUIREMENT}");
+    println!(
+        "  fluid-1 baseline (developer comparison only): {}",
+        if fluid1_available() {
+            "installed"
+        } else {
+            "absent"
+        }
     );
-    check("fluid-1 polish usable", fluid1_available());
 
     let dictionary = DictionaryFile::load();
     let dictionary_count = dictionary
