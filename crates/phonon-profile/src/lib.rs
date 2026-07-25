@@ -476,7 +476,7 @@ pub fn profile_llm(root: &Path, config: &LlmProfileConfig) -> Result<LlmProfileR
     for (mode, use_mtp) in modes {
         for &input_words in &config.input_words {
             let input = profile_input(input_words);
-            let mut serve = ServeJson::spawn(root, use_mtp)?;
+            let mut serve = ServeJson::spawn_fluid(root, use_mtp)?;
             let (warmup, _) = serve.warmup()?;
             // Pay first-request graph/shape specialization before collecting
             // any profile samples. Application readiness follows the same rule.

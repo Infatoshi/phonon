@@ -8,8 +8,10 @@
 //!     {"command":"shutdown"}
 //!   stdout JSONL responses with diagnostics.
 //!
-//! `ServeJson` still speaks to the old FluidVoice helper; it exists only so
-//! `phonon bench` / `phonon profile` can compare against that baseline locally.
+//! `ServeJson` is the synchronous handle over the same protocol, used by
+//! evaluation and benchmark tooling. `ServeJson::spawn_fluid` and `cold_run`
+//! reach the old FluidVoice helper instead; they exist only so `phonon bench` /
+//! `phonon profile` can compare against that baseline locally.
 
 mod paths;
 
@@ -73,29 +75,19 @@ pub struct ServeJson {
 }
 
 impl ServeJson {
-    pub fn spawn(root: &Path, use_mtp: bool) -> Result<Self> {
-        let (helper, model, drafter) = fluid1_paths().context("fluid-1 not installed")?;
-        let prompt = polish_prompt(root);
+    /// The shipped correction stage, so evaluation measures what users run.
+    /// Honours `PHONON_POLISH_BACKEND=fluid` for developer comparisons.
+    pub fn spawn(root: &Path) -> Result<Self> {
+        let cmd = polish_command(root)?.context("correction stage files missing")?;
+        Self::attach(cmd)
+    }
 
-        let mut cmd = Command::new(&helper);
-        cmd.arg("serve-json")
-            .arg("--model-dir")
-            .arg(&model)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        if use_mtp {
-            if let Some(d) = drafter {
-                cmd.arg("--mtp-drafter-dir")
-                    .arg(d)
-                    .arg("--draft-block-size")
-                    .arg("6");
-            }
-        }
-        if prompt.is_file() {
-            cmd.arg("--system-prompt-file").arg(&prompt);
-        }
+    /// The fluid-1 helper, for developer comparison only.
+    pub fn spawn_fluid(root: &Path, use_mtp: bool) -> Result<Self> {
+        Self::attach(fluid_command(root, use_mtp)?)
+    }
 
+    fn attach(mut cmd: Command) -> Result<Self> {
         let mut child = cmd.spawn().context("spawn serve-json")?;
         let stdin = child.stdin.take().context("serve-json stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("serve-json stdout")?);
@@ -109,6 +101,10 @@ impl ServeJson {
     pub fn request(&mut self, payload: &serde_json::Value) -> Result<ServeJsonResp> {
         writeln!(self.stdin, "{payload}")?;
         self.stdin.flush()?;
+        self.read_response()
+    }
+
+    fn read_response(&mut self) -> Result<ServeJsonResp> {
         let mut line = String::new();
         // serve-json is single-threaded; one response line per request.
         // Cap wait so a hung helper fails the bench instead of locking us.
@@ -131,9 +127,14 @@ impl ServeJson {
         }
     }
 
+    /// Warmup streams progress: several `loading` lines before `ready`. Consume
+    /// them all, or every later response arrives one request behind.
     pub fn warmup(&mut self) -> Result<(Duration, ServeJsonResp)> {
         let t0 = Instant::now();
-        let resp = self.request(&json!({"command": "warmup"}))?;
+        let mut resp = self.request(&json!({"command": "warmup"}))?;
+        while resp.ok && resp.status.as_ref().and_then(|s| s.state.as_deref()) == Some("loading") {
+            resp = self.read_response()?;
+        }
         Ok((t0.elapsed(), resp))
     }
 
@@ -310,50 +311,51 @@ pub struct PolishSidecar {
     rx: Receiver<PolishEvent>,
 }
 
-impl PolishSidecar {
-    pub fn spawn(root: &Path) -> Result<Option<Self>> {
-        let script = polish_script(root);
-        let prompt = polish_prompt(root);
-        if !(script.is_file() && prompt.is_file()) {
-            return Ok(None);
-        }
-        // Developer escape hatch for measuring the shipped model against the old
-        // fluid-1 helper on identical inputs. Never set in a shipped build.
-        if std::env::var("PHONON_POLISH_BACKEND").as_deref() == Ok("fluid") {
-            return Self::spawn_fluid_baseline(root).map(Some);
-        }
-        let uv = phonon_asr::resolve_uv().context("uv not found; install it with Homebrew")?;
-        // Overridable for developer model comparisons only; unset in shipped builds.
-        let model =
-            std::env::var("PHONON_POLISH_MODEL").unwrap_or_else(|_| POLISH_MODEL_ID.to_string());
-        let revision = std::env::var("PHONON_POLISH_REVISION")
-            .unwrap_or_else(|_| POLISH_MODEL_REVISION.to_string());
-        let mut command = Command::new(uv);
-        command
-            .args(["run", "--with", POLISH_RUNTIME_REQUIREMENT, "python"])
-            .arg(&script)
-            .args(["--model", &model, "--revision", &revision])
-            .arg("--system-prompt-file")
-            .arg(&prompt)
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        Self::attach(command.spawn().context("spawn polish")?).map(Some)
+/// The shipped correction stage. `Ok(None)` means its own files are absent.
+/// `PHONON_POLISH_BACKEND=fluid` swaps in the old helper on identical inputs;
+/// it is a developer comparison switch and is never set in a shipped build.
+fn polish_command(root: &Path) -> Result<Option<Command>> {
+    let script = polish_script(root);
+    let prompt = polish_prompt(root);
+    if !(script.is_file() && prompt.is_file()) {
+        return Ok(None);
     }
+    if std::env::var("PHONON_POLISH_BACKEND").as_deref() == Ok("fluid") {
+        return fluid_command(root, true).map(Some);
+    }
+    let uv = phonon_asr::resolve_uv().context("uv not found; install it with Homebrew")?;
+    // Overridable for developer model comparisons only; unset in shipped builds.
+    let model =
+        std::env::var("PHONON_POLISH_MODEL").unwrap_or_else(|_| POLISH_MODEL_ID.to_string());
+    let revision = std::env::var("PHONON_POLISH_REVISION")
+        .unwrap_or_else(|_| POLISH_MODEL_REVISION.to_string());
+    let mut command = Command::new(uv);
+    command
+        .args(["run", "--with", POLISH_RUNTIME_REQUIREMENT, "python"])
+        .arg(&script)
+        .args(["--model", &model, "--revision", &revision])
+        .arg("--system-prompt-file")
+        .arg(&prompt)
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    Ok(Some(command))
+}
 
-    /// fluid-1 helper, for developer comparison only. See `PHONON_POLISH_BACKEND`.
-    fn spawn_fluid_baseline(root: &Path) -> Result<Self> {
-        let (helper, model, drafter) =
-            fluid1_paths().context("fluid-1 baseline requested but not installed")?;
-        let mut command = Command::new(helper);
-        command
-            .arg("serve-json")
-            .arg("--model-dir")
-            .arg(model)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+/// fluid-1 helper, for developer comparison only. See `PHONON_POLISH_BACKEND`.
+fn fluid_command(root: &Path, use_mtp: bool) -> Result<Command> {
+    let (helper, model, drafter) =
+        fluid1_paths().context("fluid-1 baseline requested but not installed")?;
+    let mut command = Command::new(helper);
+    command
+        .arg("serve-json")
+        .arg("--model-dir")
+        .arg(model)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if use_mtp {
         if let Some(drafter) = drafter {
             command
                 .arg("--mtp-drafter-dir")
@@ -361,8 +363,17 @@ impl PolishSidecar {
                 .arg("--draft-block-size")
                 .arg("6");
         }
-        command.arg("--system-prompt-file").arg(polish_prompt(root));
-        Self::attach(command.spawn().context("spawn fluid-1 baseline")?)
+    }
+    command.arg("--system-prompt-file").arg(polish_prompt(root));
+    Ok(command)
+}
+
+impl PolishSidecar {
+    pub fn spawn(root: &Path) -> Result<Option<Self>> {
+        let Some(mut command) = polish_command(root)? else {
+            return Ok(None);
+        };
+        Self::attach(command.spawn().context("spawn polish")?).map(Some)
     }
 
     fn attach(mut child: Child) -> Result<Self> {

@@ -138,7 +138,7 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
         println!("  out: {}", cold.output);
     }
     {
-        let mut serve = ServeJson::spawn(&root, false)?;
+        let mut serve = ServeJson::spawn_fluid(&root, false)?;
         let (wu, _) = serve.warmup()?;
         println!(
             "  warmup_ms={:.0}  (fluid-1 weights only)",
@@ -192,7 +192,7 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
                 cold.tokens_per_second.unwrap_or(0.0)
             );
         }
-        let mut serve = ServeJson::spawn(&root, true)?;
+        let mut serve = ServeJson::spawn_fluid(&root, true)?;
         let (wu, wu_resp) = serve.warmup()?;
         let msg = wu_resp
             .status
@@ -452,7 +452,7 @@ fn run_bench_json(
                 }),
             );
         }
-        let mut serve = ServeJson::spawn(root, false)?;
+        let mut serve = ServeJson::spawn_fluid(root, false)?;
         let (wu, _) = serve.warmup()?;
         let mut runs = Vec::new();
         for i in 0..iters {
@@ -487,7 +487,7 @@ fn run_bench_json(
                     }),
                 );
             }
-            let mut serve = ServeJson::spawn(root, true)?;
+            let mut serve = ServeJson::spawn_fluid(root, true)?;
             let (wu, _) = serve.warmup()?;
             let mut runs = Vec::new();
             for i in 0..iters {
