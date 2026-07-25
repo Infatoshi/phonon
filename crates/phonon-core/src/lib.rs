@@ -430,7 +430,8 @@ impl Engine {
                     source_text: STARTUP_LLM_TEXT.into(),
                     screen_context_terms: Vec::new(),
                 });
-                let startup_input = self.dictionary.prepare_polish_input(STARTUP_LLM_TEXT);
+                let startup_input =
+                    startup_demo_dictionary().prepare_polish_input(STARTUP_LLM_TEXT);
                 if let Err(error) = polisher.polish(&startup_input) {
                     self.polish_requests.pop();
                     out.push(EngineEvent::Error {
@@ -581,6 +582,25 @@ fn asr_smoke_passed(text: &str) -> bool {
         && words
             .iter()
             .any(|word| word == "fluid" || word == "flamid" || word == "fluidvoice")
+}
+
+/// The two terms the dictionary demo needs, independent of what the user has
+/// taught. A fresh install has an empty dictionary, so asserting against the
+/// real one made the startup gate unpassable on a clean Mac; the demo has to
+/// prove the retrieval path works, not that this user says "cuBLAS".
+fn startup_demo_dictionary() -> data::DictionaryFile {
+    let entry = |phrase: &str| data::DictionaryEntry {
+        phrase: phrase.to_string(),
+        replacement: None,
+        spoken_forms: Vec::new(),
+        source: "startup-demo".into(),
+        starred: false,
+        usage_count: 0,
+    };
+    data::DictionaryFile {
+        entries: vec![entry("cuBLAS"), entry("cuDNN")],
+        ..Default::default()
+    }
 }
 
 fn llm_smoke_passed(text: &str) -> bool {

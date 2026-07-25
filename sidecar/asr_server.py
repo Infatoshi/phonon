@@ -73,7 +73,9 @@ def transcribe_file(model, path: str):
         return model.transcribe(path)
     from parakeet_mlx.audio import get_logmel
 
-    mel = get_logmel(mx.array(samples, dtype=mx.bfloat16), model.preprocessor_config)
+    # float32, matching what parakeet-mlx's own loader hands the preprocessor.
+    # bfloat16 changes the FFT layout and the mel matmul fails on shape.
+    mel = get_logmel(mx.array(samples, dtype=mx.float32), model.preprocessor_config)
     return model.generate(mel)[0]
 
 
