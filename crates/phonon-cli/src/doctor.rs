@@ -50,7 +50,12 @@ pub fn run_doctor() -> Result<()> {
         );
     }
     check("uv", crate::resolve_runtime_tool("uv").is_some());
-    check("terminal recording (SoX)", which::which("rec").is_ok());
+    // The native app records through CoreAudio. SoX only backs `phonon` runs
+    // from a terminal, so a fresh Mac without it is not a broken install.
+    optional(
+        "terminal recording (SoX, optional)",
+        which::which("rec").is_ok(),
+    );
     check("pbcopy", which::which("pbcopy").is_ok());
     check("swift", which::which("swift").is_ok());
 
@@ -77,9 +82,11 @@ pub fn run_doctor() -> Result<()> {
         .as_ref()
         .map(|value| value.entries.len())
         .unwrap_or(0);
+    // Entries are earned by use; empty is correct on a fresh install. Only a
+    // dictionary that fails to load is a problem.
     check(
         &format!("JSON dictionary ({dictionary_count} entries)"),
-        dictionary.is_ok() && dictionary_count > 0,
+        dictionary.is_ok(),
     );
     check("JSON settings", SettingsFile::load_or_create().is_ok());
     let recordings = list_recordings();
@@ -103,5 +110,11 @@ pub fn run_doctor() -> Result<()> {
 
 fn check(label: &str, ok: bool) {
     let mark = if ok { "ok  " } else { "MISS" };
+    println!("  [{mark}] {label}");
+}
+
+/// Something whose absence is fine, so it never reads as a failed install.
+fn optional(label: &str, present: bool) {
+    let mark = if present { "ok  " } else { "  - " };
     println!("  [{mark}] {label}");
 }

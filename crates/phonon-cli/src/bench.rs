@@ -354,8 +354,10 @@ fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
     let mut child = Command::new(uv)
         .args([
             "run",
+            "--python",
+            phonon_asr::PYTHON_REQUIREMENT,
             "--with",
-            "parakeet-mlx",
+            phonon_asr::ASR_RUNTIME_REQUIREMENT,
             "python",
             script.to_str().unwrap(),
         ])

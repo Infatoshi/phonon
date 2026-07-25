@@ -200,6 +200,7 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "clap",
+ "phonon-asr",
  "phonon-core",
  "phonon-llm",
  "phonon-profile",

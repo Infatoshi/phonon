@@ -14,6 +14,54 @@ pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
 
+/// Pinned interpreter for both sidecars. Without this, uv falls back to whatever
+/// `python3` it finds, which on a Mac with no developer tooling is the system
+/// CPython 3.9 that MLX publishes no wheels for. An open-ended range would also
+/// drift onto each new release before MLX supports it.
+pub const PYTHON_REQUIREMENT: &str = "3.12";
+
+/// Last lines a dying sidecar wrote, so its exit can be reported instead of
+/// hanging the loader at whatever percentage it reached.
+pub struct StderrTail(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl StderrTail {
+    const KEEP: usize = 12;
+
+    /// Drains `stderr` on a background thread, keeping only the tail.
+    pub fn capture(stderr: std::process::ChildStderr) -> Self {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&lines);
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let Ok(mut kept) = sink.lock() else { return };
+                if kept.len() == Self::KEEP {
+                    kept.remove(0);
+                }
+                kept.push(line);
+            }
+        });
+        Self(lines)
+    }
+
+    pub fn text(&self) -> String {
+        self.0
+            .lock()
+            .map(|lines| lines.join("\n"))
+            .unwrap_or_default()
+    }
+
+    /// Message for a sidecar whose stdout closed before it was ready.
+    pub fn exit_message(&self, what: &str) -> String {
+        let tail = self.text();
+        let tail = tail.trim();
+        if tail.is_empty() {
+            format!("{what} exited before becoming ready")
+        } else {
+            format!("{what} exited before becoming ready: {tail}")
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct SidecarMsg {
     #[serde(rename = "type")]
@@ -64,19 +112,28 @@ impl AsrSidecar {
         let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
         let started = Instant::now();
         let mut child = Command::new(uv)
-            .args(["run", "--with", ASR_RUNTIME_REQUIREMENT, "python"])
+            .args([
+                "run",
+                "--python",
+                PYTHON_REQUIREMENT,
+                "--with",
+                ASR_RUNTIME_REQUIREMENT,
+                "python",
+            ])
             .arg(&script)
             .args(["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION])
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawn ASR")?;
         let stdout = child.stdout.take().context("asr stdout")?;
         let stdin = child.stdin.take().context("asr stdin")?;
+        let stderr = StderrTail::capture(child.stderr.take().context("asr stderr")?);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
+            let mut ready = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(msg) = serde_json::from_str::<SidecarMsg>(&line) else {
                     continue;
@@ -86,10 +143,13 @@ impl AsrSidecar {
                         pct: msg.pct.unwrap_or(0.0),
                         msg: msg.msg.unwrap_or_default(),
                     },
-                    "ready" => AsrEvent::Ready {
-                        model: msg.model.unwrap_or_else(|| "parakeet".into()),
-                        load_ms: started.elapsed().as_secs_f64() * 1000.0,
-                    },
+                    "ready" => {
+                        ready = true;
+                        AsrEvent::Ready {
+                            model: msg.model.unwrap_or_else(|| "parakeet".into()),
+                            load_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        }
+                    }
                     "result" => AsrEvent::Result {
                         id: msg.id,
                         text: msg.text.unwrap_or_default(),
@@ -102,8 +162,15 @@ impl AsrSidecar {
                     _ => continue,
                 };
                 if tx.send(event).is_err() {
-                    break;
+                    return;
                 }
+            }
+            // stdout closed. If that happened before `ready`, the process died
+            // during startup and nobody would ever hear about it otherwise.
+            if !ready {
+                let _ = tx.send(AsrEvent::Error {
+                    msg: stderr.exit_message("ASR sidecar"),
+                });
             }
         });
         Ok(Self { child, stdin, rx })

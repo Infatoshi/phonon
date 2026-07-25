@@ -21,6 +21,7 @@ pub use paths::{
     polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION, POLISH_RUNTIME_REQUIREMENT,
 };
 use paths::{polish_prompt, polish_script};
+use phonon_asr::StderrTail;
 use serde::Deserialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -72,6 +73,9 @@ pub struct ServeJson {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// Drained continuously: the sidecar reports download progress on stderr,
+    /// and an undrained pipe would eventually block it mid-load.
+    stderr: Option<StderrTail>,
 }
 
 impl ServeJson {
@@ -91,10 +95,12 @@ impl ServeJson {
         let mut child = cmd.spawn().context("spawn serve-json")?;
         let stdin = child.stdin.take().context("serve-json stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("serve-json stdout")?);
+        let stderr = child.stderr.take().map(StderrTail::capture);
         Ok(Self {
             child,
             stdin,
             stdout,
+            stderr,
         })
     }
 
@@ -116,7 +122,12 @@ impl ServeJson {
             line.clear();
             let n = self.stdout.read_line(&mut line)?;
             if n == 0 {
-                bail!("serve-json EOF");
+                match self.stderr.as_ref().map(StderrTail::text) {
+                    Some(tail) if !tail.trim().is_empty() => {
+                        bail!("serve-json exited: {}", tail.trim())
+                    }
+                    _ => bail!("serve-json EOF"),
+                }
             }
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -331,7 +342,14 @@ fn polish_command(root: &Path) -> Result<Option<Command>> {
         .unwrap_or_else(|_| POLISH_MODEL_REVISION.to_string());
     let mut command = Command::new(uv);
     command
-        .args(["run", "--with", POLISH_RUNTIME_REQUIREMENT, "python"])
+        .args([
+            "run",
+            "--python",
+            phonon_asr::PYTHON_REQUIREMENT,
+            "--with",
+            POLISH_RUNTIME_REQUIREMENT,
+            "python",
+        ])
         .arg(&script)
         .args(["--model", &model, "--revision", &revision])
         .arg("--system-prompt-file")
@@ -339,7 +357,7 @@ fn polish_command(root: &Path) -> Result<Option<Command>> {
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     Ok(Some(command))
 }
 
@@ -379,11 +397,13 @@ impl PolishSidecar {
     fn attach(mut child: Child) -> Result<Self> {
         let stdout = child.stdout.take().context("polish stdout")?;
         let mut stdin = child.stdin.take().context("polish stdin")?;
+        let stderr = child.stderr.take().map(StderrTail::capture);
         let started = Instant::now();
         writeln!(stdin, "{}", json!({"command":"warmup"}))?;
         stdin.flush()?;
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
+            let mut ready = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(message) = serde_json::from_str::<ServeJsonResp>(&line) else {
                     continue;
@@ -402,6 +422,7 @@ impl PolishSidecar {
                     }
                 } else if message.status.as_ref().and_then(|x| x.state.as_deref()) == Some("ready")
                 {
+                    ready = true;
                     PolishEvent::Ready {
                         msg: message.status.and_then(|x| x.message).unwrap_or_default(),
                         load_ms: started.elapsed().as_secs_f64() * 1000.0,
@@ -410,8 +431,17 @@ impl PolishSidecar {
                     continue;
                 };
                 if tx.send(event).is_err() {
-                    break;
+                    return;
                 }
+            }
+            // stdout closed. If that happened before `ready`, the process died
+            // during startup and nobody would ever hear about it otherwise.
+            if !ready {
+                let msg = stderr
+                    .as_ref()
+                    .map(|tail| tail.exit_message("correction sidecar"))
+                    .unwrap_or_else(|| "correction sidecar exited before becoming ready".into());
+                let _ = tx.send(PolishEvent::Error { msg });
             }
         });
         Ok(Self { child, stdin, rx })
