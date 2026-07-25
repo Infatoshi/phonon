@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -217,10 +217,18 @@ impl DictionaryFile {
     /// ordinary English word is never replaced. A term the user actually taught
     /// is an exact replacement and does not come through here.
     fn phonetic_matches(&self, transcript: &str) -> Vec<(String, String)> {
-        let mut by_key: BTreeMap<String, Option<String>> = BTreeMap::new();
+        // Key -> the canonical spelling plus the word counts it was indexed
+        // under. Both matter. Indexing only single-word forms left every
+        // multi-word term unreachable, and the counts bound how far a match may
+        // stretch: with vowels dropped, `koo bloss is` keys the same as `koo
+        // bloss`, so an unbounded window absorbs the next word and deletes it.
+        let mut by_key: BTreeMap<String, Option<(String, BTreeSet<usize>)>> = BTreeMap::new();
         for entry in &self.entries {
             for form in entry.forms() {
-                if normalize(form).split_whitespace().count() != 1 {
+                let form_words = normalize(form).split_whitespace().count();
+                if form_words == 0 || form_words > MAX_PHONETIC_WINDOW {
+                    // Longer than any window the scan below builds, so a key
+                    // for it could never be matched.
                     continue;
                 }
                 let key = phonetic_key(form);
@@ -231,11 +239,22 @@ impl DictionaryFile {
                 by_key
                     .entry(key)
                     .and_modify(|existing| {
-                        if existing.as_deref() != Some(canonical.as_str()) {
-                            *existing = None;
+                        match existing {
+                            // `black well` and `blackwell` are one term written
+                            // two ways, not an ambiguity. Keep whichever spells
+                            // the capitals, since restoring them is the point.
+                            Some((known, counts)) if same_term(known, &canonical) => {
+                                counts.insert(form_words);
+                                if capital_count(&canonical) > capital_count(known) {
+                                    *known = canonical.clone();
+                                }
+                            }
+                            // Two genuinely different terms sound alike; neither
+                            // can be chosen safely, so drop the key entirely.
+                            _ => *existing = None,
                         }
                     })
-                    .or_insert(Some(canonical));
+                    .or_insert_with(|| Some((canonical, BTreeSet::from([form_words]))));
             }
         }
 
@@ -243,7 +262,7 @@ impl DictionaryFile {
         let words = normalized.split_whitespace().collect::<Vec<_>>();
         let mut occupied = vec![false; words.len()];
         let mut matches = Vec::new();
-        for window_len in (1..=3.min(words.len())).rev() {
+        for window_len in (1..=MAX_PHONETIC_WINDOW.min(words.len())).rev() {
             for start in 0..=words.len() - window_len {
                 if occupied[start..start + window_len]
                     .iter()
@@ -252,13 +271,45 @@ impl DictionaryFile {
                     continue;
                 }
                 let spoken = words[start..start + window_len].join(" ");
-                let Some(Some(canonical)) = by_key.get(&phonetic_key(&spoken)) else {
+                let Some(Some((canonical, form_words))) = by_key.get(&phonetic_key(&spoken)) else {
                     continue;
                 };
+                // A recognizer splits or joins a term by one word, writing
+                // `black well` for `Blackwell`. It does not fuse a term with
+                // two of its neighbours, so a window that far from the taught
+                // form is a key collision rather than a mishearing.
+                if !form_words
+                    .iter()
+                    .any(|count| window_len.abs_diff(*count) <= 1)
+                {
+                    continue;
+                }
+                // A word the key cannot represent at all -- `a`, `I` -- is free
+                // to absorb, and absorbing it deletes it from the transcript.
+                // Every word in the window has to contribute a sound.
+                if words[start..start + window_len]
+                    .iter()
+                    .any(|word| phonetic_key(word).is_empty())
+                {
+                    continue;
+                }
                 if normalize(canonical) == spoken {
                     continue;
                 }
                 if is_ordinary_english(&spoken) {
+                    continue;
+                }
+                // A window longer than the taught form is either the recognizer
+                // splitting the term into syllables, or the term reaching out and
+                // swallowing the word beside it. Syllables are not words, so any
+                // real English in an over-long window means the latter: `is not`
+                // becoming `Sonnet`, or `my macbook` losing the `my`.
+                let absorbing = form_words.iter().all(|count| window_len > *count);
+                if absorbing
+                    && words[start..start + window_len]
+                        .iter()
+                        .any(|word| is_real_word(word))
+                {
                     continue;
                 }
                 occupied[start..start + window_len].fill(true);
@@ -784,8 +835,27 @@ fn is_ordinary_english(phrase: &str) -> bool {
     any
 }
 
+/// Whether a word is real enough that a term must not be allowed to swallow it.
+/// Deliberately a plain lookup: the inflection guesses below exist to decide
+/// whether a word may be *rewritten*, and they are far too loose to decide
+/// whether one may be *deleted* -- they read `bloss` as English by way of `blo`.
+fn is_real_word(word: &str) -> bool {
+    if word.chars().count() <= 2 {
+        return true;
+    }
+    let words = english_words();
+    // With no list to consult, assume every word is real so nothing is dropped.
+    words.is_empty() || words.contains(&word.to_lowercase())
+}
+
 fn is_ordinary_english_word(words: &std::collections::HashSet<String>, word: &str) -> bool {
     let word = word.to_lowercase();
+    if word.chars().count() <= 2 {
+        // The list leaves out `a`, `i`, `at` and their kin, which would
+        // otherwise read as exotic and license a guess. A token this short
+        // carries too little sound to overrule what the recognizer heard.
+        return true;
+    }
     if words.contains(&word) {
         return true;
     }
@@ -818,21 +888,51 @@ fn is_ordinary_english_word(words: &std::collections::HashSet<String>, word: &st
     false
 }
 
+/// Whether two canonical spellings are the same term written differently, which
+/// spacing and capitalization alone do not distinguish.
+fn same_term(left: &str, right: &str) -> bool {
+    let squash = |value: &str| {
+        value
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    squash(left) == squash(right)
+}
+
+fn capital_count(value: &str) -> usize {
+    value
+        .chars()
+        .filter(|character| character.is_uppercase())
+        .count()
+}
+
+/// Longest run of transcript words compared against one dictionary form. Three
+/// covers the terms a recognizer actually splits apart (`Claude Agent SDK`)
+/// without letting a match wander across a clause.
+const MAX_PHONETIC_WINDOW: usize = 3;
+
 fn phonetic_key(value: &str) -> String {
     let mut output = String::new();
-    for character in normalize(value)
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-    {
-        let character = match character {
-            'c' | 'q' => 'k',
-            other => other,
-        };
-        if matches!(character, 'a' | 'e' | 'i' | 'o' | 'u' | 'y') {
-            continue;
-        }
-        if !output.ends_with(character) {
-            output.push(character);
+    // A doubled letter inside a word is silent, so `bloss` reduces to `bls`. A
+    // repeat across a word boundary is not: collapsing those made `gpt 5` and
+    // `GPT-5.5` indistinguishable, and turned the model version into the wrong
+    // one. Restart the run at every boundary.
+    for word in normalize(value).split_whitespace() {
+        let mut previous = None;
+        for character in word.chars().filter(|character| character.is_alphanumeric()) {
+            let character = match character {
+                'c' | 'q' => 'k',
+                other => other,
+            };
+            if matches!(character, 'a' | 'e' | 'i' | 'o' | 'u' | 'y') {
+                continue;
+            }
+            if previous != Some(character) {
+                output.push(character);
+            }
+            previous = Some(character);
         }
     }
     output
@@ -985,6 +1085,107 @@ mod tests {
         let result = dictionary.apply_exact_replacements("BLACK WELL and black wellness");
         assert_eq!(result.text, "Blackwell and black wellness");
         assert_eq!(result.applied[0].count, 1);
+    }
+
+    #[test]
+    fn phonetic_matching_reaches_multi_word_terms() {
+        let dictionary = DictionaryFile {
+            entries: vec![entry("Claude Code", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("ask clod kode to look at it");
+        assert!(
+            prepared.contains("clod kode => Claude Code"),
+            "multi-word term was not reachable: {prepared}"
+        );
+        assert!(prepared.contains("ask Claude Code to look at it"));
+    }
+
+    #[test]
+    fn phonetic_matching_does_not_swallow_a_neighbouring_word() {
+        // Vowels are dropped, so `koo bloss is` keys the same as `koo bloss`.
+        // Taking the longer window would delete `is` before the model sees it.
+        let dictionary = DictionaryFile {
+            entries: vec![entry("cuBLAS", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("koo bloss is slow");
+        assert!(
+            prepared.contains("cuBLAS is slow"),
+            "a word was absorbed into the replacement: {prepared}"
+        );
+    }
+
+    #[test]
+    fn phonetic_matching_does_not_absorb_a_soundless_word() {
+        let dictionary = DictionaryFile {
+            entries: vec![entry("Speculative Decoding", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("try a speculativ decoding pass");
+        assert!(
+            prepared.contains("try a Speculative Decoding pass"),
+            "the article was absorbed into the term: {prepared}"
+        );
+    }
+
+    #[test]
+    fn phonetic_matching_keeps_version_numbers_distinct() {
+        // Collapsing the repeat across the boundary made `gpt 5` key the same as
+        // `GPT-5.5`, quietly promoting one model version to another.
+        let dictionary = DictionaryFile {
+            entries: vec![entry("GPT-5.5", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("gpt 5 is out now");
+        assert!(
+            prepared.contains("gpt 5 is out now"),
+            "one version was rewritten as another: {prepared}"
+        );
+    }
+
+    #[test]
+    fn phonetic_matching_does_not_swallow_a_real_word_beside_a_term() {
+        // `my macbook` keys the same as `macbook`, so an unguarded match takes
+        // the `my` with it and the word is gone before the model sees it.
+        let dictionary = DictionaryFile {
+            entries: vec![entry("MacBook", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("on my macbuk today");
+        assert!(
+            prepared.contains("on my"),
+            "the neighbouring word was absorbed: {prepared}"
+        );
+    }
+
+    #[test]
+    fn phonetic_matching_treats_short_function_words_as_ordinary() {
+        // `at` is missing from the word list, so without a length rule the
+        // phrase reads as exotic and `even at` gets rewritten to `uv init`.
+        let dictionary = DictionaryFile {
+            entries: vec![entry("uv init", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("it is worse even at batch one");
+        assert!(
+            prepared.contains("worse even at batch one"),
+            "ordinary speech was rewritten as a term: {prepared}"
+        );
+    }
+
+    #[test]
+    fn phonetic_matching_leaves_ordinary_english_alone() {
+        let dictionary = DictionaryFile {
+            entries: vec![entry("Pallas", None)],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("please stop there");
+        assert!(
+            prepared.contains("please stop there"),
+            "an ordinary word was guessed at: {prepared}"
+        );
+        assert!(!prepared.contains("=> Pallas"));
     }
 
     #[test]
