@@ -306,6 +306,7 @@ final class NativeAppStore: ObservableObject {
     @Published var engineReady = false
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
+    @Published var availableMicrophones: [String] = []
     @Published var inputMonitoringAvailable = false
     @Published var permissionGuide: PermissionGuide?
     @Published var lastError: String?
@@ -327,6 +328,14 @@ final class NativeAppStore: ObservableObject {
         loadSettings()
         loadDictionary()
         loadHistory()
+        refreshAvailableMicrophones()
+    }
+
+    /// The microphone list is whatever CoreAudio reports right now, so a device
+    /// that has been unplugged since it was ranked still shows in the ranking but
+    /// can be told apart from one that is present.
+    func refreshAvailableMicrophones() {
+        availableMicrophones = CoreAudioInputDevices.inputNames()
     }
 
     func updateSettings(_ mutate: (inout NativeSettings) -> Void) {
@@ -543,11 +552,24 @@ final class NativeAppStore: ObservableObject {
         guard let data = try? Data(contentsOf: url),
             let decoded = try? JSONDecoder().decode(NativeSettings.self, from: data)
         else {
-            settings = NativeSettings()
+            var fresh = NativeSettings()
+            fresh.microphonePriority = Self.defaultMicrophonePriority()
+            settings = fresh
             try? writeJSON(settings, to: url)
             return
         }
         settings = decoded
+    }
+
+    /// Rank the built-in microphone first on a fresh install. It is the one device
+    /// certain to be present, so it is the safest default: an external microphone
+    /// that is plugged in but pointed away from the speaker records the room.
+    private static func defaultMicrophonePriority() -> [String] {
+        let builtIn = CoreAudioInputDevices.inputNames().first {
+            $0.localizedCaseInsensitiveContains("MacBook")
+                || $0.localizedCaseInsensitiveContains("Built-in")
+        }
+        return builtIn.map { [$0] } ?? []
     }
 
     private func loadDictionary() {

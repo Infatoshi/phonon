@@ -824,28 +824,65 @@ struct MetricColumn: View {
 struct MicrophonePriorityCard: View {
     @ObservedObject var store: NativeAppStore
     let onSettingsChanged: () -> Void
-    @State private var newMicrophone = ""
+
+    /// Three is enough to cover a headset, a desk microphone and the built-in one,
+    /// and a shorter list is easier to reason about than an open-ended one.
+    private static let maximumRanked = 3
+
+    private var ranked: [String] { store.settings.microphonePriority }
+
+    private var addable: [String] {
+        store.availableMicrophones.filter { candidate in
+            !ranked.contains { $0.localizedCaseInsensitiveCompare(candidate) == .orderedSame }
+        }
+    }
+
+    private func isConnected(_ microphone: String) -> Bool {
+        store.availableMicrophones.contains {
+            $0.localizedCaseInsensitiveContains(microphone)
+        }
+    }
 
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Microphone priority").font(.headline)
-                Text("Phonon uses the first available microphone.")
+                Text("Phonon uses the highest-ranked microphone that is plugged in.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                ForEach(Array(store.settings.microphonePriority.enumerated()), id: \.offset) {
-                    index, microphone in
+                if ranked.isEmpty {
+                    Text("No microphone ranked yet, so Phonon follows the system input.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(Array(ranked.enumerated()), id: \.offset) { index, microphone in
+                    let connected = isConnected(microphone)
+                    let active = microphone.localizedCaseInsensitiveCompare(
+                        store.selectedMicrophone) == .orderedSame
                     HStack(spacing: 8) {
                         Text("\(index + 1)")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 16)
-                        Image(systemName: "mic.fill")
+                        Image(systemName: connected ? "mic.fill" : "mic.slash")
                             .foregroundStyle(
-                                microphone == store.selectedMicrophone
-                                    ? EmberTheme.healthy : EmberTheme.muted)
-                        Text(microphone).lineLimit(1)
+                                active
+                                    ? EmberTheme.healthy
+                                    : (connected ? EmberTheme.muted : .secondary))
+                        Text(microphone)
+                            .lineLimit(1)
+                            .foregroundStyle(connected ? .primary : .secondary)
+                        if active {
+                            Text("in use")
+                                .font(.caption2)
+                                .foregroundStyle(EmberTheme.healthy)
+                        } else if !connected {
+                            Text("not connected")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
                         Button {
                             moveMicrophone(from: index, by: -1)
@@ -860,7 +897,7 @@ struct MicrophonePriorityCard: View {
                             Image(systemName: "chevron.down")
                         }
                         .buttonStyle(.plain)
-                        .disabled(index == store.settings.microphonePriority.count - 1)
+                        .disabled(index == ranked.count - 1)
                         Button {
                             removeMicrophone(at: index)
                         } label: {
@@ -870,15 +907,31 @@ struct MicrophonePriorityCard: View {
                     }
                 }
 
-                HStack {
-                    TextField("Add microphone name", text: $newMicrophone)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(addMicrophone)
-                    Button("Add", action: addMicrophone)
-                        .disabled(newMicrophone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                // Only offer microphones CoreAudio actually reports. Typing a name
+                // by hand used to let a ranking silently never match, for example
+                // "Yeti" against a device really called "Yeti Stereo Microphone".
+                if ranked.count < Self.maximumRanked {
+                    Menu {
+                        if addable.isEmpty {
+                            Text("Every microphone found is already ranked")
+                        }
+                        ForEach(addable, id: \.self) { microphone in
+                            Button(microphone) { addMicrophone(microphone) }
+                        }
+                    } label: {
+                        Label("Add microphone", systemImage: "plus")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(addable.isEmpty)
+                } else {
+                    Text("Remove one to rank a different microphone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
+        .onAppear { store.refreshAvailableMicrophones() }
     }
 
     private func moveMicrophone(from index: Int, by offset: Int) {
@@ -898,14 +951,12 @@ struct MicrophonePriorityCard: View {
         onSettingsChanged()
     }
 
-    private func addMicrophone() {
-        let name = newMicrophone.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty,
+    private func addMicrophone(_ name: String) {
+        guard store.settings.microphonePriority.count < Self.maximumRanked,
               !store.settings.microphonePriority.contains(where: {
                   $0.localizedCaseInsensitiveCompare(name) == .orderedSame
               }) else { return }
         store.updateSettings { $0.microphonePriority.append(name) }
-        newMicrophone = ""
         onSettingsChanged()
     }
 }
