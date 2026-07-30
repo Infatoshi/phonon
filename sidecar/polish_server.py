@@ -110,6 +110,23 @@ def main() -> None:
 
     sampler = make_sampler(temp=0.0)
 
+    # mlx-lm's TokenizerWrapper.detokenizer is a property that builds a brand new
+    # streaming detokenizer on every access, and building one walks this model's
+    # 262144-entry vocabulary in Python. stream_generate reads it once per call,
+    # so a resident sidecar was paying ~134 ms of table building on every
+    # utterance, which was most of the correction stage's time to first token.
+    # A detokenizer's reset() clears the whole of its mutable state (offset,
+    # pending bytes, text, tokens) and the id-to-piece table it rebuilds is
+    # immutable, so handing back one reset instance is indistinguishable from
+    # handing back a fresh one.
+    shared_detokenizer = tokenizer.detokenizer
+
+    def detokenizer_property(_wrapper):
+        shared_detokenizer.reset()
+        return shared_detokenizer
+
+    type(tokenizer).detokenizer = property(detokenizer_property)
+
     def build_prompt(text: str) -> str:
         messages = []
         if system_prompt:
