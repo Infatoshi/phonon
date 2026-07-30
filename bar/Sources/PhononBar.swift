@@ -1448,6 +1448,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "Phonon"
+        // A programmatically created NSWindow releases itself when closed, which
+        // ARC does not account for, so `mainWindow` would keep pointing at freed
+        // memory and the next reopen would message it and crash.
+        window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = true
         window.backgroundColor = EmberTheme.nsBackground
         window.appearance = NSAppearance(named: .darkAqua)
