@@ -59,6 +59,13 @@ phonon corpus --help     # paired WAV/metadata corpus + intended transcripts
 phonon stats             # local words, sessions, speaking time, dictionary fixes
 ```
 
+## Known issues
+
+- Opening Phonon can pull a connected Bluetooth headset into the hands-free
+  profile, which degrades its output quality. Reselect the input in System
+  Settings › Sound as a workaround.
+  See [#9](https://github.com/Infatoshi/phonon/issues/9).
+
 ## Local data and correction loop
 
 Nothing is retained until you say so. On first launch the app asks once whether
