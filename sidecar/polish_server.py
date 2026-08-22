@@ -110,6 +110,29 @@ def main() -> None:
 
     sampler = make_sampler(temp=0.0)
 
+    # The prefill above closes Gemma 4's thought channel. Any model whose chat
+    # template has no channel mechanism would receive it as literal prompt text,
+    # so only prefill when the template actually speaks that protocol.
+    template = getattr(tokenizer, "chat_template", None) or ""
+    think_prefill = NO_THINK_PREFILL if "channel" in template else ""
+
+    # mlx-lm's TokenizerWrapper.detokenizer is a property that builds a brand new
+    # streaming detokenizer on every access, and building one walks this model's
+    # 262144-entry vocabulary in Python. stream_generate reads it once per call,
+    # so a resident sidecar was paying ~134 ms of table building on every
+    # utterance, which was most of the correction stage's time to first token.
+    # A detokenizer's reset() clears the whole of its mutable state (offset,
+    # pending bytes, text, tokens) and the id-to-piece table it rebuilds is
+    # immutable, so handing back one reset instance is indistinguishable from
+    # handing back a fresh one.
+    shared_detokenizer = tokenizer.detokenizer
+
+    def detokenizer_property(_wrapper):
+        shared_detokenizer.reset()
+        return shared_detokenizer
+
+    type(tokenizer).detokenizer = property(detokenizer_property)
+
     def build_prompt(text: str) -> str:
         messages = []
         if system_prompt:
@@ -118,7 +141,7 @@ def main() -> None:
         rendered = tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=False
         )
-        return rendered + NO_THINK_PREFILL
+        return rendered + think_prefill
 
     def output_budget(text: str) -> int:
         spoken = transcript_payload(text)

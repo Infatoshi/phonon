@@ -176,7 +176,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "phonon-asr"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-audio"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "serde",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "phonon-asr",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-llm"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "phonon-asr",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-profile"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "phonon-llm",

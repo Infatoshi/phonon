@@ -107,8 +107,17 @@ confirmed terms, not the full screen text, into the correction prompt.
 
 - One bottom-anchored capsule that expands itself; no spawned overlay or inner waveform
 - Warm voice-responsive fill while listening; the same capsule breathes while processing
-- **hold Option (⌥)** PTT → release → ASR → auto-polish → types into frontmost app
+- **hold Right Option (⌥)** PTT → release → ASR → auto-polish → types into frontmost app
 - Ctrl+Space toggle; multi-pass OK
+
+Settings picks which of those is live. Right Option and Globe (fn) are both
+offered as the hold key, each on its own or paired with the Ctrl+Space toggle.
+macOS also acts on the Globe key, so set System Settings › Keyboard ›
+"Press 🌐 key to" to "Do Nothing" before choosing it.
+
+Recording cues are off by default. Turning them on plays a short rising sweep
+when a recording opens and a falling one when it closes. Both are synthesized by
+`scripts/make-cue-sounds.py`; no audio is sampled or downloaded.
 
 Needs: Mic + Accessibility + Input Monitoring.
 
@@ -117,7 +126,7 @@ Needs: Mic + Accessibility + Input Monitoring.
 `phonon` launches a regular macOS Dock app with a dark ember theme. Its native
 Home, History, Dictionary, and Settings surfaces read and write the same JSON
 and paired corpus used by the engine and CLI. Model status exposes parallel
-weight loading, startup smoke tests, TTFT, and speculative throughput. The
+weight loading, startup smoke tests, TTFT, and decode throughput. The
 menubar `ϕ` remains available as a compact shortcut while the app is running.
 
 The native app uses a configurable microphone priority list. Availability is

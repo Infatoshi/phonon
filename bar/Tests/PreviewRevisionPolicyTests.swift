@@ -36,6 +36,16 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         XCTAssertFalse(ShortcutPolicy.allows(mode: "right_option", source: "control-space"))
         XCTAssertFalse(ShortcutPolicy.allows(mode: "control_space", source: "right-option"))
         XCTAssertTrue(ShortcutPolicy.allows(mode: "control_space", source: "control-space"))
+        XCTAssertTrue(ShortcutPolicy.allows(mode: "fn", source: "fn"))
+        XCTAssertFalse(ShortcutPolicy.allows(mode: "fn", source: "right-option"))
+        XCTAssertFalse(ShortcutPolicy.allows(mode: "fn", source: "control-space"))
+        XCTAssertFalse(ShortcutPolicy.allows(mode: "both", source: "fn"))
+        XCTAssertFalse(ShortcutPolicy.allows(mode: "right_option", source: "fn"))
+        XCTAssertTrue(ShortcutPolicy.allows(mode: "fn_and_control_space", source: "fn"))
+        XCTAssertTrue(
+            ShortcutPolicy.allows(mode: "fn_and_control_space", source: "control-space"))
+        XCTAssertFalse(
+            ShortcutPolicy.allows(mode: "fn_and_control_space", source: "right-option"))
     }
 
     @MainActor
@@ -163,6 +173,34 @@ final class PreviewRevisionPolicyTests: XCTestCase {
 
         XCTAssertEqual(idle.minY, expanded.minY)
         XCTAssertEqual(idle.midX, expanded.midX)
+    }
+
+    func testPanelFollowsWhicheverScreenItIsGiven() {
+        // A secondary display sits at a non-zero origin, and can sit below the
+        // primary one. The capsule has to land on the screen it is handed, not
+        // on whichever one happens to contain the global origin.
+        let size = NSSize(width: 80, height: 16)
+        let primary = NSRect(x: 0, y: 0, width: 1_512, height: 982)
+        let right = NSRect(x: 1_512, y: 240, width: 2_560, height: 1_440)
+        let below = NSRect(x: -1_920, y: -1_080, width: 1_920, height: 1_080)
+
+        for screen in [primary, right, below] {
+            let frame = PanelGeometry.restingFrame(screen: screen, size: size)
+            XCTAssertEqual(frame.midX, screen.midX)
+            XCTAssertEqual(frame.minY, screen.minY + PanelGeometry.bottomInset)
+            XCTAssertTrue(screen.contains(NSPoint(x: frame.midX, y: frame.midY)))
+        }
+    }
+
+    func testMovingBetweenScreensChangesTheRestingFrame() {
+        let size = NSSize(width: 80, height: 16)
+        let left = PanelGeometry.restingFrame(
+            screen: NSRect(x: 0, y: 0, width: 1_512, height: 982), size: size)
+        let right = PanelGeometry.restingFrame(
+            screen: NSRect(x: 1_512, y: 240, width: 2_560, height: 1_440), size: size)
+
+        XCTAssertNotEqual(left, right)
+        XCTAssertGreaterThan(right.midX, left.maxX)
     }
 
     func testHiddenPanelIsBelowScreen() {

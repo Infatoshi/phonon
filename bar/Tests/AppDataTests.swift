@@ -261,4 +261,19 @@ final class AppDataTests: XCTestCase {
         XCTAssertEqual(callbackCount, 1)
         XCTAssertEqual(store.inputMonitoringAvailable, CGPreflightListenEventAccess())
     }
+
+    func testRecordingCuesAreOffUnlessChosen() throws {
+        // Absent key on a fresh install and on an upgrade both mean silence.
+        let fresh = NativeSettings()
+        XCTAssertFalse(fresh.soundFeedback)
+
+        for stored in [1, 2] {
+            let json = Data("{\"schema_version\": \(stored)}".utf8)
+            let decoded = try JSONDecoder().decode(NativeSettings.self, from: json)
+            XCTAssertFalse(decoded.soundFeedback, "schema \(stored) opted in by accident")
+        }
+
+        let opted = Data("{\"schema_version\": 2, \"sound_feedback\": true}".utf8)
+        XCTAssertTrue(try JSONDecoder().decode(NativeSettings.self, from: opted).soundFeedback)
+    }
 }
