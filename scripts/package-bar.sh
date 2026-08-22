@@ -28,6 +28,8 @@ cp -L "$uv_bin" "$staged_app/Contents/Helpers/uv"
 cp "$project_dir/sidecar/asr_server.py" "$staged_app/Contents/Resources/sidecar/asr_server.py"
 cp "$project_dir/sidecar/polish_server.py" "$staged_app/Contents/Resources/sidecar/polish_server.py"
 cp "$project_dir/assets/startup.wav" "$staged_app/Contents/Resources/assets/startup.wav"
+cp "$project_dir/assets/record_start.wav" "$staged_app/Contents/Resources/assets/record_start.wav"
+cp "$project_dir/assets/record_stop.wav" "$staged_app/Contents/Resources/assets/record_stop.wav"
 cp "$project_dir/assets/english_words.txt" "$staged_app/Contents/Resources/assets/english_words.txt"
 cp "$project_dir/prompts/polish_v2.txt" "$staged_app/Contents/Resources/prompts/polish_v2.txt"
 cp "$project_dir/third_party/uv/LICENSE-APACHE" "$project_dir/third_party/uv/LICENSE-MIT" \

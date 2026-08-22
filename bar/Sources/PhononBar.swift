@@ -242,12 +242,20 @@ enum PreviewRevisionPolicy {
 }
 
 enum ShortcutPolicy {
-    static func allows(mode: String, source: String) -> Bool {
+    /// A mode names exactly the event sources it accepts. A hold key and the
+    /// Control-Space toggle are independent, so a mode may enable either or both.
+    static func sources(for mode: String) -> Set<String> {
         switch mode {
-        case "right_option": return source != "control-space"
-        case "control_space": return source != "right-option"
-        default: return true
+        case "right_option": return ["right-option"]
+        case "fn": return ["fn"]
+        case "control_space": return ["control-space"]
+        case "fn_and_control_space": return ["fn", "control-space"]
+        default: return ["right-option", "control-space"]
         }
+    }
+
+    static func allows(mode: String, source: String) -> Bool {
+        sources(for: mode).contains(source)
     }
 }
 
@@ -616,6 +624,41 @@ final class PillPanel: NSPanel {
 
     static func hiddenFrame(size: NSSize) -> NSRect {
         PanelGeometry.hiddenFrame(screen: screenFrame(), size: size)
+    }
+}
+
+/// The two recording cues. A rising sweep opens a pass, a falling one closes it.
+///
+/// Both players are decoded once at launch. Building them on the keypress would
+/// put file I/O on the path the capsule is trying to open in a few milliseconds.
+final class CueSounds {
+    private let start: AVAudioPlayer?
+    private let stop: AVAudioPlayer?
+
+    init() {
+        start = CueSounds.load("record_start")
+        stop = CueSounds.load("record_stop")
+    }
+
+    func playStart() { CueSounds.restart(start) }
+    func playStop() { CueSounds.restart(stop) }
+
+    private static func load(_ name: String) -> AVAudioPlayer? {
+        guard let resources = Bundle.main.resourcePath else { return nil }
+        let url = URL(fileURLWithPath: resources)
+            .appendingPathComponent("assets")
+            .appendingPathComponent("\(name).wav")
+        guard let player = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        player.volume = 0.55
+        player.prepareToPlay()
+        return player
+    }
+
+    private static func restart(_ player: AVAudioPlayer?) {
+        guard let player else { return }
+        // A held key can retrigger before the previous cue finishes.
+        player.currentTime = 0
+        player.play()
     }
 }
 
@@ -1299,6 +1342,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let modelStartupState = ModelStartupState()
     private let appStore = NativeAppStore()
     private var panel: PillPanel?
+    private let cues = CueSounds()
     private var modelStartupWindow: NSPanel?
     private var mainWindow: NSWindow?
     private let engine = EngineClient()
@@ -1311,6 +1355,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var rawText = ""
     private var isRecording = false
     private var optionDown = false
+    private var fnDown = false
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var toggleHotKey: EventHotKeyRef?
@@ -1339,6 +1384,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        setupMainMenu()
         appStore.onDictionaryChanged = { [weak self] in
             self?.engine.send(["cmd": "reload_dictionary"])
         }
@@ -1749,10 +1795,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func present() {
         guard let panel else { return }
         hideWork?.cancel()
+        // The frame is recomputed every time, not only on the first show. The
+        // panel is never ordered out, so gating this on visibility left the
+        // capsule stranded on whichever display it first appeared on. It now
+        // follows the screen holding the pointer, like the rest of the UI.
         let target = PillPanel.frame(size: Self.containerSize)
         panel.contentView?.setFrameSize(Self.containerSize)
-        if !panel.isVisible {
+        if panel.frame != target {
             panel.setFrame(target, display: false)
+        }
+        if !panel.isVisible {
             panel.alphaValue = 1
             panel.orderFrontRegardless()
         }
@@ -1926,6 +1978,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if appStore.settings.soundFeedback { cues.playStart() }
         showListening()
         e2eTrace?.panelShownNs = DispatchTime.now().uptimeNanoseconds
         recorder.onAmplitude = { [weak self] a in
@@ -1977,6 +2030,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         // Instant fireball on key-up.
+        if appStore.settings.soundFeedback { cues.playStop() }
         showWorking()
 
         recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
@@ -2211,24 +2265,102 @@ final class AppController: NSObject, NSApplicationDelegate {
                 && !flags.contains(.maskCommand)
                 && !flags.contains(.maskControl)
                 && !flags.contains(.maskShift)
+            // The Globe/fn key reports through this same tap as its own flag.
+            // Require it to be the only modifier, so fn-qualified keys such as
+            // the arrow cluster can never open a recording.
+            let onlyFn =
+                flags.contains(.maskSecondaryFn)
+                && !flags.contains(.maskAlternate)
+                && !flags.contains(.maskCommand)
+                && !flags.contains(.maskControl)
+                && !flags.contains(.maskShift)
             let eventNs = event.timestamp
             let callbackNs = DispatchTime.now().uptimeNanoseconds
             Task { @MainActor in
-                guard self.shortcutAllows(source: "right-option") else {
+                if self.shortcutAllows(source: "right-option") {
+                    if anyAlt && !self.optionDown {
+                        self.optionDown = true
+                        self.startDictation(
+                            source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
+                    } else if !anyAlt && self.optionDown {
+                        self.optionDown = false
+                        self.stopDictation(
+                            source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
+                    }
+                } else {
                     self.optionDown = false
-                    return
                 }
-                if anyAlt && !self.optionDown {
-                    self.optionDown = true
-                    self.startDictation(
-                        source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
-                } else if !anyAlt && self.optionDown {
-                    self.optionDown = false
-                    self.stopDictation(
-                        source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
+                if self.shortcutAllows(source: "fn") {
+                    if onlyFn && !self.fnDown {
+                        self.fnDown = true
+                        self.startDictation(
+                            source: "fn", eventNs: eventNs, callbackNs: callbackNs)
+                    } else if !onlyFn && self.fnDown {
+                        self.fnDown = false
+                        self.stopDictation(
+                            source: "fn", eventNs: eventNs, callbackNs: callbackNs)
+                    }
+                } else {
+                    self.fnDown = false
                 }
             }
         }
+    }
+
+    /// A `.regular` app built without a nib gets no menu bar, and AppKit hangs
+    /// every standard key equivalent off menu items. Without this, Command-Q did
+    /// nothing and the text fields had no Command-C, V or A either.
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu(title: "Phonon")
+        appMenu.addItem(
+            withTitle: "About Phonon",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let settings = NSMenuItem(
+            title: "Settings…", action: #selector(showMainWindow), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(
+            withTitle: "Hide Phonon", action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "Quit Phonon", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        appMenu.addItem(quitItem)
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(
+            withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(
+            withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(
+            withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(
+            withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(
+            withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
+
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     @objc func quit() {

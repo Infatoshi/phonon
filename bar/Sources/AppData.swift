@@ -18,6 +18,7 @@ struct NativeSettings: Codable, Equatable {
     var screenContext: Bool
     var microphonePriority: [String]
     var instantMic: Bool
+    var soundFeedback: Bool
     var shortcutMode: String
     var privacyChoiceMade: Bool
     var historyRetentionDays: Int
@@ -29,6 +30,7 @@ struct NativeSettings: Codable, Equatable {
         case screenContext = "screen_context"
         case microphonePriority = "microphone_priority"
         case instantMic = "instant_mic"
+        case soundFeedback = "sound_feedback"
         case shortcutMode = "shortcut_mode"
         case privacyChoiceMade = "privacy_choice_made"
         case historyRetentionDays = "history_retention_days"
@@ -41,6 +43,7 @@ struct NativeSettings: Codable, Equatable {
         screenContext: Bool = false,
         microphonePriority: [String] = [],
         instantMic: Bool = true,
+        soundFeedback: Bool = false,
         shortcutMode: String = "both",
         privacyChoiceMade: Bool = false,
         historyRetentionDays: Int = NativeSettings.keepRecordingsForever
@@ -51,6 +54,7 @@ struct NativeSettings: Codable, Equatable {
         self.screenContext = screenContext
         self.microphonePriority = microphonePriority
         self.instantMic = instantMic
+        self.soundFeedback = soundFeedback
         self.shortcutMode = shortcutMode
         self.privacyChoiceMade = privacyChoiceMade
         self.historyRetentionDays = historyRetentionDays
@@ -70,6 +74,9 @@ struct NativeSettings: Codable, Equatable {
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
             ?? []
         instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? true
+        // Silent unless asked for. Dictation is held down mid-sentence and a
+        // cue on every press is intrusive, so nobody gets one by default.
+        soundFeedback = try values.decodeIfPresent(Bool.self, forKey: .soundFeedback) ?? false
         shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "both"
         // An existing install already chose these in Settings; do not re-prompt.
         privacyChoiceMade =

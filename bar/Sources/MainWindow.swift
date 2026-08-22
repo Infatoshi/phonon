@@ -514,6 +514,12 @@ struct SettingsView: View {
                         detail: "Keep CoreAudio warm for near-instant key-to-recording latency.",
                         isOn: settingBinding(\.instantMic)
                     )
+                    Divider()
+                    ToggleRow(
+                        title: "Recording cues",
+                        detail: "Play a short sweep when a recording opens and closes.",
+                        isOn: settingBinding(\.soundFeedback)
+                    )
                 }
 
                 SettingsSection("Stored recordings") {
@@ -555,9 +561,21 @@ struct SettingsView: View {
                     )) {
                         Text("Right Option hold + Control Space toggle").tag("both")
                         Text("Right Option hold").tag("right_option")
+                        Text("Globe (fn) hold").tag("fn")
+                        Text("Globe (fn) hold + Control Space toggle")
+                            .tag("fn_and_control_space")
                         Text("Control Space toggle").tag("control_space")
                     }
                     .pickerStyle(.menu)
+                    if store.settings.shortcutMode.hasPrefix("fn") {
+                        Text(
+                            "macOS also acts on the Globe key. Set System Settings › "
+                                + "Keyboard › \"Press 🌐 key to\" to \"Do Nothing\" so it only "
+                                + "records."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                 }
 
                 SettingsSection("System") {
@@ -573,7 +591,7 @@ struct SettingsView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Model status")
-                            Text("Inspect weights, smoke tests, TTFT, and speculative throughput.")
+                            Text("Inspect weights, smoke tests, and decode throughput.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
