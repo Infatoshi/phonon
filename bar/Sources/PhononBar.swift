@@ -1395,6 +1395,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             self?.refreshPermissionDependentServices()
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
+        offerBackupRestoreIfNeeded()
         setupPanel()
         setupModelStartupWindow()
         setupMainWindow()
@@ -2361,6 +2362,38 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         NSApp.mainMenu = mainMenu
         NSApp.windowsMenu = windowMenu
+    }
+
+    /// An uninstall sweeps ~/Library, so a reinstall can arrive with an empty
+    /// store while the off-Library mirror still holds the dictionary. Offer it
+    /// back rather than restoring silently: someone who uninstalled may have
+    /// meant it, so declining and deleting are both one click.
+    private func offerBackupRestoreIfNeeded() {
+        guard let manifest = appStore.restorableBackup() else { return }
+        let stamp = DateFormatter.localizedString(
+            from: manifest.savedAt, dateStyle: .medium, timeStyle: .short)
+        let alert = NSAlert()
+        alert.messageText = "Restore your Phonon data?"
+        alert.informativeText =
+            "This Mac has a backup from \(stamp) holding "
+            + "\(manifest.dictionaryEntries) dictionary entries and "
+            + "\(manifest.historyItems) recordings, but Phonon's data folder is "
+            + "empty. Uninstalling removes everything under ~/Library, so Phonon "
+            + "keeps a copy of the small irreplaceable files in ~/.phonon."
+        alert.addButton(withTitle: "Restore")
+        alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: "Delete Backup")
+        alert.alertStyle = .informational
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            appStore.restoreFromBackup()
+            engine.send(["cmd": "reload_dictionary"])
+        case .alertThirdButtonReturn:
+            appStore.deleteBackup()
+        default:
+            break
+        }
     }
 
     @objc func quit() {

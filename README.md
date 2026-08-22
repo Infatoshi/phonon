@@ -59,6 +59,26 @@ phonon corpus --help     # paired WAV/metadata corpus + intended transcripts
 phonon stats             # local words, sessions, speaking time, dictionary fixes
 ```
 
+## Surviving an uninstall
+
+Uninstallers match on the app name, the developer name, or the bundle
+identifier, then delete every hit under `~/Library/Application Support`,
+`Preferences`, `Caches`, `Logs`, and `Saved Application State`. Nothing kept
+there can survive one.
+
+So Phonon mirrors the small irreplaceable files to `~/.phonon/backup`, which no
+such pattern reaches: the dictionary, settings, history, vocabulary and word
+replacements, about 128 KB. The mirror is rewritten whenever any of them change,
+and a wiped store can never overwrite a populated backup.
+
+If Phonon ever starts with an empty data folder while that backup exists, it
+asks whether to restore it, and offers to delete it instead. It never restores
+silently. Settings › Backup shows what is held, reveals it in Finder, deletes
+it, and exports everything including the corpus.
+
+Model weights are unaffected. They live in `~/.cache/huggingface`, are named
+after the models rather than the app, and no uninstaller touches them.
+
 ## Known issues
 
 - Opening Phonon can pull a connected Bluetooth headset into the hands-free

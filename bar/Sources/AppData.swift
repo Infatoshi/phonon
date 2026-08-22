@@ -317,6 +317,8 @@ final class NativeAppStore: ObservableObject {
     @Published var inputMonitoringAvailable = false
     @Published var permissionGuide: PermissionGuide?
     @Published var lastError: String?
+    /// Last known state of the off-Library copy. See `PhononDataMirror`.
+    @Published private(set) var mirrorManifest: MirrorManifest?
     var onDictionaryChanged: (() -> Void)?
     var onMicrophonePermissionGranted: (() -> Void)?
     var onPermissionsRefresh: (() -> Void)?
@@ -329,6 +331,9 @@ final class NativeAppStore: ObservableObject {
         self.supportDirectory = supportDirectory
             ?? PhononDataPaths.supportDirectory(fileManager: fileManager)
         reloadAll()
+        mirrorManifest = PhononDataMirror.capture(
+            from: self.supportDirectory, fileManager: fileManager)
+            ?? PhononDataMirror.manifest(fileManager: fileManager)
     }
 
     func reloadAll() {
@@ -353,6 +358,7 @@ final class NativeAppStore: ObservableObject {
         do {
             try writeJSON(updated, to: settingsURL)
             lastError = nil
+            captureMirror()
         } catch {
             lastError = "Could not save settings: \(error.localizedDescription)"
         }
@@ -592,6 +598,56 @@ final class NativeAppStore: ObservableObject {
         }
     }
 
+    private func captureMirror() {
+        if let written = PhononDataMirror.capture(
+            from: supportDirectory, fileManager: fileManager)
+        {
+            mirrorManifest = written
+        }
+    }
+
+    /// A backup worth offering, or nil. Only non-empty when the store itself
+    /// has nothing, which is what an uninstall or a first run looks like.
+    func restorableBackup() -> MirrorManifest? {
+        PhononDataMirror.restorableManifest(for: supportDirectory, fileManager: fileManager)
+    }
+
+    func restoreFromBackup() {
+        do {
+            try PhononDataMirror.restore(into: supportDirectory, fileManager: fileManager)
+            reloadAll()
+            onDictionaryChanged?()
+            lastError = nil
+        } catch {
+            lastError = "Could not restore backup: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteBackup() {
+        do {
+            try PhononDataMirror.forget(fileManager: fileManager)
+            mirrorManifest = nil
+            lastError = nil
+        } catch {
+            lastError = "Could not delete backup: \(error.localizedDescription)"
+        }
+    }
+
+    func exportEverything(to destination: URL) {
+        do {
+            try PhononDataMirror.exportAll(
+                from: supportDirectory, to: destination, fileManager: fileManager)
+            lastError = nil
+        } catch {
+            lastError = "Could not export: \(error.localizedDescription)"
+        }
+    }
+
+    func revealBackupInFinder() {
+        let url = PhononDataMirror.directory(fileManager: fileManager)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     private func saveDictionary(_ entries: [NativeDictionaryEntry]) {
         let sorted = entries.sorted {
             $0.phrase.localizedCaseInsensitiveCompare($1.phrase) == .orderedAscending
@@ -605,6 +661,7 @@ final class NativeAppStore: ObservableObject {
             try writeJSON(file, to: dictionaryURL)
             dictionaryEntries = sorted
             lastError = nil
+            captureMirror()
             onDictionaryChanged?()
         } catch {
             lastError = "Could not save dictionary: \(error.localizedDescription)"

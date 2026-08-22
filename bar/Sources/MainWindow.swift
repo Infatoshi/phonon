@@ -522,6 +522,43 @@ struct SettingsView: View {
                     )
                 }
 
+                SettingsSection("Backup") {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(backupStatus)
+                        Text(
+                            "Uninstalling removes everything under ~/Library, so a copy "
+                            + "of the dictionary, settings and history is kept in "
+                            + "~/.phonon. Phonon offers it back if it ever starts empty."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Export everything")
+                            Text("Copy the dictionary, settings, history and every recording.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Export…", action: exportEverything)
+                    }
+                    Divider()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Forget the backup")
+                            Text("Delete the copy in ~/.phonon. Your live data is untouched.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Show in Finder") { store.revealBackupInFinder() }
+                            .disabled(store.mirrorManifest == nil)
+                        Button("Delete") { store.deleteBackup() }
+                            .disabled(store.mirrorManifest == nil)
+                    }
+                }
                 SettingsSection("Stored recordings") {
                     Picker("Keep recordings for", selection: Binding(
                         get: { store.settings.historyRetentionDays },
@@ -615,6 +652,24 @@ struct SettingsView: View {
         }
     }
 
+    private var backupStatus: String {
+        guard let manifest = store.mirrorManifest else {
+            return "No backup yet. One is written the next time anything changes."
+        }
+        let stamp = DateFormatter.localizedString(
+            from: manifest.savedAt, dateStyle: .medium, timeStyle: .short)
+        return "Backed up \(stamp): \(manifest.dictionaryEntries) dictionary entries, "
+            + "\(manifest.historyItems) recordings."
+    }
+
+    private func exportEverything() {
+        let panel = NSSavePanel()
+        panel.title = "Export Phonon data"
+        panel.nameFieldStringValue = "Phonon Data"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.exportEverything(to: url)
+    }
     private func settingBinding(_ keyPath: WritableKeyPath<NativeSettings, Bool>) -> Binding<Bool> {
         Binding(
             get: { store.settings[keyPath: keyPath] },
