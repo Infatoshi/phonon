@@ -800,6 +800,7 @@ final class MicRecorder {
     private let lock = NSLock()
     private var samples: [Float] = []
     private var hwSampleRate: Double = 48_000
+    private var tapFormat: AVAudioFormat?
     private var meter = 0.0
     private var meterFrame = 0
     private var streamSamples: [Float] = []
@@ -896,14 +897,45 @@ final class MicRecorder {
                     ])
             }
             hwSampleRate = inFmt.sampleRate
+            tapFormat = inFmt
             input.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { [weak self] buffer, _ in
                 self?.ingest(buffer)
             }
+        } else if configuredDeviceID != nil {
+            reinstallTapIfHardwareFormatChanged()
         }
         if !engine.isRunning {
             engine.prepare()
-            try engine.start()
+            do {
+                try engine.start()
+            } catch {
+                guard reinstallTapIfHardwareFormatChanged() else { throw error }
+                engine.prepare()
+                try engine.start()
+            }
         }
+    }
+
+    /// The configured device can renegotiate its format while idle, e.g. when a
+    /// Bluetooth output on another clock connects. A tap installed at the old
+    /// rate then fails every `engine.start()` with kAudioUnitErr_FormatNotSupported.
+    @discardableResult
+    private func reinstallTapIfHardwareFormatChanged() -> Bool {
+        let input = engine.inputNode
+        let inFmt = input.inputFormat(forBus: 0)
+        guard inFmt.sampleRate > 0, inFmt.channelCount > 0, inFmt != tapFormat else {
+            return false
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
+        input.removeTap(onBus: 0)
+        hwSampleRate = inFmt.sampleRate
+        tapFormat = inFmt
+        input.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { [weak self] buffer, _ in
+            self?.ingest(buffer)
+        }
+        return true
     }
 
     private func ingest(_ buffer: AVAudioPCMBuffer) {
