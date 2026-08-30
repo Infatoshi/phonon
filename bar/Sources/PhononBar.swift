@@ -463,7 +463,7 @@ enum CoreAudioInputDevices {
         all().map(\.name).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    private static func all() -> [AudioInputDevice] {
+    static func all() -> [AudioInputDevice] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -1481,6 +1481,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var terminating = false
     private var activeWavPath: String?
     private var insertionTarget: NSRunningApplication?
+    private lazy var competitors = CompetitorCoordinator(store: appStore)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1542,6 +1543,44 @@ final class AppController: NSObject, NSApplicationDelegate {
         showIdle()
 
         warmMicrophoneIfAuthorized()
+
+        // A competitor quit with consent leaves Phonon's tap in place; re-install
+        // it so it sits at the head of the tap chain (SPEC step 5).
+        competitors.onQuitFinished = { [weak self] in
+            guard let self else { return }
+            self.removeEventTap()
+            self.installHotkey()
+            NSLog("phonon competitors: hotkey tap re-installed at head")
+        }
+        competitors.subscribeToLaunches()
+        competitors.check(trigger: "launch")
+    }
+
+    /// The dictation-start scan defers its prompt; show it once the pipeline is
+    /// idle so the alert never lands while text is still being inserted.
+    private func presentCompetitorPromptWhenIdle(attempt: Int = 0) {
+        guard competitors.hasPendingPrompt else { return }
+        if isRecording || processing {
+            guard attempt < 40 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.presentCompetitorPromptWhenIdle(attempt: attempt + 1)
+            }
+            return
+        }
+        competitors.presentPendingPrompt()
+    }
+
+    @objc private func quitCompetingApps() {
+        if !competitors.checkManually() {
+            let alert = NSAlert()
+            alert.messageText = "No competing dictation app is running."
+            alert.informativeText =
+                "Phonon checks for "
+                + CompetingAppTable.apps.map(\.name).joined(separator: ", ") + "."
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
 
     private func warmMicrophoneIfAuthorized() {
@@ -1633,6 +1672,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         microphoneItem.isEnabled = false
         menu.addItem(microphoneItem)
         microphoneMenuItem = microphoneItem
+        menu.addItem(
+            NSMenuItem(
+                title: "Quit competing dictation apps…", action: #selector(quitCompetingApps),
+                keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
@@ -1669,6 +1712,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else if !isRecording {
             recorder.releaseHardware()
         }
+        competitors.settingsChanged()
     }
 
     private func promptPermissions() {
@@ -2070,6 +2114,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             keyDownHandledNs: DispatchTime.now().uptimeNanoseconds
         )
         isRecording = true
+        // Off the key-down path: a competitor that appeared since launch is
+        // noted now and asked about after this dictation ends.
+        DispatchQueue.main.async { [weak self] in self?.competitors.noteDictationStart() }
         previewPolishInput = nil
         pendingPreviewText = nil
         previewRevision = 0
@@ -2146,6 +2193,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Instant fireball on key-up.
         if appStore.settings.soundFeedback { cues.playStop() }
         showWorking()
+        if competitors.hasPendingPrompt {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.presentCompetitorPromptWhenIdle()
+            }
+        }
 
         recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
         e2eTrace?.captureEndedNs = DispatchTime.now().uptimeNanoseconds

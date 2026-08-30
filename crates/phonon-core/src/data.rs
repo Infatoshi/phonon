@@ -463,6 +463,11 @@ pub struct SettingsFile {
     pub instant_mic: bool,
     #[serde(default = "default_shortcut_mode")]
     pub shortcut_mode: String,
+    /// Bundle IDs of competing dictation apps the owner told the native app not
+    /// to ask about again. Owned by the Swift bar; kept here so a rewrite of
+    /// the file by the CLI does not drop it.
+    #[serde(default)]
+    pub competitor_quit_muted: Vec<String>,
 }
 
 impl Default for SettingsFile {
@@ -475,6 +480,7 @@ impl Default for SettingsFile {
             microphone_priority: default_microphone_priority(),
             instant_mic: true,
             shortcut_mode: default_shortcut_mode(),
+            competitor_quit_muted: Vec::new(),
         }
     }
 }
@@ -1239,6 +1245,18 @@ mod tests {
         .unwrap();
         assert!(settings.instant_mic);
         assert_eq!(settings.shortcut_mode, "fn");
+        assert!(settings.competitor_quit_muted.is_empty());
+    }
+
+    #[test]
+    fn settings_round_trip_keeps_competitor_mutes() {
+        let settings: SettingsFile = serde_json::from_str(
+            r#"{"schema_version":2,"competitor_quit_muted":["com.electron.wispr-flow"]}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.competitor_quit_muted, ["com.electron.wispr-flow"]);
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""competitor_quit_muted":["com.electron.wispr-flow"]"#));
     }
 
     #[test]

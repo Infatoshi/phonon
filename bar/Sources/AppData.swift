@@ -22,6 +22,9 @@ struct NativeSettings: Codable, Equatable {
     var shortcutMode: String
     var privacyChoiceMade: Bool
     var historyRetentionDays: Int
+    /// Bundle IDs of competing dictation apps the owner answered "Don't ask
+    /// again" for. See `CompetingApps.swift`.
+    var competitorQuitMuted: [String]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -34,6 +37,7 @@ struct NativeSettings: Codable, Equatable {
         case shortcutMode = "shortcut_mode"
         case privacyChoiceMade = "privacy_choice_made"
         case historyRetentionDays = "history_retention_days"
+        case competitorQuitMuted = "competitor_quit_muted"
     }
 
     init(
@@ -46,7 +50,8 @@ struct NativeSettings: Codable, Equatable {
         soundFeedback: Bool = false,
         shortcutMode: String = "fn",
         privacyChoiceMade: Bool = false,
-        historyRetentionDays: Int = NativeSettings.keepRecordingsForever
+        historyRetentionDays: Int = NativeSettings.keepRecordingsForever,
+        competitorQuitMuted: [String] = []
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -58,6 +63,7 @@ struct NativeSettings: Codable, Equatable {
         self.shortcutMode = shortcutMode
         self.privacyChoiceMade = privacyChoiceMade
         self.historyRetentionDays = historyRetentionDays
+        self.competitorQuitMuted = competitorQuitMuted
     }
 
     init(from decoder: Decoder) throws {
@@ -84,6 +90,8 @@ struct NativeSettings: Codable, Equatable {
         historyRetentionDays =
             try values.decodeIfPresent(Int.self, forKey: .historyRetentionDays)
             ?? NativeSettings.keepRecordingsForever
+        competitorQuitMuted =
+            try values.decodeIfPresent([String].self, forKey: .competitorQuitMuted) ?? []
     }
 }
 
