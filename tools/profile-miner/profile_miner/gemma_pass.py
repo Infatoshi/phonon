@@ -16,7 +16,7 @@ from .common import norm, out_dir, read_json, write_json
 
 MODEL_ID = "mlx-community/gemma-4-e2b-it-4bit"  # POLISH_MODEL_ID in crates/phonon-llm/src/paths.rs
 KINDS = ["person", "project", "machine", "company", "product", "model", "tool", "hardware", "command", "file",
-         "jargon", "acronym", "place", "other"]
+         "jargon", "acronym", "place", "noise"]
 RE_THOUGHT = re.compile(r"<\|channel>thought.*?(?:<channel\|>|$)", re.S)
 RE_JSON = re.compile(r"\[.*\]|\{.*\}", re.S)
 
@@ -28,6 +28,8 @@ PROMPT_A = (
 )
 PROMPT_B = (
     "Classify each term written by a software developer. Kinds: " + ", ".join(KINDS) + ". "
+    "Use noise for anything a person would not dictate as a term: code abbreviations (env, tmp, args), "
+    "identifier fragments, plain English words, greetings, month names, numbers. "
     "Reply with a JSON object mapping each term to one kind. No explanation.\n\n{terms}"
 )
 
