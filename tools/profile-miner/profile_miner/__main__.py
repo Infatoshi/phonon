@@ -21,6 +21,8 @@ def main(argv=None):
     g = sub.add_parser("gemma", help="optional stage 3d: local Gemma pass (needs mlx-lm)")
     g.add_argument("--minutes", type=float, default=20)
     g.add_argument("--top", type=int, default=400)
+    g.add_argument("--model", default=None, help="mlx model id (default: Phonon's polish model)")
+    g.add_argument("--out", default="gemma_pass.json", help="output file name under mined/")
     sc = sub.add_parser("score", help="dev-only scoring against the held-out dictionary and corpus")
     sc.add_argument("--workers", type=int, default=12)
     a = p.parse_args(argv)
@@ -37,7 +39,8 @@ def main(argv=None):
         rank.run()
     elif a.cmd == "gemma":
         from . import gemma_pass
-        gemma_pass.run(minutes=a.minutes, top=a.top)
+        gemma_pass.run(minutes=a.minutes, top=a.top, out_name=a.out,
+                       **({"model_id": a.model} if a.model else {}))
     elif a.cmd == "score":
         from . import score
         score.run(workers=a.workers)

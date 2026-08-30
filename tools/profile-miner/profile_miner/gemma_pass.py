@@ -17,7 +17,7 @@ from .common import norm, out_dir, read_json, write_json
 MODEL_ID = "mlx-community/gemma-4-e2b-it-4bit"  # POLISH_MODEL_ID in crates/phonon-llm/src/paths.rs
 KINDS = ["person", "project", "machine", "company", "product", "model", "tool", "hardware", "command", "file",
          "jargon", "acronym", "place", "noise"]
-RE_THOUGHT = re.compile(r"<\|channel>thought.*?(?:<channel\|>|$)", re.S)
+RE_THOUGHT = re.compile(r"<\|channel>thought.*?(?:<channel\|>|$)|<think>.*?(?:</think>|$)", re.S)
 RE_JSON = re.compile(r"\[.*\]|\{.*\}", re.S)
 
 PROMPT_A = (
@@ -70,16 +70,16 @@ def sample_lines(path, n, rng, lo=5, hi=40):
     return pool[:n]
 
 
-def run(minutes=20.0, top=400, per_source=150, batch=15, seed=0):
+def run(minutes=20.0, top=400, per_source=150, batch=15, seed=0, model_id=MODEL_ID, out_name="gemma_pass.json"):
     from mlx_lm import load
     od = out_dir()
     deadline = time.time() + minutes * 60
     t0 = time.time()
-    model, tok = load(MODEL_ID)
-    print(f"[gemma] loaded {MODEL_ID} in {time.time() - t0:.1f}s", file=sys.stderr)
+    model, tok = load(model_id)
+    print(f"[gemma] loaded {model_id} in {time.time() - t0:.1f}s", file=sys.stderr)
     rng = random.Random(seed)
-    result = {"model": MODEL_ID, "finished": False, "proposals": [], "kinds": {}, "seconds": 0, "prompts": 0}
-    out_path = od / "mined" / "gemma_pass.json"
+    result = {"model": model_id, "finished": False, "proposals": [], "kinds": {}, "seconds": 0, "prompts": 0}
+    out_path = od / "mined" / out_name
 
     def save(final=False):
         result["seconds"] = round(time.time() - t0, 1)
