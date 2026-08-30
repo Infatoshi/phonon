@@ -111,6 +111,30 @@ data the app already keeps:
   Risk: microphone drift after a one-time tune. Prefer the LLM side.
 No enrollment scripts. Users do not read generated sentences aloud.
 
+## Input
+
+### Shortcut
+
+Default is the bare Globe (fn) key, because the default user is on a Mac
+keyboard. Key-down starts recording at once. A press under 250 ms is a tap;
+a second tap within 350 ms of the first release latches recording on; while
+latched, the next key-down stops and commits. A lone tap yields a capture
+without speech, which the no-speech path discards. Right Option and
+Ctrl+Space remain as alternatives (`shortcut_mode` in settings.json).
+
+### Microphone
+
+Phonon never changes the system default input. With nothing ranked in
+`microphone_priority`, it follows the system input the user already chose,
+except a Bluetooth headset microphone (CoreAudio transport type), which is
+skipped for the built-in one: macOS makes a headset the default input when
+it connects, and opening its mic drops the headset to call-quality audio.
+Ranking a microphone, including a headset, overrides that. The recorder
+re-resolves on `AVAudioEngineConfigurationChange` and on system default
+input changes, and reads back the input unit's live device before each
+capture, because AVAudioEngine can silently move the unit to the new
+default when it rebuilds its graph.
+
 ## Competing dictation apps
 
 Two apps holding fn taps means both record and both insert. Phonon detects
