@@ -596,15 +596,21 @@ struct SettingsView: View {
                             onSettingsChanged()
                         }
                     )) {
-                        Text("Right Option hold + Control Space toggle").tag("both")
-                        Text("Right Option hold").tag("right_option")
                         Text("Globe (fn) hold").tag("fn")
                         Text("Globe (fn) hold + Control Space toggle")
                             .tag("fn_and_control_space")
+                        Text("Right Option hold").tag("right_option")
+                        Text("Right Option hold + Control Space toggle").tag("both")
                         Text("Control Space toggle").tag("control_space")
                     }
                     .pickerStyle(.menu)
                     if store.settings.shortcutMode.hasPrefix("fn") {
+                        Text(
+                            "Hold Globe to talk; release to insert. Double-tap to keep "
+                                + "recording, then tap once to stop."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         Text(
                             "macOS also acts on the Globe key. Set System Settings › "
                                 + "Keyboard › \"Press 🌐 key to\" to \"Do Nothing\" so it only "

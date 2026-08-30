@@ -40,7 +40,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Floating macOS pill (NSPanel) — Right ⌥ push-to-talk, types into frontmost app.
+    /// Floating macOS pill (NSPanel) — hold Globe (fn) to talk, types into frontmost app.
     Bar {
         /// Rebuild the Swift bar before launch.
         #[arg(long)]

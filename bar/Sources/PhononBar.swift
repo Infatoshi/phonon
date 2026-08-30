@@ -259,6 +259,73 @@ enum ShortcutPolicy {
     }
 }
 
+/// Tap and double-tap logic for a hold-to-talk key, fed raw key-down and
+/// key-up events with monotonic nanosecond timestamps.
+///
+/// Key-down always starts a recording, so a hold has no latency and release
+/// stops it. A release inside `tapMaxNs` is a tap. A second tap whose key-down
+/// lands inside `doubleTapWindowNs` of the first release latches the recording
+/// on; while latched the next key-down stops it. A lone tap is a short capture
+/// that the no-speech gate discards downstream.
+struct HoldKeyTapLatch {
+    enum Action: Equatable {
+        case start
+        case stop
+        case none
+    }
+
+    static let defaultTapMaxNs: UInt64 = 250_000_000
+    static let defaultDoubleTapWindowNs: UInt64 = 350_000_000
+
+    let tapMaxNs: UInt64
+    let doubleTapWindowNs: UInt64
+    private(set) var latched = false
+    private var downAt: UInt64?
+    private var lastTapUpAt: UInt64?
+    private var secondTapCandidate = false
+
+    init(
+        tapMaxNs: UInt64 = HoldKeyTapLatch.defaultTapMaxNs,
+        doubleTapWindowNs: UInt64 = HoldKeyTapLatch.defaultDoubleTapWindowNs
+    ) {
+        self.tapMaxNs = tapMaxNs
+        self.doubleTapWindowNs = doubleTapWindowNs
+    }
+
+    mutating func keyDown(at now: UInt64) -> Action {
+        if latched {
+            reset()
+            return .stop
+        }
+        secondTapCandidate = lastTapUpAt.map { now >= $0 && now - $0 <= doubleTapWindowNs } ?? false
+        lastTapUpAt = nil
+        downAt = now
+        return .start
+    }
+
+    mutating func keyUp(at now: UInt64) -> Action {
+        // A key-up with no matching key-down follows a latched stop.
+        guard let downAt else { return .none }
+        self.downAt = nil
+        let isTap = now >= downAt && now - downAt <= tapMaxNs
+        if isTap && secondTapCandidate {
+            secondTapCandidate = false
+            latched = true
+            return .none
+        }
+        secondTapCandidate = false
+        lastTapUpAt = isTap ? now : nil
+        return .stop
+    }
+
+    mutating func reset() {
+        latched = false
+        downAt = nil
+        lastTapUpAt = nil
+        secondTapCandidate = false
+    }
+}
+
 enum LiveTranscriptFormatter {
     static func format(_ text: String) -> String {
         var result = text
@@ -1388,6 +1455,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var isRecording = false
     private var optionDown = false
     private var fnDown = false
+    private var fnTapLatch = HoldKeyTapLatch()
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var toggleHotKey: EventHotKeyRef?
@@ -1945,6 +2013,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func applyHoldKey(
+        _ action: HoldKeyTapLatch.Action, source: String, eventNs: UInt64, callbackNs: UInt64
+    ) {
+        switch action {
+        case .start:
+            startDictation(source: source, eventNs: eventNs, callbackNs: callbackNs)
+        case .stop:
+            stopDictation(source: source, eventNs: eventNs, callbackNs: callbackNs)
+        case .none:
+            break
+        }
+    }
+
     private func toggleRecordFromKeyboard(source: String, eventNs: UInt64, callbackNs: UInt64) {
         guard shortcutAllows(source: source) else { return }
         if isRecording {
@@ -2253,8 +2334,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         else {
             appStore.inputMonitoringAvailable = false
             statusItem?.button?.toolTip =
-                "Phonon — Ctrl+Space ready; grant Input Monitoring for hold ⌥"
-            NSLog("phonon: Right-Option unavailable (Input Monitoring not granted)")
+                "Phonon — Ctrl+Space ready; grant Input Monitoring for the hold key"
+            NSLog("phonon: Globe/Right-Option unavailable (Input Monitoring not granted)")
             return
         }
         eventTap = tap
@@ -2324,17 +2405,25 @@ final class AppController: NSObject, NSApplicationDelegate {
                     self.optionDown = false
                 }
                 if self.shortcutAllows(source: "fn") {
+                    // Something else (Ctrl+Space, the menu) may have ended a
+                    // latched recording; the next press must start, not stop.
+                    if self.fnTapLatch.latched && !self.isRecording {
+                        self.fnTapLatch.reset()
+                    }
                     if onlyFn && !self.fnDown {
                         self.fnDown = true
-                        self.startDictation(
+                        self.applyHoldKey(
+                            self.fnTapLatch.keyDown(at: eventNs),
                             source: "fn", eventNs: eventNs, callbackNs: callbackNs)
                     } else if !onlyFn && self.fnDown {
                         self.fnDown = false
-                        self.stopDictation(
+                        self.applyHoldKey(
+                            self.fnTapLatch.keyUp(at: eventNs),
                             source: "fn", eventNs: eventNs, callbackNs: callbackNs)
                     }
                 } else {
                     self.fnDown = false
+                    self.fnTapLatch.reset()
                 }
             }
         }

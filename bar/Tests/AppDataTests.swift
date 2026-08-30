@@ -23,7 +23,7 @@ final class AppDataTests: XCTestCase {
 
         let store = NativeAppStore(supportDirectory: directory)
         XCTAssertTrue(store.settings.instantMic)
-        XCTAssertEqual(store.settings.shortcutMode, "both")
+        XCTAssertEqual(store.settings.shortcutMode, "fn")
 
         store.updateSettings {
             $0.instantMic = false

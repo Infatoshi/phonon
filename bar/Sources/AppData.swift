@@ -44,7 +44,7 @@ struct NativeSettings: Codable, Equatable {
         microphonePriority: [String] = [],
         instantMic: Bool = true,
         soundFeedback: Bool = false,
-        shortcutMode: String = "both",
+        shortcutMode: String = "fn",
         privacyChoiceMade: Bool = false,
         historyRetentionDays: Int = NativeSettings.keepRecordingsForever
     ) {
@@ -77,7 +77,7 @@ struct NativeSettings: Codable, Equatable {
         // Silent unless asked for. Dictation is held down mid-sentence and a
         // cue on every press is intrusive, so nobody gets one by default.
         soundFeedback = try values.decodeIfPresent(Bool.self, forKey: .soundFeedback) ?? false
-        shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "both"
+        shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "fn"
         // An existing install already chose these in Settings; do not re-prompt.
         privacyChoiceMade =
             try values.decodeIfPresent(Bool.self, forKey: .privacyChoiceMade) ?? legacyDefault

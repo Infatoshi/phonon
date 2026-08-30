@@ -110,7 +110,7 @@ pub fn run_doctor() -> Result<()> {
 
     println!();
     println!("ok paths:");
-    println!("  phonon           # native macOS app — Right ⌥ push-to-talk");
+    println!("  phonon           # native macOS app — hold Globe (fn) to talk");
     println!("  phonon bar       # explicit native-app launcher");
     println!("  phonon bar --rebuild");
     println!("  phonon engine    # warm backend for the bar");

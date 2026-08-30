@@ -488,7 +488,7 @@ fn default_microphone_priority() -> Vec<String> {
 }
 
 fn default_shortcut_mode() -> String {
-    "both".into()
+    "fn".into()
 }
 
 impl SettingsFile {
@@ -1238,7 +1238,7 @@ mod tests {
         )
         .unwrap();
         assert!(settings.instant_mic);
-        assert_eq!(settings.shortcut_mode, "both");
+        assert_eq!(settings.shortcut_mode, "fn");
     }
 
     #[test]

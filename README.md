@@ -134,13 +134,14 @@ confirmed terms, not the full screen text, into the correction prompt.
 
 - One bottom-anchored capsule that expands itself; no spawned overlay or inner waveform
 - Warm voice-responsive fill while listening; the same capsule breathes while processing
-- **hold Right Option (⌥)** PTT → release → ASR → auto-polish → types into frontmost app
+- **hold Globe (fn)** PTT → release → ASR → auto-polish → types into frontmost app
+- **double-tap Globe** latches the recording on; one tap stops and inserts
 - Ctrl+Space toggle; multi-pass OK
 
-Settings picks which of those is live. Right Option and Globe (fn) are both
-offered as the hold key, each on its own or paired with the Ctrl+Space toggle.
+Globe (fn) is the default shortcut. Settings can switch the hold key to Right
+Option (⌥), and either hold key can be paired with the Ctrl+Space toggle.
 macOS also acts on the Globe key, so set System Settings › Keyboard ›
-"Press 🌐 key to" to "Do Nothing" before choosing it.
+"Press 🌐 key to" to "Do Nothing".
 
 Recording cues are off by default. Turning them on plays a short rising sweep
 when a recording opens and a falling one when it closes. Both are synthesized by
