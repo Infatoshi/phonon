@@ -155,6 +155,25 @@ enum CorpusCommands {
     MigrateLegacy,
     /// Delete one recording directory and its paired WAV/metadata.
     Delete { id: String },
+    /// Run the warmed correction path over labeled corpus recordings (and
+    /// fixture files), reporting text and timing per case. Prompt options
+    /// come from settings.json plus PHONON_PROFILE_* overrides.
+    PolishEval {
+        /// Fixture JSON files of {id, raw, intended} cases to add.
+        #[arg(long)]
+        fixtures: Vec<PathBuf>,
+        /// Also include recordings without an intended transcript.
+        #[arg(long)]
+        unlabeled: bool,
+        /// Newest corpus recordings to include.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Runs per case after warmup; all are reported.
+        #[arg(long, default_value_t = 2)]
+        passes: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -256,6 +275,22 @@ fn run_corpus(command: CorpusCommands) -> Result<()> {
         CorpusCommands::SetIntended { id, text } => data_cmd::set_intended(&id, &text),
         CorpusCommands::MigrateLegacy => data_cmd::migrate_legacy_history(),
         CorpusCommands::Delete { id } => data_cmd::delete_corpus_recording(&id),
+        CorpusCommands::PolishEval {
+            fixtures,
+            unlabeled,
+            limit,
+            passes,
+            json,
+        } => data_cmd::polish_eval(
+            &phonon_core::project_root(),
+            data_cmd::PolishEvalArgs {
+                fixtures,
+                unlabeled,
+                limit,
+                passes,
+                json,
+            },
+        ),
     }
 }
 

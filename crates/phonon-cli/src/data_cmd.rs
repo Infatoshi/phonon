@@ -1,13 +1,15 @@
 use anyhow::{bail, Context, Result};
 use phonon_core::data::{
     app_support_dir, corpus_dir, delete_recording, dictionary_path, import_recording,
-    list_recordings, load_recording_by_id, safe_polish_output, set_intended_transcript,
-    settings_path, usage_stats, DictionaryEntry, DictionaryFile, SettingsFile,
+    list_recordings, load_recording_by_id, polish_config, safe_polish_output,
+    set_intended_transcript, settings_path, usage_stats, DictionaryEntry, DictionaryFile,
+    SettingsFile,
 };
-use phonon_llm::ServeJson;
+use phonon_llm::{ServeJson, ServeJsonResp};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct WisprEntry {
@@ -228,7 +230,7 @@ pub fn evaluate_dictionary(root: &Path, fixtures: &Path, json: bool) -> Result<(
     )
     .with_context(|| format!("parse {}", fixtures.display()))?;
     let dictionary = DictionaryFile::load()?;
-    let mut helper = ServeJson::spawn(root)?;
+    let mut helper = ServeJson::spawn_with(root, &polish_config()?)?;
     let (_, warmup) = helper.warmup()?;
     if !warmup.ok {
         bail!("LLM warmup failed: {:?}", warmup.error);
@@ -274,6 +276,237 @@ pub fn evaluate_dictionary(root: &Path, fixtures: &Path, json: bool) -> Result<(
                 println!("  intended: {}", evaluation.intended);
                 println!("  output:   {}", evaluation.output);
             }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PolishEvalPass {
+    wall_ms: f64,
+    latency_ms: f64,
+    ttft_ms: f64,
+    generated_tokens: u64,
+    prompt_tokens: u64,
+    cached_prompt_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PolishEvalCase {
+    id: String,
+    source: String,
+    raw: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intended: Option<String>,
+    /// The model's text before `safe_polish_output`.
+    model_output: String,
+    /// What the user would have received.
+    output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact: Option<bool>,
+    passes: Vec<PolishEvalPass>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PolishEvalReport {
+    config: PolishEvalConfig,
+    ready_message: String,
+    profile_tokens: u64,
+    cases: Vec<PolishEvalCase>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PolishEvalConfig {
+    profile_dir: Option<PathBuf>,
+    profile_token_budget: Option<u32>,
+    prefix_cache: bool,
+    passes: usize,
+}
+
+pub struct PolishEvalArgs {
+    pub fixtures: Vec<PathBuf>,
+    pub unlabeled: bool,
+    pub limit: Option<usize>,
+    pub passes: usize,
+    pub json: bool,
+}
+
+fn pass_from_resp(wall: Duration, response: &ServeJsonResp) -> PolishEvalPass {
+    let d = response.diagnostics.as_ref();
+    PolishEvalPass {
+        wall_ms: wall.as_secs_f64() * 1_000.0,
+        latency_ms: d.and_then(|x| x.latency_ms).unwrap_or(0.0),
+        ttft_ms: d.and_then(|x| x.ttft_ms).unwrap_or(0.0),
+        generated_tokens: d.and_then(|x| x.generated_tokens).unwrap_or(0),
+        prompt_tokens: d.and_then(|x| x.prompt_tokens).unwrap_or(0),
+        cached_prompt_tokens: d.and_then(|x| x.cached_prompt_tokens).unwrap_or(0),
+    }
+}
+
+/// Run the shipped correction path (dictionary retrieval, sidecar, output
+/// guard) over corpus recordings and fixture cases, reporting text and
+/// timing per case. `scripts/eval_profile_prefix.py` drives this once per
+/// prompt configuration and scores the results.
+pub fn polish_eval(root: &Path, args: PolishEvalArgs) -> Result<()> {
+    if args.passes == 0 {
+        bail!("--passes must be at least 1");
+    }
+    let mut cases: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let mut corpus = list_recordings()?
+        .into_iter()
+        .filter(|recording| {
+            recording.speech_detected != Some(false) && !recording.raw_transcript.trim().is_empty()
+        })
+        .filter(|recording| {
+            args.unlabeled
+                || recording
+                    .intended_transcript
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
+        .collect::<Vec<_>>();
+    if let Some(limit) = args.limit {
+        corpus.truncate(limit);
+    }
+    for recording in corpus {
+        let intended = recording
+            .intended_transcript
+            .filter(|text| !text.trim().is_empty());
+        cases.push((
+            recording.id,
+            "corpus".into(),
+            recording.raw_transcript,
+            intended,
+        ));
+    }
+    for fixtures in &args.fixtures {
+        let fixture_cases: Vec<CorrectionCase> = serde_json::from_slice(
+            &std::fs::read(fixtures).with_context(|| format!("read {}", fixtures.display()))?,
+        )
+        .with_context(|| format!("parse {}", fixtures.display()))?;
+        let source = format!(
+            "fixture:{}",
+            fixtures
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("fixture")
+        );
+        for case in fixture_cases {
+            cases.push((case.id, source.clone(), case.raw, Some(case.intended)));
+        }
+    }
+    if cases.is_empty() {
+        bail!("no cases: no corpus recording has an intended transcript and no fixtures were given (try --unlabeled)");
+    }
+
+    let config = polish_config()?;
+    let dictionary = DictionaryFile::load()?;
+    let mut helper = ServeJson::spawn_with(root, &config)?;
+    let (_, warmup) = helper.warmup()?;
+    if !warmup.ok {
+        bail!("LLM warmup failed: {:?}", warmup.error);
+    }
+    let ready_message = warmup
+        .status
+        .as_ref()
+        .and_then(|status| status.message.clone())
+        .unwrap_or_default();
+
+    let mut profile_tokens = 0;
+    let mut results = Vec::new();
+    for (id, source, raw, intended) in cases {
+        let input = dictionary.prepare_polish_input(&raw);
+        let mut passes = Vec::new();
+        let mut model_output = String::new();
+        for _ in 0..args.passes {
+            let (wall, response) = helper.run_text(&input)?;
+            if !response.ok {
+                bail!("case {id} failed: {:?}", response.error);
+            }
+            profile_tokens = response
+                .diagnostics
+                .as_ref()
+                .and_then(|d| d.profile_tokens)
+                .unwrap_or(profile_tokens);
+            passes.push(pass_from_resp(wall, &response));
+            model_output = response.output_text.unwrap_or_default();
+        }
+        let output = safe_polish_output(&dictionary, &raw, &model_output).text;
+        let exact = intended
+            .as_deref()
+            .map(|intended| comparable(&output) == comparable(intended));
+        results.push(PolishEvalCase {
+            id,
+            source,
+            raw,
+            intended,
+            model_output,
+            output,
+            exact,
+            passes,
+        });
+    }
+    helper.shutdown();
+
+    let report = PolishEvalReport {
+        config: PolishEvalConfig {
+            profile_dir: config.profile_dir.clone(),
+            profile_token_budget: config.profile_token_budget,
+            prefix_cache: config.prefix_cache,
+            passes: args.passes,
+        },
+        ready_message,
+        profile_tokens,
+        cases: results,
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    let labeled = report
+        .cases
+        .iter()
+        .filter(|case| case.exact.is_some())
+        .count();
+    let exact = report
+        .cases
+        .iter()
+        .filter(|case| case.exact == Some(true))
+        .count();
+    let mut ttft = report
+        .cases
+        .iter()
+        .filter_map(|case| case.passes.last().map(|pass| pass.ttft_ms))
+        .collect::<Vec<_>>();
+    ttft.sort_by(f64::total_cmp);
+    println!("{}", report.ready_message);
+    println!(
+        "cases: {} ({labeled} labeled, {exact} exact); profile tokens: {}; median ttft (last pass): {:.0} ms",
+        report.cases.len(),
+        report.profile_tokens,
+        ttft.get(ttft.len() / 2).copied().unwrap_or(0.0)
+    );
+    for case in &report.cases {
+        let mark = match case.exact {
+            Some(true) => "PASS",
+            Some(false) => "FAIL",
+            None => "    ",
+        };
+        let pass = case.passes.last();
+        println!(
+            "{mark} {} ttft={:.0}ms total={:.0}ms cached={}",
+            case.id,
+            pass.map_or(0.0, |p| p.ttft_ms),
+            pass.map_or(0.0, |p| p.latency_ms),
+            pass.map_or(0, |p| p.cached_prompt_tokens)
+        );
+        if case.exact == Some(false) {
+            println!("  raw:      {}", case.raw);
+            println!(
+                "  intended: {}",
+                case.intended.as_deref().unwrap_or_default()
+            );
+            println!("  output:   {}", case.output);
         }
     }
     Ok(())

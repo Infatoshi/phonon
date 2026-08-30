@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+pub use phonon_llm::PolishConfig;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -463,6 +464,9 @@ pub struct SettingsFile {
     pub instant_mic: bool,
     #[serde(default = "default_shortcut_mode")]
     pub shortcut_mode: String,
+    /// Put `profile/user.md` and `profile/vocab.md` in the correction prompt.
+    #[serde(default = "default_profile_prefix")]
+    pub profile_prefix: bool,
 }
 
 impl Default for SettingsFile {
@@ -475,8 +479,20 @@ impl Default for SettingsFile {
             microphone_priority: default_microphone_priority(),
             instant_mic: true,
             shortcut_mode: default_shortcut_mode(),
+            profile_prefix: default_profile_prefix(),
         }
     }
+}
+
+/// Off until the profile block earns it. Measured 2026-08-30 with
+/// `scripts/eval_profile_prefix.py` (24 labeled cases, 80 corpus recordings):
+/// no latency cost warm, but 21/24 exact against 22/24 without it, and on the
+/// corpus its vocabulary wins (Phonon, DEVLOG, Blackwell) came with two
+/// dropped sentences and one wrong term. Users can turn it on in settings.json.
+pub const DEFAULT_PROFILE_PREFIX: bool = false;
+
+fn default_profile_prefix() -> bool {
+    DEFAULT_PROFILE_PREFIX
 }
 
 fn default_true() -> bool {
@@ -492,6 +508,17 @@ fn default_shortcut_mode() -> String {
 }
 
 impl SettingsFile {
+    /// Read without writing back. Missing file means defaults; the native app
+    /// owns the file and this side must not rewrite it on every engine start.
+    pub fn load() -> Result<Self> {
+        let path = settings_path()?;
+        if !path.is_file() {
+            return Ok(Self::default());
+        }
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+    }
+
     pub fn load_or_create() -> Result<Self> {
         let path = settings_path()?;
         if path.is_file() {
@@ -526,6 +553,23 @@ pub fn settings_path() -> Result<PathBuf> {
 
 pub fn corpus_dir() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("Corpus"))
+}
+
+/// `profile/user.md` and `profile/vocab.md` live here (SPEC, onboarding).
+pub fn profile_dir() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("profile"))
+}
+
+/// The correction sidecar configuration users get: the profile when
+/// `settings.json` enables it, plus developer environment overrides.
+pub fn polish_config() -> Result<PolishConfig> {
+    let settings = SettingsFile::load()?;
+    let profile_dir = profile_dir()?;
+    let config = PolishConfig {
+        profile_dir: settings.profile_prefix.then(|| profile_dir.clone()),
+        ..PolishConfig::default()
+    };
+    Ok(config.with_env_overrides(Some(&profile_dir)))
 }
 
 pub fn metadata_path_for_audio(audio_path: &Path) -> Result<PathBuf> {
@@ -1239,6 +1283,7 @@ mod tests {
         .unwrap();
         assert!(settings.instant_mic);
         assert_eq!(settings.shortcut_mode, "both");
+        assert_eq!(settings.profile_prefix, super::DEFAULT_PROFILE_PREFIX);
     }
 
     #[test]

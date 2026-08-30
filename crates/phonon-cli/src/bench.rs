@@ -277,7 +277,7 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
 
 /// Fresh sidecar process: weight load, then the first request against it.
 fn bench_llm_cold(root: &Path, clip: &str) -> Result<(f64, RunTiming)> {
-    let mut serve = ServeJson::spawn(root)?;
+    let mut serve = ServeJson::spawn_with(root, &phonon_core::data::polish_config()?)?;
     let (load, resp) = serve.warmup()?;
     if !resp.ok {
         bail!("warmup failed: {:?}", resp.error);
@@ -289,7 +289,7 @@ fn bench_llm_cold(root: &Path, clip: &str) -> Result<(f64, RunTiming)> {
 }
 
 fn bench_llm_warm(root: &Path, clips: &[String], iters: usize) -> Result<(f64, Vec<RunTiming>)> {
-    let mut serve = ServeJson::spawn(root)?;
+    let mut serve = ServeJson::spawn_with(root, &phonon_core::data::polish_config()?)?;
     let (warmup, resp) = serve.warmup()?;
     if !resp.ok {
         bail!("warmup failed: {:?}", resp.error);

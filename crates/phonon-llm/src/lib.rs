@@ -25,7 +25,7 @@ use phonon_asr::StderrTail;
 use serde::Deserialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -66,6 +66,75 @@ pub struct ServeDiagnostics {
     pub output_chars: Option<u64>,
     #[serde(rename = "stageTimingsMilliseconds")]
     pub stage_timings: Option<serde_json::Value>,
+    #[serde(rename = "promptTokenCount")]
+    pub prompt_tokens: Option<u64>,
+    /// Prompt tokens served from the sidecar's prefix cache (0 on a miss).
+    #[serde(rename = "cachedPromptTokenCount")]
+    pub cached_prompt_tokens: Option<u64>,
+    /// Tokens the speaker profile block occupies in the prompt (0 without one).
+    #[serde(rename = "profileTokenCount")]
+    pub profile_tokens: Option<u64>,
+}
+
+/// How the correction sidecar builds its prompt prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolishConfig {
+    /// Directory holding `user.md` and `vocab.md` (SPEC, vocabulary onboarding
+    /// step 5). `None` leaves the prompt exactly as shipped without a profile.
+    pub profile_dir: Option<PathBuf>,
+    /// Token bound for the profile block; `None` is the sidecar default (1500).
+    pub profile_token_budget: Option<u32>,
+    /// Keep the KV state of the stable prompt prefix between requests. Off
+    /// only for developer comparisons; output text does not depend on it.
+    pub prefix_cache: bool,
+}
+
+impl Default for PolishConfig {
+    fn default() -> Self {
+        Self {
+            profile_dir: None,
+            profile_token_budget: None,
+            prefix_cache: true,
+        }
+    }
+}
+
+impl PolishConfig {
+    /// Developer overrides, read by the eval tooling; unset in normal use.
+    ///   PHONON_PROFILE_DIR=<dir>         profile directory (empty disables)
+    ///   PHONON_PROFILE_PREFIX=0|1        force the profile block off or on
+    ///   PHONON_PROFILE_TOKEN_BUDGET=<n>  bound for the profile block
+    ///   PHONON_POLISH_PREFIX_CACHE=0     prefill the whole prompt every call
+    pub fn with_env_overrides(mut self, default_profile_dir: Option<&Path>) -> Self {
+        if let Ok(dir) = std::env::var("PHONON_PROFILE_DIR") {
+            self.profile_dir = (!dir.is_empty()).then(|| PathBuf::from(dir));
+        }
+        match std::env::var("PHONON_PROFILE_PREFIX").as_deref() {
+            Ok("0") | Ok("false") | Ok("off") => self.profile_dir = None,
+            Ok("1") | Ok("true") | Ok("on") if self.profile_dir.is_none() => {
+                self.profile_dir = default_profile_dir.map(Path::to_path_buf);
+            }
+            _ => {}
+        }
+        if let Some(budget) = std::env::var("PHONON_PROFILE_TOKEN_BUDGET")
+            .ok()
+            .and_then(|value| value.parse().ok())
+        {
+            self.profile_token_budget = Some(budget);
+        }
+        if matches!(
+            std::env::var("PHONON_POLISH_PREFIX_CACHE").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        ) {
+            self.prefix_cache = false;
+        }
+        self
+    }
+
+    /// Environment overrides only; the engine passes settings in instead.
+    pub fn from_env() -> Self {
+        Self::default().with_env_overrides(None)
+    }
 }
 
 /// Synchronous serve-json handle for bench / tooling.
@@ -82,7 +151,11 @@ impl ServeJson {
     /// The shipped correction stage, so evaluation measures what users run.
     /// Honours `PHONON_POLISH_BACKEND=fluid` for developer comparisons.
     pub fn spawn(root: &Path) -> Result<Self> {
-        let cmd = polish_command(root)?.context("correction stage files missing")?;
+        Self::spawn_with(root, &PolishConfig::from_env())
+    }
+
+    pub fn spawn_with(root: &Path, config: &PolishConfig) -> Result<Self> {
+        let cmd = polish_command(root, config)?.context("correction stage files missing")?;
         Self::attach(cmd)
     }
 
@@ -325,7 +398,7 @@ pub struct PolishSidecar {
 /// The shipped correction stage. `Ok(None)` means its own files are absent.
 /// `PHONON_POLISH_BACKEND=fluid` swaps in the old helper on identical inputs;
 /// it is a developer comparison switch and is never set in a shipped build.
-fn polish_command(root: &Path) -> Result<Option<Command>> {
+fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>> {
     let script = polish_script(root);
     let prompt = polish_prompt(root);
     if !(script.is_file() && prompt.is_file()) {
@@ -358,6 +431,17 @@ fn polish_command(root: &Path) -> Result<Option<Command>> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(profile_dir) = &config.profile_dir {
+        command.arg("--profile-dir").arg(profile_dir);
+    }
+    if let Some(budget) = config.profile_token_budget {
+        command
+            .arg("--profile-token-budget")
+            .arg(budget.to_string());
+    }
+    if !config.prefix_cache {
+        command.arg("--no-prefix-cache");
+    }
     phonon_asr::apply_offline_policy(&mut command, &uv, POLISH_RUNTIME_REQUIREMENT);
     Ok(Some(command))
 }
@@ -389,7 +473,11 @@ fn fluid_command(root: &Path, use_mtp: bool) -> Result<Command> {
 
 impl PolishSidecar {
     pub fn spawn(root: &Path) -> Result<Option<Self>> {
-        let Some(mut command) = polish_command(root)? else {
+        Self::spawn_with(root, &PolishConfig::from_env())
+    }
+
+    pub fn spawn_with(root: &Path, config: &PolishConfig) -> Result<Option<Self>> {
+        let Some(mut command) = polish_command(root, config)? else {
             return Ok(None);
         };
         Self::attach(command.spawn().context("spawn polish")?).map(Some)

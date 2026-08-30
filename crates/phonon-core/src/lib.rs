@@ -100,7 +100,7 @@ impl Engine {
             bail!("the required local correction runtime is missing from this install");
         }
         let asr = AsrSidecar::spawn(root)?;
-        let polisher = PolishSidecar::spawn(root)?
+        let polisher = PolishSidecar::spawn_with(root, &data::polish_config()?)?
             .context("the required local correction runtime could not start")?;
 
         Ok(Self {
