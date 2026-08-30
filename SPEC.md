@@ -37,12 +37,26 @@ the personalization. Fine-tuning is a later, opt-in POC (see end).
    `type=user`, dictation histories' corrected text, repo docs
    (README, AGENTS, DEVLOG, SPEC) plus file trees to depth 2, no code bodies.
    Output `profile/extract/<source>.txt` with counts shown in the UI.
-3. Mine (parallel, one agent per source). Each agent runs frequency mining
-   (CamelCase, acronyms, digit tokens, hyphenated identifiers, capitalized
-   non-initial words, tokens absent from the corpus's own top-5k English)
-   and then reads sampled short lines to catch names, multiword units and
-   spoken-form manglings. Output `profile/mined/<source>.json`:
-   `{term, count, sources, kind, spoken_forms, evidence}`, ranked.
+3. Mine. Three stages; the model only adds and labels, it never drops.
+   a. Seed (no model): the user's identity from `id -F`, `git config
+      user.name`, `$USER`, the GitHub login, plus repo names. These are
+      always candidates; the surname of the author never appeared in the
+      first POC because it lived inside paths (`/home/elliotarledge`).
+   b. Candidates (no model): CamelCase, ALLCAPS, digit tokens, hyphenated
+      identifiers, capitalized non-initial words with count >= 2, and
+      lowercase tokens absent from a fixed general-English list shipped
+      with the app. Never a stoplist derived from the user's own corpus:
+      the user's most frequent jargon is by definition in their own top-5k.
+   c. ASR oracle (no model): for each candidate, synthesize with macOS
+      `say` in two voices, transcribe with the shipped Parakeet, keep the
+      term only when the output differs from the term, and record the
+      outputs as `spoken_forms`. About 0.7 s per term, all local. The
+      model is not asked whether ASR will mangle a term; it cannot know.
+   d. Model pass (local correction model, one agent per source): reads
+      sampled short lines to add names, multiword units and observed
+      manglings from the text; assigns `kind`; writes `evidence`. Output
+      `profile/mined/<source>.json`: `{term, count, sources, kind,
+      spoken_forms, evidence}`, ranked by count and source breadth.
    Production runs this on the local correction model; the quality bar is
    the Opus baseline in DEVLOG (2026-08-30).
 4. Merge and review. Union across sources, score by rank plus multi-source
@@ -76,12 +90,15 @@ the user's own spoken manglings). So:
 
 ### Evaluation (dev only)
 
-Hold out `dictionary.json` (curated subset: entries imported from Wispr,
-the user's hand-made list) and corpus final transcripts. Report recall of
-the curated set at top-100/200/400 and a precision proxy (share of
-proposals present in dictionary or corpus). A local model ships in the
-mining role only when it reaches the Opus baseline within a stated margin
-on the same extracts. Baseline numbers and the miss list live in DEVLOG.
+Hold out `dictionary.json` and corpus final transcripts. Gold is the
+used-or-starred subset filtered through the ASR oracle: a gold term must be
+one Parakeet mangles from clean TTS or one observed mangled in the corpus.
+Entries Wispr needed but Parakeet already transcribes (NCCL, FSDP, SM, M3)
+are not misses for Phonon. Report recall of gold at top-100/200/400 with
+spoken-form variants collapsed onto their term, and a precision proxy
+(share of proposals present in dictionary or corpus). A local model ships
+in the mining role only when it reaches the Opus baseline within a stated
+margin on the same extracts. Numbers and miss analysis live in DEVLOG.
 
 ### Fine-tuning POC (later, anvil RTX PRO 6000)
 
