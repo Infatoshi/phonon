@@ -50,6 +50,18 @@ pub fn run_doctor() -> Result<()> {
         );
     }
     check("uv", crate::resolve_runtime_tool("uv").is_some());
+    // Both sidecars start from uv's cache alone once these pass, so a Mac with
+    // no network still dictates. A fresh install fails them until first launch.
+    if let Some(uv) = crate::resolve_runtime_tool("uv") {
+        optional(
+            "ASR runtime cached for offline start",
+            phonon_asr::uv_offline_ready(&uv, phonon_asr::ASR_RUNTIME_REQUIREMENT),
+        );
+        optional(
+            "correction runtime cached for offline start",
+            phonon_asr::uv_offline_ready(&uv, POLISH_RUNTIME_REQUIREMENT),
+        );
+    }
     // The native app records through CoreAudio. SoX only backs `phonon` runs
     // from a terminal, so a fresh Mac without it is not a broken install.
     optional(

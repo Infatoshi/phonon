@@ -111,7 +111,8 @@ impl AsrSidecar {
         }
         let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
         let started = Instant::now();
-        let mut child = Command::new(uv)
+        let mut command = Command::new(&uv);
+        command
             .args([
                 "run",
                 "--python",
@@ -125,9 +126,9 @@ impl AsrSidecar {
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawn ASR")?;
+            .stderr(Stdio::piped());
+        apply_offline_policy(&mut command, &uv, ASR_RUNTIME_REQUIREMENT);
+        let mut child = command.spawn().context("spawn ASR")?;
         let stdout = child.stdout.take().context("asr stdout")?;
         let stdin = child.stdin.take().context("asr stdin")?;
         let stderr = StderrTail::capture(child.stderr.take().context("asr stderr")?);
@@ -230,6 +231,40 @@ pub fn resolve_uv() -> Option<std::path::PathBuf> {
             .map(std::path::PathBuf::from)
             .find(|path| path.is_file())
     })
+}
+
+/// True when uv can assemble the sidecar environment for `requirement` from
+/// its cache alone. Without this, uv revalidates its PyPI index entry once the
+/// entry goes stale, and with no network that fails after three retries
+/// (about 33 s) even though every wheel is already on disk. Costs 50-150 ms.
+pub fn uv_offline_ready(uv: &Path, requirement: &str) -> bool {
+    Command::new(uv)
+        .args([
+            "run",
+            "--offline",
+            "--python",
+            PYTHON_REQUIREMENT,
+            "--with",
+            requirement,
+            "python",
+            "-c",
+            "",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Pin a sidecar launch to uv's cache when the cache is enough, so a Mac with
+/// no network or a captive portal starts dictation instead of waiting on
+/// PyPI. A first launch with nothing cached still resolves online.
+pub fn apply_offline_policy(command: &mut Command, uv: &Path, requirement: &str) {
+    if uv_offline_ready(uv, requirement) {
+        command.env("UV_OFFLINE", "1");
+    }
 }
 
 impl Drop for AsrSidecar {

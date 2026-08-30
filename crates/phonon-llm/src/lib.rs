@@ -340,7 +340,7 @@ fn polish_command(root: &Path) -> Result<Option<Command>> {
         std::env::var("PHONON_POLISH_MODEL").unwrap_or_else(|_| POLISH_MODEL_ID.to_string());
     let revision = std::env::var("PHONON_POLISH_REVISION")
         .unwrap_or_else(|_| POLISH_MODEL_REVISION.to_string());
-    let mut command = Command::new(uv);
+    let mut command = Command::new(&uv);
     command
         .args([
             "run",
@@ -358,6 +358,7 @@ fn polish_command(root: &Path) -> Result<Option<Command>> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    phonon_asr::apply_offline_policy(&mut command, &uv, POLISH_RUNTIME_REQUIREMENT);
     Ok(Some(command))
 }
 
