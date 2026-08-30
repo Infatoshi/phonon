@@ -439,8 +439,20 @@ struct AudioInputDevice: Equatable {
     let id: AudioDeviceID
     let name: String
     let isDefault: Bool
+    /// Bluetooth headset microphones drop the headset to phone-call audio the
+    /// moment any process opens them, so they are never chosen by inference.
+    var isBluetooth: Bool = false
+
+    var isBuiltIn: Bool {
+        name.localizedCaseInsensitiveContains("MacBook")
+            || name.localizedCaseInsensitiveContains("Built-in")
+    }
 }
 
+/// Ranked names win. With nothing ranked, Phonon follows the system input the
+/// way every other app does, except that a Bluetooth headset microphone is
+/// skipped in favour of the built-in one: macOS makes a headset the default
+/// input when it connects, and using its mic degrades the user's headphones.
 enum MicrophonePriorityResolver {
     static func resolve(devices: [AudioInputDevice], priorities: [String]) -> AudioInputDevice? {
         for priority in priorities {
@@ -450,7 +462,12 @@ enum MicrophonePriorityResolver {
                 return match
             }
         }
-        return devices.first(where: \.isDefault) ?? devices.first
+        if let system = devices.first(where: \.isDefault), !system.isBluetooth {
+            return system
+        }
+        return devices.first(where: \.isBuiltIn)
+            ?? devices.first(where: { !$0.isBluetooth })
+            ?? devices.first
     }
 }
 
@@ -483,8 +500,35 @@ enum CoreAudioInputDevices {
         let defaultID = defaultInputID()
         return ids.compactMap { id in
             guard hasInputStreams(id), let name = deviceName(id) else { return nil }
-            return AudioInputDevice(id: id, name: name, isDefault: id == defaultID)
+            return AudioInputDevice(
+                id: id, name: name, isDefault: id == defaultID, isBluetooth: isBluetooth(id))
         }
+    }
+
+    private static func isBluetooth(_ id: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &transport) == noErr
+        else { return false }
+        return transport == kAudioDeviceTransportTypeBluetooth
+            || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    /// Fires on the main queue whenever the system default input changes.
+    static func observeDefaultInputChanges(_ handler: @escaping () -> Void) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main
+        ) { _, _ in handler() }
     }
 
     private static func defaultInputID() -> AudioDeviceID? {
@@ -879,6 +923,51 @@ final class MicRecorder {
     var onStreamPCM16: ((Data) -> Void)?
     private var primed = false
 
+    init() {
+        // AVAudioEngine rebuilds its graph when the default input changes or a
+        // device (dis)appears, and the input unit can come back on the new
+        // system default instead of the device Phonon selected. Re-resolve.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in self?.reselectDevice(reason: "engine configuration change") }
+        CoreAudioInputDevices.observeDefaultInputChanges { [weak self] in
+            self?.reselectDevice(reason: "system default input change")
+        }
+    }
+
+    private func reselectDevice(reason: String) {
+        NSLog("phonon mic: reselect (\(reason))")
+        forgetDevice()
+        guard primed else { return }
+        refreshPreferredDevice()
+    }
+
+    /// Drop the selected device so the next `ensureHardwareRunning` picks again.
+    private func forgetDevice() {
+        if engine.isRunning {
+            engine.stop()
+        }
+        if configuredDeviceID != nil {
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        configuredDeviceID = nil
+        tapFormat = nil
+    }
+
+    /// The device the input unit is actually on, which can differ from the one
+    /// Phonon set after a graph rebuild.
+    private func liveDeviceID() -> AudioDeviceID? {
+        guard let audioUnit = engine.inputNode.audioUnit else { return nil }
+        var id = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard
+            AudioUnitGetProperty(
+                audioUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                &id, &size) == noErr
+        else { return nil }
+        return id
+    }
+
     /// Keep the CoreAudio graph alive so key-down only gates sample retention.
     func prewarm() {
         guard !primed else { return }
@@ -920,6 +1009,10 @@ final class MicRecorder {
 
         let device = CoreAudioInputDevices.resolve(
             priorities: BarSettings.microphonePriorities())
+        if let configured = configuredDeviceID, let live = liveDeviceID(), live != configured {
+            NSLog("phonon mic: input unit drifted off the selected device, reselecting")
+            forgetDevice()
+        }
         if let device, configuredDeviceID != device.id {
             if engine.isRunning {
                 engine.stop()

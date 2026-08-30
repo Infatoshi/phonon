@@ -115,6 +115,42 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         XCTAssertEqual(selected?.name, "USB Microphone")
     }
 
+    func testMicrophoneFollowsSystemInputWhenNothingRanked() {
+        let devices = [
+            AudioInputDevice(id: 1, name: "MacBook Pro Microphone", isDefault: false),
+            AudioInputDevice(id: 2, name: "Yeti Stereo Microphone", isDefault: true),
+        ]
+
+        let selected = MicrophonePriorityResolver.resolve(devices: devices, priorities: [])
+
+        XCTAssertEqual(selected?.name, "Yeti Stereo Microphone")
+    }
+
+    func testMicrophoneSkipsBluetoothSystemInputForBuiltIn() {
+        let devices = [
+            AudioInputDevice(
+                id: 1, name: "soundcore Space 2", isDefault: true, isBluetooth: true),
+            AudioInputDevice(id: 2, name: "Yeti Stereo Microphone", isDefault: false),
+            AudioInputDevice(id: 3, name: "MacBook Pro Microphone", isDefault: false),
+        ]
+
+        let selected = MicrophonePriorityResolver.resolve(devices: devices, priorities: [])
+
+        XCTAssertEqual(selected?.name, "MacBook Pro Microphone")
+    }
+
+    func testMicrophoneHonoursRankedBluetoothHeadset() {
+        let devices = [
+            AudioInputDevice(id: 1, name: "AirPods Pro", isDefault: false, isBluetooth: true),
+            AudioInputDevice(id: 2, name: "MacBook Pro Microphone", isDefault: true),
+        ]
+
+        let selected = MicrophonePriorityResolver.resolve(
+            devices: devices, priorities: ["AirPods"])
+
+        XCTAssertEqual(selected?.name, "AirPods Pro")
+    }
+
     func testAcousticPreviewCannotCollapse() {
         let previous = "one two three four five six"
 

@@ -582,15 +582,11 @@ final class NativeAppStore: ObservableObject {
         settings = decoded
     }
 
-    /// Rank the built-in microphone first on a fresh install. It is the one device
-    /// certain to be present, so it is the safest default: an external microphone
-    /// that is plugged in but pointed away from the speaker records the room.
+    /// Nothing ranked on a fresh install: Phonon follows the system input the
+    /// user already chose (Bluetooth headset mics excepted, see
+    /// `MicrophonePriorityResolver`). Ranking is the override, not the default.
     private static func defaultMicrophonePriority() -> [String] {
-        let builtIn = CoreAudioInputDevices.inputNames().first {
-            $0.localizedCaseInsensitiveContains("MacBook")
-                || $0.localizedCaseInsensitiveContains("Built-in")
-        }
-        return builtIn.map { [$0] } ?? []
+        []
     }
 
     private func loadDictionary() {

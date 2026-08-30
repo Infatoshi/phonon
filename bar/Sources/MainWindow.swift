@@ -926,12 +926,14 @@ struct MicrophonePriorityCard: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Microphone priority").font(.headline)
-                Text("Phonon uses the highest-ranked microphone that is plugged in.")
+                Text(
+                    "Phonon follows the microphone selected in System Settings, except a Bluetooth headset mic, which would drop the headset to call quality. Rank microphones here to override that."
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if ranked.isEmpty {
-                    Text("No microphone ranked yet, so Phonon follows the system input.")
+                    Text("Nothing ranked, so Phonon follows the system input.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
