@@ -4,8 +4,10 @@ members = [
     "crates/phonon-audio",
     "crates/phonon-cli",
     "crates/phonon-core",
+    "crates/phonon-hotkey",
     "crates/phonon-llm",
     "crates/phonon-profile",
+    "crates/phonon-win",
 ]
 resolver = "2"
 
