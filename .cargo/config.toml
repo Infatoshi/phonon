@@ -1,0 +1,5 @@
+# The Windows beta ships as one file a user double-clicks. Linking the C runtime
+# statically removes the Visual C++ Redistributable from what that user must
+# already have installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
