@@ -1,0 +1,89 @@
+name: Windows
+
+on:
+  push:
+    branches: [windows-beta, main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep the cache off C:\Users so the runner's larger disk holds the weights.
+  PHONON_WIN_HOME: D:\phonon
+
+jobs:
+  build:
+    name: build and unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-beta
+
+      - name: format
+        run: cargo fmt --all -- --check
+
+      - name: unit tests
+        run: cargo test -p phonon-win -p phonon-hotkey
+
+      - name: clippy
+        run: cargo clippy -p phonon-win -p phonon-hotkey --all-targets -- -D warnings
+
+      - name: build the release executable
+        run: cargo build --release -p phonon-win
+
+      - name: describe the download manifest
+        run: target\release\phonon-win.exe info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phonon-win
+          path: target/release/phonon-win.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  e2e:
+    name: end-to-end on real Windows
+    needs: build
+    runs-on: windows-latest
+    # Downloading four gigabytes of weights and running them on a shared CPU is
+    # slow. This is the release gate, so give it room.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: phonon-win
+          path: bin
+
+      - name: prepare the model cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:PHONON_WIN_HOME | Out-Null
+          Write-Host "cache root: $env:PHONON_WIN_HOME"
+
+      # The runtimes are small and change only when the pinned tags change.
+      # The weights are four gigabytes and are fetched fresh; caching them would
+      # push the repository over its cache budget.
+      - name: cache the runtimes
+        uses: actions/cache@v4
+        with:
+          path: D:\phonon\runtime
+          key: phonon-win-runtime-sherpa1.13.6-llama-b10726
+
+      - name: download and verify the runtimes and weights
+        run: bin\phonon-win.exe fetch
+
+      # The gate. Real Parakeet, real Gemma, real audio, on real Windows.
+      # It fails when the transcript is wrong, when correction collapses the
+      # sentence, or when correction runs away.
+      - name: end-to-end selftest on the startup fixture
+        run: bin\phonon-win.exe selftest --wav assets\startup.wav
+
+      - name: report what is installed
+        if: always()
+        run: bin\phonon-win.exe info
