@@ -119,6 +119,43 @@ fn free_port() -> Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+/// The answer inside one chat-completion reply.
+///
+/// A reply whose `content` is empty but whose `reasoning_content` is not means
+/// the model reasoned instead of answering. Say so: it is a different fault
+/// from a server that returned nothing at all.
+pub fn parse_reply(value: &serde_json::Value) -> Result<String> {
+    let choice = value
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .ok_or_else(|| anyhow!("correction reply has no choices: {value}"))?;
+    let message = choice
+        .get("message")
+        .ok_or_else(|| anyhow!("correction reply has no message: {value}"))?;
+    let content = message
+        .get("content")
+        .and_then(|content| content.as_str())
+        .unwrap_or_default();
+    if !content.trim().is_empty() {
+        return Ok(content.to_string());
+    }
+    let reasoning = message
+        .get("reasoning_content")
+        .and_then(|reasoning| reasoning.as_str())
+        .unwrap_or_default();
+    let finish = choice
+        .get("finish_reason")
+        .and_then(|reason| reason.as_str())
+        .unwrap_or("unknown");
+    if reasoning.trim().is_empty() {
+        bail!("correction returned an empty answer (finish_reason {finish})");
+    }
+    bail!(
+        "correction reasoned instead of answering (finish_reason {finish}): {}",
+        reasoning.trim()
+    )
+}
+
 /// A running `llama-server` with the correction model loaded.
 pub struct Corrector {
     child: Child,
@@ -244,16 +281,15 @@ impl Corrector {
                 "max_tokens": max_tokens,
                 "stream": false,
                 "cache_prompt": true,
+                // Gemma 4 opens a thought channel on its own. llama.cpp turns
+                // the template's thinking on by default, and the model then
+                // spends the whole budget reasoning and answers nothing. A
+                // formatter has nothing to reason about, so turn it off. This is
+                // what the closed-thought prefill does in the macOS sidecar.
+                "chat_template_kwargs": { "enable_thinking": false },
             }))?;
         let value: serde_json::Value = response.into_json().context("read correction reply")?;
-        value
-            .get("choices")
-            .and_then(|choices| choices.get(0))
-            .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("content"))
-            .and_then(|content| content.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("correction reply has no content: {value}"))
+        parse_reply(&value)
     }
 
     /// Correct one transcript.
@@ -281,7 +317,7 @@ impl Corrector {
 
         let cleaned = clean_output(transcript_payload(&reply));
         if cleaned.is_empty() {
-            bail!("correction returned nothing for {raw:?}");
+            bail!("correction returned nothing for {raw:?}; the reply was {reply:?}");
         }
         Ok(cleaned)
     }
@@ -297,6 +333,41 @@ impl Drop for Corrector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_answer_out_of_a_reply() {
+        let reply = serde_json::json!({
+            "choices": [{ "finish_reason": "stop",
+                          "message": { "content": "Hello, Fluid Voice." } }]
+        });
+        assert_eq!(parse_reply(&reply).unwrap(), "Hello, Fluid Voice.");
+    }
+
+    /// The first end-to-end run on Windows failed exactly this way, so the
+    /// message has to name the cause rather than say "nothing came back".
+    #[test]
+    fn reasoning_without_an_answer_is_named() {
+        let reply = serde_json::json!({
+            "choices": [{ "finish_reason": "length",
+                          "message": { "content": "",
+                                       "reasoning_content": "Thinking Process: ..." } }]
+        });
+        let error = parse_reply(&reply).unwrap_err().to_string();
+        assert!(error.contains("reasoned instead of answering"), "{error}");
+        assert!(error.contains("length"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_reply_is_an_error() {
+        let reply = serde_json::json!({
+            "choices": [{ "finish_reason": "stop", "message": { "content": "  " } }]
+        });
+        assert!(parse_reply(&reply)
+            .unwrap_err()
+            .to_string()
+            .contains("empty answer"));
+        assert!(parse_reply(&serde_json::json!({})).is_err());
+    }
 
     #[test]
     fn the_prompt_ships_inside_the_executable() {
