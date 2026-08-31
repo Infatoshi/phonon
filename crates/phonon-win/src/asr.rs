@@ -49,6 +49,17 @@ pub fn parse_output(stdout: &str) -> Result<Transcript> {
     bail!("sherpa-onnx-offline printed no result object")
 }
 
+/// The path, made absolute against the current directory. Nothing is resolved:
+/// a symbolic link stays a symbolic link, and no extended-length prefix is added.
+pub fn absolute(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    Ok(std::env::current_dir()
+        .context("read the current directory")?
+        .join(path))
+}
+
 /// How many decoding threads to use. sherpa-onnx gains little past four, and
 /// leaving cores free keeps the machine responsive while the user dictates.
 pub fn thread_count(logical_cpus: usize) -> usize {
@@ -105,9 +116,14 @@ impl Recognizer {
         if !wav.is_file() {
             bail!("{} is not a file", wav.display());
         }
+        // The tool runs from its own directory so it finds onnxruntime.dll, which
+        // means a relative wave path would resolve against that directory
+        // instead of the caller's. Make it absolute here. `canonicalize` would
+        // do it too, but on Windows it returns an extended-length `\\?\` path
+        // that not every C++ file reader accepts.
+        let wav = absolute(wav)?;
         let mut command = Command::new(&self.tool);
-        command.args(self.args(wav));
-        // The tool loads onnxruntime.dll from beside itself.
+        command.args(self.args(&wav));
         if let Some(bin) = self.tool.parent() {
             command.current_dir(bin);
         }
@@ -159,6 +175,16 @@ mod tests {
     #[test]
     fn no_result_object_is_an_error() {
         assert!(parse_output("Creating recognizer ...\nStarted\n").is_err());
+    }
+
+    #[test]
+    fn a_relative_path_becomes_absolute() {
+        let made = absolute(Path::new("assets/startup.wav")).unwrap();
+        assert!(made.is_absolute());
+        assert!(made.ends_with("assets/startup.wav"));
+        // An absolute path is handed back untouched, prefix and all.
+        let already = std::env::temp_dir().join("x.wav");
+        assert_eq!(absolute(&already).unwrap(), already);
     }
 
     #[test]
