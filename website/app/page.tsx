@@ -27,6 +27,7 @@ export default function Home() {
         <div className="nav-links">
           <a className="nav-link" href="https://github.com/Infatoshi/phonon">GitHub</a>
           <a className="nav-link" href="#release">macOS release</a>
+          <a className="nav-link" href="#windows">Windows beta</a>
         </div>
       </nav>
 
@@ -82,6 +83,42 @@ export default function Home() {
           <div>
             <strong>Public release</strong>
             <span>No cloud account required</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="release shell" id="windows">
+        <div>
+          <p className="section-label">Windows beta</p>
+          <h2>Beta. Untested on real hardware.</h2>
+          <p>
+            This build is compiled and tested end to end on Windows in continuous integration.
+            Nobody has run it on a real Windows machine yet. Phonon is looking for one tester.
+          </p>
+          <div className="hero-actions">
+            <a
+              className="button primary"
+              href="https://github.com/Infatoshi/phonon/releases/download/v0.2.0-win-beta.1/phonon-win.exe"
+            >
+              Download the Windows beta
+            </a>
+            <span className="platform">Windows 10 or 11 · x64 · 8 GB RAM · 4.1 GB downloaded on first run</span>
+          </div>
+          <p className="smartscreen">
+            The build is not code signed, so Windows SmartScreen shows &quot;Windows protected your PC&quot;.
+            Choose &quot;More info&quot;, then &quot;Run anyway&quot;.
+          </p>
+          <ul className="windows-facts">
+            <li>Hold Right Ctrl to dictate.</li>
+            <li>Double-tap to latch.</li>
+            <li>Speech recognition and correction both run on the CPU with no account and no cloud.</li>
+          </ul>
+        </div>
+        <div className="release-state" aria-label="Windows release status">
+          <span className="status-dot" />
+          <div>
+            <strong>Beta build</strong>
+            <span>Seeking one tester</span>
           </div>
         </div>
       </section>

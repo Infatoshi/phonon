@@ -22,4 +22,8 @@ test("renders the Phonon landing page", async () => {
   assert.doesNotMatch(html, /being prepared|Release in preparation/);
   assert.doesNotMatch(html, /phonon-app\.png|MacBook Pro Microphone|328 voice WPM/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
+  assert.match(html, /Beta\. Untested on real hardware\./);
+  assert.match(html, /releases\/download\/v0\.2\.0-win-beta\.1\/phonon-win\.exe/);
+  assert.match(html, /Windows protected your PC/);
+  assert.match(html, /Right Ctrl/);
 });
