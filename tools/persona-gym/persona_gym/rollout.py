@@ -86,9 +86,10 @@ def run_bash(cmd: str, cwd: Path, env: dict) -> str:
     return f"exit {r.returncode}\n{out}" if out.strip() else f"exit {r.returncode} (no output)"
 
 
-def chat(endpoint: str, model: str, messages: list, timeout: int = 300) -> dict:
+def chat(endpoint: str, model: str, messages: list, timeout: int = 900,
+         tool_choice: str = "auto") -> dict:
     body = json.dumps({"model": model, "messages": messages,
-                       "tools": TOOLS, "tool_choice": "auto"}).encode()
+                       "tools": TOOLS, "tool_choice": tool_choice}).encode()
     url = endpoint.rstrip("/")
     if not url.endswith("/chat/completions"):
         url += "/v1/chat/completions" if not url.endswith("/v1") else "/chat/completions"
@@ -116,7 +117,7 @@ def parse_final(content: str):
     if not m:
         return None, "no json fence"
     try:
-        ans = json.loads(m[-1])
+        ans = json.loads(m[-1], strict=False)
     except json.JSONDecodeError as e:
         return None, f"json error: {e}"
     if not isinstance(ans, list):
@@ -144,14 +145,27 @@ def run_one(persona_dir: Path, endpoint: str, model: str, rdir: Path,
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     answer, status, turns = None, "max_turns", 0
     nudged = False
+    finalize_at = max(max_turns - 2, 1)
     for turn in range(max_turns):
         turns = turn + 1
-        resp = chat(endpoint, model, messages)
+        final_call = turn >= finalize_at
+        if final_call and messages[-1].get("role") != "user":
+            wrap = {"role": "user", "content":
+                    "Stop exploring. Reply now with your final answer: a single "
+                    "JSON array in a ```json fence and nothing after it."}
+            messages.append(wrap)
+            log(wrap)
+        resp = chat(endpoint, model, messages,
+                    tool_choice="none" if final_call else "auto")
         u = resp.get("usage") or {}
         for k in usage:
             usage[k] += u.get(k) or 0
         msg = resp["choices"][0]["message"]
-        messages.append(msg)
+        # Keep reasoning out of the history: replaying it re-renders thousands
+        # of thinking tokens into every later prompt and overflows the context.
+        clean = {k: msg.get(k) for k in ("role", "content", "tool_calls")
+                 if msg.get(k) is not None}
+        messages.append(clean)
         log(msg)
         calls = msg.get("tool_calls") or []
         if calls:
@@ -195,6 +209,9 @@ def run(personas: Path, endpoint: str, model: str, out: Path,
     for pdir in pdirs:
         for r in range(n_per):
             rdir = out / pdir.name / f"r{r}"
+            if (rdir / "meta.json").exists():
+                print(f"[rollout] {pdir.name} r{r}: skip (done)", file=sys.stderr)
+                continue
             t0 = time.time()
             meta = run_one(pdir, endpoint, model, rdir, max_turns, shim)
             print(f"[rollout] {pdir.name} r{r}: {meta['status']}, {meta['turns']} turns, "
