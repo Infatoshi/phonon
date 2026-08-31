@@ -26,4 +26,7 @@ test("renders the Phonon landing page", async () => {
   assert.match(html, /releases\/download\/v0\.2\.0-win-beta\.1\/phonon-win\.exe/);
   assert.match(html, /Windows protected your PC/);
   assert.match(html, /Right Ctrl/);
+  assert.match(html, /3\.8 GB downloaded on first run/);
+  assert.match(html, /Seeking one tester/);
+  assert.match(html, /16 GB RAM recommended/);
 });

@@ -1,6 +1,7 @@
 # Phonon
 
-Open-source voice typing for macOS. Fast, local, and sovereign.
+Open-source voice typing. Fast, local, and sovereign. macOS is the shipped
+platform. Windows is in beta.
 
 [Website](https://phonon.sh) · [Distribution plan](DISTRIBUTION.md)
 
@@ -17,6 +18,38 @@ revisions, which is about 5.6 GB and the one slow start. Everything after that
 is local and offline. Tagged releases also include the DMG for direct
 installation. To build locally instead, use
 `brew install --formula infatoshi/phonon/phonon`.
+
+## Windows beta
+
+Beta. Continuous integration builds it on Windows and runs one real dictation
+through it on every push. Nobody has run it on a real Windows machine yet.
+
+Download `phonon-win.exe` from the
+[latest Windows prerelease](https://github.com/Infatoshi/phonon/releases?q=win-beta)
+and double-click it. It needs Windows 10 or 11 on x64. Sixteen gigabytes of
+memory is comfortable; eight is the floor.
+
+The build is not code signed. SmartScreen shows **Windows protected your PC**
+the first time. Choose **More info**, then **Run anyway**. There is no way
+around this without an Extended Validation certificate.
+
+First run downloads about 3.8 GB: the sherpa-onnx tools, the llama.cpp CPU
+build, Parakeet as int8 ONNX, and the Gemma correction weights. The tray
+tooltip carries the progress. Everything after that is local and offline.
+
+Hold **Right Ctrl** to dictate. Double-tap it to latch, then press it again to
+stop. Right-click the tray icon for the menu. Phonon swallows Right Ctrl while
+it runs, so Right Ctrl stops acting as a modifier; Left Ctrl is untouched.
+`PHONON_WIN_HOTKEY` takes `rightctrl`, `leftctrl`, `rightalt`, `rightshift`,
+`capslock`, or `f13`.
+
+```
+phonon-win.exe info      # what first run downloads, and what is installed
+phonon-win.exe fetch     # download and verify, then stop
+phonon-win.exe selftest  # one real pass through both models; the release gate
+```
+
+Everything lives in `%LOCALAPPDATA%\Phonon`. Delete that folder to start over.
 
 ## Pipeline
 
@@ -171,6 +204,8 @@ crates/phonon-llm/     correction sidecar lifecycle + benchmark client
 crates/phonon-profile/ literal Metal dispatch, LLM phase, and E2E profilers
 crates/phonon-core/    pipeline coordination + engine events
 crates/phonon-cli/     commands, doctor, bench, bar launcher
+crates/phonon-hotkey/  hold, tap, and double-tap latch, shared by both platforms
+crates/phonon-win/     Windows tray app, keyboard hook, WASAPI capture, insertion
 bar/                   SwiftPM native Home/History/Dictionary/Settings app + floating pill
 sidecar/asr_server.py
 sidecar/polish_server.py

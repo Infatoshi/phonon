@@ -239,8 +239,10 @@ pub fn wav_has_speech(path: &Path) -> Result<bool> {
     }
     let data = data.with_context(|| format!("WAV has no data chunk: {}", path.display()))?;
     let samples = data
-        .chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| i16::from_le_bytes(*chunk))
         .collect::<Vec<_>>();
     Ok(samples_have_speech(&samples, sample_rate))
 }

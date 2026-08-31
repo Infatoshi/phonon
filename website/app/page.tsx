@@ -102,7 +102,7 @@ export default function Home() {
             >
               Download the Windows beta
             </a>
-            <span className="platform">Windows 10 or 11 · x64 · 8 GB RAM · 4.1 GB downloaded on first run</span>
+            <span className="platform">Windows 10 or 11 · x64 · CPU inference · 16 GB RAM recommended · 3.8 GB downloaded on first run</span>
           </div>
           <p className="smartscreen">
             The build is not code signed, so Windows SmartScreen shows &quot;Windows protected your PC&quot;.

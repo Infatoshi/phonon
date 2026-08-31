@@ -174,3 +174,94 @@ It does not detect other dictation apps.
 
 Untested before shipping: Wispr helper self-exit after SIGKILL, Aqua bridge
 orphan exit, superwhisper default hotkey and idle mic state.
+
+## Windows
+
+Phonon on Windows is one executable, `phonon-win.exe`, in `crates/phonon-win`.
+It is a beta. Continuous integration runs it end to end on `windows-latest`;
+no one has run it on real hardware.
+
+### What ships and what is downloaded
+
+The executable carries the correction prompt and `assets/startup.wav`. It
+carries no weights and no third-party runtime. First run downloads four
+components, in this order:
+
+| Component | Pinned to | Size |
+| --- | --- | --- |
+| sherpa-onnx tools and ONNX Runtime | release `v1.13.6` | 18 MB |
+| llama.cpp CPU build | release `b10726` | 18 MB |
+| Parakeet TDT 0.6b v2, int8 ONNX | commit `1ab9323` | 661 MB |
+| Gemma 4 E2B instruction tuned, q4_0 GGUF | commit `675cff4` | 3.3 GB |
+
+Every file has its SHA-256 in `crates/phonon-win/src/manifest.rs`. A file that
+does not match is deleted, not used. A component is built in a staging
+directory and renamed at the end, so an interrupted download never looks
+installed. Runtimes come first because they are small: a slow link shows
+progress within a minute.
+
+The small runtimes are chosen instead of Rust bindings on purpose. Both
+projects publish prebuilt Windows binaries, so continuous integration compiles
+no C++ and a user installs no toolchain.
+
+### The two models
+
+Speech recognition is Parakeet TDT 0.6b v2, the same acoustic model macOS runs
+on MLX, exported to ONNX and quantised to int8. `sherpa-onnx-offline.exe` reads
+one wave file and writes one JSON object to standard output.
+
+Correction is Gemma 4 E2B, Google's own quantisation-aware q4_0 GGUF, resident
+in `llama-server.exe`. The prompt is `prompts/polish_v2.txt`, embedded in the
+executable. The temperature and the output budget rule, `ceil(spoken * 1.8) +
+24` clamped to 48 and 256 tokens, are the ones in `sidecar/polish_server.py`.
+Both platforms therefore correct a transcript the same way.
+
+Correction is mandatory here as it is on macOS. There is no recognition-only
+mode.
+
+### Readiness
+
+First run writes the fixture, recognises it, corrects it, and applies both
+rules from `crates/phonon-core/src/lib.rs`: the transcript must contain the
+fixture words, and the correction must be within one word below and two words
+above the transcript's length. Weights that load are not readiness. The same
+check is `phonon-win.exe selftest`, and it is the release gate.
+
+### Threads
+
+Two. The main thread owns the message-only window, the notification-area icon,
+and the `WH_KEYBOARD_LL` hook, and does nothing else: Windows removes a
+low-level hook that blocks past its timeout. The hook reads a virtual key code,
+asks the latch, and pushes the decision onto a channel.
+
+The worker thread owns everything slow: the download, the resident correction
+server, the microphone, recognition, and insertion. A cpal stream cannot move
+between threads on Windows, so a recording begins and ends on that thread.
+
+### The dictation key
+
+Right Control, held to talk. Two taps latch; the next press stops. The rules
+are `crates/phonon-hotkey`, ported from the Swift `HoldKeyTapLatch` and tested
+against the same cases. Phonon swallows the key, so Right Control stops acting
+as a modifier while Phonon runs. `PHONON_WIN_HOTKEY` moves it.
+
+### Capture and insertion
+
+Capture is WASAPI through cpal, following the system default input device, in
+whatever format the device offers, mixed to one channel and written as 16-bit.
+sherpa-onnx resamples, so no resampler runs here.
+
+Insertion types text of 200 UTF-16 units or fewer with `SendInput` and Unicode
+key events, which leaves the clipboard alone. Anything longer, and anything
+that fails, goes through the clipboard and Control-V; the previous clipboard
+text is restored a quarter of a second later.
+
+### Known gaps
+
+- Unsigned. SmartScreen warns on first launch.
+- No microphone priority list, no streaming preview, no screen context, no
+  dictionary retrieval, and no corpus. Windows runs the recognise-and-correct
+  path only.
+- Unpacking uses the `tar` that ships with Windows 10 build 17063 and later.
+- Recognition loads the encoder per pass, so the first word costs more than it
+  does on macOS.
