@@ -32,7 +32,7 @@ export default function Home() {
       </nav>
 
       <section className="hero shell" id="top">
-        <h1>Fast. Local.<br />Sovereignty.</h1>
+        <h1>Fast. Local.<br />Yours.</h1>
         <p className="hero-copy">
           Voice typing that runs on your Mac, understands your vocabulary, and stays out of your way.
         </p>
@@ -64,7 +64,7 @@ export default function Home() {
           <h2>Your voice in.<br />Clean text out.</h2>
         </div>
         <div className="pipeline" aria-label="Phonon processing pipeline">
-          <span>Microphone</span><i>→</i><span>Local speech</span><i>→</i><span>Personal polish</span><i>→</i><span>Your text</span>
+          <span>Microphone</span><i>→</i><span>Speech to text</span><i>→</i><span>Correction</span><i>→</i><span>Your text</span>
         </div>
       </section>
 
@@ -90,10 +90,11 @@ export default function Home() {
       <section className="release shell" id="windows">
         <div>
           <p className="section-label">Windows beta</p>
-          <h2>Beta. Untested on real hardware.</h2>
+          <h2>Beta. Runs on the CPU.</h2>
           <p>
-            This build is compiled and tested end to end on Windows in continuous integration.
-            Nobody has run it on a real Windows machine yet. Phonon is looking for one tester.
+            Continuous integration builds it and runs a real dictation through it on every push, and
+            the same flow has run end to end on a Windows Server 2022 machine. Reports from real Windows
+            PCs are welcome as GitHub issues.
           </p>
           <div className="hero-actions">
             <a
@@ -118,7 +119,7 @@ export default function Home() {
           <span className="status-dot" />
           <div>
             <strong>Beta build</strong>
-            <span>Seeking one tester</span>
+            <span>Reports welcome</span>
           </div>
         </div>
       </section>
@@ -128,7 +129,7 @@ export default function Home() {
           <Image src="/phonon-icon.png" alt="" width={28} height={28} />
           <span>Phonon</span>
         </a>
-        <p>Open-source voice typing for macOS.</p>
+        <p>Open-source voice typing for macOS, with a Windows beta. Source under GPL-3.0.</p>
       </footer>
     </main>
   );

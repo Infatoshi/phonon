@@ -1,0 +1,120 @@
+{
+  "about": "Post-paste edit learning behaviour, shared by the engine (crates/phonon-core/src/edits.rs) and the bar (bar/Tests/EditLearningTests.swift). Each case is what Phonon pasted, what the user kept when the watch ended, and the engine's expected reply. The dictionary is empty unless `dictionary` lists terms.",
+  "cases": [
+    {
+      "name": "paste then retype a misheard term",
+      "pasted": "we benchmark coo blast against cutlass",
+      "edited": "we benchmark cuBLAS against CUTLASS",
+      "end_reason": "quiet_after_edit",
+      "outcome": "correction",
+      "suggestions": [
+        {"kind": "dictionary_term", "term": "cuBLAS", "heard_as": "coo blast", "reason": "misheard", "existing_entry": false},
+        {"kind": "dictionary_term", "term": "CUTLASS", "heard_as": "cutlass", "reason": "casing", "existing_entry": false}
+      ]
+    },
+    {
+      "name": "select all and retype the whole dictation",
+      "pasted": "ask clod code to review it",
+      "edited": "ask Claude Code to review it",
+      "end_reason": "message_sent",
+      "outcome": "correction",
+      "suggestions": [
+        {"kind": "dictionary_term", "term": "Claude Code", "heard_as": "clod code", "reason": "misheard", "existing_entry": false}
+      ]
+    },
+    {
+      "name": "known term gains the heard form",
+      "pasted": "profile coo blast",
+      "edited": "profile cuBLAS",
+      "dictionary": [{"phrase": "cuBLAS", "spoken_forms": ["koo bloss"]}],
+      "end_reason": "textbox_emptied",
+      "outcome": "correction",
+      "suggestions": [
+        {"kind": "dictionary_term", "term": "cuBLAS", "heard_as": "coo blast", "reason": "misheard", "existing_entry": true}
+      ]
+    },
+    {
+      "name": "autocorrect: smart quotes and dashes",
+      "pasted": "it's done -- ship it",
+      "edited": "it’s done — ship it",
+      "end_reason": "quiet_after_edit",
+      "outcome": "typographic",
+      "suggestions": []
+    },
+    {
+      "name": "autocorrect: the field capitalized the first letter",
+      "pasted": "cuBLAS is fast",
+      "edited": "CuBLAS is fast",
+      "end_reason": "quiet_after_edit",
+      "outcome": "style",
+      "suggestions": []
+    },
+    {
+      "name": "autocorrect: observation ended on a half-typed word",
+      "pasted": "Send the report today",
+      "edited": "Send the report t",
+      "end_reason": "next_dictation",
+      "outcome": "capture_error",
+      "suggestions": []
+    },
+    {
+      "name": "unrelated typing after the dictation",
+      "pasted": "Ship it today.",
+      "edited": "Ship it today. Also ping Bob about the cutover.",
+      "end_reason": "trailing_newline_added",
+      "outcome": "appended",
+      "suggestions": []
+    },
+    {
+      "name": "undo removed the dictation",
+      "pasted": "hello world",
+      "edited": "",
+      "end_reason": "transcript_region_emptied",
+      "outcome": "removed",
+      "suggestions": []
+    },
+    {
+      "name": "edit then undo back to the paste",
+      "pasted": "use coo blast",
+      "edited": "use coo blast",
+      "end_reason": "observation_window_elapsed",
+      "outcome": "unchanged",
+      "suggestions": []
+    },
+    {
+      "name": "change of mind is not a mishearing",
+      "pasted": "we use Postgres here",
+      "edited": "we use SQLite here",
+      "end_reason": "quiet_after_edit",
+      "outcome": "correction",
+      "suggestions": []
+    },
+    {
+      "name": "unit typed onto a number",
+      "pasted": "meet at 3:30",
+      "edited": "meet at 3:30pm",
+      "end_reason": "message_sent",
+      "outcome": "correction",
+      "suggestions": []
+    },
+    {
+      "name": "chat style: lowercase start and no final period",
+      "pasted": "Sounds good.",
+      "edited": "sounds good",
+      "end_reason": "message_sent",
+      "outcome": "style",
+      "suggestions": [
+        {"kind": "style", "preference": "lowercase_start"},
+        {"kind": "style", "preference": "no_trailing_period"}
+      ]
+    },
+    {
+      "name": "anchor mismatch records but never proposes",
+      "pasted": "we benchmark coo blast",
+      "edited": "we benchmark cuBLAS",
+      "end_reason": "anchor_mismatch",
+      "outcome": "correction",
+      "suggestions": []
+    }
+  ]
+}

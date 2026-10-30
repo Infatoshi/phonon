@@ -1,9 +1,9 @@
-// Phonon — native macOS app plus a bottom-anchored dictation capsule.
+// Phonon: the native macOS app plus a bottom-anchored dictation capsule.
 //
-// Idle: tiny warm bar. Hold Option → the same bar expands. Key-up → it breathes.
-// Done → type text and return to idle.
-//
-// First-pass fix: wait for warm engine, pre-warm mic, queue work until ready.
+// Idle, the capsule is a small bar. Holding the shortcut (Globe by default)
+// expands it; on key-up it breathes while the text is corrected, then the text
+// is typed and the capsule returns to idle. Work that arrives before the engine
+// is warm is queued, not dropped.
 
 import AVFoundation
 import AppKit
@@ -13,10 +13,12 @@ import Carbon.HIToolbox
 import CoreAudio
 import Darwin
 import Foundation
+import PhononObjC
 import QuartzCore
 import ScreenCaptureKit
 import SwiftUI
 import Vision
+import os
 
 final class SingleInstanceLock {
     private let descriptor: Int32
@@ -53,14 +55,6 @@ final class SingleInstanceLock {
     }
 }
 
-// MARK: - Theme (black shell, white ink)
-
-enum Theme {
-    static let panel = NSColor.black
-    static let ink = NSColor.white
-    static let inkDim = NSColor(white: 1.0, alpha: 0.22)
-}
-
 // MARK: - State
 
 @MainActor
@@ -75,9 +69,6 @@ final class PillState: ObservableObject {
     @Published var mode: Mode = .hidden
     @Published var level = 0.0
     @Published var streamingPreviewEnabled = true
-    @Published var previewText = ""
-    @Published var previewStage = "Listening"
-    @Published var panelHeight: CGFloat = 116
 }
 
 struct ModelLoadStream: Identifiable {
@@ -141,7 +132,7 @@ struct ModelStartupView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(state.ready ? "Phonon is ready" : "Preparing Phonon")
                         .font(.title2.weight(.semibold))
-                    Text("Models are warmed with real demo requests before dictation.")
+                    Text("Phonon checks both models with a short test before you dictate.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -213,14 +204,6 @@ struct ModelStartupView: View {
 enum PreviewRevisionPolicy {
     static func stableAcoustic(previous: String, candidate: String) -> String {
         wordCount(candidate) < wordCount(previous) ? previous : candidate
-    }
-
-    static func canShowPolish(
-        source: String, latestAcoustic: String, polished: String, newerCandidateWaiting: Bool
-    ) -> Bool {
-        !newerCandidateWaiting
-            && source == latestAcoustic
-            && wordCount(polished) >= wordCount(source)
     }
 
     static func safeFinalText(source: String, candidate: String) -> String {
@@ -323,60 +306,6 @@ struct HoldKeyTapLatch {
         downAt = nil
         lastTapUpAt = nil
         secondTapCandidate = false
-    }
-}
-
-enum LiveTranscriptFormatter {
-    static func format(_ text: String) -> String {
-        var result = text
-        let replacements = [
-            (#"(?i)\b(?:full stop|period)\b"#, "."),
-            (#"(?i)\bquestion mark\b"#, "?"),
-            (#"(?i)\b(?:exclamation mark|exclamation point)\b"#, "!"),
-            (#"(?i)\bcomma\b"#, ","),
-            (#"(?i)\bsemicolon\b"#, ";"),
-            (#"(?i)\bcolon\b"#, ":"),
-            (#"(?i)\bnew line\b"#, "\n"),
-            (#"(?i)\b(?:uh+|um+|ah+)\b[\s,]*"#, ""),
-            (#"(?i)\b([[:alnum:]']+)(?:\s+\1\b)+"#, "$1"),
-            (#"\s+([,.!?;:])"#, "$1"),
-            (#"([,.!?;:])(?=\S)"#, "$1 "),
-            (#"[ \t]{2,}"#, " "),
-        ]
-        for (pattern, replacement) in replacements {
-            result = replacing(pattern: pattern, in: result, with: replacement)
-        }
-        return capitalizeSentences(
-            result.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private static func replacing(pattern: String, in text: String, with replacement: String)
-        -> String
-    {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.stringByReplacingMatches(
-            in: text, range: range, withTemplate: replacement)
-    }
-
-    private static func capitalizeSentences(_ text: String) -> String {
-        var output = ""
-        var shouldCapitalize = true
-        for character in text {
-            if shouldCapitalize, character.isLetter {
-                output.append(contentsOf: character.uppercased())
-                shouldCapitalize = false
-            } else {
-                output.append(character)
-                if !character.isWhitespace && !"\"'([{«.».".contains(character) {
-                    shouldCapitalize = false
-                }
-            }
-            if ".!?\n".contains(character) {
-                shouldCapitalize = true
-            }
-        }
-        return output
     }
 }
 
@@ -573,44 +502,191 @@ enum CoreAudioInputDevices {
 }
 
 enum ScreenContextCapture {
-    static func recognizeAllDisplays() async -> String {
+    /// One capture's OCR text and the windows it covered.
+    struct Read {
+        let keys: [String]
+        let windowIDs: [UInt32]
+        let text: String
+    }
+
+    /// On-screen windows, front to back, from the window server. Titles need
+    /// the Screen Recording permission screen context already requires.
+    static func onScreenWindows() -> [ScreenWindow] {
+        guard
+            let info = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]]
+        else { return [] }
+        var bundles = [pid_t: String?]()
+        return info.compactMap { entry in
+            guard let number = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                let bounds = entry[kCGWindowBounds as String] as? NSDictionary,
+                let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+            else { return nil }
+            if bundles[pid] == nil {
+                bundles[pid] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+            }
+            return ScreenWindow(
+                id: number, pid: pid, bundleID: bundles[pid] ?? nil, frame: frame,
+                layer: (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                alpha: (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1,
+                title: entry[kCGWindowName as String] as? String)
+        }
+    }
+
+    /// The window `pid` has in front, the one a switch just brought up.
+    static func frontWindow(of pid: pid_t) -> ScreenWindow? {
+        onScreenWindows().first { $0.pid == pid && $0.layer == 0 }
+    }
+
+    /// The focused browser window and its top-level page host, when the
+    /// frontmost app is a browser and the focused element is in a page of
+    /// one of its standard windows. The window id is the focused element's
+    /// own window (`BrowserPage.focusedWindow`), never one picked separately
+    /// from the window list, so a popup or a window switch between two reads
+    /// cannot pair one window's host with another window. Blocking AX; call
+    /// off the main thread.
+    static func focusedBrowserPage(pid: pid_t?, isBrowser: Bool) -> (
+        windowID: UInt32, host: String
+    )? {
+        guard isBrowser, let pid else { return nil }
+        return BrowserPage.focusedWindow(pid: pid)
+    }
+
+    /// The reads to keep once the capture is done: all of them while the
+    /// focused browser page is still the one the capture was allowed for;
+    /// otherwise none that covered that browser window, whose tab may have
+    /// changed under the capture.
+    static func keptReads(
+        _ reads: [Read], allowed: (windowID: UInt32, host: String)?,
+        now: (windowID: UInt32, host: String)?
+    ) -> [Read] {
+        guard let allowed, !samePage(allowed, now) else { return reads }
+        return reads.filter { !$0.windowIDs.contains(allowed.windowID) }
+    }
+
+    /// The page a switched-to window may be read for: the focused element's
+    /// own window and host, from one walk, only if that window is the one
+    /// in front.
+    static func switchedPage(_ focus: BrowserPage.Focus, window: UInt32) -> (
+        windowID: UInt32, host: String
+    )? {
+        guard let page = focus.page, page.windowID == window else { return nil }
+        return page
+    }
+
+    /// Whether the focused browser page is still the one a capture was
+    /// allowed for: same window, same host. Checked after the capture.
+    static func samePage(
+        _ before: (windowID: UInt32, host: String)?, _ after: (windowID: UInt32, host: String)?
+    ) -> Bool {
+        guard let before, let after else { return before == nil && after == nil }
+        return before.windowID == after.windowID && before.host == after.host
+    }
+
+    /// Read what can be seen on each display: one capture per display that
+    /// contains only that display's visible windows (`ScreenWindowSelector`),
+    /// so a window buried under others, Phonon's own and private ones are
+    /// never read.
+    static func readVisible(excluded: @escaping (ScreenWindow) -> Bool) async -> [Read] {
         guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
-            return ""
+            return []
         }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false, onScreenWindowsOnly: true)
-            let ownApplication = content.applications.first {
-                $0.processID == ProcessInfo.processInfo.processIdentifier
+            let displays = content.displays.map {
+                ScreenDisplay(id: $0.displayID, frame: $0.frame)
             }
-            var recognized = [String]()
+            let picked = ScreenWindowSelector.visibleWindows(
+                windows: onScreenWindows(), displays: displays, excluded: excluded)
+            var reads = [Read]()
             for display in content.displays {
-                guard !Task.isCancelled else { return "" }
-                let filter = SCContentFilter(
-                    display: display,
-                    excludingApplications: ownApplication.map { [$0] } ?? [],
-                    exceptingWindows: [])
+                guard !Task.isCancelled else { return reads }
+                let chosen = picked[display.displayID] ?? []
+                let ids = Set(chosen.map(\.id))
+                let windows = content.windows.filter { ids.contains($0.windowID) }
+                guard !windows.isEmpty else { continue }
+                let filter = SCContentFilter(display: display, including: windows)
                 let configuration = SCStreamConfiguration()
                 configuration.width = display.width
                 configuration.height = display.height
                 configuration.showsCursor = false
                 let image = try await SCScreenshotManager.captureImage(
                     contentFilter: filter, configuration: configuration)
-                guard !Task.isCancelled else { return "" }
-                let text = recognize(image)
-                recognized.append(text)
+                guard !Task.isCancelled else { return reads }
+                reads.append(
+                    Read(
+                        keys: chosen.map(\.captureKey), windowIDs: chosen.map(\.id),
+                        text: recognize(image)))
             }
-            return recognized.filter { !$0.isEmpty }.joined(separator: "\n")
+            return reads
         } catch {
             NSLog("phonon screen context: \(error.localizedDescription)")
-            return ""
+            return []
+        }
+    }
+
+    /// Read one window, for a window or tab the user switched to mid-dictation.
+    static func readWindow(id: UInt32) async -> String? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true)
+            guard let window = content.windows.first(where: { $0.windowID == id }) else {
+                return nil
+            }
+            let configuration = SCStreamConfiguration()
+            configuration.width = max(1, Int(window.frame.width))
+            configuration.height = max(1, Int(window.frame.height))
+            configuration.showsCursor = false
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(desktopIndependentWindow: window),
+                configuration: configuration)
+            guard !Task.isCancelled else { return nil }
+            return recognize(image)
+        } catch {
+            NSLog("phonon screen context window: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// The final correction waits for the screen read, and the first accurate text
+    /// recognition in a process loads Vision's models (cold after a reboot it took
+    /// ~14 s and held the first dictation). Recognize one rendered word at launch
+    /// so that load happens before the first dictation; no screen is captured.
+    static func warmUp() {
+        Task.detached(priority: .utility) {
+            let width = 192
+            let height = 48
+            guard
+                let context = CGContext(
+                    data: nil, width: width, height: height, bitsPerComponent: 8,
+                    bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                    bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return }
+            context.setFillColor(gray: 1, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let word = NSAttributedString(
+                string: "Phonon",
+                attributes: [.font: NSFont.systemFont(ofSize: 28), .foregroundColor: NSColor.black])
+            context.textPosition = CGPoint(x: 12, y: 12)
+            CTLineDraw(CTLineCreateWithAttributedString(word), context)
+            guard let image = context.makeImage() else { return }
+            _ = recognize(image)
         }
     }
 
     private static func recognize(_ image: CGImage) -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        // Language correction "fixes" identifiers toward English words and
+        // costs about 30% of the time; screen context exists to read exactly
+        // those identifiers. Measured 2026-10-29 (synthetic Retina screens,
+        // 316 dictionary terms, warm, M4 Max): on 96.9/96.1% of terms exact
+        // in 202/218 ms (code/UI screen), off 96.9/98.7% in 156/135 ms.
+        request.usesLanguageCorrection = false
         let handler = VNImageRequestHandler(cgImage: image)
         do {
             try handler.perform([request])
@@ -922,6 +998,13 @@ final class MicRecorder {
     var onAmplitude: ((Double) -> Void)?
     var onStreamPCM16: ((Data) -> Void)?
     private var primed = false
+    private var pendingReselect: DispatchWorkItem?
+    private var reselectRetries = 0
+    /// Device changes arrive in bursts (a call app switching a Bluetooth
+    /// headset fires a default-input change and several engine rebuilds), and
+    /// the input format is not final until the burst ends.
+    static let reselectSettle: TimeInterval = 0.4
+    static let reselectRetryLimit = 3
 
     init() {
         // AVAudioEngine rebuilds its graph when the default input changes or a
@@ -929,17 +1012,59 @@ final class MicRecorder {
         // system default instead of the device Phonon selected. Re-resolve.
         NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in self?.reselectDevice(reason: "engine configuration change") }
+        ) { [weak self] _ in self?.scheduleReselect(reason: "engine configuration change") }
         CoreAudioInputDevices.observeDefaultInputChanges { [weak self] in
-            self?.reselectDevice(reason: "system default input change")
+            self?.scheduleReselect(reason: "system default input change")
         }
+    }
+
+    /// Re-resolve once the burst of device notifications has settled.
+    private func scheduleReselect(reason: String, delay: TimeInterval = MicRecorder.reselectSettle) {
+        pendingReselect?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reselectDevice(reason: reason) }
+        pendingReselect = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func reselectDevice(reason: String) {
         NSLog("phonon mic: reselect (\(reason))")
+        pendingReselect = nil
         forgetDevice()
         guard primed else { return }
-        refreshPreferredDevice()
+        do {
+            try ensureHardwareRunning()
+            reselectRetries = 0
+        } catch {
+            NSLog("mic reselect: \(error.localizedDescription)")
+            // The hardware may still be switching formats; try again shortly.
+            guard reselectRetries < Self.reselectRetryLimit else {
+                reselectRetries = 0
+                return
+            }
+            reselectRetries += 1
+            scheduleReselect(reason: "retry after \(reason)", delay: 1.0)
+        }
+    }
+
+    /// Install the capture tap in the hardware's current format. A format that
+    /// changed under us raises inside AVFAudio; that becomes a thrown error
+    /// instead of an abort, and the caller retries once the device settles.
+    private func installCaptureTap(on input: AVAudioInputNode, format: AVAudioFormat) throws {
+        var raised: NSError?
+        let installed = PhononCatchException({
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                self?.ingest(buffer)
+            }
+        }, &raised)
+        guard installed else {
+            tapFormat = nil
+            throw raised
+                ?? NSError(
+                    domain: "PhononBar", code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not install the microphone tap"])
+        }
+        hwSampleRate = format.sampleRate
+        tapFormat = format
     }
 
     /// Drop the selected device so the next `ensureHardwareRunning` picks again.
@@ -1056,10 +1181,12 @@ final class MicRecorder {
                             "No mic format (sr=\(inFmt.sampleRate) ch=\(inFmt.channelCount))"
                     ])
             }
-            hwSampleRate = inFmt.sampleRate
-            tapFormat = inFmt
-            input.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { [weak self] buffer, _ in
-                self?.ingest(buffer)
+            do {
+                try installCaptureTap(on: input, format: inFmt)
+            } catch {
+                // Leave nothing half-configured: the next call starts over.
+                configuredDeviceID = nil
+                throw error
             }
         } else if configuredDeviceID != nil {
             reinstallTapIfHardwareFormatChanged()
@@ -1090,10 +1217,11 @@ final class MicRecorder {
             engine.stop()
         }
         input.removeTap(onBus: 0)
-        hwSampleRate = inFmt.sampleRate
-        tapFormat = inFmt
-        input.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { [weak self] buffer, _ in
-            self?.ingest(buffer)
+        do {
+            try installCaptureTap(on: input, format: inFmt)
+        } catch {
+            NSLog("mic tap reinstall: \(error.localizedDescription)")
+            return false
         }
         return true
     }
@@ -1378,6 +1506,9 @@ struct E2EProfileRecord: Codable {
     let llmReportedWallMs: Double?
     let llmTtftMs: Double?
     let llmTokensPerSecond: Double?
+    /// Final transcript to correction request: the time spent waiting for
+    /// screen context (bounded by `ScreenContextWait`).
+    var screenWaitMs: Double? = nil
 
     enum CodingKeys: String, CodingKey {
         case timestamp
@@ -1405,6 +1536,7 @@ struct E2EProfileRecord: Codable {
         case llmReportedWallMs = "llm_reported_wall_ms"
         case llmTtftMs = "llm_ttft_ms"
         case llmTokensPerSecond = "llm_tokens_per_second"
+        case screenWaitMs = "screen_wait_ms"
     }
 }
 
@@ -1491,7 +1623,8 @@ final class E2ETrace {
             asrReportedMs: asrReportedMs,
             llmReportedWallMs: llmReportedWallMs,
             llmTtftMs: llmTtftMs,
-            llmTokensPerSecond: llmTokensPerSecond
+            llmTokensPerSecond: llmTokensPerSecond,
+            screenWaitMs: milliseconds(from: asrResultNs, to: polishSubmittedNs)
         )
     }
 }
@@ -1560,21 +1693,39 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var submittedTranscribe: (path: String, id: String)?
     private var processing = false
     private var streamActive = false
-    private var previewPolishInput: String?
-    private var pendingPreviewText: String?
-    private var previewRevision = 0
-    private var lastPreviewPolishInput = ""
     private var latestAcousticPreview = ""
     private var e2eTrace: E2ETrace?
-    private var screenContextText = ""
     private var screenContextReady = true
     private var pendingFinalPolish: (text: String, id: String)?
     private var screenContextTask: Task<Void, Never>?
+    /// What screen context read this pass: the visible windows at key-down
+    /// plus windows and tabs switched to while speaking.
+    private var screenCollection = ScreenContextCollection()
+    private var screenInitialDone = true
+    /// A browser dictation's screen read waits for the tab lookup.
+    private var screenStartAwaitsTarget = false
+    private var screenReads = ScreenReadLedger()
+    private var screenSwitchTasks: [Task<Void, Never>] = []
+    private var screenSwitchTimer: Timer?
+    private var screenWaitWork: DispatchWorkItem?
     private var engineRestartWork: DispatchWorkItem?
     private var terminating = false
     private var activeWavPath: String?
     private var insertionTarget: NSRunningApplication?
+    /// Where this pass is going (app, browser site), and whether it is on the
+    /// private list. Read off the main thread at key-down.
+    private var dictationTarget: DictationTarget?
+    private var dictationTargetTask: Task<Void, Never>?
+    /// The text around the cursor at key-down (setting `textbox_context`).
+    private var dictationTextbox: TextboxContext?
     private lazy var competitors = CompetitorCoordinator(store: appStore)
+    /// True while edit learning watches a field; read on the event-tap thread.
+    nonisolated private let editKeyWatch = OSAllocatedUnfairLock(initialState: false)
+    private lazy var editLearning = EditLearningController(
+        store: appStore, keyWatch: editKeyWatch,
+        send: { [weak self] command in self?.engine.send(command) })
+    private lazy var meetings = MeetingController(store: appStore)
+    private var meetingMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1615,13 +1766,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                 state.streamingPreviewEnabled = demo != "compact"
                 showListening()
                 state.level = 0.72
-                if state.streamingPreviewEnabled {
-                    setPreview(
-                        ProcessInfo.processInfo.environment["PHONON_UI_DEMO_TEXT"]
-                            ?? "The live transcript expands upward from the bottom dock.",
-                        stage: "Polished live"
-                    )
-                }
             }
             snapshotPanelIfRequested()
             return
@@ -1636,6 +1780,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         showIdle()
 
         warmMicrophoneIfAuthorized()
+        if appStore.settings.screenContext { ScreenContextCapture.warmUp() }
+        // The https handler list is looked up once per process (7-11 ms,
+        // 3 runs); do it now, off the main thread, not at the first key-down.
+        Task.detached(priority: .utility) { _ = BrowserCatalog.httpsHandlers() }
+        meetings.onRecordingChanged = { [weak self] app in self?.meetingRecordingChanged(app) }
+        meetings.refresh()
 
         // A competitor quit with consent leaves Phonon's tap in place; re-install
         // it so it sits at the head of the tap chain (SPEC step 5).
@@ -1666,7 +1816,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc private func quitCompetingApps() {
         if !competitors.checkManually() {
             let alert = NSAlert()
-            alert.messageText = "No competing dictation app is running."
+            alert.messageText = "No other dictation app is running"
             alert.informativeText =
                 "Phonon checks for "
                 + CompetingAppTable.apps.map(\.name).joined(separator: ", ") + "."
@@ -1744,13 +1894,15 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "ϕ"
-        item.button?.toolTip = "Phonon — hold ⌥ to dictate"
+        item.button?.toolTip = "Phonon"
         let menu = NSMenu()
         menu.addItem(
             NSMenuItem(title: "Open Phonon…", action: #selector(showMainWindow), keyEquivalent: ","))
         menu.addItem(.separator())
         menu.addItem(
-            NSMenuItem(title: "Toggle record", action: #selector(toggleRecord), keyEquivalent: "r"))
+            NSMenuItem(
+                title: "Start or Stop Dictation", action: #selector(toggleRecord),
+                keyEquivalent: "r"))
         let previewItem = NSMenuItem(
             title: "Streaming", action: #selector(toggleStreamingPreview), keyEquivalent: ""
         )
@@ -1759,7 +1911,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         streamingMenuItem = previewItem
         menu.addItem(
             NSMenuItem(
-                title: "Model status…", action: #selector(showModelStatus), keyEquivalent: ""))
+                title: "Model Status…", action: #selector(showModelStatus), keyEquivalent: ""))
         let microphoneItem = NSMenuItem(
             title: "Microphone: Auto → Resolving…", action: nil, keyEquivalent: "")
         microphoneItem.isEnabled = false
@@ -1767,10 +1919,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         microphoneMenuItem = microphoneItem
         menu.addItem(
             NSMenuItem(
-                title: "Quit competing dictation apps…", action: #selector(quitCompetingApps),
+                title: "Quit Other Dictation Apps…", action: #selector(quitCompetingApps),
                 keyEquivalent: ""))
+        let meetingItem = NSMenuItem(
+            title: "Stop Meeting Notes", action: #selector(stopMeetingNotes), keyEquivalent: "")
+        meetingItem.isHidden = true
+        menu.addItem(meetingItem)
+        meetingMenuItem = meetingItem
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit Phonon", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
         statusItem = item
     }
@@ -1786,6 +1943,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         appStore.refreshPermissions()
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func showSettings() {
+        appStore.pageRequest = .settings
+        showMainWindow()
     }
 
     private func updateMicrophoneStatus() {
@@ -1806,6 +1968,20 @@ final class AppController: NSObject, NSApplicationDelegate {
             recorder.releaseHardware()
         }
         competitors.settingsChanged()
+        if !appStore.settings.meetingCapture { meetings.stop(reason: "turned_off") }
+        meetings.refresh()
+    }
+
+    /// A recording meeting is always visible: a dot on the menu bar item and
+    /// a Stop item in its menu.
+    private func meetingRecordingChanged(_ app: String?) {
+        statusItem?.button?.title = app == nil ? "ϕ" : "ϕ ●"
+        meetingMenuItem?.isHidden = app == nil
+        meetingMenuItem?.title = app.map { "Stop Meeting Notes (\($0))" } ?? "Stop Meeting Notes"
+    }
+
+    @objc private func stopMeetingNotes() {
+        meetings.stop(reason: "user_stopped")
     }
 
     private func promptPermissions() {
@@ -1872,7 +2048,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             modelStartupState.markReady()
             engineRestartWork?.cancel()
             engineRestartWork = nil
-            statusItem?.button?.title = "ϕ"
+            statusItem?.button?.title = meetings.isRecording ? "ϕ ●" : "ϕ"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 guard self?.enginesReady == true else { return }
                 self?.modelStartupWindow?.orderOut(nil)
@@ -1884,7 +2060,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             if let pending = pendingTranscribe {
                 pendingTranscribe = nil
                 sendTranscribe(path: pending.path, id: pending.id)
-            } else if screenContextReady, let pending = pendingFinalPolish {
+            } else if let pending = pendingFinalPolish {
+                // Waits for screen context again, bounded, if it is still reading.
                 pendingFinalPolish = nil
                 submitFinalPolish(pending.text, id: pending.id)
             }
@@ -1905,7 +2082,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                         previous: latestAcousticPreview, candidate: text)
                     guard stable != latestAcousticPreview else { return }
                     latestAcousticPreview = stable
-                    setPreview(LiveTranscriptFormatter.format(stable), stage: "Live cleanup")
                     if e2eTrace?.passId == id, e2eTrace?.firstPreviewNs == nil {
                         e2eTrace?.firstPreviewNs = DispatchTime.now().uptimeNanoseconds
                     }
@@ -1929,24 +2105,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
                 submitFinalPolish(text, id: pid)
             } else if kind == "polish" {
-                if let id, let activeId, id.hasPrefix("\(activeId):preview:") {
-                    let source = previewPolishInput ?? ""
-                    previewPolishInput = nil
-                    if isRecording {
-                        let polished = (ev["text"] as? String ?? "").trimmingCharacters(
-                            in: .whitespacesAndNewlines)
-                        if PreviewRevisionPolicy.canShowPolish(
-                            source: source,
-                            latestAcoustic: latestAcousticPreview,
-                            polished: polished,
-                            newerCandidateWaiting: pendingPreviewText != nil
-                        ) {
-                            setPreview(polished, stage: "Polished live")
-                        }
-                        submitPendingPreviewPolish()
-                    }
-                    return
-                }
                 guard id == activeId else { return }
                 if e2eTrace?.passId == id {
                     e2eTrace?.polishResultNs = DispatchTime.now().uptimeNanoseconds
@@ -1958,8 +2116,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                 let final = PreviewRevisionPolicy.safeFinalText(source: rawText, candidate: text)
                 processing = false
                 if !final.isEmpty {
-                    setPreview(final, stage: "Inserted")
                     e2eTrace?.insertionStartedNs = DispatchTime.now().uptimeNanoseconds
+                    if let category = ev["app_category"] as? String, let id {
+                        editLearning.noteCategory(category, passID: id)
+                    }
+                    // The field as read while the correction ran (never in a
+                    // private app or site), so the dictation can be told apart
+                    // from the text around it after the paste.
+                    let editSnapshot = id.flatMap { editLearning.takeSnapshot(passID: $0) }
                     var insertionSucceeded = false
                     do {
                         try Typer.emit(final, target: insertionTarget)
@@ -1968,6 +2132,11 @@ final class AppController: NSObject, NSApplicationDelegate {
                         NSLog("phonon insertion failed: \(error.localizedDescription)")
                     }
                     e2eTrace?.insertionCompletedNs = DispatchTime.now().uptimeNanoseconds
+                    if insertionSucceeded, let editSnapshot, let id {
+                        editLearning.didPaste(
+                            editSnapshot, passID: id, pasted: final,
+                            record: appStore.settings.localHistory)
+                    }
                     if let record = e2eTrace?.finish(
                         textCharacters: final.count,
                         insertionSucceeded: insertionSucceeded
@@ -1980,17 +2149,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                 } else {
                     hidePill()
                 }
+            } else if kind == "edit" {
+                editLearning.handleEngineResult(ev)
             }
         case "error":
             let msg = ev["msg"] as? String ?? "error"
             appStore.lastError = msg
             NSLog("phonon engine error: \(msg)")
-            if let id = ev["id"] as? String, id.contains(":preview:") {
-                guard let activeId, id.hasPrefix("\(activeId):preview:") else { return }
-                previewPolishInput = nil
-                if isRecording { submitPendingPreviewPolish() }
-                return
-            }
             if let id = ev["id"] as? String, id != activeId { return }
             if isRecording { return }
             // Don't kill a queued first pass on boot-stream noise.
@@ -2017,7 +2182,6 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func showListening() {
         hideWork?.cancel()
         state.level = 0
-        setPreview("", stage: enginesReady ? "Listening" : "Loading speech engine")
         state.mode = .listening
         present()
     }
@@ -2026,7 +2190,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         hideWork?.cancel()
         state.level = 0
         state.mode = .working
-        state.previewStage = "Final pass"
         present()
     }
 
@@ -2068,11 +2231,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
-    }
-
-    private func setPreview(_ text: String, stage: String) {
-        state.previewText = text
-        state.previewStage = stage
     }
 
     private func snapshotPanelIfRequested() {
@@ -2187,6 +2345,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             processing = false
         }
         guard !isRecording else { return }
+        editLearning.interrupt(reason: .nextDictation)
         let ownPID = ProcessInfo.processInfo.processIdentifier
         if let frontmost = NSWorkspace.shared.frontmostApplication,
             frontmost.processIdentifier != ownPID
@@ -2210,27 +2369,29 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Off the key-down path: a competitor that appeared since launch is
         // noted now and asked about after this dictation ends.
         DispatchQueue.main.async { [weak self] in self?.competitors.noteDictationStart() }
-        previewPolishInput = nil
-        pendingPreviewText = nil
-        previewRevision = 0
-        lastPreviewPolishInput = ""
+        // The correction model is slow on its first request after an idle
+        // minute; waking it now hides that behind the user's speech.
+        if enginesReady { engine.send(["cmd": "prewarm"]) }
         latestAcousticPreview = ""
-        screenContextText = ""
-        screenContextReady = !appStore.settings.screenContext
+        let denylist = appStore.settings.screenContextDenylist
+        let target = DictationTarget.resolve(
+            bundleID: insertionTarget?.bundleIdentifier, name: insertionTarget?.localizedName,
+            url: nil, denylist: denylist, urlLookedUp: false)
+        dictationTarget = target
+        resolveDictationTarget(
+            app: insertionTarget, denylist: denylist,
+            readTextbox: appStore.settings.textboxContext && !target.denied)
         pendingFinalPolish = nil
-        screenContextTask?.cancel()
-        if appStore.settings.screenContext {
-            let contextPass = activeId
-            screenContextTask = Task { [weak self] in
-                let text = await ScreenContextCapture.recognizeAllDisplays()
-                guard !Task.isCancelled, let self, self.activeId == contextPass else { return }
-                self.screenContextText = text
-                self.screenContextReady = true
-                if let pending = self.pendingFinalPolish {
-                    self.pendingFinalPolish = nil
-                    self.submitFinalPolish(pending.text, id: pending.id)
-                }
-            }
+        let wantScreen = appStore.settings.screenContext && !target.denied
+        if wantScreen && target.awaitsTabLookup {
+            // A browser tab might be a private site: read nothing until the
+            // tab lookup says it is not (it takes milliseconds).
+            startScreenContext(enabled: false)
+            screenStartAwaitsTarget = true
+            screenInitialDone = false
+            screenContextReady = false
+        } else {
+            startScreenContext(enabled: wantScreen)
         }
         if appStore.settings.soundFeedback { cues.playStart() }
         showListening()
@@ -2277,7 +2438,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         e2eTrace?.keyUpHandledNs = DispatchTime.now().uptimeNanoseconds
         isRecording = false
         processing = true
-        pendingPreviewText = nil
+        stopScreenSwitchWatch()
         if streamActive {
             engine.send(["cmd": "stream_stop", "id": activeId ?? "p\(pass)"])
             streamActive = false
@@ -2360,18 +2521,232 @@ final class AppController: NSObject, NSApplicationDelegate {
         ShortcutPolicy.allows(mode: appStore.settings.shortcutMode, source: source)
     }
 
-    private func submitFinalPolish(_ text: String, id: String) {
+    /// Read the browser tab (or Electron page) URL off the main thread. A
+    /// site on the private list drops whatever screen context this pass has.
+    private func resolveDictationTarget(
+        app: NSRunningApplication?, denylist: [String], readTextbox: Bool
+    ) {
+        dictationTargetTask?.cancel()
+        dictationTextbox = nil
+        let pass = activeId
+        let bundleID = app?.bundleIdentifier
+        let name = app?.localizedName
+        let pid = app?.processIdentifier
+        let watchEdits = appStore.settings.editLearning
+        let readsFields = readTextbox || watchEdits
+        let screenContext = appStore.settings.screenContext
+        dictationTargetTask = Task { [weak self] in
+            let (target, field) = await Task.detached(priority: .userInitiated) {
+                let target = DictationTarget.capture(
+                    bundleID: bundleID, name: name, pid: pid, readsFields: readsFields,
+                    screenContext: screenContext, denylist: denylist)
+                // One read of the focused field, only if it belongs to the
+                // dictation's app and neither the app nor its page is private:
+                // the text around the cursor (with the setting on) and the
+                // anchors edit learning needs after the paste.
+                let field = KeyDownFieldRead.read(
+                    target: target, targetPID: pid, wantTextbox: readTextbox,
+                    wantEditSnapshot: watchEdits)
+                return (target, field)
+            }.value
+            guard let self, !Task.isCancelled, self.activeId == pass, let pass else { return }
+            self.dictationTarget = target
+            self.dictationTextbox = field.textbox
+            self.editLearning.store(field.editSnapshot, passID: pass)
+            if target.denied {
+                self.dropScreenContext()
+            } else if self.screenStartAwaitsTarget {
+                self.screenStartAwaitsTarget = false
+                if self.isRecording {
+                    self.startScreenContext(enabled: true)
+                } else {
+                    // Key-up came first: correct without screen context
+                    // rather than start reading now.
+                    self.screenInitialDone = true
+                    self.screenContextUpdated()
+                }
+            }
+        }
+    }
+
+    // MARK: Screen context
+
+    /// Read the visible windows of every display now, then any window or tab
+    /// the user switches to until key-up.
+    private func startScreenContext(enabled: Bool) {
+        screenStartAwaitsTarget = false
+        screenSwitchTimer?.invalidate()
+        screenSwitchTimer = nil
+        screenWaitWork?.cancel()
+        screenWaitWork = nil
+        cancelScreenReads()
+        screenCollection = ScreenContextCollection()
+        screenInitialDone = !enabled
+        screenContextReady = !enabled
+        guard enabled else { return }
+        let token = screenReads.generation
+        let denylist = appStore.settings.screenContextDenylist
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let front = NSWorkspace.shared.frontmostApplication
+        let frontPID = front?.processIdentifier
+        let frontIsBrowser = ContextPolicy.isBrowser(front?.bundleIdentifier)
+        screenContextTask = Task { [weak self] in
+            // Only the focused browser window can be read, and only with its
+            // top-level page known; background browser windows never are.
+            let focusedPage = await Task.detached(priority: .userInitiated) {
+                ScreenContextCapture.focusedBrowserPage(pid: frontPID, isBrowser: frontIsBrowser)
+            }.value
+            var reads = await ScreenContextCapture.readVisible(
+                excluded: ContextPolicy.screenExclusion(
+                    denylist: denylist, ownPID: ownPID, focusedPage: focusedPage))
+            if focusedPage != nil {
+                // The browser window was read for one page; if the focus
+                // moved to another window or tab meanwhile, drop its read.
+                let after = await Task.detached(priority: .userInitiated) {
+                    ScreenContextCapture.focusedBrowserPage(
+                        pid: frontPID, isBrowser: frontIsBrowser)
+                }.value
+                reads = ScreenContextCapture.keptReads(reads, allowed: focusedPage, now: after)
+            }
+            guard !Task.isCancelled, let self, self.screenReads.isCurrent(token) else { return }
+            for read in reads { self.screenCollection.add(keys: read.keys, text: read.text) }
+            self.screenInitialDone = true
+            self.screenContextUpdated()
+        }
+        screenSwitchTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.readSwitchedWindow() }
+        }
+    }
+
+    /// A window or browser tab that came to the front mid-dictation and has
+    /// not been read yet is read now, unless it is private.
+    private func readSwitchedWindow() {
+        // The key-down read covers whatever is in front until it finishes.
+        guard isRecording, screenInitialDone, !screenCollection.isFull,
+            let app = NSWorkspace.shared.frontmostApplication,
+            app.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        else { return }
+        let denylist = appStore.settings.screenContextDenylist
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        // App-level check first; a browser's tab is decided once its page
+        // is known (the switch focused this window).
+        guard let window = ScreenContextCapture.frontWindow(of: app.processIdentifier),
+            screenCollection.wants(window.captureKey),
+            !ContextPolicy.isPrivateApp(window, denylist: denylist, ownPID: ownPID)
+        else { return }
+        screenCollection.markSeen([window.captureKey])
+        let token = screenReads.begin()
+        screenContextReady = false
+        let bundleID = app.bundleIdentifier
+        let name = app.localizedName
+        let pid = app.processIdentifier
+        let isBrowser = ContextPolicy.isBrowser(bundleID)
+        let task = Task { [weak self] in
+            // One walk gives the page, its host and its window.
+            let (target, focus) = await Task.detached(priority: .userInitiated) {
+                DictationTarget.captureWithFocus(
+                    bundleID: bundleID, name: name, pid: pid, screenContext: true,
+                    denylist: denylist)
+            }.value
+            // A browser window is read only if it is the focused element's
+            // own window (not a popup, not a window the focus left).
+            let focusedPage = ScreenContextCapture.switchedPage(focus, window: window.id)
+            let isPrivate =
+                target.denied
+                || ContextPolicy.isPrivateWindow(
+                    window, denylist: denylist, ownPID: ownPID, focusedPage: focusedPage)
+            var text =
+                isPrivate || Task.isCancelled
+                ? nil : await ScreenContextCapture.readWindow(id: window.id)
+            if text != nil, isBrowser {
+                // Still the same window and page after the capture?
+                let after = await Task.detached(priority: .userInitiated) {
+                    BrowserPage.focusedWindow(pid: pid)
+                }.value
+                if !ScreenContextCapture.samePage(focusedPage, after) { text = nil }
+            }
+            // A read from before a reset (new dictation, private target) is
+            // dropped whole: its text must never reach the correction.
+            guard let self, self.screenReads.finish(token), !Task.isCancelled else { return }
+            if let text { self.screenCollection.add(keys: [window.captureKey], text: text) }
+            self.screenContextUpdated()
+        }
+        screenSwitchTasks.append(task)
+    }
+
+    /// Cancel every screen read in flight and invalidate their results.
+    private func cancelScreenReads() {
+        screenContextTask?.cancel()
+        screenContextTask = nil
+        screenSwitchTasks.forEach { $0.cancel() }
+        screenSwitchTasks.removeAll()
+        screenReads.reset()
+    }
+
+    private func screenContextUpdated() {
+        screenContextReady = ScreenContextWait.shouldSubmit(
+            pendingReads: screenReads.pending, initialDone: screenInitialDone, waited: 0)
+        if screenContextReady, let pending = pendingFinalPolish {
+            pendingFinalPolish = nil
+            submitFinalPolish(pending.text, id: pending.id)
+        }
+    }
+
+    private func stopScreenSwitchWatch() {
+        screenSwitchTimer?.invalidate()
+        screenSwitchTimer = nil
+    }
+
+    private func dropScreenContext() {
+        screenStartAwaitsTarget = false
+        cancelScreenReads()
+        stopScreenSwitchWatch()
+        screenCollection = ScreenContextCollection()
+        screenInitialDone = true
+        guard !screenContextReady else { return }
+        screenContextReady = true
+        if let pending = pendingFinalPolish {
+            pendingFinalPolish = nil
+            submitFinalPolish(pending.text, id: pending.id)
+        }
+    }
+
+    /// The final correction waits for screen context, but at most
+    /// `ScreenContextWait.afterFinalTranscript`; then it goes with whatever
+    /// was read by then.
+    private func submitFinalPolish(_ text: String, id: String, force: Bool = false) {
         guard activeId == id, processing else { return }
-        guard screenContextReady else {
+        guard screenContextReady || force else {
             pendingFinalPolish = (text, id)
+            if screenWaitWork == nil {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, let pending = self.pendingFinalPolish, pending.id == id else {
+                        return
+                    }
+                    self.pendingFinalPolish = nil
+                    NSLog("phonon screen context: wait bounded, correcting without the rest")
+                    self.submitFinalPolish(pending.text, id: pending.id, force: true)
+                }
+                screenWaitWork = work
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + ScreenContextWait.afterFinalTranscript, execute: work)
+            }
             return
         }
+        screenWaitWork?.cancel()
+        screenWaitWork = nil
         if e2eTrace?.passId == id {
             e2eTrace?.polishSubmittedNs = DispatchTime.now().uptimeNanoseconds
         }
-        engine.send([
-            "cmd": "polish", "text": text, "context": screenContextText, "id": id,
-        ])
+        engine.send(polishCommand(text: text, id: id, context: screenCollection.text))
+    }
+
+    private func polishCommand(text: String, id: String, context: String) -> [String: Any] {
+        PolishCommand.make(
+            text: text, id: id, screenText: context, target: dictationTarget,
+            textbox: appStore.settings.textboxContext ? dictationTextbox : nil,
+            localHistory: appStore.settings.localHistory)
     }
 
     private func startAsrStream() {
@@ -2379,29 +2754,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         let id = activeId ?? "p\(pass)"
         engine.send(["cmd": "stream_start", "id": id])
         streamActive = true
-    }
-
-    private func queuePreviewPolish(_ text: String) {
-        guard enginesReady, text != lastPreviewPolishInput else { return }
-        if previewPolishInput != nil {
-            pendingPreviewText = text
-            return
-        }
-        previewRevision += 1
-        previewPolishInput = text
-        lastPreviewPolishInput = text
-        state.previewStage = "Polishing live"
-        let id = "\(activeId ?? "p\(pass)"):preview:\(previewRevision)"
-        engine.send([
-            "cmd": "polish", "text": text,
-            "context": screenContextReady ? screenContextText : "", "id": id,
-        ])
-    }
-
-    private func submitPendingPreviewPolish() {
-        guard let text = pendingPreviewText else { return }
-        pendingPreviewText = nil
-        queuePreviewPolish(text)
     }
 
     // MARK: Hotkey
@@ -2454,7 +2806,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             appStore.inputMonitoringAvailable = CGEvent.tapIsEnabled(tap: eventTap)
             return
         }
-        let mask = 1 << CGEventType.flagsChanged.rawValue
+        // Key-downs are listened to only so edit learning can tell a sent
+        // message from a cleared field; they are ignored unless a field is
+        // being watched, and only their category is kept.
+        let mask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon else { return Unmanaged.passUnretained(event) }
             let app = Unmanaged<AppController>.fromOpaque(refcon).takeUnretainedValue()
@@ -2479,7 +2834,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         else {
             appStore.inputMonitoringAvailable = false
             statusItem?.button?.toolTip =
-                "Phonon — Ctrl+Space ready; grant Input Monitoring for the hold key"
+                "Phonon: Control-Space works; allow Input Monitoring for the hold key"
             NSLog("phonon: Globe/Right-Option unavailable (Input Monitoring not granted)")
             return
         }
@@ -2517,6 +2872,17 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     nonisolated private func handleCGEvent(type: CGEventType, event: CGEvent) {
+        if type == .keyDown {
+            guard editKeyWatch.withLock({ $0 }) else { return }
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            let flags = event.flags
+            Task { @MainActor in
+                self.editLearning.noteKey(
+                    keyCode: keyCode, command: flags.contains(.maskCommand),
+                    option: flags.contains(.maskAlternate), shift: flags.contains(.maskShift))
+            }
+            return
+        }
         if type == .flagsChanged {
             let flags = event.flags
             let anyAlt =
@@ -2587,7 +2953,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         let settings = NSMenuItem(
-            title: "Settings…", action: #selector(showMainWindow), keyEquivalent: ",")
+            title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
         appMenu.addItem(.separator())
@@ -2666,6 +3032,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         terminating = true
         engineRestartWork?.cancel()
         screenContextTask?.cancel()
+        stopScreenSwitchWatch()
+        editLearning.interrupt(reason: .appTermination)
+        meetings.stopNow(reason: "app_quit")
         engine.shutdown()
         NSApp.terminate(nil)
     }
@@ -2674,6 +3043,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         terminating = true
         engineRestartWork?.cancel()
         screenContextTask?.cancel()
+        stopScreenSwitchWatch()
+        meetings.stopNow(reason: "app_quit")
         engine.shutdown()
         recorder.stop(writeFile: false)
         removeEventTap()

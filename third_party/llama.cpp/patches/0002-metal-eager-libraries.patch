@@ -1,0 +1,163 @@
+--- a/ggml/src/ggml-metal/ggml-metal-device.m	2026-10-28 13:48:22
++++ b/ggml/src/ggml-metal/ggml-metal-device.m	2026-10-28 14:16:58
+@@ -181,6 +181,14 @@
+     ggml_metal_pipelines_t pipelines; // cache of compiled pipelines
+ 
+     NSLock * lock;
++
++    // Deferred compilation (phonon fork). With GGML_METAL_EAGER_LIBS set (build define or
++    // environment, comma-separated kind names) only those kinds compile at init; any other
++    // kind compiles the first time one of its kernels is requested. Compiling every kind
++    // up front costs ~3 s cold on an M4 Max, most of it kinds a given model never uses.
++    bool compiled[GGML_METAL_LIB_COUNT];
++    NSDictionary * prep;                                // retained compile-time macros
++    NSString * (^source_for_kind)(int kind, NSError ** err); // Block_copy'd, nil when not lazy
+ };
+ 
+ // Build the fn_to_lib routing table by querying each compiled library's public
+@@ -192,6 +200,9 @@
+             for (NSString * fname in [lib->objs[kind] functionNames]) {
+                 index[fname] = @(kind);
+             }
++        }
++        if (lib->fn_to_lib) {
++            [lib->fn_to_lib release]; // rebuilt after a deferred compile
+         }
+         lib->fn_to_lib = index;
+     }
+@@ -319,7 +330,8 @@
+         id<MTLDevice> device,
+         NSDictionary * prep,
+         NSString * (^source_for_kind)(int kind, NSError ** err),
+-        const char * origin) {
++        const char * origin,
++        const bool * want) { // NULL: every kind not yet compiled
+     const int64_t t_start = ggml_time_us();
+ 
+     int64_t  * t_per_lib   = calloc(GGML_METAL_LIB_COUNT, sizeof(int64_t));
+@@ -329,7 +341,12 @@
+     dispatch_group_t group = dispatch_group_create();
+     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+ 
++    int n_compiling = 0;
+     for (int kind = 0; kind < GGML_METAL_LIB_COUNT; ++kind) {
++        if (res->compiled[kind] || (want && !want[kind])) {
++            continue;
++        }
++        n_compiling++;
+         dispatch_group_async(group, queue, ^{
+ 
+             const int64_t t0 = ggml_time_us();
+@@ -370,6 +387,7 @@
+             }
+ 
+             res->objs[kind] = lib;
++            res->compiled[kind] = true;
+         });
+     }
+     dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+@@ -385,8 +403,8 @@
+                            __func__, k_lib_names[kind], t_per_lib[kind] / 1e6);
+             if (t_per_lib[kind] > t_max) t_max = t_per_lib[kind];
+         }
+-        GGML_LOG_INFO("%s: loaded %d libraries from %s in %.3f sec (max single = %.3f sec)\n",
+-                      __func__, GGML_METAL_LIB_COUNT, origin, t_total / 1e6, t_max / 1e6);
++        GGML_LOG_INFO("%s: loaded %d of %d libraries from %s in %.3f sec (max single = %.3f sec)\n",
++                      __func__, n_compiling, GGML_METAL_LIB_COUNT, origin, t_total / 1e6, t_max / 1e6);
+ 
+         ggml_metal_library_build_index(res);
+     } else {
+@@ -484,14 +502,41 @@
+ #undef X
+     };
+ 
+-    const bool ok = ggml_metal_library_compile_all(res, device, prep,
+-        ^NSString * (int kind, NSError ** err) {
++    NSString * (^embedded_source)(int, NSError **) = ^NSString * (int kind, NSError ** err) {
+             (void) err;
+             return [[NSString alloc] initWithBytes:lib_start[kind]
+                                             length:(lib_end[kind] - lib_start[kind])
+                                           encoding:NSUTF8StringEncoding];
+-        }, "embedded data");
++        };
++
++    // eager kinds: environment first, then the build define; unset compiles everything now
++    const char * eager = getenv("GGML_METAL_EAGER_LIBS");
++#ifdef GGML_METAL_EAGER_LIBS
++    if (!eager) {
++        eager = GGML_METAL_EAGER_LIBS;
++    }
++#endif
++    bool want[GGML_METAL_LIB_COUNT] = { false };
++    if (eager && *eager) {
++        for (int kind = 0; kind < GGML_METAL_LIB_COUNT; ++kind) {
++            const char * name = k_lib_names[kind];
++            const size_t len  = strlen(name);
++            for (const char * p = eager; (p = strstr(p, name)) != NULL; p += len) {
++                const bool starts = p == eager || p[-1] == ',';
++                const bool ends   = p[len] == '\0' || p[len] == ',';
++                if (starts && ends) {
++                    want[kind] = true;
++                    break;
++                }
++            }
++        }
++        res->prep            = [prep retain];
++        res->source_for_kind = Block_copy(embedded_source);
++    }
+ 
++    const bool ok = ggml_metal_library_compile_all(res, device, prep, embedded_source, "embedded data",
++                                                   res->source_for_kind ? want : NULL);
++
+     if (!ok) {
+         ggml_metal_library_free(res);
+         return NULL;
+@@ -585,7 +630,7 @@
+     const bool ok = ggml_metal_library_compile_all(res, device, prep,
+         ^NSString * (int kind, NSError ** err) {
+             return ggml_metal_library_flatten_source(path_per_kind[kind], err);
+-        }, "source");
++        }, "source", NULL);
+ 
+     for (int kind = 0; kind < GGML_METAL_LIB_COUNT; ++kind) {
+         [path_per_kind[kind] release];
+@@ -689,6 +734,13 @@
+         [lib->override_fns release];
+     }
+ 
++    if (lib->prep) {
++        [lib->prep release];
++    }
++    if (lib->source_for_kind) {
++        Block_release(lib->source_for_kind);
++    }
++
+     ggml_metal_pipelines_free(lib->pipelines);
+ 
+     [lib->lock release];
+@@ -754,6 +806,15 @@
+             lib_idx = GGML_METAL_LIB_MUL_MM;
+         } else if (!lib->single_library) {
+             NSNumber * idx = lib->fn_to_lib[base_func];
++            if (!idx && lib->source_for_kind) {
++                // deferred kinds: compile the rest once, then route again
++                GGML_LOG_INFO("%s: '%s' is not in the eager libraries, compiling the deferred ones\n", __func__, base);
++                ggml_metal_library_compile_all(lib, ggml_metal_device_get_obj(lib->dev), lib->prep,
++                                               lib->source_for_kind, "embedded data (deferred)", NULL);
++                Block_release(lib->source_for_kind);
++                lib->source_for_kind = nil;
++                idx = lib->fn_to_lib[base_func];
++            }
+             if (!idx) {
+                 [lib->lock unlock];
+ 
+@@ -763,6 +824,9 @@
+             }
+             lib_idx = [idx intValue];
+         }
++
++        GGML_LOG_DEBUG("%s: kernel '%s' from library '%s'\n", __func__, base,
++                       lib->single_library ? "combined" : k_lib_names[lib_idx]);
+ 
+         id<MTLLibrary> mtl_lib = lib->objs[lib_idx];
+ 

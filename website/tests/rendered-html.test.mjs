@@ -5,8 +5,8 @@ import test from "node:test";
 test("renders the Phonon landing page", async () => {
   const html = await readFile(new URL("../.next/server/app/index.html", import.meta.url), "utf8");
 
-  assert.match(html, /<title>Phonon — Fast, local voice typing<\/title>/i);
-  assert.match(html, /Fast\. Local\.<br\/>Sovereignty\./);
+  assert.match(html, /<title>Phonon: fast, local voice typing<\/title>/i);
+  assert.match(html, /Fast\. Local\.<br\/>Yours\./);
   assert.match(html, /Open-source voice typing/);
   assert.doesNotMatch(html, /Open-source voice typing for Mac/);
   assert.match(html, /Local by design/);
@@ -22,11 +22,13 @@ test("renders the Phonon landing page", async () => {
   assert.doesNotMatch(html, /being prepared|Release in preparation/);
   assert.doesNotMatch(html, /phonon-app\.png|MacBook Pro Microphone|328 voice WPM/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
-  assert.match(html, /Beta\. Untested on real hardware\./);
+  assert.match(html, /Beta\. Runs on the CPU\./);
+  assert.doesNotMatch(html, /Untested on real hardware|Nobody has run it/);
+  assert.doesNotMatch(html, /Personal polish/);
   assert.match(html, /releases\/download\/v0\.2\.0-win-beta\.1\/phonon-win\.exe/);
   assert.match(html, /Windows protected your PC/);
   assert.match(html, /Right Ctrl/);
   assert.match(html, /3\.8 GB downloaded on first run/);
-  assert.match(html, /Seeking one tester/);
+  assert.match(html, /Windows Server 2022/);
   assert.match(html, /16 GB RAM recommended/);
 });

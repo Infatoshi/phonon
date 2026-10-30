@@ -417,6 +417,17 @@ pub struct RecordingMetadata {
     pub screen_context_terms: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmMetadata>,
+    /// What the user changed after insertion; see `edits::UserEditRecord`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_edit: Option<crate::edits::UserEditRecord>,
+    /// The app (and page host) the dictation went to, with its category.
+    /// Kept only with local history on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_context: Option<crate::app_context::AppContext>,
+    /// The text around the cursor at key-down, when the user turned
+    /// text-box context on. Kept only with local history on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub textbox_context: Option<crate::app_context::TextboxContext>,
 }
 
 impl RecordingMetadata {
@@ -437,6 +448,9 @@ impl RecordingMetadata {
             dictionary_corrections: Vec::new(),
             screen_context_terms: Vec::new(),
             llm: None,
+            user_edit: None,
+            app_context: None,
+            textbox_context: None,
         }
     }
 }
@@ -472,6 +486,18 @@ pub struct SettingsFile {
     /// Put `profile/user.md` and `profile/vocab.md` in the correction prompt.
     #[serde(default = "default_profile_prefix")]
     pub profile_prefix: bool,
+    /// Watch the field after insertion and propose terms the user corrected.
+    #[serde(default = "default_true")]
+    pub edit_learning: bool,
+    /// Style preferences the user approved, by app category
+    /// (`{"chat": ["lowercase_start"]}`).
+    #[serde(default)]
+    pub style_preferences: BTreeMap<String, Vec<String>>,
+    /// Keys the native app owns that this side does not model. `phonon doctor`
+    /// rewrites the file through this struct; before this field it dropped
+    /// them (the sound cue, the first-run privacy answer, the retention days).
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for SettingsFile {
@@ -486,6 +512,9 @@ impl Default for SettingsFile {
             shortcut_mode: default_shortcut_mode(),
             competitor_quit_muted: Vec::new(),
             profile_prefix: default_profile_prefix(),
+            edit_learning: true,
+            style_preferences: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -517,12 +546,21 @@ impl SettingsFile {
     /// Read without writing back. Missing file means defaults; the native app
     /// owns the file and this side must not rewrite it on every engine start.
     pub fn load() -> Result<Self> {
-        let path = settings_path()?;
+        Self::load_from(&settings_path()?)
+    }
+
+    /// Read a settings file at `path`; a missing file means defaults, an
+    /// unreadable or malformed one is an error.
+    pub fn load_from(path: &Path) -> Result<Self> {
         if !path.is_file() {
             return Ok(Self::default());
         }
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+        let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        Self::parse(&bytes).with_context(|| format!("parse {}", path.display()))
+    }
+
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
     }
 
     pub fn load_or_create() -> Result<Self> {
@@ -531,7 +569,9 @@ impl SettingsFile {
             let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
             let mut settings: Self = serde_json::from_slice(&bytes)
                 .with_context(|| format!("parse {}", path.display()))?;
-            settings.schema_version = DATA_SCHEMA_VERSION;
+            // The native app writes schema 2, where an absent privacy key
+            // means "off"; stamping 1 over it would turn absent keys back on.
+            settings.schema_version = settings.schema_version.max(DATA_SCHEMA_VERSION);
             write_json_atomic(&path, &settings)?;
             return Ok(settings);
         }
@@ -566,13 +606,33 @@ pub fn profile_dir() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("profile"))
 }
 
+/// The user's own trained refiner, an MLX model directory. Used instead of the
+/// pinned correction model when it holds `phonon_refiner.json`; its weights
+/// come from the user's dictations, so they stay on this machine.
+pub fn refiner_dir() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("models").join("refiner"))
+}
+
+/// `dir` when it holds a refiner of the user's own (`phonon_refiner.json`).
+/// It then replaces the pinned public download, and its own
+/// `phonon_engine.json` keeps naming the engine it runs on; the public
+/// default applies only when no such refiner is installed.
+pub fn local_refiner(dir: &Path) -> Option<PathBuf> {
+    dir.join("phonon_refiner.json")
+        .is_file()
+        .then(|| dir.to_path_buf())
+}
+
 /// The correction sidecar configuration users get: the profile when
-/// `settings.json` enables it, plus developer environment overrides.
+/// `settings.json` enables it, the local refiner when one is installed, plus
+/// developer environment overrides.
 pub fn polish_config() -> Result<PolishConfig> {
     let settings = SettingsFile::load()?;
     let profile_dir = profile_dir()?;
+    let refiner = refiner_dir()?;
     let config = PolishConfig {
         profile_dir: settings.profile_prefix.then(|| profile_dir.clone()),
+        model_dir: local_refiner(&refiner),
         ..PolishConfig::default()
     };
     Ok(config.with_env_overrides(Some(&profile_dir)))
@@ -815,7 +875,7 @@ fn normalized_unique(values: Vec<String>) -> Vec<String> {
     by_key.into_values().collect()
 }
 
-fn normalize(value: &str) -> String {
+pub(crate) fn normalize(value: &str) -> String {
     value
         .chars()
         .map(|character| {
@@ -867,9 +927,33 @@ fn english_words() -> &'static std::collections::HashSet<String> {
     })
 }
 
+/// First names from the system's word lists (`/usr/share/dict/propernames`
+/// on macOS, about 1,300 of them); empty where the file is missing. Read in
+/// place, never copied into Phonon.
+pub(crate) fn proper_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        fs::read_to_string("/usr/share/dict/propernames")
+            .map(|text| {
+                text.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// A first name as written (`Grant`, `Frank`).
+pub(crate) fn is_proper_name(word: &str) -> bool {
+    proper_names().contains(word)
+}
+
 /// Whether every word of `phrase` is ordinary English, allowing for the common
 /// inflections the base word list omits.
-fn is_ordinary_english(phrase: &str) -> bool {
+pub(crate) fn is_ordinary_english(phrase: &str) -> bool {
     let words = english_words();
     if words.is_empty() {
         // No list available: treat everything as ordinary so nothing is guessed.
@@ -963,7 +1047,7 @@ fn capital_count(value: &str) -> usize {
 /// without letting a match wander across a clause.
 const MAX_PHONETIC_WINDOW: usize = 3;
 
-fn phonetic_key(value: &str) -> String {
+pub(crate) fn phonetic_key(value: &str) -> String {
     let mut output = String::new();
     // A doubled letter inside a word is silent, so `bloss` reduces to `bls`. A
     // repeat across a word boundary is not: collapsing those made `gpt 5` and
@@ -1026,7 +1110,7 @@ fn broadly_similar_word(left: &str, right: &str) -> bool {
     distance <= 3 && distance * 2 <= longest
 }
 
-fn levenshtein(left: &str, right: &str) -> usize {
+pub(crate) fn levenshtein(left: &str, right: &str) -> usize {
     let right: Vec<char> = right.chars().collect();
     let mut previous: Vec<usize> = (0..=right.len()).collect();
     for (row, left_character) in left.chars().enumerate() {
@@ -1089,7 +1173,7 @@ fn wav_duration_ms(path: &Path) -> Result<u64> {
     Ok(data_bytes * 1_000 / bytes_per_second)
 }
 
-fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
+pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("path has no parent: {}", path.display()))?;
@@ -1106,6 +1190,31 @@ fn now_unix_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod local_refiner_tests {
+    use super::local_refiner;
+
+    #[test]
+    fn an_installed_user_refiner_is_used_and_keeps_its_own_engine() {
+        let dir = std::env::temp_dir().join(format!("phonon-local-refiner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // No marker: the pinned public refiner applies.
+        assert_eq!(local_refiner(&dir), None);
+        // An engine config alone is not a refiner.
+        std::fs::write(
+            dir.join("phonon_engine.json"),
+            r#"{"binary": "engine-ship3/bin/pe", "target": "t.gguf"}"#,
+        )
+        .unwrap();
+        assert_eq!(local_refiner(&dir), None);
+        // The owner's setup: marker plus its own engine config. The directory is
+        // passed to the sidecar as it is, so its engine binary is the one used.
+        std::fs::write(dir.join("phonon_refiner.json"), "{}").unwrap();
+        assert_eq!(local_refiner(&dir), Some(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1302,6 +1411,23 @@ mod tests {
         assert_eq!(settings.competitor_quit_muted, ["com.electron.wispr-flow"]);
         let json = serde_json::to_string(&settings).unwrap();
         assert!(json.contains(r#""competitor_quit_muted":["com.electron.wispr-flow"]"#));
+    }
+
+    #[test]
+    fn settings_round_trip_keeps_keys_only_the_native_app_knows() {
+        let settings: SettingsFile = serde_json::from_str(
+            r#"{"schema_version":2,"sound_feedback":true,"privacy_choice_made":true,"history_retention_days":30,"style_preferences":{"chat":["lowercase_start"]}}"#,
+        )
+        .unwrap();
+        assert!(settings.edit_learning);
+        assert_eq!(settings.style_preferences["chat"], ["lowercase_start"]);
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(json["sound_feedback"], true);
+        assert_eq!(json["privacy_choice_made"], true);
+        assert_eq!(json["history_retention_days"], 30);
+        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["style_preferences"]["chat"][0], "lowercase_start");
     }
 
     #[test]

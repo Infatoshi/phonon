@@ -18,10 +18,17 @@ pub fn project_root() -> PathBuf {
     {
         return resources;
     }
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.join("../..");
-    if workspace.join("sidecar/asr_server.py").is_file() {
-        return workspace.canonicalize().unwrap_or(workspace);
+    // A build from a source checkout (cargo run, cargo install) finds its
+    // checkout here. A bundled build (package-bar.sh passes --cfg
+    // phonon_bundle) leaves this out, so the shipped binary does not carry the
+    // builder's path; it found its Resources above.
+    #[cfg(not(phonon_bundle))]
+    {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace = manifest.join("../..");
+        if workspace.join("sidecar/asr_server.py").is_file() {
+            return workspace.canonicalize().unwrap_or(workspace);
+        }
     }
     // cargo install still bakes CARGO_MANIFEST_DIR at compile time; fall back
     // to common personal checkout if the binary is relocated later.
@@ -32,5 +39,5 @@ pub fn project_root() -> PathBuf {
             return p;
         }
     }
-    std::env::current_dir().unwrap_or(manifest)
+    std::env::current_dir().unwrap_or_default()
 }

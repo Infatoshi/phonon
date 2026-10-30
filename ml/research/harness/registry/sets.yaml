@@ -6,7 +6,7 @@ default: [real_580, term_old_seen, term_old_unseen, term_new]
 sets:
   real_580:
     kind: real_audio
-    reference: Elliot's kept text (date holdout)
+    reference: the user's kept text (date holdout)
     frozen: /data/phonon_bench_v0/sets/real_580.jsonl
     source: /data/phonon_corrector_v0/datesplit/holdout_date_audio.jsonl
   term_old_seen:

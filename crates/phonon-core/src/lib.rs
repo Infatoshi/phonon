@@ -3,17 +3,24 @@
 //! Protocol (stdin/stdout, one JSON object per line):
 //!   {"cmd":"status"}
 //!   {"cmd":"transcribe","path":"/tmp/x.wav","id":"..."}
-//!   {"cmd":"polish","text":"...","id":"..."}
+//!   {"cmd":"polish","text":"...","id":"...","context":"<ocr>","app":{"bundle_id":"...","name":"...","url_host":"..."},"textbox":{...}}
+//!   {"cmd":"prewarm"}  — dictation started; no event in reply
 //!   {"cmd":"reload_dictionary"}
+//!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
+//!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
 //!   {"cmd":"shutdown"}
 //!
 //! Events (stdout):
 //!   {"type":"stream","name":"asr|llm","state":"loading|ready|error","pct":0.5,"msg":"...","load_ms":123}
 //!   {"type":"ready"}  — all required streams ready
 //!   {"type":"result","kind":"asr|polish","id":"...","text":"...","seconds":0.1,"latency_ms":70,"ttft_ms":30,"tok_s":200}
+//!   {"type":"result","kind":"edit","id":"...","outcome":"correction","suggestions":[...],"recorded":false}
 //!   {"type":"error","id":"...","msg":"..."}
 
+pub mod app_context;
 pub mod data;
+pub mod edits;
+pub mod pairs;
 mod paths;
 
 use anyhow::{bail, Context, Result};
@@ -59,6 +66,7 @@ pub enum EngineEvent {
         latency_ms: f64,
         ttft_ms: f64,
         tok_s: f64,
+        app_category: Option<app_context::AppCategory>,
     },
     Error {
         id: Option<String>,
@@ -76,6 +84,9 @@ pub struct Engine {
     /// FIFO of polish requests (serve-json returns in order).
     polish_requests: Vec<PolishRequest>,
     dictionary: data::DictionaryFile,
+    styles: app_context::StylePreferenceCache,
+    /// Capitalizations of ordinary words seen this session, in memory only.
+    repeated_edits: edits::RepeatedEdits,
     recording_ids: HashMap<String, String>,
     pending_events: Vec<EngineEvent>,
     all_ready_emitted: bool,
@@ -87,11 +98,20 @@ pub struct Engine {
     startup_dictionary_demo_sent: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct PolishRequest {
     id: Option<String>,
     source_text: String,
     screen_context_terms: Vec<String>,
+    /// Where the dictation goes, for the corpus and the reply to the bar.
+    app: Option<app_context::AppContext>,
+    /// Style preferences the user approved for that app's category.
+    style: Vec<String>,
+    /// The text around the cursor, when the user turned that on.
+    textbox: Option<app_context::TextboxContext>,
+    /// Local history is on: the app and text-box context may be kept in the
+    /// corpus entry. Off, nothing read from the screen or a field is written.
+    keep_context: bool,
 }
 
 impl Engine {
@@ -112,6 +132,8 @@ impl Engine {
             started: Instant::now(),
             polish_requests: Vec::new(),
             dictionary: data::DictionaryFile::load()?,
+            styles: app_context::StylePreferenceCache::new(None),
+            repeated_edits: edits::RepeatedEdits::default(),
             recording_ids: HashMap::new(),
             pending_events: Vec::new(),
             all_ready_emitted: false,
@@ -139,12 +161,12 @@ impl Engine {
                     msg,
                     load_ms: None,
                 }),
-                AsrEvent::Ready { model, load_ms } => {
+                AsrEvent::Ready { load_ms, .. } => {
                     out.push(EngineEvent::Stream {
                         name: "asr".into(),
                         state: "loading".into(),
                         pct: 0.78,
-                        msg: format!("{model} loaded; running demo pass"),
+                        msg: "Checking speech recognition with a test clip".into(),
                         load_ms: Some(load_ms),
                     });
                     let fixture = self.root.join("assets/startup.wav");
@@ -171,7 +193,7 @@ impl Engine {
                                 name: "asr".into(),
                                 state: "loading".into(),
                                 pct: 0.9,
-                                msg: format!("batch demo passed: {text}; warming stream"),
+                                msg: "Checking live speech recognition".into(),
                                 load_ms: None,
                             });
                             let fixture = self.root.join("assets/startup.wav");
@@ -203,7 +225,7 @@ impl Engine {
                                 name: "asr".into(),
                                 state: "ready".into(),
                                 pct: 1.0,
-                                msg: format!("batch + streaming demos passed: {text}"),
+                                msg: "Speech recognition ready".into(),
                                 load_ms: Some(self.started.elapsed().as_secs_f64() * 1000.0),
                             });
                         } else {
@@ -243,18 +265,27 @@ impl Engine {
         if let Some(polisher) = self.polisher.as_mut() {
             for event in polisher.poll() {
                 match event {
+                    PolishEvent::Loading { msg, progress } => {
+                        out.push(EngineEvent::Stream {
+                            name: "llm".into(),
+                            state: "loading".into(),
+                            pct: llm_loading_pct(progress),
+                            msg,
+                            load_ms: None,
+                        });
+                    }
                     PolishEvent::Ready { msg, load_ms } => {
                         out.push(EngineEvent::Stream {
                             name: "llm".into(),
                             state: "loading".into(),
                             pct: 0.78,
-                            msg: format!("weights loaded · {msg}; compiling demo request"),
+                            msg: llm_checking_message(&msg),
                             load_ms: Some(load_ms),
                         });
                         self.polish_requests.push(PolishRequest {
                             id: Some(STARTUP_LLM_PRIME_ID.into()),
                             source_text: STARTUP_LLM_PRIME_TEXT.into(),
-                            screen_context_terms: Vec::new(),
+                            ..Default::default()
                         });
                         if let Err(error) = polisher.polish(STARTUP_LLM_PRIME_TEXT) {
                             self.polish_requests.pop();
@@ -271,11 +302,7 @@ impl Engine {
                         tok_s,
                     } => {
                         let request = if self.polish_requests.is_empty() {
-                            PolishRequest {
-                                id: None,
-                                source_text: String::new(),
-                                screen_context_terms: Vec::new(),
-                            }
+                            PolishRequest::default()
                         } else {
                             self.polish_requests.remove(0)
                         };
@@ -288,7 +315,7 @@ impl Engine {
                                     name: "llm".into(),
                                     state: "loading".into(),
                                     pct: 0.9,
-                                    msg: "base graph primed; waiting for speech warmup".into(),
+                                    msg: "Waiting for speech recognition".into(),
                                     load_ms: None,
                                 });
                             } else {
@@ -308,7 +335,7 @@ impl Engine {
                                     name: "llm".into(),
                                     state: "loading".into(),
                                     pct: 0.94,
-                                    msg: "startup.wav passed through ASR and correction".into(),
+                                    msg: "Test clip corrected".into(),
                                     load_ms: None,
                                 });
                             } else {
@@ -328,9 +355,7 @@ impl Engine {
                                     name: "llm".into(),
                                     state: "ready".into(),
                                     pct: 1.0,
-                                    msg: format!(
-                                        "demo passed · TTFT {ttft_ms:.0}ms · {tok_s:.0} tok/s"
-                                    ),
+                                    msg: "Correction model ready".into(),
                                     load_ms: Some(startup_ms),
                                 });
                             } else {
@@ -343,8 +368,14 @@ impl Engine {
                                 });
                             }
                         } else {
-                            let corrected =
+                            let mut corrected =
                                 safe_polish_output(&self.dictionary, &request.source_text, &text);
+                            corrected.text = app_context::apply_style(
+                                &corrected.text,
+                                &request.style,
+                                &self.dictionary,
+                            );
+                            let app_category = request.app.as_ref().map(|app| app.category);
                             if let Some(recording_id) = id
                                 .as_ref()
                                 .and_then(|request_id| self.recording_ids.get(request_id))
@@ -359,6 +390,8 @@ impl Engine {
                                         ttft_ms,
                                         tokens_per_second: tok_s,
                                     },
+                                    request.keep_context.then_some(request.app).flatten(),
+                                    request.keep_context.then_some(request.textbox).flatten(),
                                 ) {
                                     out.push(EngineEvent::Error {
                                         id: id.clone(),
@@ -372,6 +405,7 @@ impl Engine {
                                 latency_ms,
                                 ttft_ms,
                                 tok_s,
+                                app_category,
                             });
                         }
                     }
@@ -399,13 +433,13 @@ impl Engine {
                     name: "llm".into(),
                     state: "loading".into(),
                     pct: 0.92,
-                    msg: "running startup.wav through the correction model".into(),
+                    msg: "Correcting the test clip".into(),
                     load_ms: None,
                 });
                 self.polish_requests.push(PolishRequest {
                     id: Some(STARTUP_LLM_AUDIO_ID.into()),
                     source_text: startup_text.clone(),
-                    screen_context_terms: Vec::new(),
+                    ..Default::default()
                 });
                 let startup_input = self.dictionary.prepare_polish_input(&startup_text);
                 if let Err(error) = polisher.polish(&startup_input) {
@@ -422,13 +456,13 @@ impl Engine {
                     name: "llm".into(),
                     state: "loading".into(),
                     pct: 0.94,
-                    msg: "running full dictionary correction demo".into(),
+                    msg: "Checking corrections with a test sentence".into(),
                     load_ms: None,
                 });
                 self.polish_requests.push(PolishRequest {
                     id: Some(STARTUP_LLM_ID.into()),
                     source_text: STARTUP_LLM_TEXT.into(),
-                    screen_context_terms: Vec::new(),
+                    ..Default::default()
                 });
                 let startup_input =
                     startup_demo_dictionary().prepare_polish_input(STARTUP_LLM_TEXT);
@@ -500,6 +534,24 @@ impl Engine {
         screen_text: &str,
         id: Option<&str>,
     ) -> Result<()> {
+        self.polish_request(text, screen_text, id, None, None, false)
+    }
+
+    /// A polish request that knows where it is going. `app` is the bar's
+    /// `app` object (bundle id, name, page host); `textbox` is the text around
+    /// the cursor when the user turned text-box context on. Both reach the
+    /// sidecar as `context`; the approved style preferences for the app's
+    /// category are applied to the result. `keep_context` (local history on)
+    /// lets the corpus entry keep them.
+    pub fn polish_request(
+        &mut self,
+        text: &str,
+        screen_text: &str,
+        id: Option<&str>,
+        app: Option<&serde_json::Value>,
+        textbox: Option<&serde_json::Value>,
+        keep_context: bool,
+    ) -> Result<()> {
         let Some(polisher) = self.polisher.as_mut() else {
             bail!("the required local correction model is unavailable");
         };
@@ -509,12 +561,25 @@ impl Engine {
         let input = self
             .dictionary
             .prepare_polish_input_with_context(text, screen_text);
+        let app = app.and_then(app_context::AppContext::from_request);
+        // Re-parsed only when settings.json changes, so an approval applies
+        // to the very next dictation without a read per preview.
+        let style = match app.as_ref() {
+            Some(app) => self.styles.styles_for(app.category),
+            None => Vec::new(),
+        };
+        let textbox = textbox.and_then(app_context::TextboxContext::from_request);
+        let context = app_context::polish_context(app.as_ref(), &style, textbox.as_ref());
         self.polish_requests.push(PolishRequest {
             id: id.map(str::to_string),
             source_text: text.to_string(),
             screen_context_terms: self.dictionary.screen_confirmed_terms(text, screen_text),
+            app,
+            style,
+            textbox,
+            keep_context,
         });
-        if let Err(error) = polisher.polish(&input) {
+        if let Err(error) = polisher.polish_with_context(&input, context.as_ref()) {
             self.polish_requests.pop();
             return Err(error);
         }
@@ -523,6 +588,47 @@ impl Engine {
 
     pub fn polish_available(&self) -> bool {
         self.polisher.is_some()
+    }
+
+    /// Dictation started. Best effort: a sidecar that is not ready simply
+    /// misses the hint.
+    pub fn prewarm_polish(&mut self) -> Result<()> {
+        match self.polisher.as_mut() {
+            Some(polisher) if self.llm_ready => polisher.prewarm(),
+            _ => Ok(()),
+        }
+    }
+
+    fn recording_metadata_path(&self, id: Option<&str>) -> Option<std::path::PathBuf> {
+        let recording_id = id.and_then(|id| self.recording_ids.get(id))?;
+        data::corpus_dir()
+            .ok()
+            .map(|corpus| corpus.join(recording_id).join("metadata.json"))
+    }
+
+    /// Classify what the user did to a pasted dictation and, when the bar says
+    /// local history is on, keep the record in that dictation's corpus entry.
+    pub fn edit_observed(
+        &mut self,
+        id: Option<&str>,
+        request: &edits::ObservedEdit,
+    ) -> Result<serde_json::Value> {
+        let mut analysis = request.analyze(&self.dictionary);
+        if edits::end_reason_is_learnable(&request.end_reason) {
+            self.repeated_edits.promote(&mut analysis);
+        }
+        let recorded = match (request.record, self.recording_metadata_path(id)) {
+            (true, Some(path)) => edits::write_record(&path, &request.record(&analysis))?,
+            _ => false,
+        };
+        Ok(edits::observed_event(id, &analysis, recorded))
+    }
+
+    pub fn edit_decision(&self, id: Option<&str>, index: usize, decision: &str) -> Result<bool> {
+        match self.recording_metadata_path(id) {
+            Some(path) => edits::write_decision(&path, index, decision),
+            None => Ok(false),
+        }
     }
 
     pub fn shutdown(mut self) {
@@ -545,12 +651,20 @@ fn update_recording_final(
     corrections: Vec<data::AppliedCorrection>,
     screen_context_terms: Vec<String>,
     llm: data::LlmMetadata,
+    app: Option<app_context::AppContext>,
+    textbox: Option<app_context::TextboxContext>,
 ) -> Result<()> {
     let mut recording = data::load_recording_by_id(recording_id)?;
     recording.final_transcript = final_text.trim().to_string();
     recording.dictionary_corrections = corrections;
     recording.screen_context_terms = screen_context_terms;
     recording.llm = Some(llm);
+    if app.is_some() {
+        recording.app_context = app;
+    }
+    if textbox.is_some() {
+        recording.textbox_context = textbox;
+    }
     data::save_recording(&recording)
 }
 
@@ -625,11 +739,42 @@ fn llm_audio_smoke_passed(asr_text: &str, corrected: &str) -> bool {
     corrected.len() >= floor && corrected.len() <= spoken.len() + 2
 }
 
+/// Where the correction stream sits while its sidecar loads: 5% at start, up
+/// to 65% as the first-launch download lands, below the 78% that `Ready`
+/// (weights loaded) reports. A stage without a byte count holds at 5%, and the
+/// bar keeps the highest value it has shown, so a later stage never rewinds it.
+fn llm_loading_pct(progress: Option<f64>) -> f64 {
+    0.05 + 0.6 * progress.unwrap_or(0.0).clamp(0.0, 1.0)
+}
+
+/// The startup line once the correction weights are loaded. The sidecar's own
+/// ready message is developer detail; the one fact a user needs from it is
+/// that this Mac fell back to the slower MLX path.
+fn llm_checking_message(ready_message: &str) -> String {
+    if ready_message.contains("native engine unavailable: no engine binary") {
+        // A source build without scripts/build-engine.sh.
+        "Checking the correction model (MLX; this build has no native engine)".into()
+    } else if ready_message.contains("native engine unavailable") {
+        "Checking the correction model (MLX fallback; the native engine is unavailable on this Mac)"
+            .into()
+    } else {
+        "Checking the correction model".into()
+    }
+}
+
+/// The prime is the warmup request, not a vocabulary test. A refiner may
+/// rewrite the product name in it as a technical term (the public refiner on
+/// MLX returned "hello FluentBit startup prime"), so it passes on the audio
+/// demo's rule (no collapse, no runaway) when most of its words survive.
+/// Keyword retention is the dictionary demo's job.
 fn llm_prime_passed(text: &str) -> bool {
-    let words = normalized_words(data::extract_transcript_payload(text));
-    words.iter().any(|word| word == "fluid")
-        && words.iter().any(|word| word == "voice")
-        && words.iter().any(|word| word == "prime")
+    let spoken = normalized_words(STARTUP_LLM_PRIME_TEXT);
+    let corrected = normalized_words(data::extract_transcript_payload(text));
+    let kept = spoken
+        .iter()
+        .filter(|word| corrected.contains(word))
+        .count();
+    llm_audio_smoke_passed(STARTUP_LLM_PRIME_TEXT, text) && kept * 2 >= spoken.len()
 }
 
 /// Long-lived CLI: `phonon engine` — JSONL on stdin/stdout for the floating bar.
@@ -642,14 +787,14 @@ pub fn run_engine_serve() -> Result<()> {
         "name": "asr",
         "state": "loading",
         "pct": 0.05,
-        "msg": "starting parakeet"
+        "msg": "Loading the speech model"
     }));
     emit(&json!({
         "type": "stream",
         "name": "llm",
         "state": "loading",
         "pct": 0.05,
-        "msg": "starting the correction model"
+        "msg": "Loading the correction model"
     }));
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
@@ -729,8 +874,44 @@ pub fn run_engine_serve() -> Result<()> {
                         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
                         let context = v.get("context").and_then(|x| x.as_str()).unwrap_or("");
                         let id = v.get("id").and_then(|x| x.as_str());
-                        if let Err(e) = eng.polish_with_context(text, context, id) {
+                        if let Err(e) = eng.polish_request(
+                            text,
+                            context,
+                            id,
+                            v.get("app"),
+                            v.get("textbox"),
+                            v.get("local_history")
+                                .and_then(|x| x.as_bool())
+                                .unwrap_or(false),
+                        ) {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
+                        }
+                    }
+                    "prewarm" => {
+                        if let Err(e) = eng.prewarm_polish() {
+                            emit(&json!({"type":"error","msg":format!("{e:#}")}));
+                        }
+                    }
+                    "edit_observed" => {
+                        let id = v.get("id").and_then(|x| x.as_str());
+                        let outcome = serde_json::from_value::<edits::ObservedEdit>(v.clone())
+                            .map_err(anyhow::Error::from)
+                            .and_then(|request| eng.edit_observed(id, &request));
+                        match outcome {
+                            Ok(event) => emit(&event),
+                            Err(e) => {
+                                emit(&json!({"type":"error","id":id,"msg":format!("edit: {e:#}")}))
+                            }
+                        }
+                    }
+                    "edit_decision" => {
+                        let id = v.get("id").and_then(|x| x.as_str());
+                        let index = v.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                        let decision = v.get("decision").and_then(|x| x.as_str()).unwrap_or("");
+                        if let Err(e) = eng.edit_decision(id, index, decision) {
+                            emit(
+                                &json!({"type":"error","id":id,"msg":format!("edit decision: {e:#}")}),
+                            );
                         }
                     }
                     "reload_dictionary" => match data::DictionaryFile::load() {
@@ -808,6 +989,7 @@ fn emit_engine_event(ev: &EngineEvent) {
             latency_ms,
             ttft_ms,
             tok_s,
+            app_category,
         } => emit(&json!({
             "type": "result",
             "kind": "polish",
@@ -816,6 +998,7 @@ fn emit_engine_event(ev: &EngineEvent) {
             "latency_ms": latency_ms,
             "ttft_ms": ttft_ms,
             "tok_s": tok_s,
+            "app_category": app_category,
         })),
         EngineEvent::Error { id, msg } => emit(&json!({
             "type": "error",
@@ -828,8 +1011,8 @@ fn emit_engine_event(ev: &EngineEvent) {
 #[cfg(test)]
 mod tests {
     use super::{
-        asr_smoke_passed, llm_audio_smoke_passed, llm_prime_passed, llm_smoke_passed,
-        safe_polish_output,
+        asr_smoke_passed, llm_audio_smoke_passed, llm_checking_message, llm_loading_pct,
+        llm_prime_passed, llm_smoke_passed, safe_polish_output,
     };
     use crate::data::{DictionaryEntry, DictionaryFile};
 
@@ -861,6 +1044,37 @@ mod tests {
         assert!(!llm_smoke_passed("Test."));
         assert!(llm_prime_passed("Hello Fluid Voice startup prime."));
         assert!(!llm_prime_passed("Hello."));
+        // A refiner's legitimate rewrite of the product name still primes.
+        assert!(llm_prime_passed("hello FluentBit startup prime"));
+        // Unrelated text of the right length, and a runaway, do not.
+        assert!(!llm_prime_passed("the quick brown fox jumps"));
+        assert!(!llm_prime_passed(
+            "hello fluid voice startup prime and then a long explanation follows here"
+        ));
+    }
+
+    #[test]
+    fn llm_loading_progress_stays_below_weights_loaded() {
+        assert_eq!(llm_loading_pct(None), 0.05);
+        assert!((llm_loading_pct(Some(0.5)) - 0.35).abs() < 1e-9);
+        assert!(llm_loading_pct(Some(7.0)) < 0.78);
+        assert_eq!(llm_loading_pct(Some(-1.0)), 0.05);
+    }
+
+    #[test]
+    fn llm_checking_message_names_the_mlx_fallback() {
+        assert_eq!(
+            llm_checking_message("x loaded in 1.0s; native refiner engine"),
+            "Checking the correction model"
+        );
+        assert!(llm_checking_message(
+            "x loaded in 1.0s; MLX refiner (native engine unavailable: probe request failed)"
+        )
+        .contains("MLX fallback"));
+        assert!(llm_checking_message(
+            "x loaded in 1.0s; MLX refiner (native engine unavailable: no engine binary)"
+        )
+        .contains("no native engine"));
     }
 
     #[test]

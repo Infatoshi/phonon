@@ -4,6 +4,7 @@
 //!   stdin JSONL:
 //!     {"command":"warmup"}
 //!     {"command":"run","inputText":"…"}
+//!     {"command":"prewarm"}  (reply: a non-ready status line, skipped)
 //!     {"command":"status"}
 //!     {"command":"shutdown"}
 //!   stdout JSONL responses with diagnostics.
@@ -17,8 +18,9 @@ mod paths;
 
 use anyhow::{bail, Context, Result};
 pub use paths::{
-    fluid1_available, fluid1_paths, fluid_drafter_dir, fluid_helper, fluid_model_dir,
-    polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION, POLISH_RUNTIME_REQUIREMENT,
+    bundled_engine, fluid1_available, fluid1_paths, fluid_drafter_dir, fluid_helper,
+    fluid_model_dir, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
+    POLISH_RUNTIME_REQUIREMENT,
 };
 use paths::{polish_prompt, polish_script};
 use phonon_asr::StderrTail;
@@ -46,6 +48,9 @@ pub struct ServeStatus {
     #[allow(dead_code)]
     pub state: Option<String>,
     pub message: Option<String>,
+    /// Fraction of a loading stage done (the first-launch download), 0 to 1.
+    #[serde(default)]
+    pub progress: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +92,10 @@ pub struct PolishConfig {
     /// Keep the KV state of the stable prompt prefix between requests. Off
     /// only for developer comparisons; output text does not depend on it.
     pub prefix_cache: bool,
+    /// A local MLX model directory used instead of the pinned download: the
+    /// user's own trained refiner (`phonon_refiner.json` inside switches the
+    /// sidecar to the refiner prompt and guard). `None` runs the pinned model.
+    pub model_dir: Option<PathBuf>,
 }
 
 impl Default for PolishConfig {
@@ -95,6 +104,7 @@ impl Default for PolishConfig {
             profile_dir: None,
             profile_token_budget: None,
             prefix_cache: true,
+            model_dir: None,
         }
     }
 }
@@ -134,6 +144,20 @@ impl PolishConfig {
     /// Environment overrides only; the engine passes settings in instead.
     pub fn from_env() -> Self {
         Self::default().with_env_overrides(None)
+    }
+
+    /// The sidecar's `--model` and `--revision`: the user's own refiner
+    /// directory when one is configured (used as it is, including the engine
+    /// binary its `phonon_engine.json` names), otherwise the pinned public
+    /// refiner download.
+    pub fn model_and_revision(&self) -> (String, String) {
+        match &self.model_dir {
+            Some(dir) => (dir.display().to_string(), "local".to_string()),
+            None => (
+                POLISH_MODEL_ID.to_string(),
+                POLISH_MODEL_REVISION.to_string(),
+            ),
+        }
     }
 }
 
@@ -374,6 +398,12 @@ pub fn timing_from_resp(wall: Duration, resp: &ServeJsonResp) -> Result<RunTimin
 
 #[derive(Debug, Clone)]
 pub enum PolishEvent {
+    /// A startup stage the sidecar reports before `Ready`: download bytes,
+    /// engine start, MLX fallback. Never a readiness signal.
+    Loading {
+        msg: String,
+        progress: Option<f64>,
+    },
     Ready {
         msg: String,
         load_ms: f64,
@@ -412,10 +442,10 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     }
     let uv = phonon_asr::resolve_uv().context("uv not found; install it with Homebrew")?;
     // Overridable for developer model comparisons only; unset in shipped builds.
-    let model =
-        std::env::var("PHONON_POLISH_MODEL").unwrap_or_else(|_| POLISH_MODEL_ID.to_string());
-    let revision = std::env::var("PHONON_POLISH_REVISION")
-        .unwrap_or_else(|_| POLISH_MODEL_REVISION.to_string());
+    // A local directory has no revision; the sidecar uses it as it is.
+    let (default_model, default_revision) = config.model_and_revision();
+    let model = std::env::var("PHONON_POLISH_MODEL").unwrap_or(default_model);
+    let revision = std::env::var("PHONON_POLISH_REVISION").unwrap_or(default_revision);
     let mut command = Command::new(&uv);
     command
         .args([
@@ -444,6 +474,13 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     }
     if !config.prefix_cache {
         command.arg("--no-prefix-cache");
+    }
+    if let Some((binary, shaders)) = bundled_engine(root) {
+        command
+            .arg("--engine-binary")
+            .arg(binary)
+            .arg("--engine-shaders")
+            .arg(shaders);
     }
     // Developer comparison switch for correctors trained on the bare transcript
     // (no dictionary envelope); never set in a shipped build.
@@ -524,6 +561,14 @@ impl PolishSidecar {
                         msg: message.status.and_then(|x| x.message).unwrap_or_default(),
                         load_ms: started.elapsed().as_secs_f64() * 1000.0,
                     }
+                } else if let Some(status) = message
+                    .status
+                    .filter(|x| !ready && x.state.as_deref() == Some("loading"))
+                {
+                    PolishEvent::Loading {
+                        msg: status.message.unwrap_or_default(),
+                        progress: status.progress,
+                    }
                 } else {
                     continue;
                 };
@@ -553,7 +598,27 @@ impl PolishSidecar {
     }
 
     pub fn polish(&mut self, text: &str) -> Result<()> {
-        writeln!(self.stdin, "{}", json!({"command":"run", "inputText":text}))?;
+        self.polish_with_context(text, None)
+    }
+
+    /// `context` (app category, site, approved style preferences, text-box
+    /// text) rides along for a correction model that reads it; the sidecar
+    /// ignores keys it does not use.
+    pub fn polish_with_context(
+        &mut self,
+        text: &str,
+        context: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        writeln!(self.stdin, "{}", run_request(text, context))?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    /// Dictation started: let the sidecar wake its model while the user is
+    /// still talking. The reply is a status line the reader thread skips, so
+    /// it never pairs with a queued polish request.
+    pub fn prewarm(&mut self) -> Result<()> {
+        writeln!(self.stdin, "{}", json!({"command":"prewarm"}))?;
         self.stdin.flush()?;
         Ok(())
     }
@@ -568,5 +633,64 @@ impl PolishSidecar {
 impl Drop for PolishSidecar {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+/// One `run` line for the serve-json sidecar. The `context` key is present
+/// only when there is context, so a helper that predates it sees the old
+/// request unchanged.
+pub fn run_request(text: &str, context: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut request = json!({"command": "run", "inputText": text});
+    if let Some(context) = context.filter(|value| !value.is_null()) {
+        request["context"] = context.clone();
+    }
+    request
+}
+
+#[cfg(test)]
+mod run_request_tests {
+    use super::run_request;
+    use serde_json::json;
+
+    #[test]
+    fn context_is_added_only_when_present() {
+        assert_eq!(
+            run_request("hi", None),
+            json!({"command": "run", "inputText": "hi"})
+        );
+        let context = json!({"app_category": "chat"});
+        let request = run_request("hi", Some(&context));
+        assert_eq!(request["context"]["app_category"], "chat");
+        assert_eq!(request["inputText"], "hi");
+        assert!(run_request("hi", Some(&serde_json::Value::Null))
+            .get("context")
+            .is_none());
+    }
+}
+
+#[cfg(test)]
+mod model_precedence_tests {
+    use super::{PolishConfig, POLISH_MODEL_ID, POLISH_MODEL_REVISION};
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_configured_user_refiner_wins_over_the_public_download() {
+        let personal =
+            PathBuf::from("/Users/someone/Library/Application Support/Phonon/models/refiner");
+        let config = PolishConfig {
+            model_dir: Some(personal.clone()),
+            ..PolishConfig::default()
+        };
+        assert_eq!(
+            config.model_and_revision(),
+            (personal.display().to_string(), "local".to_string())
+        );
+        assert_eq!(
+            PolishConfig::default().model_and_revision(),
+            (
+                POLISH_MODEL_ID.to_string(),
+                POLISH_MODEL_REVISION.to_string()
+            )
+        );
     }
 }

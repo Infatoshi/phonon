@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs on anvil, detached: oracle the live candidates (Kokoro), label them with Opus 5 via OpenRouter,
+# Runs on the GPU box, detached: oracle the live candidates (Kokoro), label them with Opus 5 via OpenRouter,
 # zero-shot 4B judge (two prompts), LoRA per-term judge, gate on held-out Opus labels. Restartable: each
 # stage is skipped when its output exists. Writes report.json and done.txt (RC=n).
 export PATH="$HOME/.local/bin:$PATH"
@@ -41,7 +41,8 @@ if [ ! -f judge_final.json ]; then
   python3 prep.py judge_input.json judge_cache.jsonl judge_final.json heldout_ids.json 2000 2>> progress.log || finish 4
 fi
 
-# 3. Opus labels through OpenRouter (network, no GPU)
+# 3. Opus labels through OpenRouter (network, no GPU). label_opus.py lives in tools/dev/
+#    because it sends data to a cloud API; copy it next to this script on the box.
 if [ ! -f labels_opus.json ]; then
   log "opus labelling"
   python3 label_opus.py judge_final.json labels_opus.jsonl labels_opus.json 2> opus.log || { log "opus failed: $(tail -3 opus.log)"; finish 5; }

@@ -19,6 +19,10 @@ sentence, Kokoro TTS, Parakeet) plus the user's real dictation pairs. `SPEC.md` 
 the eval roadmap. The full experiment log is a private `DEVLOG.md` kept with the research tree on the
 GPU box (ignored here, like the root one); the numbers that decide anything are in these two files.
 
+## State (2026-10-23)
+
+Earlier distillation experiments are kept out of this repository.
+
 ## State (2026-09-28)
 
 **Ship recipe.** LFM2.5-1.2B, LoRA r16, trained on the 14.5k-term acoustic corpus with the real
@@ -84,6 +88,7 @@ The shell jobs call scripts under `/data/phonon_ship_v0/scripts/`; copies are in
 | `research/ship_v0/scripts/` | quant, retrieval multiprocess and report scripts the ship queue calls |
 | `research/record_terms/record.py` | Mac recorder for the field set (sox, 16 kHz mono) |
 | `src/phonon/`, `scripts/option0/` | the older ASR benchmark package and gate scripts some experiments import |
+| `src/phonon/vendor.py`, `src/phonon/eval.py` | vendor comparison tools; they call third-party APIs and are not part of the app |
 
 Per-experiment `results.md` tables, generated plots and all jsonl/json outputs stay on the GPU box.
 

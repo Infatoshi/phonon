@@ -136,6 +136,12 @@ def main() -> None:
     try:
         import mlx.core as mx
 
+        # Every utterance has its own length, so freed buffers rarely fit the next request,
+        # and MLX's default cache limit is its memory limit (tens of GB on a 36 GB Mac): a
+        # process that transcribed a few hundred clips of different lengths grew past 28 GB.
+        # 1 GB keeps short clips at 39.7 ms median (256 MB: 43.0 ms; clearing every call:
+        # 51.6 ms; M4 Max, 52 clips under 4 s).
+        mx.set_cache_limit(1 << 30)
         mx.eval(model.parameters())
     except Exception as e:  # noqa: BLE001
         emit({"type": "error", "msg": f"weight materialization failed: {e}"})

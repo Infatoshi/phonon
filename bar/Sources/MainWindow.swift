@@ -132,7 +132,15 @@ struct PhononMainView: View {
         .onAppear {
             showPrivacyChoice = store.needsPrivacyChoice
             store.pruneExpiredRecordings()
+            showRequestedPage()
         }
+        .onChange(of: store.pageRequest) { _, _ in showRequestedPage() }
+    }
+
+    private func showRequestedPage() {
+        guard let requested = store.pageRequest else { return }
+        page = requested
+        store.pageRequest = nil
     }
 
     private var detailView: AnyView {
@@ -164,17 +172,17 @@ struct HomeView: View {
                 HStack(spacing: 14) {
                     StatTile(
                         value: "\(store.usage.wordsPerMinute)",
-                        label: "voice WPM",
+                        label: "Words per minute",
                         symbol: "speedometer"
                     )
                     StatTile(
                         value: "\(store.usage.wordsToday)",
-                        label: "words today",
+                        label: "Words today",
                         symbol: "sun.max.fill"
                     )
                     StatTile(
                         value: "\(store.usage.words)",
-                        label: "total words",
+                        label: "Total words",
                         symbol: "text.word.spacing"
                     )
                 }
@@ -200,7 +208,7 @@ struct HomeView: View {
                                 label: "Average length",
                                 value: "\(store.usage.averageWordsPerRecording) words")
                             MetricColumn(
-                                label: "Dictionary repairs",
+                                label: "Dictionary fixes",
                                 value: "\(store.usage.dictionaryFixes)")
                             MetricColumn(
                                 label: "Active days", value: "\(store.usage.activeDays)")
@@ -231,8 +239,11 @@ struct HistoryView: View {
     private var filtered: [NativeHistoryItem] {
         guard !query.isEmpty else { return store.history }
         return store.history.filter { item in
-            [item.displayText, item.metadata.rawTranscript, item.metadata.finalTranscript]
-                .contains { $0.localizedCaseInsensitiveContains(query) }
+            [
+                item.displayText, item.metadata.rawTranscript, item.metadata.finalTranscript,
+                item.changedEdit?.editedText ?? "",
+            ]
+            .contains { $0.localizedCaseInsensitiveContains(query) }
         }
     }
 
@@ -248,18 +259,7 @@ struct HistoryView: View {
                         .textFieldStyle(.roundedBorder)
                         .padding(12)
                     List(filtered, selection: $selectedID) { item in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(item.displayText.isEmpty ? "No speech" : item.displayText)
-                                .lineLimit(2)
-                            HStack {
-                                Text(relativeDate(item.date))
-                                if item.metadata.speechDetected == false { Text("No speech") }
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                        .tag(item.id)
+                        HistoryRow(item: item).tag(item.id)
                     }
                     .scrollContentBackground(.hidden)
                     .background(EmberTheme.background)
@@ -288,37 +288,35 @@ struct HistoryView: View {
                                     }
                                 }
 
-                                TranscriptSection(title: "Final", text: item.metadata.finalTranscript)
+                                if let edit = item.changedEdit {
+                                    // Like Wispr Flow: what was typed beside
+                                    // what the user kept.
+                                    EditComparison(pasted: edit.pastedText, edited: edit.editedText)
+                                } else {
+                                    TranscriptSection(title: "Phonon wrote", text: item.metadata.finalTranscript)
+                                }
                                 if item.metadata.rawTranscript != item.metadata.finalTranscript {
-                                    TranscriptSection(title: "Raw ASR", text: item.metadata.rawTranscript)
+                                    TranscriptSection(title: "Before correction", text: item.metadata.rawTranscript)
                                 }
 
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text("Intended transcription").font(.headline)
+                                    Text("What you meant").font(.headline)
                                     TextEditor(text: $intendedText)
                                         .font(.body)
+                                        .scrollContentBackground(.hidden)
                                         .frame(minHeight: 90)
                                         .padding(6)
                                         .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 8))
                                     HStack {
-                                        Text("Saving this creates ground truth for future evaluation.")
+                                        Text("Kept with this recording to measure accuracy. It does not change the dictionary.")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                         Spacer()
-                                        Button("Save intended") {
+                                        Button("Save") {
                                             store.saveIntendedTranscript(itemID: item.id, text: intendedText)
                                         }
                                         .buttonStyle(.borderedProminent)
                                     }
-                                }
-
-                                if let llm = item.metadata.llm {
-                                    HStack(spacing: 18) {
-                                        if let value = llm.ttftMs { Label("TTFT \(value, specifier: "%.0f") ms", systemImage: "bolt") }
-                                        if let value = llm.tokensPerSecond { Label("\(value, specifier: "%.0f") tok/s", systemImage: "speedometer") }
-                                    }
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                                 }
                             }
                             .padding(24)
@@ -350,6 +348,30 @@ struct HistoryView: View {
             }
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         }
+    }
+}
+
+/// One dictation in the History list. A dictation the user changed after it
+/// was typed says so; the rest look as before.
+struct HistoryRow: View {
+    let item: NativeHistoryItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(item.displayText.isEmpty ? "No speech" : item.displayText)
+                .lineLimit(2)
+            HStack {
+                Text(relativeDate(item.date))
+                if item.metadata.speechDetected == false { Text("No speech") }
+                if item.changedEdit != nil {
+                    Label("Edited", systemImage: "pencil")
+                        .foregroundStyle(EmberTheme.warm)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -417,16 +439,21 @@ struct DictionaryView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         Text(editingID == nil ? "Add a term" : "Edit term")
                             .font(.title2.weight(.semibold))
-                        LabeledContent("Written term") {
-                            TextField("Blackwell", text: $phrase).frame(width: 280)
+                        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
+                            GridRow {
+                                Text("Term").gridColumnAlignment(.trailing)
+                                TextField("Blackwell", text: $phrase)
+                            }
+                            GridRow {
+                                Text("Replace with")
+                                TextField("Optional", text: $replacement)
+                            }
+                            GridRow {
+                                Text("Also heard as")
+                                TextField("Comma separated", text: $spokenForms)
+                            }
                         }
-                        LabeledContent("Replace spoken phrase") {
-                            TextField("Optional exact output", text: $replacement).frame(width: 280)
-                        }
-                        LabeledContent("Other spoken forms") {
-                            TextField("Comma separated", text: $spokenForms).frame(width: 280)
-                        }
-                        Text("Leave replacement empty for a spelling term. Add a replacement when a spoken form should deterministically become different written text.")
+                        Text("Leave Replace with empty to teach Phonon a spelling. Fill it in to turn the spoken term into exactly that text every time.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         HStack {
@@ -493,25 +520,38 @@ struct SettingsView: View {
                 SettingsSection("Dictation") {
                     ToggleRow(
                         title: "Streaming",
-                        detail: "Produce acoustic partials while you speak.",
+                        detail: "Transcribe while you speak, not only after you let go.",
                         isOn: settingBinding(\.streaming)
                     )
                     Divider()
                     ToggleRow(
                         title: "Screen context",
-                        detail: "Run local OCR and use only relevant dictionary terms.",
+                        detail: "Read the visible windows with on-device OCR to spell dictionary terms that are on screen. Screenshots are never saved.",
                         isOn: settingBinding(\.screenContext)
                     )
                     Divider()
                     ToggleRow(
+                        title: "Text around the cursor",
+                        detail: "Give the local correction model the text before and after the cursor.",
+                        isOn: settingBinding(\.textboxContext)
+                    )
+                    Divider()
+                    ToggleRow(
+                        title: "Learn from your edits",
+                        detail: "When you fix a word Phonon typed, offer to add it to the dictionary.",
+                        isOn: settingBinding(\.editLearning)
+                    )
+                    LearnedStylesList(store: store, onChanged: onSettingsChanged)
+                    Divider()
+                    ToggleRow(
                         title: "Local history",
-                        detail: "Retain paired WAV and metadata after insertion.",
+                        detail: "Keep each recording and its transcript after it is typed.",
                         isOn: settingBinding(\.localHistory)
                     )
                     Divider()
                     ToggleRow(
                         title: "Instant microphone",
-                        detail: "Keep CoreAudio warm for near-instant key-to-recording latency.",
+                        detail: "Keep the microphone ready so recording starts the moment you press the shortcut.",
                         isOn: settingBinding(\.instantMic)
                     )
                     Divider()
@@ -520,6 +560,25 @@ struct SettingsView: View {
                         detail: "Play a short sweep when a recording opens and closes.",
                         isOn: settingBinding(\.soundFeedback)
                     )
+                }
+
+                SettingsSection("Meetings") {
+                    ToggleRow(
+                        title: "Offer meeting notes",
+                        detail: "When a call starts, ask whether to record your mic and the call audio on this Mac.",
+                        isOn: settingBinding(\.meetingCapture)
+                    )
+                    Divider()
+                    ToggleRow(
+                        title: "Start without asking",
+                        detail: "Record detected calls right away. Some places require everyone's consent.",
+                        isOn: settingBinding(\.meetingAutoStart)
+                    )
+                    .disabled(!store.settings.meetingCapture)
+                }
+
+                SettingsSection("Private apps and sites") {
+                    PrivateListEditor(store: store, onChanged: onSettingsChanged)
                 }
 
                 SettingsSection("Backup") {
@@ -624,7 +683,7 @@ struct SettingsView: View {
                 SettingsSection("System") {
                     ToggleRow(
                         title: "Launch at login",
-                        detail: "Keep Phonon warm in the menu bar after signing in.",
+                        detail: "Start Phonon in the menu bar when you log in.",
                         isOn: Binding(
                             get: { store.launchAtLoginEnabled },
                             set: { store.setLaunchAtLogin($0) }
@@ -634,7 +693,7 @@ struct SettingsView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Model status")
-                            Text("Inspect weights, smoke tests, and decode throughput.")
+                            Text("See whether the speech and correction models are loaded.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -688,6 +747,115 @@ struct SettingsView: View {
 
 }
 
+/// The writing styles the user approved on the edit-learning card, each
+/// removable. Nothing shows until one is approved.
+struct LearnedStylesList: View {
+    @ObservedObject var store: NativeAppStore
+    let onChanged: () -> Void
+
+    var body: some View {
+        let rows = EditSuggestionCopy.styleRows(store.settings.stylePreferences)
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Learned writing style")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(rows, id: \.text) { row in
+                    HStack {
+                        Text(row.text)
+                        Spacer()
+                        Button("Remove") {
+                            store.removeStylePreference(row.preference, category: row.category)
+                            onChanged()
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+/// The denylist: apps and sites Phonon never reads for context, text-box
+/// text or edits. Dictation still works there.
+struct PrivateListEditor: View {
+    @ObservedObject var store: NativeAppStore
+    let onChanged: () -> Void
+    @State private var draft = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(
+                "Phonon never reads the screen, the text field or your edits in these apps "
+                    + "and sites. Dictation still works. A site and its desktop app count as "
+                    + "one (discord.com also covers the Discord app). Password prompts and "
+                    + "password managers (1Password, Bitwarden, Keychain Access, Passwords, "
+                    + "LastPass, Dashlane, KeePassXC, Proton Pass, Enpass, Keeper) are always "
+                    + "private, as is any app or page Phonon cannot identify."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            ForEach(store.settings.screenContextDenylist, id: \.self) { entry in
+                HStack {
+                    let name = Self.displayName(entry)
+                    Text(name)
+                    if name != entry {
+                        Text(entry).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Remove") {
+                        store.removeFromDenylist(entry)
+                        onChanged()
+                    }
+                }
+            }
+            HStack {
+                TextField("App bundle id or website, e.g. discord.com", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(add)
+                Menu("Running app") {
+                    ForEach(Self.runningApps(), id: \.bundleID) { app in
+                        Button(app.name) {
+                            store.addToDenylist(app.bundleID)
+                            onChanged()
+                        }
+                    }
+                }
+                .fixedSize()
+                Button("Add", action: add)
+                    .disabled(ContextPolicy.normalizeEntry(draft) == nil)
+            }
+        }
+    }
+
+    private func add() {
+        guard ContextPolicy.normalizeEntry(draft) != nil else { return }
+        store.addToDenylist(draft)
+        draft = ""
+        onChanged()
+    }
+
+    static func displayName(_ entry: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: entry) {
+            return FileManager.default.displayName(atPath: url.path)
+                .replacingOccurrences(of: ".app", with: "")
+        }
+        return entry
+    }
+
+    static func runningApps() -> [(name: String, bundleID: String)] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app in
+                guard let id = app.bundleIdentifier, id != Bundle.main.bundleIdentifier else {
+                    return nil
+                }
+                return (app.localizedName ?? id, id)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
 struct PermissionSummary: View {
     @ObservedObject var store: NativeAppStore
 
@@ -695,7 +863,7 @@ struct PermissionSummary: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Permissions and health").font(.headline)
+                    Text("Permissions").font(.headline)
                     Spacer()
                     Button("Refresh") { store.refreshPermissions() }
                         .buttonStyle(.borderless)
@@ -745,21 +913,21 @@ struct PrivacyChoiceView: View {
                 ToggleRow(
                     title: "Keep recordings and transcripts",
                     detail:
-                        "Save the paired WAV and text after insertion so History, the dictionary, and accuracy work have something to learn from.",
+                        "Save the audio and text of each dictation so History can show it and you can correct it later.",
                     isOn: $localHistory
                 )
                 Divider()
                 ToggleRow(
-                    title: "Read the active window",
+                    title: "Read the screen",
                     detail:
-                        "Run local OCR on the frontmost window to spell technical terms correctly. Nothing leaves the Mac.",
+                        "Read the visible windows with on-device OCR to spell technical terms correctly. Screenshots are never saved, and nothing leaves the Mac.",
                     isOn: $screenContext
                 )
             }
             .padding(14)
             .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
 
-            Text("Both can be changed any time in Settings, and History has a Clear all button.")
+            Text("Both can be changed any time in Settings, which can also clear all history.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -1054,7 +1222,7 @@ struct SettingsSection<Content: View>: View {
             Text(title.uppercased())
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Card { VStack(spacing: 12) { content } }
+            Card { VStack(alignment: .leading, spacing: 12) { content } }
         }
     }
 }
@@ -1070,8 +1238,48 @@ struct ToggleRow: View {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Toggle("", isOn: $isOn).labelsHidden()
+            Toggle(title, isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(EmberSwitchStyle())
+                .accessibilityLabel(title)
         }
+    }
+}
+
+/// A switch drawn in the ember accent. AppKit's own switch greys its ON track
+/// whenever the window is not key, so ON and OFF looked alike in this dark theme.
+struct EmberSwitchStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        EmberSwitch(isOn: configuration.$isOn)
+    }
+}
+
+private struct EmberSwitch: View {
+    @Binding var isOn: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? EmberTheme.accent : Color.white.opacity(0.14))
+                    .overlay(
+                        Capsule().stroke(EmberTheme.border, lineWidth: isOn ? 0 : 1))
+                Circle()
+                    .fill(Color.white)
+                    .padding(2)
+                    .shadow(color: .black.opacity(0.35), radius: 1, y: 0.5)
+            }
+            .frame(width: 32, height: 18)
+            .contentShape(Capsule())
+            .animation(.easeOut(duration: 0.12), value: isOn)
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.4)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
     }
 }
 
@@ -1092,18 +1300,6 @@ struct PermissionRow: View {
                 .foregroundStyle(.secondary)
             Button(actionTitle ?? "Settings", action: action)
                 .buttonStyle(.borderless)
-        }
-    }
-}
-
-struct MetricRow: View {
-    let label: String
-    let value: String
-    var body: some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).font(.body.monospacedDigit())
         }
     }
 }

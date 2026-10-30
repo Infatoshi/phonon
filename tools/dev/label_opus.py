@@ -1,5 +1,8 @@
 """Label candidates keep/drop with Opus 5 through OpenRouter. Resumable: appends per-item results to a JSONL
-and skips ids already labelled. Key is read from ~/.omp/agent/.env on this box and never printed.
+and skips ids already labelled. The key comes from OPENROUTER_API_KEY (or a dotenv file below) and is never printed.
+
+Developer tooling, not part of the app: this script SENDS vocabulary candidates to OpenRouter's cloud API.
+It is step 3 of tools/profile-miner/judge/runner.sh; the prompts live in tools/profile-miner/judge/prompts.py.
 usage: python label_opus.py judge_final.json labels_opus.jsonl labels_opus.json [--model anthropic/claude-opus-5]
 """
 import argparse
@@ -10,7 +13,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "profile-miner" / "judge"))
 from prompts import BASE, fmt_batch_item
 
 ap = argparse.ArgumentParser()
@@ -21,6 +26,8 @@ a = ap.parse_args()
 
 
 def load_key():
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return os.environ["OPENROUTER_API_KEY"]
     for p in (os.path.expanduser("~/.omp/agent/.env"), os.path.expanduser("~/.env_vars")):
         if not os.path.exists(p):
             continue

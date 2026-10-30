@@ -512,8 +512,11 @@ final class CompetitorCoordinator {
             else { return }
             NSLog("phonon competitors: \(bundleID) launched")
             // Let the app finish starting before its settings are read.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                Task { @MainActor in self?.check(trigger: "relaunch") }
+            // Rebind self as a constant: Swift 5.10 (the CI runner's
+            // toolchain) rejects a captured `weak var` inside a Task.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in self.check(trigger: "relaunch") }
             }
         }
     }
@@ -684,8 +687,8 @@ final class CompetitorCoordinator {
                 NSLog("phonon competitors: microphone still busy; not quitting \(names)")
                 self.store.lastError =
                     "Phonon did not quit \(names): a microphone is still in use. "
-                    + "Finish the other dictation, then choose Phonon › Quit competing "
-                    + "dictation apps from the menu bar."
+                    + "Finish the other dictation, then choose Quit Other Dictation Apps "
+                    + "from Phonon's menu bar item."
                 return
             }
             let mainApps = findings.flatMap(\.running)

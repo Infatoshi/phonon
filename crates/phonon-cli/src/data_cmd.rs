@@ -671,6 +671,106 @@ fn comparable(value: &str) -> String {
         .join(" ")
 }
 
+pub struct ExportPairsArgs {
+    pub since: Option<String>,
+    pub eval_from: Option<String>,
+    pub out: Option<PathBuf>,
+    pub edited_only: bool,
+    pub wispr_db: Option<PathBuf>,
+    pub with_audio: bool,
+    pub audio_dir: Option<PathBuf>,
+    pub holdout_ids: Vec<PathBuf>,
+}
+
+/// `phonon data export-pairs`: the corpus (and optionally a copy of Wispr
+/// Flow's history) as JSONL training/eval pairs. A summary goes to stderr.
+pub fn export_pairs(args: ExportPairsArgs) -> Result<()> {
+    use phonon_core::pairs;
+    use std::io::Write;
+
+    if args.with_audio && args.wispr_db.is_none() {
+        bail!("--with-audio applies to --wispr-db rows (corpus rows already point at their WAV)");
+    }
+    let mut holdout_ids = std::collections::HashSet::new();
+    for path in &args.holdout_ids {
+        holdout_ids.extend(pairs::read_holdout_ids(path)?);
+    }
+    let eval_from_ms = match &args.eval_from {
+        Some(date) => pairs::parse_date(date)?,
+        None => pairs::default_eval_from(pairs::now_ms(), pairs::DEFAULT_EVAL_DAYS),
+    };
+    let options = pairs::ExportOptions {
+        since_ms: args.since.as_deref().map(pairs::parse_date).transpose()?,
+        eval_from_ms,
+        edited_only: args.edited_only,
+        holdout_ids,
+    };
+    let (mut rows, counts) = pairs::phonon_rows(&corpus_dir()?, &options)?;
+    let phonon_count = rows.len();
+    let mut wispr_counts = pairs::ExportCounts::default();
+    if let Some(database) = &args.wispr_db {
+        let audio_dir = args.with_audio.then(|| {
+            args.audio_dir
+                .clone()
+                .unwrap_or_else(|| std::env::temp_dir().join("phonon-wispr-audio"))
+        });
+        let (wispr, found) = pairs::wispr_rows(database, &options, audio_dir.as_deref())?;
+        wispr_counts = found;
+        rows.extend(wispr);
+        if let Some(audio_dir) = audio_dir {
+            eprintln!("Wispr audio: {}", audio_dir.display());
+        }
+    }
+    rows.sort_by_key(|row| row.timestamp_unix_ms);
+
+    let mut writer: Box<dyn Write> = match &args.out {
+        Some(path) => {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            Box::new(std::io::BufWriter::new(
+                std::fs::File::create(path)
+                    .with_context(|| format!("create {}", path.display()))?,
+            ))
+        }
+        None => Box::new(std::io::BufWriter::new(std::io::stdout().lock())),
+    };
+    for row in &rows {
+        serde_json::to_writer(&mut writer, row)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+
+    let edited = rows
+        .iter()
+        .filter(|row| row.edited && row.learnable)
+        .count();
+    let eval = rows
+        .iter()
+        .filter(|row| row.split == pairs::Split::Eval)
+        .count();
+    eprintln!(
+        "{} rows ({} phonon, {} wispr): {} edited, {} train, {} eval from {}; skipped {} unreadable, {} without text, {} password prompts or managers",
+        rows.len(),
+        phonon_count,
+        rows.len() - phonon_count,
+        edited,
+        rows.len() - eval,
+        eval,
+        &pairs::rfc3339_utc(eval_from_ms)[..10],
+        counts.unreadable + wispr_counts.unreadable,
+        counts.empty + wispr_counts.empty,
+        counts.private + wispr_counts.private,
+    );
+    if let Some(path) = &args.out {
+        eprintln!("{}", path.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::comparable;

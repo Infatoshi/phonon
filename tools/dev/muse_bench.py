@@ -1,5 +1,8 @@
 """Benchmark Meta Muse Voice Transcribe on the local Phonon corpus.
 
+Developer tooling, not part of the app: this script UPLOADS your recordings to
+Meta's cloud API. Phonon itself never sends audio or text off the Mac.
+
 Sends each speech recording to POST /v1/asr/transcribe twice: plain, and with
 `keywords` = the Phonon dictionary (canonical phrases). Writes muse_results.json
 and prints a side-by-side of Parakeet raw / Phonon final / Muse / Muse+keywords

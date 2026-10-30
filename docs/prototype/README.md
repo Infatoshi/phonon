@@ -4,8 +4,8 @@ The visual prototype this app was designed against. It lived at `~/dev/phonon`,
 was never committed, and is archived here so the design record survives the
 folder.
 
-It was one 664-line GPUI view (`main.rs.original`, renamed so it is not built)
-with a single dependency and hardcoded sample data: no audio, no ASR, no model,
+It was one 664-line GPUI view with a single dependency and hardcoded sample
+data: no audio, no ASR, no model,
 no sidecar. It existed to answer one question, quoted from its own acceptance
 criteria: whether a "native GPUI window with aligned navigation and interactive
 page switching" could carry the product surface without a webview. The four
@@ -24,6 +24,6 @@ API keys, model pickers, or prompt editors). Read it as the current intent.
 recorder, graceful context capture when permission is absent, compact history,
 and the term-versus-replacement split.
 
-`AGENTS.md.original` is kept only as a record. It claims that folder is the
-source of truth and requires GPUI, both of which describe the prototype and are
-false of this repository.
+The prototype's source (`main.rs`, `Cargo.toml`, `justfile`) and its agent
+notes were removed from the tree; they remain in git history at commit
+`b510b1b`.

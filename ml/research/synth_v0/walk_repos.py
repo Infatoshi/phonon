@@ -260,15 +260,25 @@ CODE_KEYWORDS = frozenset(
     """.split()
 )
 
-MACHINE_SEEDS = {
-    "gpubox": "machine",
-    "gamer": "machine",
-    "macbook": "machine",
+GENERIC_SEEDS = {
     "blackwell": "machine",
     "rtx": "product",
-    "infatoshi": "person",
-    "elliot": "person",
 }
+
+
+def load_machine_seeds() -> dict[str, str]:
+    """Generic seeds plus the user's own names and hostnames from seeds.json beside
+    the data ({term: kind}, e.g. {"mybox": "machine"}). Nothing personal is
+    hardcoded here."""
+    seeds = dict(GENERIC_SEEDS)
+    path = DATA_ROOT / "seeds.json"
+    if path.is_file():
+        user = json.loads(path.read_text(encoding="utf-8"))
+        seeds.update({term.lower(): kind for term, kind in user.items()})
+    return seeds
+
+
+MACHINE_SEEDS = load_machine_seeds()
 
 
 def is_skipped_dir(name: str) -> bool:

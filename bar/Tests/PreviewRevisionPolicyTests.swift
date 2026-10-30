@@ -168,29 +168,6 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         )
     }
 
-    func testStalePolishCannotReplaceNewerHypothesis() {
-        XCTAssertFalse(
-            PreviewRevisionPolicy.canShowPolish(
-                source: "hello",
-                latestAcoustic: "hello this is the current hypothesis",
-                polished: "Hello.",
-                newerCandidateWaiting: true
-            )
-        )
-    }
-
-    func testCollapsingPolishIsRejected() {
-        let source = "this transcript already contains several useful words"
-        XCTAssertFalse(
-            PreviewRevisionPolicy.canShowPolish(
-                source: source,
-                latestAcoustic: source,
-                polished: "Words.",
-                newerCandidateWaiting: false
-            )
-        )
-    }
-
     func testPanelRestsAtBottomCenter() {
         let screen = NSRect(x: 100, y: 50, width: 1_200, height: 800)
         let size = NSSize(width: 360, height: 180)
@@ -245,21 +222,6 @@ final class PreviewRevisionPolicyTests: XCTestCase {
             screen: screen, size: NSSize(width: 360, height: 180))
 
         XCTAssertLessThanOrEqual(frame.maxY, screen.minY)
-    }
-
-    func testLiveFormatterHandlesPunctuationFillersAndDuplicateWords() {
-        XCTAssertEqual(
-            LiveTranscriptFormatter.format(
-                "well I'm typing in real time period ah and and then it corrects"),
-            "Well I'm typing in real time. And then it corrects"
-        )
-    }
-
-    func testLiveFormatterDoesNotPerformSemanticRewriting() {
-        XCTAssertEqual(
-            LiveTranscriptFormatter.format("use vLLM with CUDA"),
-            "Use vLLM with CUDA"
-        )
     }
 
     func testE2ETraceSeparatesDictationFromReleaseLatency() throws {

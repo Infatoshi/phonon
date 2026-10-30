@@ -25,6 +25,21 @@ struct NativeSettings: Codable, Equatable {
     /// Bundle IDs of competing dictation apps the owner answered "Don't ask
     /// again" for. See `CompetingApps.swift`.
     var competitorQuitMuted: [String]
+    /// Watch the field after insertion and offer what the user corrected.
+    var editLearning: Bool
+    /// Approved style preferences by app category, e.g. `["chat":
+    /// ["lowercase_start"]]`. Written only when the user says yes.
+    var stylePreferences: [String: [String]]
+    /// Apps (bundle ids) and sites (hosts) whose screen, text fields and
+    /// edits Phonon never reads. Signal and Discord by default.
+    var screenContextDenylist: [String]
+    /// Send the text around the cursor to the local correction model.
+    var textboxContext: Bool
+    /// Notice calls and offer to record meeting notes (mic + call audio).
+    var meetingCapture: Bool
+    /// Start recording a detected call without asking. Off by default:
+    /// recording other people needs their consent in some places.
+    var meetingAutoStart: Bool
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -38,6 +53,12 @@ struct NativeSettings: Codable, Equatable {
         case privacyChoiceMade = "privacy_choice_made"
         case historyRetentionDays = "history_retention_days"
         case competitorQuitMuted = "competitor_quit_muted"
+        case editLearning = "edit_learning"
+        case stylePreferences = "style_preferences"
+        case screenContextDenylist = "screen_context_denylist"
+        case textboxContext = "textbox_context"
+        case meetingCapture = "meeting_capture"
+        case meetingAutoStart = "meeting_auto_start"
     }
 
     init(
@@ -51,7 +72,13 @@ struct NativeSettings: Codable, Equatable {
         shortcutMode: String = "fn",
         privacyChoiceMade: Bool = false,
         historyRetentionDays: Int = NativeSettings.keepRecordingsForever,
-        competitorQuitMuted: [String] = []
+        competitorQuitMuted: [String] = [],
+        editLearning: Bool = true,
+        stylePreferences: [String: [String]] = [:],
+        screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
+        textboxContext: Bool = false,
+        meetingCapture: Bool = false,
+        meetingAutoStart: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -64,6 +91,12 @@ struct NativeSettings: Codable, Equatable {
         self.privacyChoiceMade = privacyChoiceMade
         self.historyRetentionDays = historyRetentionDays
         self.competitorQuitMuted = competitorQuitMuted
+        self.editLearning = editLearning
+        self.stylePreferences = stylePreferences
+        self.screenContextDenylist = screenContextDenylist
+        self.textboxContext = textboxContext
+        self.meetingCapture = meetingCapture
+        self.meetingAutoStart = meetingAutoStart
     }
 
     init(from decoder: Decoder) throws {
@@ -92,6 +125,19 @@ struct NativeSettings: Codable, Equatable {
             ?? NativeSettings.keepRecordingsForever
         competitorQuitMuted =
             try values.decodeIfPresent([String].self, forKey: .competitorQuitMuted) ?? []
+        editLearning = try values.decodeIfPresent(Bool.self, forKey: .editLearning) ?? true
+        stylePreferences =
+            try values.decodeIfPresent([String: [String]].self, forKey: .stylePreferences) ?? [:]
+        // Absent means never edited: the defaults apply. An empty list is the
+        // user's own choice and stays empty.
+        screenContextDenylist =
+            try values.decodeIfPresent([String].self, forKey: .screenContextDenylist)
+            ?? ContextPolicy.defaultDenylist
+        // Off until the user turns it on: it reads what they are typing.
+        textboxContext = try values.decodeIfPresent(Bool.self, forKey: .textboxContext) ?? false
+        meetingCapture = try values.decodeIfPresent(Bool.self, forKey: .meetingCapture) ?? false
+        meetingAutoStart =
+            try values.decodeIfPresent(Bool.self, forKey: .meetingAutoStart) ?? false
     }
 }
 
@@ -136,6 +182,18 @@ struct NativeDictionaryEntry: Codable, Identifiable, Equatable {
         starred = try values.decodeIfPresent(Bool.self, forKey: .starred) ?? false
         usageCount = try values.decodeIfPresent(UInt64.self, forKey: .usageCount) ?? 0
     }
+}
+
+/// What one edit-learning approval changed in the dictionary.
+struct LearnedTermUndo: Equatable {
+    static let source = "edit-learning"
+
+    enum Change: Equatable {
+        case addedEntry(id: String)
+        case addedSpokenForm(entryID: String, form: String)
+    }
+
+    let change: Change
 }
 
 struct NativeDictionaryFile: Codable {
@@ -189,9 +247,13 @@ struct NativeRecordingMetadata: Codable, Equatable {
     var screenContextTerms: [String]
     var dictionaryCorrections: [NativeAppliedCorrection]
     var llm: NativeLlmMetadata?
+    /// What the user did to the dictation after it was typed, when edit
+    /// learning watched it (the engine's `user_edit`).
+    var userEdit: NativeUserEdit?
 
     enum CodingKeys: String, CodingKey {
         case id, source, microphone, llm
+        case userEdit = "user_edit"
         case createdAtUnixMs = "created_at_unix_ms"
         case audioFile = "audio_file"
         case audioDurationMs = "audio_duration_ms"
@@ -221,6 +283,29 @@ struct NativeRecordingMetadata: Codable, Equatable {
             try values.decodeIfPresent([NativeAppliedCorrection].self, forKey: .dictionaryCorrections)
             ?? []
         llm = try values.decodeIfPresent(NativeLlmMetadata.self, forKey: .llm)
+        // A malformed record must not hide the dictation from History.
+        userEdit = try? values.decodeIfPresent(NativeUserEdit.self, forKey: .userEdit)
+    }
+}
+
+/// The parts of an engine `user_edit` record History shows.
+struct NativeUserEdit: Codable, Equatable {
+    var pastedText: String
+    var editedText: String
+    var outcome: String
+    var endReason: String
+
+    enum CodingKeys: String, CodingKey {
+        case outcome
+        case pastedText = "pasted_text"
+        case editedText = "edited_text"
+        case endReason = "end_reason"
+    }
+
+    /// The user changed what Phonon typed (including deleting it).
+    var changed: Bool {
+        pastedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            != editedText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -236,6 +321,8 @@ struct NativeHistoryItem: Identifiable, Equatable {
         return metadata.rawTranscript
     }
     var date: Date { Date(timeIntervalSince1970: Double(metadata.createdAtUnixMs) / 1_000) }
+    /// The user's edit, when they changed what Phonon typed.
+    var changedEdit: NativeUserEdit? { metadata.userEdit.flatMap { $0.changed ? $0 : nil } }
 }
 
 struct NativeUsageStats: Equatable {
@@ -325,6 +412,9 @@ final class NativeAppStore: ObservableObject {
     @Published var inputMonitoringAvailable = false
     @Published var permissionGuide: PermissionGuide?
     @Published var lastError: String?
+    /// A page the main window should switch to, set by the app menu's
+    /// Settings… item and cleared once the window shows it.
+    @Published var pageRequest: NativeAppPage?
     /// Last known state of the off-Library copy. See `PhononDataMirror`.
     @Published private(set) var mirrorManifest: MirrorManifest?
     var onDictionaryChanged: (() -> Void)?
@@ -333,15 +423,37 @@ final class NativeAppStore: ObservableObject {
 
     private let fileManager: FileManager
     private let supportDirectory: URL
+    /// Where `PhononDataMirror` keeps the off-Library copy of this store.
+    private let mirrorDirectory: URL
 
-    init(fileManager: FileManager = .default, supportDirectory: URL? = nil) {
+    /// A store opened on an injected directory (tests, tools) mirrors inside
+    /// that directory unless told otherwise. Before this, every test that
+    /// saved a dictionary entry captured its temporary store into the owner's
+    /// real `~/.phonon/backup`, which is the copy a wipe is restored from.
+    init(
+        fileManager: FileManager = .default, supportDirectory: URL? = nil,
+        mirrorDirectory: URL? = nil
+    ) {
         self.fileManager = fileManager
-        self.supportDirectory = supportDirectory
+        let support = supportDirectory
             ?? PhononDataPaths.supportDirectory(fileManager: fileManager)
+        self.supportDirectory = support
+        self.mirrorDirectory = Self.mirrorDirectory(
+            explicit: mirrorDirectory, injectedSupport: supportDirectory, fileManager: fileManager)
         reloadAll()
         mirrorManifest = PhononDataMirror.capture(
-            from: self.supportDirectory, fileManager: fileManager)
-            ?? PhononDataMirror.manifest(fileManager: fileManager)
+            from: support, mirror: self.mirrorDirectory, fileManager: fileManager)
+            ?? PhononDataMirror.manifest(mirror: self.mirrorDirectory, fileManager: fileManager)
+    }
+
+    static func mirrorDirectory(
+        explicit: URL?, injectedSupport: URL?, fileManager: FileManager = .default
+    ) -> URL {
+        if let explicit { return explicit }
+        if let injectedSupport {
+            return injectedSupport.appendingPathComponent(".mirror", isDirectory: true)
+        }
+        return PhononDataMirror.directory(fileManager: fileManager)
     }
 
     func reloadAll() {
@@ -364,7 +476,7 @@ final class NativeAppStore: ObservableObject {
         updated.schemaVersion = NativeSettings.currentSchemaVersion
         settings = updated
         do {
-            try writeJSON(updated, to: settingsURL)
+            try writeSettingsKeepingUnknownKeys(updated)
             lastError = nil
             captureMirror()
         } catch {
@@ -406,6 +518,93 @@ final class NativeAppStore: ObservableObject {
         saveDictionary(dictionaryEntries.filter { $0.id != id })
     }
 
+    /// Add a term the user approved on the edit-learning panel. An entry that
+    /// already spells the term gains the heard form as a spoken form; any
+    /// other term becomes a new entry carrying it. Returns what changed, for
+    /// Undo, or nil when there was nothing to add.
+    @discardableResult
+    func approveLearnedTerm(term: String, heardAs: String) -> LearnedTermUndo? {
+        let term = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        let heard = heardAs.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return nil }
+        let same = { (left: String, right: String) in
+            left.caseInsensitiveCompare(right) == .orderedSame
+        }
+        var entries = dictionaryEntries
+        if let index = entries.firstIndex(where: {
+            same($0.phrase, term) || ($0.replacement.map { same($0, term) } ?? false)
+        }) {
+            let entry = entries[index]
+            guard !heard.isEmpty, !same(heard, entry.phrase), !same(heard, term),
+                !entry.spokenForms.contains(where: { same($0, heard) })
+            else { return nil }
+            entries[index].spokenForms = (entry.spokenForms + [heard]).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+            saveDictionary(entries)
+            return LearnedTermUndo(change: .addedSpokenForm(entryID: entry.id, form: heard))
+        }
+        let forms = heard.isEmpty || same(heard, term) ? [] : [heard]
+        let entry = NativeDictionaryEntry(
+            phrase: term, spokenForms: forms, source: LearnedTermUndo.source)
+        entries.append(entry)
+        saveDictionary(entries)
+        return LearnedTermUndo(change: .addedEntry(id: entry.id))
+    }
+
+    /// Take back exactly what one approval added, if it is still there.
+    @discardableResult
+    func undoLearnedTerm(_ undo: LearnedTermUndo) -> Bool {
+        switch undo.change {
+        case let .addedEntry(id):
+            guard dictionaryEntries.contains(where: { $0.id == id }) else { return false }
+            saveDictionary(dictionaryEntries.filter { $0.id != id })
+            return true
+        case let .addedSpokenForm(entryID, form):
+            var entries = dictionaryEntries
+            guard let index = entries.firstIndex(where: { $0.id == entryID }),
+                entries[index].spokenForms.contains(form)
+            else { return false }
+            entries[index].spokenForms.removeAll { $0 == form }
+            saveDictionary(entries)
+            return true
+        }
+    }
+
+    /// Save a style preference the user approved for one app category.
+    func approveStylePreference(_ preference: String, category: String) {
+        updateSettings {
+            var list = $0.stylePreferences[category] ?? []
+            if !list.contains(preference) { list.append(preference) }
+            $0.stylePreferences[category] = list
+        }
+    }
+
+    /// Add an app (bundle id) or site (host or URL) to the private list.
+    func addToDenylist(_ raw: String) {
+        guard let entry = ContextPolicy.normalizeEntry(raw) else { return }
+        updateSettings {
+            guard
+                !$0.screenContextDenylist.contains(where: {
+                    $0.caseInsensitiveCompare(entry) == .orderedSame
+                })
+            else { return }
+            $0.screenContextDenylist.append(entry)
+        }
+    }
+
+    func removeFromDenylist(_ entry: String) {
+        updateSettings { $0.screenContextDenylist.removeAll { $0 == entry } }
+    }
+
+    func removeStylePreference(_ preference: String, category: String) {
+        updateSettings {
+            var list = $0.stylePreferences[category] ?? []
+            list.removeAll { $0 == preference }
+            $0.stylePreferences[category] = list.isEmpty ? nil : list
+        }
+    }
+
     func saveIntendedTranscript(itemID: String, text: String) {
         guard let item = history.first(where: { $0.id == itemID }) else { return }
         do {
@@ -423,7 +622,7 @@ final class NativeAppStore: ObservableObject {
             loadHistory()
             lastError = nil
         } catch {
-            lastError = "Could not save intended transcription: \(error.localizedDescription)"
+            lastError = "Could not save the transcript: \(error.localizedDescription)"
         }
     }
 
@@ -604,7 +803,7 @@ final class NativeAppStore: ObservableObject {
 
     private func captureMirror() {
         if let written = PhononDataMirror.capture(
-            from: supportDirectory, fileManager: fileManager)
+            from: supportDirectory, mirror: mirrorDirectory, fileManager: fileManager)
         {
             mirrorManifest = written
         }
@@ -613,12 +812,14 @@ final class NativeAppStore: ObservableObject {
     /// A backup worth offering, or nil. Only non-empty when the store itself
     /// has nothing, which is what an uninstall or a first run looks like.
     func restorableBackup() -> MirrorManifest? {
-        PhononDataMirror.restorableManifest(for: supportDirectory, fileManager: fileManager)
+        PhononDataMirror.restorableManifest(
+            for: supportDirectory, mirror: mirrorDirectory, fileManager: fileManager)
     }
 
     func restoreFromBackup() {
         do {
-            try PhononDataMirror.restore(into: supportDirectory, fileManager: fileManager)
+            try PhononDataMirror.restore(
+                into: supportDirectory, mirror: mirrorDirectory, fileManager: fileManager)
             reloadAll()
             onDictionaryChanged?()
             lastError = nil
@@ -629,7 +830,7 @@ final class NativeAppStore: ObservableObject {
 
     func deleteBackup() {
         do {
-            try PhononDataMirror.forget(fileManager: fileManager)
+            try PhononDataMirror.forget(mirror: mirrorDirectory, fileManager: fileManager)
             mirrorManifest = nil
             lastError = nil
         } catch {
@@ -648,8 +849,7 @@ final class NativeAppStore: ObservableObject {
     }
 
     func revealBackupInFinder() {
-        let url = PhononDataMirror.directory(fileManager: fileManager)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        NSWorkspace.shared.activateFileViewerSelecting([mirrorDirectory])
     }
 
     private func saveDictionary(_ entries: [NativeDictionaryEntry]) {
@@ -716,6 +916,22 @@ final class NativeAppStore: ObservableObject {
         let data = try encoder.encode(value)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+    }
+
+    /// settings.json is shared with the Rust side, which owns keys this struct
+    /// does not model (`profile_prefix`); a save must not drop them.
+    private func writeSettingsKeepingUnknownKeys(_ updated: NativeSettings) throws {
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(updated))
+        var object =
+            (try? Data(contentsOf: settingsURL)).flatMap {
+                try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+            } ?? [:]
+        for (key, value) in encoded as? [String: Any] ?? [:] {
+            object[key] = value
+        }
+        try fileManager.createDirectory(
+            at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try writeJSONObject(object, to: settingsURL)
     }
 
     private func writeJSONObject(_ object: [String: Any], to url: URL) throws {

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[lints.rust]
+# Set by scripts/package-bar.sh for the bundled app (see paths.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(phonon_bundle)"] }
+
 [dependencies]
 anyhow.workspace = true
 phonon-asr = { path = "../phonon-asr" }

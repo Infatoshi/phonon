@@ -1,0 +1,29 @@
+diff --git a/conversion/lfm3.py b/conversion/lfm3.py
+index 435edd3..4fa7b00 100644
+--- a/conversion/lfm3.py
++++ b/conversion/lfm3.py
+@@ -64,7 +64,9 @@ class LFM3Model(TextModel):
+         )
+ 
+     def set_vocab(self):
+-        super().set_vocab()
++        # explicit base: DFlash/DSpark drafters call this on themselves with an LFM3 target, and a
++        # zero-argument super() fails for an instance that is not an LFM3Model
++        TextModel.set_vocab(self)
+         # hparams hold the merged text config, the checkpoint's own model_type is in config.json
+         with open(self.dir_model / "config.json", encoding="utf-8") as f:
+             model_type = json.load(f).get("model_type")
+diff --git a/src/models/lfm3.cpp b/src/models/lfm3.cpp
+index 174ce9c..a464526 100644
+--- a/src/models/lfm3.cpp
++++ b/src/models/lfm3.cpp
+@@ -157,6 +157,9 @@ llama_model_lfm3::graph<decision>::graph(const llama_model & model, const llm_gr
+     ggml_tensor * inp_out_ids = build_inp_out_ids();
+ 
+     for (int il = 0; il < n_layer; ++il) {
++        // layer input, read by DFlash/DSpark drafters through llama_set_embeddings_layer_inp
++        res->t_layer_inp[il] = cur;
++
+         auto * prev_cur = cur;
+ 
+         cur = build_norm(cur, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);

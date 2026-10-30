@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -97,15 +98,35 @@ CFG_RE = re.compile(r"^\s*[\"']?([A-Za-z_][A-Za-z0-9_.\-]{1,60})[\"']?\s*[:=]", 
 IDENTISH = re.compile(r"[A-Za-z][A-Za-z0-9_\-\./]*")
 HEXISH = re.compile(r"^(0x)?[0-9a-f]{6,}$", re.I)
 
-# tier B: mentions.  Technical-looking tokens anywhere in the text, plus the fixed
-# command / host / person seeds that walk_repos.py used (these never appear as a
-# definition site, so a definition-only index can never produce them).
+# tier B: mentions.  Technical-looking tokens anywhere in the text, plus command and
+# product seeds (these never appear as a definition site, so a definition-only index
+# can never produce them). The user's own names and hostnames come from --seeds, a
+# file from their profile, one term per line; none are hardcoded here.
 MENTION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_\-\.]{2,60}")
-SEED_RE = re.compile(
-    r"\b(uv|pytest|ruff|nvidia-smi|nvcc|ncu|nsys|cmake|ninja|rsync|tmux|docker|kubectl|"
-    r"huggingface-cli|overnight-compute|hyperfine|croc|bun|cargo|rustc|node|npm|pnpm|ffmpeg|"
-    r"sox|jq|rg|fd|scp|gpubox|gamer|macbook|blackwell|Elliot|Infatoshi|Grok|Opus|Codex|"
-    r"Claude|Fable|parakeet|whisper|wispr|jiwer|metaphone|rapidfuzz)\b", re.I)
+GENERIC_SEEDS = (
+    r"uv|pytest|ruff|nvidia-smi|nvcc|ncu|nsys|cmake|ninja|rsync|tmux|docker|kubectl|"
+    r"huggingface-cli|hyperfine|croc|bun|cargo|rustc|node|npm|pnpm|ffmpeg|"
+    r"sox|jq|rg|fd|scp|blackwell|Grok|Opus|Codex|"
+    r"Claude|Fable|parakeet|whisper|wispr|jiwer|metaphone|rapidfuzz"
+)
+SEED_RE = re.compile(rf"\b({GENERIC_SEEDS})\b", re.IGNORECASE)
+
+
+@functools.lru_cache(maxsize=4)
+def seed_regex(extra: tuple[str, ...]) -> re.Pattern:
+    """SEED_RE plus the user's own seeds (names, hostnames) from --seeds."""
+    if not extra:
+        return SEED_RE
+    alternatives = "|".join(re.escape(term) for term in extra)
+    return re.compile(rf"\b({GENERIC_SEEDS}|{alternatives})\b", re.IGNORECASE)
+
+
+def load_seeds(path: str) -> tuple[str, ...]:
+    """One term per line; blank lines and # comments are skipped."""
+    if not path:
+        return ()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return tuple(sorted({ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}))
 
 
 def looks_technical(t: str) -> bool:
@@ -228,7 +249,7 @@ def walk_tree(root, src, lang, emit):
         stack.extend(n.children)
 
 
-def scan_file(path: str, ext: str, mentions: bool = False):
+def scan_file(path: str, ext: str, mentions: bool = False, seeds: tuple[str, ...] = ()):
     """-> list of (term, kind, lang)."""
     out = []
     try:
@@ -291,7 +312,7 @@ def scan_file(path: str, ext: str, mentions: bool = False):
             text = raw.decode("utf-8", "replace")
         for m in FLAG_RE.finditer(text):
             emit(m.group(1), "flag", lang or "text")
-        for m in SEED_RE.finditer(text):
+        for m in seed_regex(seeds).finditer(text):
             emit(m.group(1), "mention", lang or "text")
         for m in MENTION_RE.finditer(text):
             tok = m.group(0)
@@ -300,12 +321,12 @@ def scan_file(path: str, ext: str, mentions: bool = False):
     return out
 
 
-def scan_batch(batch, mentions=False):
+def scan_batch(batch, mentions=False, seeds=()):
     """batch: list of (path, ext, repo). -> {(term,kind): [count, nfiles, {repo:c}, {lang:c}]}"""
     agg = {}
     nf = 0
     for path, ext, repo in batch:
-        rows = scan_file(path, ext, mentions)
+        rows = scan_file(path, ext, mentions, seeds)
         if rows:
             nf += 1
         for term, kind, lang in rows:
@@ -369,7 +390,10 @@ def main() -> int:
     ap.add_argument("--max-per-repo", type=int, default=0)
     ap.add_argument("--min-count", type=int, default=1)
     ap.add_argument("--mentions", action="store_true")
+    ap.add_argument("--seeds", default="",
+                    help="file of the user's own seed terms (names, hostnames), one per line")
     a = ap.parse_args()
+    seeds = load_seeds(a.seeds)
 
     t0 = time.perf_counter()
     files = iter_files(a.roots, max_per_repo=a.max_per_repo)
@@ -382,7 +406,7 @@ def main() -> int:
     nf_used = 0
     t1 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
-        futs = [ex.submit(scan_batch, b, a.mentions) for b in batches]
+        futs = [ex.submit(scan_batch, b, a.mentions, seeds) for b in batches]
         for fu in as_completed(futs):
             agg, nb, nf = fu.result()
             done += nb
@@ -421,7 +445,7 @@ def main() -> int:
         "walk_seconds": round(t_walk, 1), "parse_seconds": round(t_parse, 1),
         "seconds_per_1k_files": round(1000 * t_parse / max(1, len(files)), 2),
         "terms": n, "kinds": dict(kinds.most_common()),
-        "workers": a.workers, "mentions": bool(a.mentions),
+        "workers": a.workers, "mentions": bool(a.mentions), "user_seeds": len(seeds),
     }
     print(json.dumps(stats, indent=1), flush=True)
     if a.stats:

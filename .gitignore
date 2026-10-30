@@ -24,7 +24,17 @@
 
 # ml/: the research log, goal file and field recordings stay on the machines that make them
 /ml/DEVLOG.md
+/GOAL.md
 /ml/GOAL.md
 /ml/research/record_terms/read_script.jsonl
 /ml/research/record_terms/recordings.jsonl
 /ml/research/record_terms/wav/
+
+# Local scratch: A/B pages built from real dictations, and a local working copy
+# of research scripts (the published copy lives under ml/research/)
+/ab/
+/research/
+# Research trained on a third-party app's output; kept on the research machines
+/ml/research/distill_v1/
+# Demo videos go on the GitHub release, not into git
+/demos/

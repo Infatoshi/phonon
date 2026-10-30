@@ -1,0 +1,2 @@
+# A patch's context lines end in spaces by design.
+*.patch -whitespace

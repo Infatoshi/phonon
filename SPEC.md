@@ -4,7 +4,7 @@
 
 Goal: a new user gets a dictionary and a short profile that fit them on day
 one, without reading their files by hand and without any data leaving the
-machine. Parakeet and Gemma stay as shipped; the profile and dictionary carry
+machine. Parakeet and the correction model stay as shipped; the profile and dictionary carry
 the personalization. Fine-tuning is a later, opt-in POC (see end).
 
 ### Principles
@@ -41,7 +41,7 @@ the personalization. Fine-tuning is a later, opt-in POC (see end).
    a. Seed (no model): the user's identity from `id -F`, `git config
       user.name`, `$USER`, the GitHub login, plus repo names. These are
       always candidates; the surname of the author never appeared in the
-      first POC because it lived inside paths (`/home/elliotarledge`).
+      first POC because it lived inside paths (`/home/<first><last>`).
    b. Candidates (no model): CamelCase, ALLCAPS, digit tokens, hyphenated
       identifiers, capitalized non-initial words with count >= 2, and
       lowercase tokens absent from a fixed general-English list shipped
@@ -67,7 +67,7 @@ the personalization. Fine-tuning is a later, opt-in POC (see end).
 5. Profile files, prefix-cached in the polish prompt, bounded to about 1.5k
    tokens together: `profile/user.md` (role, domains, tools, projects,
    people, style) and `profile/vocab.md` (accepted terms by kind with spoken
-   forms). Gemma reads them every pass.
+   forms). The correction model reads them every pass.
 6. Refresh button ("Update my vocabulary"). Re-runs extract from per-source
    watermarks in `profile/state.json`, mines only the delta, dedups against
    dictionary plus rejections, shows the diff for review, rewrites the
@@ -100,15 +100,57 @@ spoken-form variants collapsed onto their term, and a precision proxy
 in the mining role only when it reaches the Opus baseline within a stated
 margin on the same extracts. Numbers and miss analysis live in DEVLOG.
 
-### Fine-tuning POC (later, anvil RTX PRO 6000)
+### On-device fine-tuning: Train Now
 
-Only if the profile plus dictionary plateaus. Two candidates, both from
-data the app already keeps:
-- Gemma polish on pairs (raw ASR transcript, what the user finally kept).
-  Needs post-insert edit capture first; the corpus stores raw and final
-  but not the user's later edits.
-- Parakeet on corpus audio with NeMo, evaluated on held-out corpus WER.
-  Risk: microphone drift after a one-time tune. Prefer the LLM side.
+The refiner learns from the user's own corrections, on the user's Mac, only
+when the user presses a button. Decided 2026-10-29.
+- Data: dictations whose corpus `metadata.json` holds a `user_edit` record
+  with a real edit. The input is the raw ASR transcript in the exact prompt
+  Phonon used (system prompt plus the vocabulary line); the target is
+  `edited_text` with the inserted text's first-letter case and final period
+  put back. Corrections that change only those are not counted: they fit a
+  dictation into text already on screen, which the refiner does not see
+  (40 of the owner's 44 Wispr corrections did that; a cursor-aware casing
+  rule is the cheaper fix for them). Rows never leave the machine.
+- UI: History shows "You hand-corrected N transcriptions" and a Train Now
+  button once N reaches a minimum set by measurement. Training runs in the
+  background with visible progress and Cancel. A dictation preempts it: the
+  current step is dropped or finished, the dictation runs at normal latency,
+  then training resumes. There is no scheduler.
+- Recipe: a LoRA adapter rebuilt from the shipped refiner every time, never
+  stacked on an earlier personal adapter (a second pass on a finished
+  refiner regressed, DEVLOG 2026-10-29). The training rows are the user's
+  corrections plus up to 2.75 times as many of their own uncorrected
+  dictations, target the inserted text, at lr 1e-4 for 2 passes. Public
+  replay is out: on the owner's data it moved general dictation by +0.013
+  to +0.07 WER.
+- Gate before use: a held-out slice of the user's corrections (the newest
+  20%), a bundled public check set (margin 0.01), and the user's 30 newest
+  uncorrected dictations, never trained on: the adapter may rewrite at most
+  8% of the shipped refiner's words there, counted as typed. The new adapter
+  replaces the current one only if it passes all three. The app reports the
+  result in one line and keeps one-click revert to the shipped refiner.
+- Serving: a dictation longer than the longest training row uses the shipped
+  weights. Merging into the K-quant target is not a serving path: a gentle
+  adapter's deltas fall below the quantization step and vanish (measured).
+  The engine needs a runtime low-rank add, fused into its per-layer kernels
+  (projected +3.3% bytes per pass); until then an active adapter is served
+  by the MLX refiner.
+- Value is unproven: on 42 held Wispr-era corrections the safe recipe was
+  +0.000 [-0.006, +0.006] fair WER, and recipes that moved the corrections
+  more broke real_580 and sep. Re-measure on 100+ Phonon-recorded
+  corrections before shipping the button.
+- Budgets, measured on an 8 GB M1 and the M4 Max (DEVLOG 2026-10-30): wall
+  time for 25, 100 and 400 edit rows; peak memory footprint; dictation
+  latency while training runs. Where trainer plus dictation stack exceed 85%
+  of the GPU's recommended working set, the trainer is evicted at key-down
+  (saves its state, exits, restarts after 30 s of quiet); otherwise it is
+  paused. On an 8 GB M1 the recognizer still slows about 3x at key-up while
+  a trainer is resident, so there Train Now says dictation is slower until
+  it finishes.
+- Personal adapters never leave the machine and never enter public
+  training.
+- Parakeet fine-tuning stays out: microphone drift after a one-time tune.
 No enrollment scripts. Users do not read generated sentences aloud.
 
 ## Input
@@ -272,3 +314,16 @@ The next correction model is built in `ml/`: Parakeet TDT v2, then per-utterance
 vocabulary indexed from the user's own code, then LFM2.5-1.2B with a LoRA adapter, shipped as the
 same int4 weights on every platform. `ml/SPEC.md` has the design and the evaluation roadmap;
 `ml/AGENTS.md` has the current state and how to run the pipeline.
+
+A trained refiner runs today as a local model. When
+`~/Library/Application Support/Phonon/models/refiner/` holds an MLX model with a
+`phonon_refiner.json` marker, the engine passes that directory to the correction
+sidecar instead of the pinned Gemma download, and the sidecar switches to the refiner's
+own format: the phonon-bench system prompt with a `Vocabulary the speaker may use:` line
+built from the dictionary envelope (screen-confirmed, phonetic and exact-replacement
+targets, likely, then canonical terms, capped at `min(80, max(30, 3 x words))`), the bare
+transcript as the user turn, an output cap of `1.5 x input tokens + 32`, and the word-count
+guard (fall back to the transcript when the output is over twice or, past 8 words, under
+0.4 of its length). No profile block, no repetition penalty. A refiner trained on a user's
+dictations is that user's alone and is never downloaded from or published to a hub.
+`phonon doctor` names the model in use.

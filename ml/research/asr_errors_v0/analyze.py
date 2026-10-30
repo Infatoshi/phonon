@@ -684,7 +684,7 @@ def narrative(results, top_entities, wer_table, oracle, class_counts, share_coun
         f"On holdout120, Parakeet v2 fair WER is {fmt(hold_v2)} and the oracle-over-systems fair WER is {fmt(oracle_h)}"
         + (f", a {gap:.4f} absolute gap that is the recoverable diversity across recognizers." if gap is not None else "."),
         f"Of {n_shared + n_spec} classified error chunks, {n_shared / total:.1%} are SHARED (the same reference word is wrong in at least half the systems) and {n_spec / total:.1%} are MODEL_SPECIFIC.",
-        f"Shared errors concentrate on entities and stable mishearings of Elliot's names and stack words ({tops}), which no single recognizer invents in isolation.",
+        f"Shared errors concentrate on entities and stable mishearings of the speaker's names and stack words ({tops}), which no single recognizer invents in isolation.",
         "Recognizer-specific errors are the rest: function-word jitter, near-miss spellings, and one model's habit of dropping or inserting a content word the others keep.",
         f"On this audio the dominant classes by chunk count are ENTITY {entity_n}, FUNCTION {func_n}, ORTHOGRAPHY {ortho_n}, NEAR_MISS {near_n}, DROP {drop_n}, INSERT {insert_n}, OTHER {other_n}.",
         "Orthography is large because Wispr targets keep product casing and digit forms while several engines emit lowercase or number-words; fair WER hides most of that, strict WER does not.",

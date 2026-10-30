@@ -1,11 +1,13 @@
 # Phonon
 
-Open-source voice typing. Fast, local, and sovereign. macOS is the shipped
-platform. Windows is in beta.
+Open-source voice typing. Fast. Local. Yours.
+macOS is the shipped platform. Windows is in beta.
 
-[Website](https://phonon.sh) · [Distribution plan](DISTRIBUTION.md)
+[Website](https://phonon.sh) · [Releases](https://github.com/Infatoshi/phonon/releases)
 
 ## Install
+
+Apple silicon, macOS 14 or later.
 
 ```bash
 brew install --cask infatoshi/phonon/phonon
@@ -13,10 +15,11 @@ phonon
 ```
 
 The cask installs the Developer ID-signed and notarized app. On first launch
-Phonon downloads the open Parakeet and Gemma weights, both pinned to exact
-revisions, which is about 5.6 GB and the one slow start. Everything after that
-is local and offline. Tagged releases also include the DMG for direct
-installation. To build locally instead, use
+Phonon downloads Parakeet TDT 0.6B v2 for speech recognition and the Phonon
+refiner 1.7B for correction, both pinned to exact revisions. That is about
+4.9 GB (2.47 GB for Parakeet, 2.40 GB for the refiner) plus the Python packages
+`uv` installs, and the one slow start; everything after it is local and offline. Tagged releases
+also include the DMG for direct installation. To build from source instead, use
 `brew install --formula infatoshi/phonon/phonon`.
 
 ## Windows beta
@@ -57,42 +60,43 @@ Everything lives in `%LOCALAPPDATA%\Phonon`. Delete that folder to start over.
 ## Pipeline
 
 ```
-mic → Parakeet ASR → dictionary retrieval → Gemma correction → clipboard / type
+mic → Parakeet speech recognition → dictionary lookup → correction model → typed into the app
 ```
 
-The runtime requires and loads two weight streams in parallel:
-**asr ∥ llm**. The single startup loader reaches 100% only after Parakeet
-transcribes the bundled fixture through batch and streaming ASR, that transcript
-survives a round trip through the correction model, and a representative
-technical correction succeeds. Phonon does not expose an ASR-only mode.
+Both models load in parallel at launch. The startup screen reaches 100% only
+after Parakeet transcribes a bundled clip through both the batch and the
+streaming path, that transcript goes through the correction model, and a
+representative technical correction succeeds. There is no speech-only mode.
 
-The correction stage is `sidecar/polish_server.py`: `mlx-community/gemma-4-e2b-it-4bit`
-on `mlx-lm`, run locally through `uv`. It is a pipeline stage, not a provider
-setting, and there is no way to point it at a remote model.
+The correction model is the Phonon refiner 1.7B, fine-tuned from LiquidAI's
+LFM3-1.7B on public audio only; no personal dictation went into it. It runs on
+Phonon's native Metal engine (a decode megakernel with a speculative drafter,
+prefill through a patched llama.cpp), and falls back to an MLX copy of the same
+model when the engine cannot run. On an M4 Max, key-up to typed text takes
+about 0.3 s (median, dictations under 30 s), and the engine path is about 1.6x
+faster than the earlier MLX refiner on the same weights.
+`sidecar/polish_server.py` drives it. Correction is a pipeline stage, not a
+provider setting: there is no way to point it at a remote model.
 
 ## Build from source
 
 ```bash
 cargo install --path crates/phonon-cli --force --root ~/.local
-phonon bar --rebuild   # once, builds Swift floating pill
+phonon bar --rebuild   # once: builds and signs the app from this checkout
 ```
 
 ## Commands
 
 ```bash
-phonon                 # native macOS app
-phonon bar             # explicit native-app launcher
-phonon engine          # warm JSONL backend (bar uses this)
-phonon doctor
-phonon bench
-phonon profile --help   # discover kernel, model, and end-to-end profilers
-phonon profile kernel   # literal MLX Metal kernel top 10 for a warmed request
-phonon profile model    # warm-only LLM prefill / decode sweep
-phonon profile e2e      # summarize real keyboard-to-insertion traces
-phonon dictionary --help # terms, replacements, Wispr import, correction evaluation
-phonon dictionary import-txt # activate dictionary_new_terms.txt
-phonon corpus --help     # paired WAV/metadata corpus + intended transcripts
-phonon stats             # local words, sessions, speaking time, dictionary fixes
+phonon                       # open the app
+phonon doctor                # check the runtime, models and data files
+phonon bench                 # time speech recognition and correction
+phonon profile model         # warm correction timings by input length
+phonon profile e2e           # key-press-to-insertion timings from recent dictations
+phonon dictionary --help     # terms, replacements, Wispr Flow import, evaluation
+phonon dictionary import-txt # add one term per line from a text file
+phonon corpus --help         # stored recordings and their transcripts
+phonon stats                 # words, sessions, speaking time, dictionary fixes
 ```
 
 ## Surviving an uninstall
@@ -122,15 +126,14 @@ after the models rather than the app, and no uninstaller touches them.
   Settings › Sound as a workaround.
   See [#9](https://github.com/Infatoshi/phonon/issues/9).
 
-## Local data and correction loop
+## Local data
 
 Nothing is retained until you say so. On first launch the app asks once whether
-to keep local history and whether to use active-window context; both start off,
+to keep local history and whether to read the screen for context; both start off,
 and declining leaves dictation fully working. Settings carries the retention
 window (keep until deleted, or 7 / 30 / 90 days) and a clear-everything button.
 
-With local history on, every native-app recording is retained as a paired corpus
-item:
+With local history on, every recording is kept with its metadata:
 
 ```text
 ~/Library/Application Support/Phonon/
@@ -142,12 +145,16 @@ item:
         └── metadata.json
 ```
 
-`metadata.json` keeps the raw ASR transcript, final correction, optional intended
-transcript, dictionary changes, source, duration, and LLM timings. Useful loops:
+`metadata.json` keeps the raw transcript, the corrected text, what you meant
+(when you save it in History), dictionary changes, source, duration, and
+correction timings.
 
-Before ASR, an adaptive audio gate requires sustained speech-like energy above
-the clip's measured noise floor. Clips without speech remain in the corpus with
-`speech_detected: false`, skip Parakeet and the correction model entirely, and produce no text.
+Before speech recognition, an adaptive audio gate requires sustained
+speech-like energy above the clip's measured noise floor. A clip without speech
+stays in the corpus with `speech_detected: false`, skips both models, and
+produces no text.
+
+Working with the dictionary and the stored recordings:
 
 ```bash
 phonon dictionary import-wispr
@@ -156,26 +163,27 @@ phonon dictionary test 'run v llm on black well'
 phonon dictionary evaluate
 phonon corpus list --search Blackwell
 phonon corpus show <id>
-phonon corpus set-intended <id> 'intended ground truth'
+phonon corpus set-intended <id> 'what you meant to say'
 phonon dictionary learn <id> --from 'black well' --to Blackwell
 ```
 
-When `screen_context` is enabled in `settings.json`, the floating bar captures
-each visible display once at recording start and runs local macOS Vision OCR.
-Screenshots are discarded immediately. The engine uses OCR only to rank
-dictionary candidates already relevant to the spoken transcript; it sends
-confirmed terms, not the full screen text, into the correction prompt.
+With screen context on, Phonon reads the windows visible on each display when
+a recording starts, plus any window brought to the front while you speak, with
+macOS Vision OCR on the Mac. Screenshots are never saved. The OCR text only
+confirms dictionary terms that already match the spoken transcript; those
+terms, not the screen text, go into the correction prompt. Apps and sites on
+the private list (Settings › Private apps and sites) are never read, and
+password managers are always private.
 
 ### Floating bar
 
-- One bottom-anchored capsule that expands itself; no spawned overlay or inner waveform
-- Warm voice-responsive fill while listening; the same capsule breathes while processing
-- **hold Globe (fn)** PTT → release → ASR → auto-polish → types into frontmost app
-- **double-tap Globe** latches the recording on; one tap stops and inserts
-- Ctrl+Space toggle; multi-pass OK
+- One capsule at the bottom of the screen; it widens with your voice while
+  listening and breathes while the text is corrected.
+- Hold Globe (fn) to talk and release to type into the frontmost app.
+- Double-tap Globe to keep recording; tap once to stop and type.
 
 Globe (fn) is the default shortcut. Settings can switch the hold key to Right
-Option (⌥), and either hold key can be paired with the Ctrl+Space toggle.
+Option (⌥), and either hold key can be paired with a Control-Space toggle.
 macOS also acts on the Globe key, so set System Settings › Keyboard ›
 "Press 🌐 key to" to "Do Nothing".
 
@@ -183,40 +191,48 @@ Recording cues are off by default. Turning them on plays a short rising sweep
 when a recording opens and a falling one when it closes. Both are synthesized by
 `scripts/make-cue-sounds.py`; no audio is sampled or downloaded.
 
-Needs: Mic + Accessibility + Input Monitoring.
+Phonon needs Microphone, Accessibility and Input Monitoring access, plus Screen
+Recording if screen context is on.
 
 ### Native app
 
-`phonon` launches a regular macOS Dock app with a dark ember theme. Its native
-Home, History, Dictionary, and Settings surfaces read and write the same JSON
-and paired corpus used by the engine and CLI. Model status exposes parallel
-weight loading, startup smoke tests, TTFT, and decode throughput. The
-menubar `ϕ` remains available as a compact shortcut while the app is running.
+`phonon` opens a regular macOS Dock app. Its Home, History, Dictionary, and
+Settings pages read and write the same JSON files and recordings as the engine
+and the CLI. Settings › Model status shows whether both models are loaded. The
+`ϕ` in the menu bar stays available as a shortcut while the app runs.
 
-The native app uses a configurable microphone priority list. Availability is
-refreshed before each recording, so a preferred external microphone can take
-over automatically when connected. The bar menu shows the microphone selected
-by Auto.
+Phonon uses the input selected in System Settings, except a Bluetooth headset
+microphone, which would drop the headset to call quality. A priority list on
+Home overrides that. Availability is checked before each recording, so a
+preferred external microphone takes over as soon as it is connected. The menu
+bar menu shows the microphone in use.
 
 ## Layout
 
 ```
-crates/phonon-audio/   recording and audio file ownership
-crates/phonon-asr/     Parakeet sidecar lifecycle + protocol
-crates/phonon-llm/     correction sidecar lifecycle + benchmark client
-crates/phonon-profile/ literal Metal dispatch, LLM phase, and E2E profilers
-crates/phonon-core/    pipeline coordination + engine events
-crates/phonon-cli/     commands, doctor, bench, bar launcher
-crates/phonon-hotkey/  hold, tap, and double-tap latch, shared by both platforms
+crates/phonon-audio/   recording and audio files
+crates/phonon-asr/     Parakeet sidecar lifecycle and protocol
+crates/phonon-llm/     correction sidecar lifecycle and benchmark client
+crates/phonon-profile/ Metal dispatch, model phase, and key-to-insertion profilers
+crates/phonon-core/    pipeline coordination and engine events
+crates/phonon-cli/     the phonon command: app launcher, doctor, bench, data tools
+crates/phonon-hotkey/  hold, tap, and double-tap latch, shared by macOS and Windows
 crates/phonon-win/     Windows tray app, keyboard hook, WASAPI capture, insertion
-bar/                   SwiftPM native Home/History/Dictionary/Settings app + floating pill
-sidecar/asr_server.py
-sidecar/polish_server.py
-assets/english_words.txt
-prompts/polish_v2.txt
+crates/phonon-mine/    source-identifier extraction for vocabulary mining
+bar/                   SwiftPM macOS app: Home, History, Dictionary, Settings, capsule
+sidecar/               speech recognition and correction servers (Python, run by uv)
+prompts/               correction prompt
+assets/                startup clip, English word list, recording cues
+ml/                    refiner training and evaluation pipeline (runs on a GPU box)
+tools/                 vocabulary-mining research tools
+tools/dev/             developer benchmarks that call cloud APIs; not part of the app
+website/               phonon.sh
 ```
 
 ## License
 
-Phonon source is GPL-3.0. Downloaded model weights retain their upstream
-licenses and are not stored in this repository. See [THIRD_PARTY.md](THIRD_PARTY.md).
+Phonon source is GPL-3.0. Model weights are downloaded, not stored in this
+repository, and keep their own licenses: Parakeet is CC-BY-4.0, and the Phonon
+refiner, as a derivative of LFM3, is under the LFM Open License v1.0, which
+allows commercial use only for organizations under $10M in annual revenue. See
+[THIRD_PARTY.md](THIRD_PARTY.md).

@@ -8,6 +8,14 @@ app_path="$bar_dir/dist/Phonon.app"
 dmg_path="$bar_dir/dist/Phonon.dmg"
 notary_profile=${PHONON_NOTARY_PROFILE:-phonon-notary}
 
+# A notarized release must pin the refiner's Hugging Face commit, never the
+# placeholder (a signed dry run with PHONON_SKIP_NOTARIZATION=1 may).
+if [[ ${PHONON_SKIP_NOTARIZATION:-0} != 1 ]] &&
+	grep -q 'POLISH_MODEL_REVISION: &str = "0\{40\}"' "$project_dir/crates/phonon-llm/src/paths.rs"; then
+	printf 'POLISH_MODEL_REVISION is still the placeholder; pin the uploaded refiner commit first.\n' >&2
+	exit 1
+fi
+
 identity=${PHONON_CODESIGN_IDENTITY:-}
 if [[ -z "$identity" ]]; then
 	identity=$(security find-identity -v -p codesigning 2>/dev/null |
@@ -19,13 +27,15 @@ if [[ -z "$identity" ]]; then
 	exit 1
 fi
 
-PHONON_CODESIGN_IDENTITY="$identity" "$script_dir/package-bar.sh"
+# The DMG always carries the native refiner engine (scripts/build-engine.sh).
+PHONON_REQUIRE_ENGINE=1 PHONON_CODESIGN_IDENTITY="$identity" "$script_dir/package-bar.sh"
 
 codesign --verify --deep --strict --verbose=4 "$app_path"
 codesign -dvv "$app_path" 2>&1 | grep -E 'Authority=Developer ID Application|TeamIdentifier=|Timestamp='
 for executable in \
 	"$app_path/Contents/MacOS/PhononBar" \
 	"$app_path/Contents/Helpers/phonon" \
+	"$app_path/Contents/Helpers/pe" \
 	"$app_path/Contents/Helpers/uv"; do
 	lipo "$executable" -verify_arch arm64
 	codesign --verify --strict --verbose=4 "$executable"

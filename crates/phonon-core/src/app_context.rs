@@ -1,0 +1,851 @@
+//! Where a dictation is going: the app, the browser site, and a coarse
+//! category the correction model can use to pick a register (a Slack reply is
+//! not an email is not a Claude Code prompt).
+//!
+//! The bar sends the frontmost app's bundle id and name and, for a browser
+//! tab, the page host it read through Accessibility (`AXWebArea.AXURL`). The
+//! category lists follow Wispr Flow 1.6's `app-category-constants` (module
+//! 59725: messaging, email, AI, terminal, document bundle ids and hosts),
+//! regrouped into Phonon's six categories. A host decides before a bundle id:
+//! Chrome on `mail.google.com` is email, Chrome on an unknown site is other.
+
+use crate::data::DictionaryFile;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppCategory {
+    Chat,
+    Email,
+    /// Editors, IDEs and terminals (including agent CLIs run in them).
+    Code,
+    /// Chat assistants and AI prompt boxes.
+    AiPrompt,
+    Docs,
+    #[default]
+    Other,
+}
+
+impl AppCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppCategory::Chat => "chat",
+            AppCategory::Email => "email",
+            AppCategory::Code => "code",
+            AppCategory::AiPrompt => "ai_prompt",
+            AppCategory::Docs => "docs",
+            AppCategory::Other => "other",
+        }
+    }
+}
+
+/// The app a dictation was inserted into, as kept in the corpus entry. Only
+/// the host of a page is kept, never its path or query.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppContext {
+    #[serde(default)]
+    pub bundle_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_host: Option<String>,
+    #[serde(default)]
+    pub category: AppCategory,
+}
+
+impl AppContext {
+    /// Read the `app` object of a polish request. The category is always
+    /// recomputed here so the bar and the corpus cannot disagree.
+    pub fn from_request(app: &Value) -> Option<Self> {
+        let bundle_id = app.get("bundle_id").and_then(Value::as_str).unwrap_or("");
+        let app_name = app.get("name").and_then(Value::as_str).unwrap_or("");
+        let url_host = app
+            .get("url_host")
+            .and_then(Value::as_str)
+            .and_then(normalize_host);
+        if bundle_id.is_empty() && url_host.is_none() {
+            return None;
+        }
+        Some(Self {
+            bundle_id: bundle_id.to_string(),
+            app_name: app_name.to_string(),
+            category: categorize(bundle_id, url_host.as_deref()),
+            url_host,
+        })
+    }
+}
+
+/// Lowercased host without `www.`, or None for anything that is not a host.
+pub fn normalize_host(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let valid = !host.is_empty()
+        && host.contains('.')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    valid.then(|| host.to_string())
+}
+
+fn host_matches(host: &str, pattern: &str) -> bool {
+    host == pattern || host.ends_with(&format!(".{pattern}"))
+}
+
+fn bundle_matches(bundle: &str, pattern: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => bundle.starts_with(prefix),
+        None => bundle == pattern,
+    }
+}
+
+const CHAT_HOSTS: &[&str] = &[
+    "slack.com",
+    "discord.com",
+    "web.whatsapp.com",
+    "messages.google.com",
+    "web.telegram.org",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "messenger.com",
+    "chat.google.com",
+    "x.com",
+    "twitter.com",
+    "linkedin.com",
+    "reddit.com",
+    "app.beeper.com",
+    "chat.beeper.com",
+    "zulip.com",
+    "app.intercom.com",
+];
+const EMAIL_HOSTS: &[&str] = &[
+    "mail.google.com",
+    "inbox.google.com",
+    "outlook.live.com",
+    "outlook.office.com",
+    "outlook.office365.com",
+    "mail.superhuman.com",
+    "app.hey.com",
+    "app.fastmail.com",
+    "mail.proton.me",
+    "mail.yahoo.com",
+    "mail.zoho.com",
+    "app.shortwave.com",
+    "app.frontapp.com",
+];
+const AI_HOSTS: &[&str] = &[
+    "chatgpt.com",
+    "chat.openai.com",
+    "claude.ai",
+    "gemini.google.com",
+    "aistudio.google.com",
+    "perplexity.ai",
+    "perplexity.com",
+    "chat.deepseek.com",
+    "chat.mistral.ai",
+    "grok.com",
+    "copilot.microsoft.com",
+    "poe.com",
+    "t3.chat",
+    "notebooklm.google.com",
+    "console.anthropic.com",
+    "platform.openai.com",
+    "openrouter.ai",
+    "v0.dev",
+    "v0.app",
+    "bolt.new",
+    "lovable.dev",
+];
+const CODE_HOSTS: &[&str] = &[
+    "github.com",
+    "gist.github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "github.dev",
+    "vscode.dev",
+    "colab.research.google.com",
+    "replit.com",
+    "codesandbox.io",
+    "stackoverflow.com",
+];
+const DOCS_HOSTS: &[&str] = &[
+    "docs.google.com",
+    "notion.so",
+    "notion.site",
+    "coda.io",
+    "quip.com",
+    "paper.dropbox.com",
+    "atlassian.net",
+    "linear.app",
+    "overleaf.com",
+    "dropbox.com",
+    "onedrive.live.com",
+    "office.com",
+    "hackmd.io",
+];
+
+const CHAT_BUNDLES: &[&str] = &[
+    "com.tinyspeck.slackmacgap",
+    "com.slack.Slack",
+    "com.hnc.Discord",
+    "com.discordapp.Discord",
+    "org.whispersystems.signal-desktop",
+    "ru.keepcoder.Telegram",
+    "com.tdesktop.Telegram",
+    "net.whatsapp.WhatsApp",
+    "desktop.WhatsApp",
+    "com.apple.MobileSMS",
+    "com.microsoft.teams",
+    "com.microsoft.teams2",
+    "com.facebook.archon",
+    "im.beeper",
+    "com.tencent.xinWeChat",
+    "com.kishanbagaria.jack",
+    "com.linecorp.line",
+];
+const EMAIL_BUNDLES: &[&str] = &[
+    "com.apple.mail",
+    "com.microsoft.Outlook",
+    "com.superhuman.electron",
+    "com.mimestream.Mimestream",
+    "com.readdle.SparkDesktop",
+    "com.readdle.smartemail-Mac",
+    "it.bloop.airmail2",
+    "com.hey.app.desktop",
+    "org.mozilla.thunderbird",
+    "com.frontapp.Front",
+    "io.canarymail.mac",
+    "com.missiveapp.osx",
+];
+const AI_BUNDLES: &[&str] = &[
+    "com.openai.chat",
+    "com.openai.codex",
+    "com.anthropic.claudefordesktop",
+    "ai.perplexity.perplexity-mac",
+    "com.google.GeminiMacOS",
+    "ai.elementlabs.lmstudio",
+];
+const CODE_BUNDLES: &[&str] = &[
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "dev.warp.Warp-Stable",
+    "com.mitchellh.ghostty",
+    "net.kovidgoyal.kitty",
+    "io.alacritty",
+    "com.github.wez.wezterm",
+    "co.zeit.hyper",
+    "com.microsoft.VSCode",
+    "com.microsoft.VSCodeInsiders",
+    "com.todesktop.230313mzl4w4u92",
+    "com.exafunction.windsurf",
+    "dev.zed.Zed",
+    "dev.zed.Zed-Preview",
+    "com.apple.dt.Xcode",
+    "com.jetbrains.*",
+    "com.google.android.studio",
+    "com.sublimetext.*",
+    "com.panic.Nova",
+    "com.barebones.bbedit",
+];
+const DOCS_BUNDLES: &[&str] = &[
+    "notion.id",
+    "md.obsidian",
+    "net.shinyfrog.bear",
+    "com.apple.Notes",
+    "com.apple.iWork.Pages",
+    "com.apple.iWork.Keynote",
+    "com.apple.iWork.Numbers",
+    "com.apple.TextEdit",
+    "com.microsoft.Word",
+    "com.microsoft.Excel",
+    "com.microsoft.Powerpoint",
+    "com.microsoft.onenote.mac",
+    "com.evernote.Evernote",
+    "com.lukilabs.lukiapp",
+    "com.linear",
+    "com.figma.Desktop",
+    "com.agiletortoise.Drafts-OSX",
+    "abnerworks.Typora",
+];
+
+/// The category of a dictation target. A known host wins; a browser on an
+/// unknown site is `Other`, never the browser's own category.
+pub fn categorize(bundle_id: &str, url_host: Option<&str>) -> AppCategory {
+    let host_table: [(&[&str], AppCategory); 5] = [
+        (AI_HOSTS, AppCategory::AiPrompt),
+        (EMAIL_HOSTS, AppCategory::Email),
+        (CHAT_HOSTS, AppCategory::Chat),
+        (CODE_HOSTS, AppCategory::Code),
+        (DOCS_HOSTS, AppCategory::Docs),
+    ];
+    if let Some(host) = url_host.and_then(normalize_host) {
+        for (hosts, category) in host_table {
+            if hosts.iter().any(|pattern| host_matches(&host, pattern)) {
+                return category;
+            }
+        }
+        if BROWSER_BUNDLES
+            .iter()
+            .any(|pattern| bundle_matches(bundle_id, pattern))
+        {
+            return AppCategory::Other;
+        }
+    }
+    let bundle_table: [(&[&str], AppCategory); 5] = [
+        (AI_BUNDLES, AppCategory::AiPrompt),
+        (EMAIL_BUNDLES, AppCategory::Email),
+        (CHAT_BUNDLES, AppCategory::Chat),
+        (CODE_BUNDLES, AppCategory::Code),
+        (DOCS_BUNDLES, AppCategory::Docs),
+    ];
+    for (bundles, category) in bundle_table {
+        if bundles
+            .iter()
+            .any(|pattern| bundle_matches(bundle_id, pattern))
+        {
+            return category;
+        }
+    }
+    AppCategory::Other
+}
+
+/// Browsers whose tab URL the bar reads; their own category is the site's.
+pub const BROWSER_BUNDLES: &[&str] = &[
+    "com.google.Chrome",
+    "com.google.Chrome.*",
+    "com.brave.Browser",
+    "com.brave.Browser.*",
+    "com.microsoft.edgemac",
+    "com.microsoft.edgemac.*",
+    "company.thebrowser.Browser",
+    "company.thebrowser.dia",
+    "com.vivaldi.Vivaldi",
+    "com.operasoftware.Opera",
+    "org.chromium.Chromium",
+    "com.apple.Safari",
+    "com.apple.SafariTechnologyPreview",
+    "org.mozilla.firefox",
+    "app.zen-browser.zen",
+];
+
+/// The text around the cursor at key-down (Wispr's `textbox_contents`), sent
+/// by the bar only when the user turned text-box context on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextboxContext {
+    #[serde(default)]
+    pub before_text: String,
+    #[serde(default)]
+    pub selected_text: String,
+    #[serde(default)]
+    pub after_text: String,
+}
+
+impl TextboxContext {
+    /// Characters kept per side, whatever a client sends.
+    pub const MAX_CHARS: usize = 2_000;
+
+    pub fn from_request(value: &Value) -> Option<Self> {
+        let field = |key: &str, keep_end: bool| {
+            let text = value.get(key).and_then(Value::as_str).unwrap_or("");
+            let count = text.chars().count();
+            if count <= Self::MAX_CHARS {
+                text.to_string()
+            } else if keep_end {
+                text.chars().skip(count - Self::MAX_CHARS).collect()
+            } else {
+                text.chars().take(Self::MAX_CHARS).collect()
+            }
+        };
+        let context = Self {
+            before_text: field("before_text", true),
+            selected_text: field("selected_text", false),
+            after_text: field("after_text", false),
+        };
+        let empty = context.before_text.is_empty()
+            && context.selected_text.is_empty()
+            && context.after_text.is_empty();
+        (!empty).then_some(context)
+    }
+}
+
+/// The `context` object sent to the correction sidecar. A model that does
+/// not read it is unaffected; the context lane decides what to use.
+pub fn polish_context(
+    app: Option<&AppContext>,
+    style_preferences: &[String],
+    textbox: Option<&TextboxContext>,
+) -> Option<Value> {
+    if app.is_none() && style_preferences.is_empty() && textbox.is_none() {
+        return None;
+    }
+    let mut context = json!({});
+    if let Some(app) = app {
+        context["app_category"] = json!(app.category);
+        context["app_bundle_id"] = json!(app.bundle_id);
+        if let Some(host) = &app.url_host {
+            context["url_host"] = json!(host);
+        }
+    }
+    if !style_preferences.is_empty() {
+        context["style_preferences"] = json!(style_preferences);
+    }
+    if let Some(textbox) = textbox {
+        context["textbox"] = json!(textbox);
+    }
+    Some(context)
+}
+
+/// The approved style preferences from settings.json, parsed again only
+/// when the file changes (size or modification time). Every polish request
+/// asks, previews included, so reading and parsing the file each time was
+/// work for nothing.
+#[derive(Debug, Default)]
+pub struct StylePreferenceCache {
+    path: Option<std::path::PathBuf>,
+    stamp: Option<(Option<std::time::SystemTime>, u64)>,
+    /// Hash of the bytes last parsed successfully.
+    content: Option<u64>,
+    /// Hash of bytes that failed to parse, so they are not parsed again.
+    failed: Option<u64>,
+    styles: std::collections::BTreeMap<String, Vec<String>>,
+    /// Successful parses (for tests and diagnostics).
+    pub loads: usize,
+    /// File reads and parse attempts (for tests and diagnostics).
+    pub reads: usize,
+    pub parse_attempts: usize,
+}
+
+/// A file modified this recently may change again within the same mtime
+/// tick and keep its size, so its bytes are compared, not just its stamp.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl StylePreferenceCache {
+    /// Reads `path`, or the user's settings.json when `None`.
+    pub fn new(path: Option<std::path::PathBuf>) -> Self {
+        Self {
+            path,
+            ..Self::default()
+        }
+    }
+
+    pub fn styles_for(&mut self, category: AppCategory) -> Vec<String> {
+        self.refresh();
+        self.styles
+            .get(category.as_str())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn refresh(&mut self) {
+        let Some(path) = self
+            .path
+            .clone()
+            .or_else(|| crate::data::settings_path().ok())
+        else {
+            return;
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            // No file: no preferences.
+            self.stamp = None;
+            self.content = None;
+            self.styles.clear();
+            return;
+        };
+        let stamp = Some((meta.modified().ok(), meta.len()));
+        // Recently written: compare bytes even with an unchanged stamp. An
+        // mtime in the future (clock skew) or unreadable is settled: the
+        // stamp alone decides, so it is not re-read on every request.
+        let settling = meta
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age < SETTLE);
+        if stamp == self.stamp && !settling {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        self.reads += 1;
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            hasher.finish()
+        };
+        self.stamp = stamp;
+        if Some(hash) == self.content || Some(hash) == self.failed {
+            return;
+        }
+        // A file caught mid-write or malformed keeps the last good
+        // preferences; its bytes are remembered so they are not parsed
+        // again, and it is never cached as "no preferences".
+        self.parse_attempts += 1;
+        match crate::data::SettingsFile::parse(&bytes) {
+            Ok(settings) => {
+                self.loads += 1;
+                self.styles = settings.style_preferences;
+                self.content = Some(hash);
+                self.failed = None;
+            }
+            Err(_) => self.failed = Some(hash),
+        }
+    }
+}
+
+/// Apply the style preferences the user approved for this category to a
+/// corrected dictation. Terms the dictionary spells (`cuBLAS`), acronyms and
+/// words with inner capitals keep their case.
+pub fn apply_style(text: &str, preferences: &[String], dictionary: &DictionaryFile) -> String {
+    let wants = |name: &str| preferences.iter().any(|p| p == name);
+    let mut output = text.to_string();
+    let protected = |word: &str| {
+        let core: String = word.chars().filter(|c| c.is_alphanumeric()).collect();
+        let letters: Vec<char> = core.chars().filter(|c| c.is_alphabetic()).collect();
+        let acronym = letters.len() >= 2 && letters.iter().all(|c| c.is_uppercase());
+        let inner = core.chars().skip(1).any(char::is_uppercase);
+        let term = dictionary.entries.iter().any(|entry| {
+            let canonical = entry.canonical();
+            canonical.split_whitespace().any(|part| {
+                part.trim_matches(|c: char| !c.is_alphanumeric()) == core
+                    && part.chars().any(char::is_uppercase)
+            })
+        });
+        acronym || inner || term
+    };
+    if wants("all_lowercase") {
+        output = output
+            .split_inclusive(char::is_whitespace)
+            .map(|piece| {
+                if protected(piece) {
+                    piece.to_string()
+                } else {
+                    piece.to_lowercase()
+                }
+            })
+            .collect();
+    } else if wants("lowercase_start") {
+        let first_word = output.split_whitespace().next().unwrap_or("");
+        if !protected(first_word) && first_word != "I" && !first_word.starts_with("I'") {
+            let mut chars = output.chars();
+            if let Some(first) = chars.next() {
+                output = first.to_lowercase().chain(chars).collect();
+            }
+        }
+    }
+    if wants("no_trailing_period") {
+        let trimmed = output.trim_end();
+        let last_word = trimmed.split_whitespace().last().unwrap_or("");
+        // `etc.`, `e.g.` and `U.S.` end in a period that is part of the word.
+        let abbreviation =
+            last_word.trim_end_matches('.').contains('.') || ABBREVIATIONS.contains(&last_word);
+        if trimmed.ends_with('.') && !trimmed.ends_with("..") && !abbreviation {
+            output = trimmed[..trimmed.len() - 1].to_string();
+        }
+    }
+    output
+}
+
+const ABBREVIATIONS: &[&str] = &[
+    "etc.", "e.g.", "i.e.", "vs.", "Inc.", "Ltd.", "Co.", "Jr.", "Sr.", "Dr.", "Mr.", "Mrs.",
+    "Ms.", "St.", "a.m.", "p.m.",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::DictionaryEntry;
+
+    fn dictionary(terms: &[&str]) -> DictionaryFile {
+        DictionaryFile {
+            entries: terms
+                .iter()
+                .map(|term| DictionaryEntry {
+                    phrase: term.to_string(),
+                    replacement: None,
+                    spoken_forms: Vec::new(),
+                    source: "test".into(),
+                    starred: false,
+                    usage_count: 0,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn apps_fall_into_the_six_categories() {
+        assert_eq!(
+            categorize("com.tinyspeck.slackmacgap", None),
+            AppCategory::Chat
+        );
+        assert_eq!(categorize("com.hnc.Discord", None), AppCategory::Chat);
+        assert_eq!(categorize("com.apple.mail", None), AppCategory::Email);
+        assert_eq!(categorize("com.mitchellh.ghostty", None), AppCategory::Code);
+        assert_eq!(
+            categorize("com.jetbrains.rustrover", None),
+            AppCategory::Code
+        );
+        assert_eq!(
+            categorize("com.todesktop.230313mzl4w4u92", None),
+            AppCategory::Code
+        );
+        assert_eq!(categorize("com.openai.chat", None), AppCategory::AiPrompt);
+        assert_eq!(categorize("md.obsidian", None), AppCategory::Docs);
+        assert_eq!(categorize("com.apple.finder", None), AppCategory::Other);
+    }
+
+    #[test]
+    fn a_browser_takes_the_category_of_its_site() {
+        let chrome = "com.google.Chrome";
+        assert_eq!(
+            categorize(chrome, Some("mail.google.com")),
+            AppCategory::Email
+        );
+        assert_eq!(
+            categorize(chrome, Some("www.claude.ai")),
+            AppCategory::AiPrompt
+        );
+        assert_eq!(
+            categorize(chrome, Some("acme.slack.com")),
+            AppCategory::Chat
+        );
+        assert_eq!(categorize(chrome, Some("app.slack.com")), AppCategory::Chat);
+        assert_eq!(categorize(chrome, Some("notslack.com")), AppCategory::Other);
+        assert_eq!(categorize(chrome, Some("github.com")), AppCategory::Code);
+        assert_eq!(
+            categorize(chrome, Some("docs.google.com")),
+            AppCategory::Docs
+        );
+        assert_eq!(
+            categorize(chrome, Some("acme.atlassian.net")),
+            AppCategory::Docs
+        );
+        assert_eq!(categorize(chrome, Some("example.com")), AppCategory::Other);
+        assert_eq!(categorize(chrome, None), AppCategory::Other);
+        // An Electron app's own web area does not demote it to Other.
+        assert_eq!(
+            categorize("com.tinyspeck.slackmacgap", Some("example.com")),
+            AppCategory::Chat
+        );
+    }
+
+    #[test]
+    fn request_keeps_only_a_normalized_host() {
+        let app = AppContext::from_request(&json!({
+            "bundle_id": "com.google.Chrome", "name": "Google Chrome",
+            "url_host": "WWW.Mail.Google.com"
+        }))
+        .unwrap();
+        assert_eq!(app.url_host.as_deref(), Some("mail.google.com"));
+        assert_eq!(app.category, AppCategory::Email);
+        let bad = AppContext::from_request(&json!({
+            "bundle_id": "com.google.Chrome", "url_host": "https://x.com/path?q=1"
+        }))
+        .unwrap();
+        assert_eq!(bad.url_host, None);
+        assert!(AppContext::from_request(&json!({})).is_none());
+        let stored = serde_json::to_value(&app).unwrap();
+        assert_eq!(stored["category"], "email");
+    }
+
+    #[test]
+    fn polish_context_carries_what_the_model_may_use() {
+        let app = AppContext {
+            bundle_id: "com.hnc.Discord".into(),
+            app_name: "Discord".into(),
+            url_host: None,
+            category: AppCategory::Chat,
+        };
+        let context = polish_context(Some(&app), &["lowercase_start".into()], None).unwrap();
+        assert_eq!(context["app_category"], "chat");
+        assert_eq!(context["style_preferences"][0], "lowercase_start");
+        assert!(context.get("textbox").is_none());
+        assert!(polish_context(None, &[], None).is_none());
+
+        let textbox = TextboxContext::from_request(&json!({
+            "before_text": "Hi Bob, about the kernel: ", "selected_text": "", "after_text": "\n\nThanks"
+        }))
+        .unwrap();
+        let context = polish_context(None, &[], Some(&textbox)).unwrap();
+        assert_eq!(
+            context["textbox"]["before_text"],
+            "Hi Bob, about the kernel: "
+        );
+        assert_eq!(context["textbox"]["after_text"], "\n\nThanks");
+    }
+
+    /// Review item 9: settings.json is parsed once, then again only when it
+    /// changes.
+    #[test]
+    fn style_preferences_are_parsed_only_when_settings_change() {
+        let directory = std::env::temp_dir().join(format!(
+            "phonon-style-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":2,"style_preferences":{"chat":["lowercase_start"]}}"#,
+        )
+        .unwrap();
+        let mut cache = StylePreferenceCache::new(Some(path.clone()));
+        for _ in 0..50 {
+            assert_eq!(cache.styles_for(AppCategory::Chat), ["lowercase_start"]);
+            assert!(cache.styles_for(AppCategory::Email).is_empty());
+        }
+        assert_eq!(cache.loads, 1, "100 requests, one parse");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":2,"style_preferences":{"chat":["lowercase_start","no_trailing_period"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cache.styles_for(AppCategory::Chat).len(),
+            2,
+            "an approval applies next time"
+        );
+        assert_eq!(cache.loads, 2);
+        std::fs::remove_file(&path).unwrap();
+        assert!(cache.styles_for(AppCategory::Chat).is_empty());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Second review, item 8: a failed parse was cached as "no preferences"
+    /// until the next write, and a rewrite with the same size inside one
+    /// mtime tick went unnoticed.
+    #[test]
+    fn a_bad_or_same_stamp_write_never_loses_the_preferences() {
+        let directory = std::env::temp_dir().join(format!(
+            "phonon-style-cache-b-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let write = |text: &str, modified: std::time::SystemTime| {
+            std::fs::write(&path, text).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        let tick = std::time::SystemTime::now() - std::time::Duration::from_millis(500);
+        write(
+            r#"{"schema_version":2,"style_preferences":{"chat":["lowercase_start"]}}"#,
+            tick,
+        );
+        let mut cache = StylePreferenceCache::new(Some(path.clone()));
+        assert_eq!(cache.styles_for(AppCategory::Chat), ["lowercase_start"]);
+        // Same length, same mtime: only the bytes differ.
+        write(
+            r#"{"schema_version":2,"style_preferences":{"chat":["all_lowercase__"]}}"#,
+            tick,
+        );
+        assert_eq!(cache.styles_for(AppCategory::Chat), ["all_lowercase__"]);
+        // A half-written file keeps the last good preferences.
+        write(
+            r#"{"schema_version":2,"style_preferences":{"chat":["#,
+            std::time::SystemTime::now(),
+        );
+        assert_eq!(cache.styles_for(AppCategory::Chat), ["all_lowercase__"]);
+        write(
+            r#"{"schema_version":2,"style_preferences":{"chat":["no_trailing_period"]}}"#,
+            std::time::SystemTime::now(),
+        );
+        assert_eq!(cache.styles_for(AppCategory::Chat), ["no_trailing_period"]);
+
+        // Third review, item 10: a malformed file was parsed again on every
+        // request, and an mtime in the future kept the file 'settling'
+        // forever, so it was re-read on every request.
+        write(
+            r#"{"schema_version":2,"style_"#,
+            std::time::SystemTime::now(),
+        );
+        let attempts = cache.parse_attempts;
+        for _ in 0..20 {
+            assert_eq!(cache.styles_for(AppCategory::Chat), ["no_trailing_period"]);
+        }
+        assert_eq!(
+            cache.parse_attempts,
+            attempts + 1,
+            "the bad bytes are parsed once"
+        );
+        write(
+            r#"{"schema_version":2,"style_preferences":{"chat":["lowercase_start"]}}"#,
+            std::time::SystemTime::now() + std::time::Duration::from_secs(3_600),
+        );
+        let reads = cache.reads;
+        for _ in 0..20 {
+            assert_eq!(cache.styles_for(AppCategory::Chat), ["lowercase_start"]);
+        }
+        assert_eq!(
+            cache.reads,
+            reads + 1,
+            "a future mtime is read once, not every time"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn textbox_context_is_bounded_and_empty_means_absent() {
+        assert!(TextboxContext::from_request(&json!({})).is_none());
+        assert!(TextboxContext::from_request(&json!({"before_text": ""})).is_none());
+        let long = "x".repeat(5_000) + "END";
+        let textbox = TextboxContext::from_request(&json!({
+            "before_text": long, "after_text": format!("START{}", "y".repeat(5_000))
+        }))
+        .unwrap();
+        assert_eq!(
+            textbox.before_text.chars().count(),
+            TextboxContext::MAX_CHARS
+        );
+        assert!(
+            textbox.before_text.ends_with("END"),
+            "the text nearest the cursor stays"
+        );
+        assert!(textbox.after_text.starts_with("START"));
+    }
+
+    #[test]
+    fn approved_styles_apply_without_touching_terms() {
+        let terms = dictionary(&["cuBLAS", "Phonon"]);
+        let lower = vec!["lowercase_start".to_string()];
+        assert_eq!(apply_style("Sounds good.", &lower, &terms), "sounds good.");
+        assert_eq!(apply_style("GPU is busy", &lower, &terms), "GPU is busy");
+        assert_eq!(
+            apply_style("Phonon shipped", &lower, &terms),
+            "Phonon shipped"
+        );
+        assert_eq!(apply_style("I think so", &lower, &terms), "I think so");
+        let period = vec!["no_trailing_period".to_string()];
+        assert_eq!(
+            apply_style("Sounds good. See you.", &period, &terms),
+            "Sounds good. See you"
+        );
+        assert_eq!(
+            apply_style("Bring snacks etc.", &period, &terms),
+            "Bring snacks etc."
+        );
+        assert_eq!(apply_style("Wait...", &period, &terms), "Wait...");
+        let all = vec![
+            "all_lowercase".to_string(),
+            "no_trailing_period".to_string(),
+        ];
+        assert_eq!(
+            apply_style("Sounds Good, Ship cuBLAS On The GPU.", &all, &terms),
+            "sounds good, ship cuBLAS on the GPU"
+        );
+        assert_eq!(apply_style("Unchanged.", &[], &terms), "Unchanged.");
+    }
+}

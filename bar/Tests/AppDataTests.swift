@@ -120,6 +120,23 @@ final class AppDataTests: XCTestCase {
         XCTAssertTrue(store.dictionaryEntries.isEmpty)
     }
 
+    func testInjectedStoreMirrorsInsideItselfNeverIntoTheOwnersBackup() throws {
+        let realMirror = PhononDataMirror.directory()
+        XCTAssertEqual(
+            NativeAppStore.mirrorDirectory(explicit: nil, injectedSupport: nil), realMirror)
+        let local = NativeAppStore.mirrorDirectory(explicit: nil, injectedSupport: directory)
+        XCTAssertEqual(local, directory.appendingPathComponent(".mirror", isDirectory: true))
+        XCTAssertNotEqual(local, realMirror)
+
+        let store = NativeAppStore(supportDirectory: directory)
+        store.upsertDictionary(
+            originalID: nil, phrase: "cuBLAS", replacement: nil, spokenForms: ["coo blast"])
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: local.appendingPathComponent("dictionary.json").path),
+            "the capture should land in the injected store's own mirror")
+    }
+
     func testSavingIntendedTranscriptPreservesUnmodeledMetadata() throws {
         let recording = directory.appendingPathComponent("Corpus/test", isDirectory: true)
         try FileManager.default.createDirectory(at: recording, withIntermediateDirectories: true)

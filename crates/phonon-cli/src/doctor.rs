@@ -1,10 +1,10 @@
 //! Quick dependency / model presence check for the local dictation stack.
 
 use anyhow::Result;
-use phonon_core::data::{list_recordings, DictionaryFile, SettingsFile};
+use phonon_core::data::{list_recordings, polish_config, DictionaryFile, SettingsFile};
 use phonon_core::project_root;
 use phonon_llm::{
-    fluid1_available, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
+    bundled_engine, fluid1_available, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
     POLISH_RUNTIME_REQUIREMENT,
 };
 
@@ -75,11 +75,22 @@ pub fn run_doctor() -> Result<()> {
         "required correction stage installed",
         polish_available(&root),
     );
-    println!(
-        "  correction model: {POLISH_MODEL_ID}@{}",
-        &POLISH_MODEL_REVISION[..7]
-    );
-    println!("  correction runtime: {POLISH_RUNTIME_REQUIREMENT}");
+    match polish_config().ok().and_then(|config| config.model_dir) {
+        Some(dir) => println!("  correction model: local refiner {}", dir.display()),
+        None => println!(
+            "  correction model: {POLISH_MODEL_ID}@{}",
+            &POLISH_MODEL_REVISION[..7]
+        ),
+    }
+    match bundled_engine(&root) {
+        Some((binary, _)) => println!(
+            "  correction runtime: native engine {} (MLX fallback: {POLISH_RUNTIME_REQUIREMENT})",
+            binary.display()
+        ),
+        None => println!(
+            "  correction runtime: {POLISH_RUNTIME_REQUIREMENT} (no bundled native engine)"
+        ),
+    }
     println!(
         "  fluid-1 baseline (developer comparison only): {}",
         if fluid1_available() {
@@ -109,11 +120,9 @@ pub fn run_doctor() -> Result<()> {
     );
 
     println!();
-    println!("ok paths:");
-    println!("  phonon           # native macOS app — hold Globe (fn) to talk");
-    println!("  phonon bar       # explicit native-app launcher");
-    println!("  phonon bar --rebuild");
-    println!("  phonon engine    # warm backend for the bar");
+    println!("next:");
+    println!("  phonon                   # open the app; hold Globe (fn) to talk");
+    println!("  phonon bar --rebuild     # rebuild the app from this checkout");
     println!("  phonon bench");
     println!("  phonon dictionary --help");
     println!("  phonon corpus --help");

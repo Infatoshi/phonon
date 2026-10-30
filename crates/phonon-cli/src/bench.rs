@@ -80,7 +80,7 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
         );
     }
 
-    println!("phonon bench — two weight streams");
+    println!("phonon bench: speech recognition and correction");
     println!("root={}", root.display());
     println!();
 
@@ -134,11 +134,8 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
     println!();
 
     if !args.baseline {
-        println!("== e2e picture (dictation path) ==");
-        println!("  boot: asr load ∥ llm load  (parallel in native app)");
-        println!("  request: record → asr.transcribe → auto polish (warm llm)");
-        println!("  polish always-on; no manual step");
-        println!("  pass --baseline to also measure the old fluid-1 helper");
+        println!("The app loads both models in parallel at launch; every dictation runs");
+        println!("speech recognition, then correction on the warm model.");
         return Ok(());
     }
 

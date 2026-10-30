@@ -6,7 +6,9 @@ on:
 
 jobs:
   native:
-    runs-on: macos-14
+    # macos-14 ships Swift 5.10, which rejects concurrency captures the app's
+    # Swift 6 toolchain accepts; macos-15 is closer to what the app is built with.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

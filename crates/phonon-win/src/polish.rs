@@ -306,6 +306,12 @@ impl Corrector {
                 "messages": messages,
                 "temperature": 0.0,
                 "top_k": 1,
+                // A GGUF can carry sampling defaults from the model's
+                // generation_config (general.sampling.*), and llama-server
+                // applies them. LFM3 ships repetition_penalty 1.1, which makes a
+                // copy-editor drop repeated words: 0.098 against 0.073 WER on
+                // real dictation. A formatter wants plain greedy decoding.
+                "repeat_penalty": 1.0,
                 "max_tokens": max_tokens,
                 "stream": false,
                 "cache_prompt": true,

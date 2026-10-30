@@ -1,11 +1,27 @@
 use std::path::{Path, PathBuf};
 
-/// Pinned correction model. The revision is exact so an upstream re-upload
-/// cannot change what shipped users run.
-pub const POLISH_MODEL_ID: &str = "mlx-community/gemma-4-e2b-it-4bit";
-pub const POLISH_MODEL_REVISION: &str = "238767527555cb75a05732a84dff5d6ba0dd6809";
+/// Pinned correction model: Phonon's public refiner, fine-tuned from
+/// LiquidAI/LFM3-1.7B on public audio only. One repository holds the
+/// native engine's GGUF target and drafter (`phonon_engine.json`) and the MLX
+/// weights the sidecar falls back to. The revision is exact so an upstream
+/// re-upload cannot change what shipped users run.
+/// RELEASE: the revision is the Hugging Face commit of the upload; set it
+/// after the upload and before tagging.
+pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
+pub const POLISH_MODEL_REVISION: &str = "52f391734f8f45022cc952ed2a5b5b470bcd009c";
 /// Pinned runtime, for the same reason.
 pub const POLISH_RUNTIME_REQUIREMENT: &str = "mlx-lm==0.31.3";
+
+/// The native refiner engine bundled with the app: `pe` next to the running
+/// executable (`Contents/Helpers`) and its Metal shader sources in
+/// `<root>/engine` (`Contents/Resources/engine`). `None` outside a packaged
+/// app; the sidecar then runs the MLX weights.
+pub fn bundled_engine(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let binary = std::env::current_exe().ok()?.parent()?.join("pe");
+    let shaders = root.join("engine");
+    (binary.is_file() && shaders.join("mk.metal").is_file() && shaders.join("df.metal").is_file())
+        .then_some((binary, shaders))
+}
 
 pub fn polish_script(root: &Path) -> PathBuf {
     root.join("sidecar/polish_server.py")

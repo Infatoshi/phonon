@@ -1,39 +1,68 @@
 # Distribution
 
-Phonon's public release is installed from source through its Homebrew tap. Model
-weights are not stored in the repository; the app downloads the open Parakeet and
-Gemma weights on first launch. Tagged releases also provide a Developer ID-signed
-and notarized DMG for direct installation.
+Phonon's public release is installed from its Homebrew tap (a cask for the
+signed DMG, and a formula that builds from source) or from the DMG on GitHub
+releases. Model weights are not stored in the repository; the app downloads the
+open Parakeet weights and Phonon's public refiner on first launch. Tagged
+releases provide a Developer ID-signed and notarized DMG.
 
 ## Runtime layout
 
 - The app bundle contains the native Swift UI, Rust engine, signed arm64 `uv`
-  runtime, both sidecars, the prompt, the English word list, and the startup
-  audio fixture.
+  runtime, both sidecars, the native refiner engine (`Contents/Helpers/pe`,
+  with its Metal shader sources in `Contents/Resources/engine`), the prompt,
+  the English word list, the startup audio fixture, and third-party notices.
 - ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v2` model, pinned by
-  revision. It is public, ungated, CC-BY-4.0, and approximately 2.3 GB on disk.
-- Correction uses `mlx-community/gemma-4-e2b-it-4bit`, also pinned by revision,
-  approximately 3.3 GB on disk, run locally on `mlx-lm==0.31.3` through the
-  bundled `uv`. First launch therefore downloads roughly 5.6 GB in total.
+  revision. It is public, ungated, CC-BY-4.0, and approximately 2.5 GB.
+- Correction uses Phonon's public refiner, `Infatoshi/phonon-refiner-1.7b`,
+  pinned by revision (`crates/phonon-llm/src/paths.rs`). It is fine-tuned from
+  LiquidAI/LFM3-1.7B on public audio only and is distributed under the LFM
+  Open License v1.0. One repository holds what the app needs, approximately
+  2.4 GB: the engine's GGUF target and DFlash2 drafter (`phonon_engine.json`),
+  and the same refiner as MLX weights. First launch therefore downloads roughly
+  4.9 GB in total, plus `uv`'s Python packages.
+- The sidecar runs the refiner on the bundled engine. When the engine cannot
+  start on a Mac, or its first request does not return real text, the sidecar
+  loads the MLX weights from the same download instead (`mlx-lm==0.31.3`);
+  dictation is the same text path, only slower. The startup window says so.
+- A refiner trained on the owner's own dictations, under
+  `~/Library/Application Support/Phonon/models/refiner/`, replaces the
+  download on that Mac only. It is never published.
+- Gemma 4 E2B is no longer downloaded. A developer can still compare against
+  it with `PHONON_POLISH_MODEL=mlx-community/gemma-4-e2b-it-4bit` and
+  `PHONON_POLISH_REVISION=238767527555cb75a05732a84dff5d6ba0dd6809`.
 - Production Phonon does not redistribute FluidVoice or its private MLX helper,
-  and no longer depends on either. The fluid-1 baseline remains reachable behind
+  and does not depend on either. The fluid-1 baseline remains reachable behind
   `PHONON_POLISH_BACKEND=fluid` and `phonon bench --baseline` for local
   comparison only.
 
-This requires no Phonon file-storage service. Hugging Face hosts the upstream
-weights, GitHub hosts tagged source releases, and Vercel hosts the static website.
+This requires no Phonon file-storage service. Hugging Face hosts the weights,
+GitHub hosts tagged source releases and the DMG, and Vercel hosts the static
+website.
 
 ## Release channels
 
 - ASR-only fallback is not a supported release mode. The correction stage is
-  mandatory and is now bundled, which clears the blocker that held the previous
-  public build.
-- GitHub releases include a signed, notarized `Phonon.dmg` for direct download.
-- The bundled engine and small runtime resources do not depend on a checkout.
-- A correction model that cannot be downloaded or loaded is a startup failure,
-  not a degraded mode.
-- The DMG retains the same local model-download design and does not bundle model
+  mandatory. A correction model that cannot be downloaded or loaded is a
+  startup failure, not a degraded mode.
+- GitHub releases include a signed, notarized `Phonon.dmg`. It always carries
+  the native engine (`release-dmg.sh` fails without it).
+- The Homebrew formula builds from source and does not build the engine; it
+  corrects on the MLX refiner. Run `scripts/build-engine.sh` before
+  `scripts/package-bar.sh` to bundle the engine in a source build.
+- The DMG keeps the local model-download design and does not bundle model
   weights or user data.
+
+## The native refiner engine
+
+`engine/` holds its source (`pe.mm`, `gguf.cpp`, and the Metal shaders it
+compiles at startup). It links llama.cpp, MIT, at upstream commit
+`39febd2adb947b70da35e95f9351b3bf58ad170a` with
+`third_party/llama.cpp/phonon-engine.patch` applied. `scripts/build-engine.sh`
+fetches that commit, applies the patch and builds `target/engine/pe` for the
+app's minimum macOS (14.0). `package-bar.sh` refuses an engine whose minimum
+macOS is newer than the app's: the Command Line Tools default is the build
+machine's own version, which dyld refuses on every older Mac.
 
 ## Apple distribution requirement
 
@@ -44,13 +73,16 @@ Personal Team development identity is not sufficient.
 ## Release command
 
 Store notarization credentials once with `xcrun notarytool store-credentials`,
+upload the refiner and pin its commit in `crates/phonon-llm/src/paths.rs`,
 then run:
 
 ```bash
+scripts/build-engine.sh
 PHONON_NOTARY_PROFILE=phonon-notary scripts/release-dmg.sh
 ```
 
-The script builds the app, signs nested executables and the bundle with hardened
-runtime and secure timestamps, creates and signs `bar/dist/Phonon.dmg`, submits
-it to Apple, saves the notarization log, staples the ticket, and verifies the
-final artifact with Gatekeeper.
+The script refuses the placeholder refiner revision, builds the app with the
+engine, signs nested executables and the bundle with hardened runtime and
+secure timestamps, creates and signs `bar/dist/Phonon.dmg`, submits it to
+Apple, saves the notarization log, staples the ticket, and verifies the final
+artifact with Gatekeeper.
