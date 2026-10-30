@@ -508,7 +508,7 @@ final class MeetingRecordingFilesTests: XCTestCase {
         // No timestamp: appended where the clock says.
         try writer.append(quiet, hostNs: nil)
         try writer.finish()
-        XCTAssertEqual(closed.map(\.sampleCount), [46_000 + 5_000])
+        XCTAssertEqual(closed.map(\.sampleCount), [Int64(46_000 + 5_000)])
         let data = try Data(contentsOf: directory.appendingPathComponent("system/0000.wav"))
         let samples = stride(from: 44, to: data.count, by: 2).map {
             Int16(bitPattern: UInt16(data[$0]) | UInt16(data[$0 + 1]) << 8)
