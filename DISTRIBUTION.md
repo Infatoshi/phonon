@@ -72,14 +72,26 @@ Personal Team development identity is not sufficient.
 
 ## Release command
 
-Store notarization credentials once with `xcrun notarytool store-credentials`,
-upload the refiner and pin its commit in `crates/phonon-llm/src/paths.rs`,
+Store notarization credentials once, from an App Store Connect team API key
+(App Store Connect, Users and Access, Integrations; it does not expire the way
+an app-specific password does):
+
+```bash
+xcrun notarytool store-credentials phonon-notary-key \
+  --key ~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8 \
+  --key-id <KEY_ID> --issuer <ISSUER_ID>
+```
+
+Upload the refiner and pin its commit in `crates/phonon-llm/src/paths.rs`,
 then run:
 
 ```bash
 scripts/build-engine.sh
-PHONON_NOTARY_PROFILE=phonon-notary scripts/release-dmg.sh
+scripts/release-dmg.sh
 ```
+
+A notarization request answered with HTTP 403 means the account holder has an
+updated developer agreement to accept at developer.apple.com.
 
 The script refuses the placeholder refiner revision, builds the app with the
 engine, signs nested executables and the bundle with hardened runtime and

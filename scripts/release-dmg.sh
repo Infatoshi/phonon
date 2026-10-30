@@ -6,7 +6,7 @@ project_dir=$(cd "$script_dir/.." && pwd)
 bar_dir="$project_dir/bar"
 app_path="$bar_dir/dist/Phonon.app"
 dmg_path="$bar_dir/dist/Phonon.dmg"
-notary_profile=${PHONON_NOTARY_PROFILE:-phonon-notary}
+notary_profile=${PHONON_NOTARY_PROFILE:-phonon-notary-key}
 
 # A notarized release must pin the refiner's Hugging Face commit, never the
 # placeholder (a signed dry run with PHONON_SKIP_NOTARIZATION=1 may).
