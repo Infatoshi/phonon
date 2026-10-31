@@ -201,6 +201,14 @@ struct ModelStartupView: View {
     }
 }
 
+/// Streaming refine (SPEC "Streaming refine"): the engine decides (settings.json
+/// `stream_refine`, PHONON_STREAM_REFINE) and says so in its ready event.
+enum StreamRefine {
+    static func enabled(readyEvent ev: [String: Any]) -> Bool {
+        ev["stream_refine"] as? Bool ?? false
+    }
+}
+
 enum PreviewRevisionPolicy {
     static func stableAcoustic(previous: String, candidate: String) -> String {
         wordCount(candidate) < wordCount(previous) ? previous : candidate
@@ -874,14 +882,56 @@ enum PanelGeometry {
 
 // MARK: - Engine client
 
+/// The engine's stderr (and, labeled, its sidecars') appended to
+/// ~/Library/Logs/Phonon/engine.log, rotated to engine.log.1 past 5 MB at each engine start,
+/// so a helper that dies leaves its last words behind.
+enum EngineLog {
+    static let maxBytes = 5_000_000
+
+    static var defaultURL: URL? {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs/Phonon/engine.log")
+    }
+
+    static func handle(at url: URL?) -> FileHandle? {
+        guard let url else { return nil }
+        let manager = FileManager.default
+        try? manager.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let size = (try? manager.attributesOfItem(atPath: url.path))?[.size] as? Int,
+            size > maxBytes
+        {
+            let previous = URL(fileURLWithPath: url.path + ".1")
+            try? manager.removeItem(at: previous)
+            try? manager.moveItem(at: url, to: previous)
+        }
+        if !manager.fileExists(atPath: url.path) {
+            manager.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return nil }
+        _ = try? handle.seekToEnd()
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        try? handle.write(contentsOf: Data("=== engine started \(stamp)\n".utf8))
+        return handle
+    }
+}
+
 final class EngineClient {
     private var process: Process?
     private var stdin: FileHandle?
     private var readSource: DispatchSourceRead?
     private var buffer = Data()
     private var shuttingDown = false
+    /// Bumped at every start, so a late exit notice from a replaced engine is ignored.
+    private var generation = 0
+    private var exitReported = false
     var onEvent: (([String: Any]) -> Void)?
     var onExit: (() -> Void)?
+    /// The engine to run and its arguments (tests swap in a stand-in; nil is the app's own).
+    var executable: String?
+    var arguments = ["engine"]
+    var logURL: URL? = EngineLog.defaultURL
+    var processIdentifier: Int32? { process?.processIdentifier }
 
     func start() throws {
         readSource?.cancel()
@@ -891,10 +941,13 @@ final class EngineClient {
         process = nil
         buffer.removeAll(keepingCapacity: true)
         shuttingDown = false
-        let phonon = resolvePhonon()
+        exitReported = false
+        generation += 1
+        let started = generation
+        let phonon = executable ?? resolvePhonon()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: phonon)
-        p.arguments = ["engine"]
+        p.arguments = arguments
         var environment = ProcessInfo.processInfo.environment
         if let resources = Bundle.main.resourcePath {
             environment["PHONON_ROOT"] = resources
@@ -904,22 +957,27 @@ final class EngineClient {
         let outPipe = Pipe()
         p.standardInput = inPipe
         p.standardOutput = outPipe
-        p.standardError = FileHandle.nullDevice
-        try p.run()
+        p.standardError = EngineLog.handle(at: logURL) ?? FileHandle.nullDevice
         p.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
-                guard let self, !self.shuttingDown else { return }
-                self.onExit?()
+                guard let self, self.generation == started else { return }
+                self.reportExit()
             }
         }
+        try p.run()
         process = p
         stdin = inPipe.fileHandleForWriting
 
         let fh = outPipe.fileHandleForReading
         let source = DispatchSource.makeReadSource(fileDescriptor: fh.fileDescriptor, queue: .main)
-        source.setEventHandler { [weak self] in
+        source.setEventHandler { [weak self, weak source] in
             let chunk = fh.availableData
-            guard !chunk.isEmpty else { return }
+            guard !chunk.isEmpty else {
+                // End of file: the engine closed its output. A readable source at EOF fires
+                // without end, so stop it; the exit itself arrives via the termination handler.
+                source?.cancel()
+                return
+            }
             self?.buffer.append(chunk)
             self?.drainLines()
         }
@@ -960,21 +1018,56 @@ final class EngineClient {
     }
 
     func send(_ obj: [String: Any]) {
-        guard let stdin,
+        guard !shuttingDown, let stdin,
             let data = try? JSONSerialization.data(withJSONObject: obj),
             var line = String(data: data, encoding: .utf8)
         else { return }
         line += "\n"
-        if let d = line.data(using: .utf8) {
-            try? stdin.write(contentsOf: d)
+        guard let d = line.data(using: .utf8) else { return }
+        do {
+            try stdin.write(contentsOf: d)
+        } catch {
+            // The engine closed its end (it exited, or is exiting). SIGPIPE is ignored for
+            // the whole app (PhononBarMain), so this is an error, not the app's death:
+            // stop writing and restart the engine.
+            engineLost("write failed: \(error.localizedDescription)")
         }
     }
 
+    private func engineLost(_ reason: String) {
+        guard !shuttingDown, stdin != nil else { return }
+        NSLog("phonon engine lost: \(reason)")
+        try? stdin?.close()
+        stdin = nil
+        if let process, process.isRunning {
+            process.terminate()  // its termination handler reports the exit
+        } else {
+            reportExit()
+        }
+    }
+
+    private func reportExit() {
+        guard !shuttingDown, !exitReported else { return }
+        exitReported = true
+        try? stdin?.close()
+        stdin = nil
+        onExit?()
+    }
+
+    /// Stop writing first, then let the engine go: one shutdown line, end of input, and
+    /// terminate. Safe to call twice (quit and applicationWillTerminate both do).
     func shutdown() {
+        guard !shuttingDown else { return }
+        let input = stdin
         shuttingDown = true
         onExit = nil
-        send(["cmd": "shutdown"])
+        stdin = nil
+        if let input {
+            try? input.write(contentsOf: Data("{\"cmd\":\"shutdown\"}\n".utf8))
+            try? input.close()
+        }
         readSource?.cancel()
+        readSource = nil
         process?.terminate()
         process = nil
     }
@@ -1282,6 +1375,18 @@ final class MicRecorder {
                 self?.onStreamPCM16?(streamPCM)
             }
         }
+    }
+
+    /// The streamed audio not yet sent (under one 0.4 s chunk), as 16 kHz PCM16, so the stream
+    /// ends where the recording ends.
+    func drainStreamPCM16() -> Data? {
+        lock.lock()
+        let pending = streamSamples
+        let rate = hwSampleRate
+        streamSamples.removeAll(keepingCapacity: true)
+        lock.unlock()
+        guard !pending.isEmpty else { return nil }
+        return Self.pcm16Data(Self.resample(pending, from: rate, to: 16_000))
     }
 
     func endCapture(keepHardwareWarm: Bool = true) {
@@ -1687,6 +1792,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var toggleHotKey: EventHotKeyRef?
     private var toggleHandler: EventHandlerRef?
     private var enginesReady = false
+    /// Screen text last sent to the engine for the open stream (streaming refine).
+    private var streamScreenTextSent = ""
+    /// The engine refines while the speaker talks (its ready event says so).
+    private var engineStreamRefine = false
     private var hideWork: DispatchWorkItem?
     /// First dict often lands before models are warm — hold until ready.
     private var pendingTranscribe: (path: String, id: String)?
@@ -2043,6 +2152,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             )
         case "ready":
             enginesReady = true
+            engineStreamRefine = StreamRefine.enabled(readyEvent: ev)
             appStore.engineReady = true
             appStore.engineMessage = "Ready"
             modelStartupState.markReady()
@@ -2382,6 +2492,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             app: insertionTarget, denylist: denylist,
             readTextbox: appStore.settings.textboxContext && !target.denied)
         pendingFinalPolish = nil
+        streamScreenTextSent = ""
         let wantScreen = appStore.settings.screenContext && !target.denied
         if wantScreen && target.awaitsTabLookup {
             // A browser tab might be a private site: read nothing until the
@@ -2440,7 +2551,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         processing = true
         stopScreenSwitchWatch()
         if streamActive {
-            engine.send(["cmd": "stream_stop", "id": activeId ?? "p\(pass)"])
+            let streamId = activeId ?? "p\(pass)"
+            if engineStreamRefine {
+                // Streaming refine: send the last partial chunk too, so the stream holds the
+                // whole recording, and finish it now. The release transcription then runs
+                // while the WAV is written; the transcribe that follows releases its text.
+                if let tail = recorder.drainStreamPCM16() {
+                    engine.send([
+                        "cmd": "stream_chunk", "id": streamId,
+                        "pcm16": tail.base64EncodedString(),
+                    ])
+                }
+                engine.send(["cmd": "stream_finish", "id": streamId])
+            } else {
+                engine.send(["cmd": "stream_stop", "id": streamId])
+            }
             streamActive = false
         }
 
@@ -2685,12 +2810,26 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func screenContextUpdated() {
+        sendStreamScreenContext()
         screenContextReady = ScreenContextWait.shouldSubmit(
             pendingReads: screenReads.pending, initialDone: screenInitialDone, waited: 0)
         if screenContextReady, let pending = pendingFinalPolish {
             pendingFinalPolish = nil
             submitFinalPolish(pending.text, id: pending.id)
         }
+    }
+
+    /// Streaming refine (PHONON_STREAM_REFINE=1): the engine refines the transcript so far
+    /// while the speaker talks. With the screen text read so far in hand, its background
+    /// prompts carry the same dictionary envelope as the final correction, which then reuses
+    /// their cached state. Sent again only when the collected text changed.
+    private func sendStreamScreenContext() {
+        guard engineStreamRefine, isRecording else { return }
+        let id = activeId ?? "p\(pass)"  // the stream's id (startAsrStream)
+        let text = screenCollection.text
+        guard !text.isEmpty, text != streamScreenTextSent else { return }
+        streamScreenTextSent = text
+        engine.send(["cmd": "screen_context", "id": id, "text": text])
     }
 
     private func stopScreenSwitchWatch() {
@@ -3066,7 +3205,14 @@ final class AppController: NSObject, NSApplicationDelegate {
 enum PhononBarMain {
     private static var instanceLock: SingleInstanceLock?
 
+    /// A write to a helper that already exited (the engine, during a quit or after a crash)
+    /// must be an error the caller handles, not a signal that kills the app.
+    static func ignoreBrokenPipes() {
+        signal(SIGPIPE, SIG_IGN)
+    }
+
     static func main() {
+        ignoreBrokenPipes()
         let lock = ProcessInfo.processInfo.environment["PHONON_INSTANCE_LOCK_PATH"]
             .flatMap { SingleInstanceLock.acquire(at: URL(fileURLWithPath: $0)) }
             ?? SingleInstanceLock.acquire()

@@ -4,9 +4,32 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+/// Where a sidecar reader thread nudges its owner after queueing an event, so an event loop can
+/// block instead of sleeping between polls. The nudge is an empty line on the owner's command
+/// channel, which the engine loop already skips.
+#[derive(Clone, Default)]
+pub struct Waker(Arc<Mutex<Option<Sender<String>>>>);
+
+impl Waker {
+    pub fn set(&self, sender: Sender<String>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(sender);
+        }
+    }
+
+    pub fn wake(&self) {
+        if let Ok(slot) = self.0.lock() {
+            if let Some(sender) = slot.as_ref() {
+                let _ = sender.send(String::new());
+            }
+        }
+    }
+}
 
 /// Pinned ASR model and runtime. Exact revisions so an upstream release cannot
 /// change what shipped users run.
@@ -24,15 +47,29 @@ pub const PYTHON_REQUIREMENT: &str = "3.12";
 /// hanging the loader at whatever percentage it reached.
 pub struct StderrTail(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
+static STDERR_PASS_THROUGH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Copy every sidecar stderr line to this process's stderr (see `StderrTail::capture`).
+pub fn pass_stderr_through(on: bool) {
+    STDERR_PASS_THROUGH.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl StderrTail {
     const KEEP: usize = 12;
 
-    /// Drains `stderr` on a background thread, keeping only the tail.
-    pub fn capture(stderr: std::process::ChildStderr) -> Self {
+    /// Drains `stderr` on a background thread, keeping only the tail. With
+    /// `pass_stderr_through(true)` (the engine's serve mode) every line is also written to this
+    /// process's own stderr as `[label] line`, which the bar appends to
+    /// ~/Library/Logs/Phonon/engine.log, so a sidecar's last words outlive it.
+    pub fn capture(stderr: std::process::ChildStderr, label: &'static str) -> Self {
         let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = std::sync::Arc::clone(&lines);
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if STDERR_PASS_THROUGH.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("[{label}] {line}");
+                }
                 let Ok(mut kept) = sink.lock() else { return };
                 if kept.len() == Self::KEEP {
                     kept.remove(0);
@@ -74,6 +111,7 @@ struct SidecarMsg {
     id: Option<String>,
     #[serde(default)]
     partial: bool,
+    index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +130,15 @@ pub enum AsrEvent {
         seconds: f64,
         partial: bool,
     },
+    /// A speech segment closed by a pause during a segment stream, transcribed on its own.
+    Segment {
+        id: Option<String>,
+        index: usize,
+        text: String,
+    },
     Error {
+        /// The request the error belongs to, when the sidecar names one.
+        id: Option<String>,
         msg: String,
     },
 }
@@ -101,10 +147,17 @@ pub struct AsrSidecar {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<AsrEvent>,
+    waker: Waker,
 }
 
 impl AsrSidecar {
     pub fn spawn(root: &Path) -> Result<Self> {
+        Self::spawn_with(root, false)
+    }
+
+    /// `stream_refine`: segment streaming's ASR side on (SPEC "Streaming refine"); the
+    /// sidecar reads it from PHONON_STREAM_REFINE.
+    pub fn spawn_with(root: &Path, stream_refine: bool) -> Result<Self> {
         let script = root.join("sidecar/asr_server.py");
         if !script.is_file() {
             bail!("missing {}", script.display());
@@ -123,6 +176,10 @@ impl AsrSidecar {
             ])
             .arg(&script)
             .args(["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION])
+            .env(
+                "PHONON_STREAM_REFINE",
+                if stream_refine { "1" } else { "0" },
+            )
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -131,8 +188,10 @@ impl AsrSidecar {
         let mut child = command.spawn().context("spawn ASR")?;
         let stdout = child.stdout.take().context("asr stdout")?;
         let stdin = child.stdin.take().context("asr stdin")?;
-        let stderr = StderrTail::capture(child.stderr.take().context("asr stderr")?);
+        let stderr = StderrTail::capture(child.stderr.take().context("asr stderr")?, "asr");
         let (tx, rx) = mpsc::channel();
+        let waker = Waker::default();
+        let thread_waker = waker.clone();
         thread::spawn(move || {
             let mut ready = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -157,7 +216,13 @@ impl AsrSidecar {
                         seconds: msg.seconds.unwrap_or(0.0),
                         partial: msg.partial,
                     },
+                    "segment" => AsrEvent::Segment {
+                        id: msg.id,
+                        index: msg.index.unwrap_or(0),
+                        text: msg.text.unwrap_or_default(),
+                    },
                     "error" => AsrEvent::Error {
+                        id: msg.id,
                         msg: msg.msg.unwrap_or_else(|| "asr error".into()),
                     },
                     _ => continue,
@@ -165,16 +230,29 @@ impl AsrSidecar {
                 if tx.send(event).is_err() {
                     return;
                 }
+                thread_waker.wake();
             }
             // stdout closed. If that happened before `ready`, the process died
             // during startup and nobody would ever hear about it otherwise.
             if !ready {
                 let _ = tx.send(AsrEvent::Error {
+                    id: None,
                     msg: stderr.exit_message("ASR sidecar"),
                 });
+                thread_waker.wake();
             }
         });
-        Ok(Self { child, stdin, rx })
+        Ok(Self {
+            child,
+            stdin,
+            rx,
+            waker,
+        })
+    }
+
+    /// Nudge `sender` (an empty line) whenever an event is queued.
+    pub fn set_waker(&self, sender: Sender<String>) {
+        self.waker.set(sender);
     }
 
     pub fn poll(&self) -> Vec<AsrEvent> {
@@ -205,6 +283,19 @@ impl AsrSidecar {
 
     pub fn stream_stop(&mut self, id: Option<&str>) -> Result<()> {
         self.send(json!({"cmd":"stream_stop", "id":id}))
+    }
+
+    /// Start a segment stream: chunks are cut at pauses and each closed segment is
+    /// transcribed while the speaker keeps talking (AsrEvent::Segment).
+    pub fn stream_start_segments(&mut self, id: Option<&str>) -> Result<()> {
+        self.send(json!({"cmd":"stream_start", "id":id, "segments": true}))
+    }
+
+    /// Finish a segment stream at key release: the sidecar appends the part of `path` it has
+    /// not received (none when `path` is None: the stream holds all the audio), transcribes
+    /// the open segment, and answers with the whole transcript as a final AsrEvent::Result.
+    pub fn stream_finish(&mut self, path: Option<&Path>, id: Option<&str>) -> Result<()> {
+        self.send(json!({"cmd":"stream_finish", "path":path, "id":id}))
     }
 
     pub fn warmup_stream(&mut self, path: &Path, id: Option<&str>) -> Result<()> {
@@ -270,5 +361,22 @@ pub fn apply_offline_policy(command: &mut Command, uv: &Path, requirement: &str)
 impl Drop for AsrSidecar {
     fn drop(&mut self) {
         let _ = self.child.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Waker;
+    use std::sync::mpsc;
+
+    #[test]
+    fn waker_nudges_with_an_empty_line_once_set() {
+        let waker = Waker::default();
+        waker.wake(); // nothing set yet: no panic, nothing sent
+        let (tx, rx) = mpsc::channel();
+        waker.clone().set(tx);
+        waker.wake();
+        assert_eq!(rx.try_recv().as_deref(), Ok(""));
+        assert!(rx.try_recv().is_err());
     }
 }

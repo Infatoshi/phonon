@@ -327,3 +327,112 @@ guard (fall back to the transcript when the output is over twice or, past 8 word
 0.4 of its length). No profile block, no repetition penalty. A refiner trained on a user's
 dictations is that user's alone and is never downloaded from or published to a hub.
 `phonon doctor` names the model in use.
+
+## Streaming refine (settings.json `stream_refine`; default on with 16 GB of memory or more)
+
+settings.json `"stream_refine": true` or `false` decides; without the key it is on for Macs with
+16 GB of memory or more (`hw.memsize`) and off below, since it keeps the GPU busy about 28% of
+dictation time on an M4 Max and is unmeasured on 8 GB machines. `PHONON_STREAM_REFINE=0` or `=1`
+in the engine's environment overrides both for that run. The engine passes its decision to both
+sidecars (`PHONON_STREAM_REFINE` in their environment) and to the bar (`"stream_refine"` in its
+ready event). It needs the live preview stream (`streaming`, also on by default): without a
+stream there is nothing to refine early.
+
+Goal: most of the transcription and correction work happens while the speaker is still talking,
+so the wait after key release no longer grows with the length of the dictation. The text that is
+inserted does not depend on streaming: the refiner's output is the greedy output of the final
+prompt, verified token by token.
+
+ASR (`sidecar/stream_asr.py` with its `SCHEME`, driven by `asr_server.py` when `stream_start`
+carries `"segments": true`). Every 0.4 s stream chunk, once the stream has heard speech, a
+speculative round transcribes the whole recording so far, so the transcript so far reaches the
+present with all of its left context. Past 60 s of pending audio a round also commits its words up
+to 2 s before its end, and later rounds keep 20 s of left context before that point, so no window
+exceeds 80.4 s (Metal Parakeet's capacity is 82 s). At key release only `[t_cut - 8 s, end]` is
+transcribed, where `t_cut` is the end of the last round minus 2 s: words before `t_cut` come from
+the round, which heard them with at least 2 s of right context. The causal energy VAD
+(`sidecar/stream_vad.py`) only starts the rounds: in long stretches without a pause its noise
+floor rises to speech level and it stops hearing speech, so it never decides what is transcribed.
+Measured against whole-file ASR of the same clips on pubeval_v0 (1,351 public clips of 3-60 s
+with human verbatim transcripts; windowed minus whole-file WER, paired bootstrap 95% CI;
+pre-registered bound: CI upper at most +0.004): this scheme +0.0009 [-0.0006, +0.0023], every
+length band's CI including 0; the same rounds with a 1 s release window +0.0047
+[+0.0029, +0.0064]; commits every 30 s with 20 s of left context +0.0044 [+0.0015, +0.0079]
+(+0.010 on 30-60 s clips); 0.2.0's pause-cut segments (a 0.5 s pause closes a segment,
+transcribed with 4 s of left and 2 s of right context, 1 s release window) +0.0119
+[+0.0093, +0.0147], and +0.0230 while the VAD also decided which segments to transcribe (empty
+transcripts on clips without pauses). Transcribing the whole recording at release instead (the
+final transcript then is the whole-file ASR) was slower at key up (below). parakeet-mlx's own
+chunked streaming is not used for this: its partials differed from batch ASR of the same audio
+by 0.46 WER.
+At key up the bar sends the last partial chunk, so the stream holds the whole recording (the
+recorder keeps only the last 120 s of samples), and then `stream_finish`: the release window is
+transcribed while the bar writes the WAV. The bar's `transcribe` with the WAV follows as before
+(corpus entry, speech gate); the engine sends the ASR text once both are in, or an empty result
+as soon as the gate finds no speech (the release text is then dropped, so a no-speech clip never
+inserts text). If the sidecar fails to finish the stream, the WAV is transcribed the usual way. A
+`transcribe` for a segment stream without a prior `stream_finish` (an older bar) appends whatever
+audio the WAV holds beyond the stream and finishes it then.
+
+Correction (`sidecar/stream_decode.py`, `sidecar/stream_draft.py`, `polish_server.py`). The
+engine forwards each transcript so far as `stream_commit` with the same dictionary envelope as
+the final polish (and the screen text, once the bar sends `screen_context`). The sidecar keeps a
+rollback-able model state, refines the transcript so far, and keeps the output as a draft. The
+state lives in one of two backends behind the same decode loop (`RollbackDecoder`): with the
+native refiner engine (`phonon_engine.json`), its per-dictation session (`pe serve` ops `open`,
+`rollback`, `forward` with argmax ids per row; `PeEngine`), into which the sidecar sends the
+token ids it encodes with the refiner's tokenizer (the GGUF's vocabulary and merges are the
+same); with MLX, a second cache over the same weights (`stream_refiner.Engine`: plain KV for full
+and sliding attention, full input history for the short convolutions). A one-shot request to the
+native engine (warmup, prewarm, a run without commits) ends its session; the next commit opens a
+new one from the cached system-prompt prefix. A session forward that hits the engine's 2048-token
+context cap falls back to the one-shot run, which continues past it. Draft blocks after a
+rejection follow a per-backend ladder: on the native engine 7, 15, 31, ... tokens (its megakernel
+verifies up to 8 rows for the price of 2), on MLX 3, 31, 63, ... A newer commit replaces one that
+has not started; a run aborts a running commit between forward passes, and background passes are
+capped at 127 tokens so that wait is short. At release, when the final prompt equals the prompt of the last completed background
+refine (the speaker stopped inside the last 0.4 s chunk), that draft is the answer and no pass
+runs; otherwise the run prefills only the prompt after the cached prefix, fused with the draft
+in one forward pass, verifies the draft in large blocks, and decodes what the draft does not
+cover with prompt-lookup drafts. Off this path (no commits, or a Gemma polisher), `run` is
+unchanged.
+
+Measured (M4 Max, MLX refiner, 40 held-out dictations replayed at 1x through the two sidecar
+processes): post-release p50/p90 for dictations of 5 s and longer 51/110 ms against 528/1178 ms
+for today's path on the same rows; over 20 s 47/97 against 866/1224; under 5 s 64/77 against
+194/248. GPU busy during dictation 28% of wall time. End-to-end fair WER on 564 rows +0.0001
+[-0.0054, +0.0053] against today's path; term hit +0.0034. On the native engine (same 40
+dictations, 2 runs each, the 7-15-31 ladder): 5 s and longer 56/100 and 53/101 ms against
+504/1568 and 476/1677 ms for its one-shot path; under 5 s 68/95 and 61/73 against 213/241 and
+230/257; GPU busy 27.8%; final text identical to the one-shot refine of the same transcript on
+39 of 40 in every run. Those numbers are for 0.2.0's pause-cut ASR scheme.
+
+With the whole-recording rounds above (the bundle's `phonon engine` driven as the bar drives
+it, 40 held-out dictations at 1x, owner refiner on the native engine, 2 runs each), key-up to
+text p50/p90: on Metal Parakeet 31.4/130.2 and 32.0/133.9 ms against 221.2/681.0 and
+208.8/658.1 with streaming refine off; on MLX Parakeet 96.6/339.1 and 97.6/356.5 ms (0.2.0's
+scheme on MLX, same rows: 58.8/135.1 and 60.6/135.7; off 246.3/777.7 and 253.0/773.1). The
+release reused the last background draft without a forward pass on 25 of 40 dictations. The
+alternatives measured the same way (Metal, 1 run each): a whole-file release up to 82 s after
+pause-cut rounds 75.7/465.7 ms (draft reused 10/40), after whole-recording rounds 65.9/372.3
+(17/40).
+
+Engine (`phonon-core`): `stream_start` opens a segment stream when streaming refine is on and the
+correction stage is ready; `segment` events become `stream_commit`s; `stream_finish` (or, from an
+older bar, `transcribe`) for that id finishes the stream. The serve loop blocks on one channel for
+commands and sidecar events instead of polling every 15 ms (through the core, 20 one-shot
+dictations, 2 runs: key-up-to-text p50 212/157 ms against 238/226 with the poll). The final
+polish reuses the dictionary envelope of the stream's last commit when the transcript and screen
+text are unchanged; building one costs 1.8 ms at 19 words and 4.6 ms at 228 (it was 5.0 and
+42 ms before the transcript's phonetic window keys were computed once per request instead of
+once per dictionary entry; same output on 1128 held-out transcripts).
+
+Known limits: the dictionary envelope is rebuilt from each transcript so far, so a vocabulary
+line that changes late (a new phonetic match in the last words) makes the release prefill the
+whole prompt again (still lossless, slower). Batched verification and one-token decoding can
+differ in the last bit of a logit, so a near-tie token can flip; the streaming output is the
+greedy output of the batched forward, not bit-identical to the one-token path in every case
+(39 of 40 replayed dictations identical). The ASR side shares the GPU with the background
+refine: a round runs every 0.4 s over up to 80 s of audio, and a key release that lands during
+a round of a long dictation waits for it (Metal: dictations of 45 s and longer p50 130-134 ms
+against 28-37 ms by length band below 45 s; MLX rounds cost more, p50 295-298 ms over 45 s).

@@ -23,7 +23,7 @@ pub use paths::{
     POLISH_RUNTIME_REQUIREMENT,
 };
 use paths::{polish_prompt, polish_script};
-use phonon_asr::StderrTail;
+use phonon_asr::{StderrTail, Waker};
 use serde::Deserialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
@@ -96,6 +96,9 @@ pub struct PolishConfig {
     /// user's own trained refiner (`phonon_refiner.json` inside switches the
     /// sidecar to the refiner prompt and guard). `None` runs the pinned model.
     pub model_dir: Option<PathBuf>,
+    /// Refine while the speaker talks (SPEC "Streaming refine"); the sidecar reads it
+    /// from PHONON_STREAM_REFINE.
+    pub stream_refine: bool,
 }
 
 impl Default for PolishConfig {
@@ -105,6 +108,7 @@ impl Default for PolishConfig {
             profile_token_budget: None,
             prefix_cache: true,
             model_dir: None,
+            stream_refine: false,
         }
     }
 }
@@ -192,7 +196,10 @@ impl ServeJson {
         let mut child = cmd.spawn().context("spawn serve-json")?;
         let stdin = child.stdin.take().context("serve-json stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("serve-json stdout")?);
-        let stderr = child.stderr.take().map(StderrTail::capture);
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| StderrTail::capture(stderr, "serve-json"));
         Ok(Self {
             child,
             stdin,
@@ -423,6 +430,7 @@ pub struct PolishSidecar {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<PolishEvent>,
+    waker: Waker,
 }
 
 /// The shipped correction stage. `Ok(None)` means its own files are absent.
@@ -460,6 +468,10 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
         .args(["--model", &model, "--revision", &revision])
         .arg("--system-prompt-file")
         .arg(&prompt)
+        .env(
+            "PHONON_STREAM_REFINE",
+            if config.stream_refine { "1" } else { "0" },
+        )
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -531,11 +543,16 @@ impl PolishSidecar {
     fn attach(mut child: Child) -> Result<Self> {
         let stdout = child.stdout.take().context("polish stdout")?;
         let mut stdin = child.stdin.take().context("polish stdin")?;
-        let stderr = child.stderr.take().map(StderrTail::capture);
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| StderrTail::capture(stderr, "polish"));
         let started = Instant::now();
         writeln!(stdin, "{}", json!({"command":"warmup"}))?;
         stdin.flush()?;
         let (tx, rx) = mpsc::channel();
+        let waker = Waker::default();
+        let thread_waker = waker.clone();
         thread::spawn(move || {
             let mut ready = false;
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -575,6 +592,7 @@ impl PolishSidecar {
                 if tx.send(event).is_err() {
                     return;
                 }
+                thread_waker.wake();
             }
             // stdout closed. If that happened before `ready`, the process died
             // during startup and nobody would ever hear about it otherwise.
@@ -584,9 +602,20 @@ impl PolishSidecar {
                     .map(|tail| tail.exit_message("correction sidecar"))
                     .unwrap_or_else(|| "correction sidecar exited before becoming ready".into());
                 let _ = tx.send(PolishEvent::Error { msg });
+                thread_waker.wake();
             }
         });
-        Ok(Self { child, stdin, rx })
+        Ok(Self {
+            child,
+            stdin,
+            rx,
+            waker,
+        })
+    }
+
+    /// Nudge `sender` (an empty line) whenever an event is queued.
+    pub fn set_waker(&self, sender: std::sync::mpsc::Sender<String>) {
+        self.waker.set(sender);
     }
 
     pub fn poll(&self) -> Vec<PolishEvent> {
@@ -619,6 +648,26 @@ impl PolishSidecar {
     /// it never pairs with a queued polish request.
     pub fn prewarm(&mut self) -> Result<()> {
         writeln!(self.stdin, "{}", json!({"command":"prewarm"}))?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    /// The transcript so far of a dictation still in progress (same envelope as `polish`).
+    /// A refiner sidecar refines it in the background so the `polish` at key release has
+    /// its prompt cached and a draft to verify; the answer is not a correction result.
+    pub fn stream_commit(&mut self, text: &str) -> Result<()> {
+        writeln!(
+            self.stdin,
+            "{}",
+            json!({"command":"stream_commit", "inputText":text})
+        )?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    /// Forget any background refine state (a new dictation starts).
+    pub fn stream_reset(&mut self) -> Result<()> {
+        writeln!(self.stdin, "{}", json!({"command":"stream_reset"}))?;
         self.stdin.flush()?;
         Ok(())
     }

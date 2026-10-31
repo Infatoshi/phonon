@@ -27,7 +27,7 @@ if [[ -z "$identity" ]]; then
 	exit 1
 fi
 
-# The DMG always carries the native refiner engine (scripts/build-engine.sh).
+# The DMG always carries the native refiner engine and the Metal Parakeet helper (scripts/build-engine.sh).
 PHONON_REQUIRE_ENGINE=1 PHONON_CODESIGN_IDENTITY="$identity" "$script_dir/package-bar.sh"
 
 codesign --verify --deep --strict --verbose=4 "$app_path"
@@ -36,6 +36,7 @@ for executable in \
 	"$app_path/Contents/MacOS/PhononBar" \
 	"$app_path/Contents/Helpers/phonon" \
 	"$app_path/Contents/Helpers/pe" \
+	"$app_path/Contents/Helpers/pa" \
 	"$app_path/Contents/Helpers/uv"; do
 	lipo "$executable" -verify_arch arm64
 	codesign --verify --strict --verbose=4 "$executable"

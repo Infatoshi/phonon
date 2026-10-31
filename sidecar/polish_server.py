@@ -3,10 +3,21 @@
 
 Speaks the same line protocol the engine already used for the correction stage:
   stdin:  {"command":"warmup"} | {"command":"run","inputText":"…"}
-          {"command":"status"} | {"command":"shutdown"}
+          {"command":"status"} | {"command":"shutdown"} | {"command":"prewarm"}
+          {"command":"stream_commit","inputText":"…"} | {"command":"stream_reset"}
   stdout: {"ok":true,"status":{"state":"ready","message":"…"}}
           {"ok":true,"outputText":"…","diagnostics":{…}}
+          {"ok":true,"stream":{…}}   (after a stream_commit job; carries no outputText)
           {"ok":false,"error":"…"}
+
+Streaming refine (refiner mode only): while the speaker is still talking the engine sends
+stream_commit with the envelope of the transcript so far (closed speech segments). The sidecar
+refines that transcript in the background, keeping the prompt in a rollback-able model state and
+the output as a draft. A newer commit replaces one that has not started; a run aborts a running
+commit between forward passes. The run that follows is the greedy output of its own prompt
+whatever the draft says (stream_decode.py), so the inserted text does not depend on streaming.
+The state lives in this process (MLX, stream_refiner.Engine) or, with the native refiner engine,
+in its per-dictation session (stream_decode.PeEngine).
 """
 
 from __future__ import annotations
@@ -105,6 +116,13 @@ ENGINE_PROBE_TEXT = "hello fluid voice startup prime"
 # so no library can read a request or print into a reply line.
 PROTOCOL_IN = None
 PROTOCOL_OUT = None
+
+
+def stream_refine_enabled() -> bool:
+    """Streaming refine: the engine sets PHONON_STREAM_REFINE (1/true/on) from settings.json
+    `stream_refine` or its own environment."""
+    value = os.environ.get("PHONON_STREAM_REFINE", "")
+    return value.strip().lower() in ("1", "true", "on")
 
 
 def emit(obj: dict) -> None:
@@ -850,6 +868,8 @@ def main() -> None:
         started_at = time.perf_counter()
         reply = engine.generate(prompt, max_tokens)
         latency_ms = (time.perf_counter() - started_at) * 1000
+        if stream is not None:
+            stream.e.invalidate()  # a one-shot request ends the engine's session
         if not reply.get("ok"):
             raise RuntimeError(f"refiner engine: {reply}")
         output, guard_fired = guard_output(
@@ -883,7 +903,156 @@ def main() -> None:
             },
         }
 
-    def run(text: str) -> dict:
+    # Streaming refine (refiner mode): a rollback-able model state fed by stream_commit while
+    # the speaker talks: a second cache over the MLX weights, or the native engine's session.
+    # Only the refiner's prompt is streamed; a Gemma polisher ignores stream_commit. Set up
+    # only when the engine turned streaming refine on (PHONON_STREAM_REFINE).
+    stream = None
+    stream_prefix: list[int] = []
+    if refiner and stream_refine_enabled():
+        try:  # run as sidecar/polish_server.py (sidecar dir on sys.path) or as a package
+            from stream_decode import (
+                PE_LADDER,
+                Aborted,
+                EngineError,
+                PeEngine,
+                StreamSession,
+            )
+        except ImportError:
+            from .stream_decode import (
+                PE_LADDER,
+                Aborted,
+                EngineError,
+                PeEngine,
+                StreamSession,
+            )
+
+        class EnvelopePrompter:
+            """Refiner prompt pieces for an engine envelope (vocabulary + transcript)."""
+
+            def prompt_tokens(self, text: str) -> list[int]:
+                return encode_prompt(build_prompt(text))
+
+            def open_prompt_tokens(self, text: str) -> list[int]:
+                system = refiner_system_prompt(refiner_vocabulary(text))
+                rendered = render(
+                    system, transcript_payload(text) + PROMPT_SPLIT_SENTINEL
+                )
+                return encode_prompt(rendered.split(PROMPT_SPLIT_SENTINEL)[0])
+
+            def budget(self, text: str) -> int:
+                return output_budget(text)
+
+            def text_tokens(self, text: str) -> list[int]:
+                return tokenizer.encode(
+                    " " + transcript_payload(text), add_special_tokens=False
+                )
+
+        stream_prefix = encode_prompt(prompt_prefix)[:-1]
+        eos = getattr(tokenizer, "eos_token_ids", None) or {tokenizer.eos_token_id}
+        if engine is not None:
+            # The session opens from the same prefix tokens the engine's one-shot prefix cache
+            # holds, so an open restores that state instead of prefilling it.
+            stream_engine = PeEngine(engine.call, stream_prefix, set(eos))
+        else:
+            try:
+                from stream_refiner import Engine
+            except ImportError:
+                from .stream_refiner import Engine
+
+            stream_engine = Engine(model, tokenizer)
+            stream_engine.extend(stream_prefix)
+        # Draft sizes per backend: the native engine verifies up to 8 rows for the price of 2
+        # (real-time replay, 40 held-out dictations, 2 runs each: >= 5 s p90 118-126 ms with
+        # the MLX ladder, 99.5-100.7 ms with PE_LADDER).
+        stream = StreamSession(
+            stream_engine,
+            EnvelopePrompter(),
+            ladder=PE_LADDER if engine is not None else None,
+        )
+
+    def stream_reset(lost: bool = False) -> None:
+        """Forget the dictation's draft; keep the prefix state. `lost`: the state may no
+        longer match the bookkeeping (an error mid-request), so drop it."""
+        if stream is None:
+            return
+        stream.reset()
+        if lost and engine is not None:
+            stream.e.invalidate()  # the next forward opens a fresh session
+        elif lost:
+            stream.e.rollback(0)
+            stream.e.extend(stream_prefix)
+        else:
+            stream.e.rollback(len(stream_prefix))
+
+    def stream_commit(text: str, should_abort) -> dict:
+        started_at = time.perf_counter()
+        aborted = False
+        info: dict = {}
+        try:
+            info = stream.commit(text, should_abort=should_abort)
+        except Aborted:
+            aborted = True
+            # Keep only the part of the state that matches this commit's prompt prefix.
+            stream.e.rollback(stream.e.common_prefix(stream.p.open_prompt_tokens(text)))
+        return {
+            "ok": True,
+            "stream": {
+                "commits": stream.commits,
+                "aborted": aborted,
+                "milliseconds": (time.perf_counter() - started_at) * 1000,
+                "draftTokenCount": len(stream.draft or []),
+                "forwardPasses": info.get("passes", []),
+            },
+        }
+
+    def run_streamed(text: str) -> dict:
+        max_tokens = output_budget(text)
+        started_at = time.perf_counter()
+        commits, draft_tokens = stream.commits, len(stream.draft or [])
+        cached = len(stream.e.tokens)
+        try:
+            ids, info = stream.final(text)
+        except EngineError as error:
+            # e.g. the session's context cap: the one-shot request continues past it
+            print(f"stream: {error}; one-shot refine", file=sys.stderr)
+            stream_reset(lost=True)
+            return run_engine(text)
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        prompt_tokens = len(stream.p.prompt_tokens(text))
+        stream_reset()
+        output = clean_output(tokenizer.decode(ids))
+        output, guard_fired = guard_output(transcript_payload(text), output)
+        return {
+            "ok": True,
+            "outputText": output,
+            "diagnostics": {
+                "latencyMilliseconds": latency_ms,
+                "timeToFirstTokenMilliseconds": latency_ms,
+                "tokensPerSecond": (
+                    len(ids) / (latency_ms / 1000) if latency_ms > 0 else 0.0
+                ),
+                "generatedTokenCount": len(ids),
+                "inputCharacterCount": len(text),
+                "outputCharacterCount": len(output),
+                "maxOutputTokenBudget": max_tokens,
+                "promptTokenCount": prompt_tokens,
+                "cachedPromptTokenCount": min(cached, prompt_tokens),
+                "profileTokenCount": profile_report["blockTokens"],
+                "refiner": refiner,
+                "guardFired": guard_fired,
+                "engine": "native session" if engine is not None else "mlx",
+                "streamCommits": commits,
+                "streamDraftTokenCount": draft_tokens,
+                "releaseForwardPasses": info.get("passes", []),
+                # tokens of background work thrown away because the transcript was revised
+                "streamWaste": info.get("waste"),
+            },
+        }
+
+    def run(text: str, streamed: bool = True) -> dict:
+        if streamed and stream is not None and stream.commits:
+            return run_streamed(text)
         if engine is not None:
             return run_engine(text)
         prompt = build_prompt(text)
@@ -959,31 +1128,29 @@ def main() -> None:
         ready_message += f"; {describe_profile(profile_report)}"
     if prefix_cache is not None:
         ready_message += f"; prefix cache {len(prefix_tokens)} tokens"
+    if stream is not None:
+        ready_message += "; streaming refine"
 
-    for line in PROTOCOL_IN or sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError as error:
-            emit({"ok": False, "error": f"bad json: {error}"})
-            continue
+    def handle(request) -> bool:
+        """One command; False ends the loop."""
+        if isinstance(request, str):
+            emit({"ok": False, "error": f"bad json: {request[:80]}"})
+            return True
         command = request.get("command")
         if command == "shutdown":
-            break
+            return False
         if command == "status":
             emit({"ok": True, "status": {"state": "ready", "message": ready_message}})
-            continue
+            return True
         if command == "warmup":
             try:
-                run("warmup pass")
+                run("warmup pass", streamed=False)
             except Exception as error:  # noqa: BLE001
                 emit({"ok": False, "error": f"warmup failed: {error}"})
                 traceback.print_exc(file=sys.stderr)
-                continue
+                return True
             emit({"ok": True, "status": {"state": "ready", "message": ready_message}})
-            continue
+            return True
         if command == "prewarm":
             # Dictation started. After a minute or two idle the native engine
             # answers its next request ~3x slower (284 vs 96 ms after 120 s,
@@ -991,23 +1158,86 @@ def main() -> None:
             # takes that cost instead (the real one then ran in 107-119 ms).
             if engine is not None:
                 try:
-                    run("warmup pass")
+                    run("warmup pass", streamed=False)
                 except Exception as error:  # noqa: BLE001
                     print(f"prewarm failed: {error}", file=sys.stderr)
             emit({"ok": True, "status": {"state": "warm"}})
-            continue
+            return True
+        if command == "stream_reset":
+            stream_reset()
+            return True
         if command == "run":
             text = request.get("inputText") or ""
             if not text.strip():
+                stream_reset()
                 emit({"ok": False, "error": "empty inputText"})
-                continue
+                return True
             try:
                 emit(run(text))
             except Exception as error:  # noqa: BLE001
+                stream_reset(lost=True)
                 emit({"ok": False, "error": f"correction failed: {error}"})
                 traceback.print_exc(file=sys.stderr)
-            continue
+            return True
         emit({"ok": False, "error": f"unknown command: {command}"})
+        return True
+
+    try:  # run as sidecar/polish_server.py (sidecar dir on sys.path) or imported as a package
+        from linereader import LineReader
+    except ImportError:
+        from .linereader import LineReader
+
+    # The protocol channel (isolate_protocol moved it off fd 0), read unbuffered so a
+    # running background commit can see a newer command between forward passes.
+    reader = LineReader((PROTOCOL_IN or sys.stdin).fileno())
+    queue: list = []
+    pending_commit = None
+
+    def is_commit(request) -> bool:
+        return isinstance(request, dict) and request.get("command") == "stream_commit"
+
+    def take(messages) -> None:
+        """Queue messages; commits are coalesced to the newest, and any other command
+        (a run above all) supersedes commits that have not started."""
+        nonlocal pending_commit
+        for message in messages:
+            if is_commit(message):
+                pending_commit = message if stream is not None else None
+            else:
+                if isinstance(message, dict) and message.get("command") in (
+                    "run",
+                    "stream_reset",
+                ):
+                    pending_commit = None
+                queue.append(message)
+
+    while True:
+        if not queue:
+            take(reader.poll(None if pending_commit is None else 0.0))
+            if reader.eof and not queue and pending_commit is None:
+                break
+        if queue:
+            if not handle(queue.pop(0)):
+                break
+            continue
+        if pending_commit is None:
+            continue
+        request, pending_commit = pending_commit, None
+        text = request.get("inputText") or ""
+        if not text.strip():
+            continue
+
+        def should_abort() -> bool:
+            take(reader.poll(0.0))
+            return bool(queue)
+
+        try:
+            emit(stream_commit(text, should_abort))
+        except Exception as error:  # noqa: BLE001
+            # A failed background commit must not surface as a correction error.
+            stream_reset(lost=True)
+            emit({"ok": True, "stream": {"error": str(error)}})
+            traceback.print_exc(file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -111,6 +111,16 @@ impl DictionaryFile {
     pub fn relevant_entries(&self, transcript: &str) -> Vec<&DictionaryEntry> {
         let normalized = normalize(transcript);
         let transcript_words: Vec<&str> = normalized.split_whitespace().collect();
+        // The phonetic keys of every 1- to 3-word window, once per transcript rather than once
+        // per dictionary entry (that loop made the final polish's envelope cost about 0.18 ms
+        // per transcript word with a 105 KB dictionary).
+        let window_keys: std::collections::HashSet<String> = (1..=3.min(transcript_words.len()))
+            .flat_map(|window_len| {
+                transcript_words
+                    .windows(window_len)
+                    .map(|window| phonetic_key(&window.join(" ")))
+            })
+            .collect();
         let mut matches: Vec<(&DictionaryEntry, u64)> = self
             .entries
             .iter()
@@ -133,14 +143,8 @@ impl DictionaryFile {
                             }
                         }
                         let form_key = phonetic_key(&form);
-                        if form_key.len() >= 3 {
-                            for window_len in 1..=3.min(transcript_words.len()) {
-                                for window in transcript_words.windows(window_len) {
-                                    if phonetic_key(&window.join(" ")) == form_key {
-                                        best = best.max(750_000);
-                                    }
-                                }
-                            }
+                        if form_key.len() >= 3 && window_keys.contains(&form_key) {
+                            best = best.max(750_000);
                         }
                     }
                 }
@@ -489,6 +493,12 @@ pub struct SettingsFile {
     /// Watch the field after insertion and propose terms the user corrected.
     #[serde(default = "default_true")]
     pub edit_learning: bool,
+    /// Refine while the speaker talks (SPEC "Streaming refine"). Absent: on for
+    /// Macs with 16 GB of memory or more, off below (it keeps the GPU busy about
+    /// 28% of dictation time on an M4 Max and is unmeasured on 8 GB machines).
+    /// `PHONON_STREAM_REFINE=0` or `=1` overrides both for one engine run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_refine: Option<bool>,
     /// Style preferences the user approved, by app category
     /// (`{"chat": ["lowercase_start"]}`).
     #[serde(default)]
@@ -513,6 +523,7 @@ impl Default for SettingsFile {
             competitor_quit_muted: Vec::new(),
             profile_prefix: default_profile_prefix(),
             edit_learning: true,
+            stream_refine: None,
             style_preferences: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
@@ -1420,6 +1431,12 @@ mod tests {
         )
         .unwrap();
         assert!(settings.edit_learning);
+        assert_eq!(settings.stream_refine, None); // absent: the engine decides by memory
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("stream_refine")); // and a rewrite does not pin it
+        let off: SettingsFile =
+            serde_json::from_str(r#"{"schema_version":2,"stream_refine":false}"#).unwrap();
+        assert_eq!(off.stream_refine, Some(false));
         assert_eq!(settings.style_preferences["chat"], ["lowercase_start"]);
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();

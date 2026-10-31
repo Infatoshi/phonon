@@ -5,6 +5,11 @@
 //!   {"cmd":"transcribe","path":"/tmp/x.wav","id":"..."}
 //!   {"cmd":"polish","text":"...","id":"...","context":"<ocr>","app":{"bundle_id":"...","name":"...","url_host":"..."},"textbox":{...}}
 //!   {"cmd":"prewarm"}  — dictation started; no event in reply
+//!   {"cmd":"stream_start","id":"..."} / {"cmd":"stream_chunk","id":"...","pcm16":"<base64>"} /
+//!   {"cmd":"stream_stop","id":"..."}  — live audio; with streaming refine a segment stream
+//!   {"cmd":"stream_finish","id":"..."}  — key up of a segment stream with all its audio sent:
+//!   the release transcription starts now; the `transcribe` that follows releases the result
+//!   {"cmd":"screen_context","id":"...","text":"..."}  — screen text for the open stream
 //!   {"cmd":"reload_dictionary"}
 //!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
@@ -12,7 +17,8 @@
 //!
 //! Events (stdout):
 //!   {"type":"stream","name":"asr|llm","state":"loading|ready|error","pct":0.5,"msg":"...","load_ms":123}
-//!   {"type":"ready"}  — all required streams ready
+//!   {"type":"ready","stream_refine":true}  — all required streams ready; streaming refine on
+//!   (the bar then sends the last partial chunk at key up and {"cmd":"screen_context"})
 //!   {"type":"result","kind":"asr|polish","id":"...","text":"...","seconds":0.1,"latency_ms":70,"ttft_ms":30,"tok_s":200}
 //!   {"type":"result","kind":"edit","id":"...","outcome":"correction","suggestions":[...],"recorded":false}
 //!   {"type":"error","id":"...","msg":"..."}
@@ -32,7 +38,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::sync::mpsc::{self, TryRecvError};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -53,7 +59,11 @@ pub enum EngineEvent {
         msg: String,
         load_ms: Option<f64>,
     },
-    AllReady,
+    /// Both stacks are ready. `stream_refine`: the bar should send the last partial chunk
+    /// at key up and the screen text while recording (streaming refine is on).
+    AllReady {
+        stream_refine: bool,
+    },
     AsrResult {
         id: Option<String>,
         text: String,
@@ -96,6 +106,56 @@ pub struct Engine {
     startup_audio_demo_sent: bool,
     startup_audio_demo_passed: bool,
     startup_dictionary_demo_sent: bool,
+    /// Refine while the speaker talks: segment streams in the ASR sidecar, each closed
+    /// segment's transcript so far committed to the correction sidecar. settings.json
+    /// `stream_refine` (default on), overridden by PHONON_STREAM_REFINE=0/1.
+    stream_refine: bool,
+    /// Transcripts so far received from the open segment stream, by request id.
+    segment_streams: HashMap<String, Vec<String>>,
+    /// Screen text captured at key down for the open stream, so background commits are built
+    /// from the same dictionary envelope as the final polish.
+    stream_screen_text: Option<(String, String)>,
+    /// Segment streams the bar finished at key up (`stream_finish`) before its `transcribe`
+    /// with the WAV: the release ASR runs while the WAV is written, and the result goes out
+    /// once the WAV's speech gate has spoken.
+    finishing: HashMap<String, StreamFinish>,
+    /// The dictionary envelope of the open stream's last commit: (transcript, screen text,
+    /// envelope). Building one costs about 0.18 ms per word (M4 Max, 40 ms at 228 words);
+    /// when the speaker stops inside the last chunk the final polish asks for the same one.
+    stream_envelope: Option<(String, String, String)>,
+}
+
+/// The two halves of a streamed dictation's final transcript (see `Engine::finishing`).
+#[derive(Debug, Default)]
+struct StreamFinish {
+    text: Option<(String, f64)>,
+    speech: Option<bool>,
+    /// An empty result already went out (the gate found no speech); the ASR text is dropped.
+    answered: bool,
+    /// The sidecar could not finish the stream: the WAV is transcribed the usual way instead.
+    failed: bool,
+    /// The WAV, once the bar's `transcribe` has named it.
+    path: Option<std::path::PathBuf>,
+}
+
+impl StreamFinish {
+    /// What to send now (text, seconds), if anything, and whether the entry is finished.
+    /// The ASR text goes out only once the gate found speech; no speech sends an empty
+    /// result at once and drops the ASR text whenever it arrives.
+    fn resolve(&mut self) -> (Option<(String, f64)>, bool) {
+        match (self.speech, self.text.take()) {
+            (Some(false), text) => {
+                let answer = (!self.answered).then(|| (String::new(), 0.0));
+                self.answered = true;
+                (answer, text.is_some())
+            }
+            (Some(true), Some(text)) => (Some(text), true),
+            (_, text) => {
+                self.text = text;
+                (None, false)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -119,8 +179,24 @@ impl Engine {
         if !polish_available(root) {
             bail!("the required local correction runtime is missing from this install");
         }
-        let asr = AsrSidecar::spawn(root)?;
-        let polisher = PolishSidecar::spawn_with(root, &data::polish_config()?)?
+        // Decided once per engine run and handed to both sidecars, which read it from
+        // PHONON_STREAM_REFINE in their environment: the environment, else settings.json,
+        // else on for Macs with 16 GB of memory or more.
+        let stream_refine = stream_refine_setting(
+            std::env::var("PHONON_STREAM_REFINE").ok(),
+            data::SettingsFile::load()
+                .ok()
+                .and_then(|settings| settings.stream_refine)
+                .unwrap_or_else(|| stream_refine_default(physical_memory_bytes())),
+        );
+        eprintln!(
+            "phonon engine: streaming refine {}",
+            if stream_refine { "on" } else { "off" }
+        );
+        let asr = AsrSidecar::spawn_with(root, stream_refine)?;
+        let mut polish_config = data::polish_config()?;
+        polish_config.stream_refine = stream_refine;
+        let polisher = PolishSidecar::spawn_with(root, &polish_config)?
             .context("the required local correction runtime could not start")?;
 
         Ok(Self {
@@ -143,11 +219,25 @@ impl Engine {
             startup_audio_demo_sent: false,
             startup_audio_demo_passed: false,
             startup_dictionary_demo_sent: false,
+            stream_refine,
+            segment_streams: HashMap::new(),
+            stream_screen_text: None,
+            finishing: HashMap::new(),
+            stream_envelope: None,
         })
     }
 
     pub fn stacks_ready(&self) -> bool {
         self.asr_ready && self.llm_ready
+    }
+
+    /// Have both sidecars nudge `sender` (an empty line) whenever they queue an event, so a
+    /// serve loop can block on its command channel instead of sleeping between polls.
+    pub fn set_waker(&self, sender: mpsc::Sender<String>) {
+        self.asr.set_waker(sender.clone());
+        if let Some(polisher) = self.polisher.as_ref() {
+            polisher.set_waker(sender);
+        }
     }
 
     pub fn poll(&mut self) -> Vec<EngineEvent> {
@@ -237,6 +327,14 @@ impl Engine {
                                 load_ms: None,
                             });
                         }
+                    } else if let Some(finish) = id
+                        .as_deref()
+                        .filter(|_| !partial)
+                        .and_then(|request_id| self.finishing.get_mut(request_id))
+                    {
+                        finish.text = Some((text, seconds));
+                        let request_id = id.clone().unwrap_or_default();
+                        out.extend(self.finished_stream_result(&request_id));
                     } else {
                         if !partial {
                             if let Some(recording_id) = id
@@ -259,7 +357,27 @@ impl Engine {
                         });
                     }
                 }
-                AsrEvent::Error { msg } => out.push(EngineEvent::Error { id: None, msg }),
+                AsrEvent::Segment { id, index, text } => {
+                    if let Some(error) = self.commit_segment(id.as_deref(), index, text) {
+                        out.push(EngineEvent::Error { id, msg: error });
+                    }
+                }
+                AsrEvent::Error { id, msg } => {
+                    if let Some(request_id) =
+                        id.as_deref().filter(|i| self.finishing.contains_key(*i))
+                    {
+                        // A stream finished at key up failed in the sidecar: transcribe the
+                        // WAV instead (now, or when the bar's transcribe names it).
+                        let request_id = request_id.to_string();
+                        if let Some(error) = self.fall_back_from_stream(&request_id) {
+                            out.push(EngineEvent::Error {
+                                id: Some(request_id),
+                                msg: error,
+                            });
+                        }
+                    }
+                    out.push(EngineEvent::Error { id: None, msg });
+                }
             }
         }
         if let Some(polisher) = self.polisher.as_mut() {
@@ -478,7 +596,9 @@ impl Engine {
 
         if self.stacks_ready() && !self.all_ready_emitted {
             self.all_ready_emitted = true;
-            out.push(EngineEvent::AllReady);
+            out.push(EngineEvent::AllReady {
+                stream_refine: self.stream_refine,
+            });
         }
         out
     }
@@ -499,6 +619,20 @@ impl Engine {
                 .insert(id.to_string(), metadata.id.clone());
             let speech_detected = wav_has_speech(path)?;
             data::set_speech_detected(&metadata.id, speech_detected)?;
+            if let Some(finish) = self.finishing.get_mut(id) {
+                if finish.failed {
+                    // the sidecar could not finish the stream: the usual path below
+                    self.finishing.remove(id);
+                } else {
+                    // The release ASR already runs (stream_finish at key up); the gate
+                    // decides what of it goes out.
+                    finish.speech = Some(speech_detected);
+                    finish.path = Some(path.to_path_buf());
+                    let events = self.finished_stream_result(id);
+                    self.pending_events.extend(events);
+                    return Ok(());
+                }
+            }
             if !speech_detected {
                 self.pending_events.push(EngineEvent::AsrResult {
                     id: Some(id.to_string()),
@@ -506,14 +640,161 @@ impl Engine {
                     seconds: 0.0,
                     partial: false,
                 });
+                self.segment_streams.remove(id);
                 return Ok(());
             }
+        }
+        if let Some(stream_id) = id.filter(|id| self.segment_streams.contains_key(*id)) {
+            // The closed segments are transcribed already; only the open one is left.
+            self.segment_streams.remove(stream_id);
+            return self.asr.stream_finish(Some(path), Some(stream_id));
         }
         self.asr.transcribe(path, id)
     }
 
+    /// Key up of a streamed dictation, before the WAV exists: the bar has sent the last
+    /// audio, so the sidecar can transcribe the release window now. `transcribe` with the
+    /// WAV follows (corpus entry, speech gate) and releases the result. For any other
+    /// stream this is `stream_stop`.
+    pub fn stream_finish(&mut self, id: Option<&str>) -> Result<()> {
+        let Some(stream_id) = id.filter(|id| self.segment_streams.contains_key(*id)) else {
+            return self.asr.stream_stop(id);
+        };
+        self.segment_streams.remove(stream_id);
+        self.finishing
+            .insert(stream_id.to_string(), StreamFinish::default());
+        self.asr.stream_finish(None, Some(stream_id))
+    }
+
+    /// The sidecar failed a stream finished at key up: transcribe its WAV the usual way, now if
+    /// the bar has named it (and the gate found speech), else when it does.
+    fn fall_back_from_stream(&mut self, id: &str) -> Option<String> {
+        let finish = self.finishing.get_mut(id)?;
+        if finish.answered {
+            self.finishing.remove(id); // no speech: the empty result went out already
+            return None;
+        }
+        match (finish.speech, finish.path.clone()) {
+            (Some(true), Some(path)) => {
+                self.finishing.remove(id);
+                self.asr
+                    .transcribe(&path, Some(id))
+                    .err()
+                    .map(|error| format!("transcribe after a failed stream: {error:#}"))
+            }
+            _ => {
+                finish.failed = true;
+                None
+            }
+        }
+    }
+
+    /// The final transcript of a stream finished at key up, once both its ASR text and
+    /// its WAV's speech gate are in (an empty one as soon as the gate finds no speech).
+    fn finished_stream_result(&mut self, id: &str) -> Vec<EngineEvent> {
+        let Some(finish) = self.finishing.get_mut(id) else {
+            return Vec::new();
+        };
+        let (answer, done) = finish.resolve();
+        if done {
+            self.finishing.remove(id);
+        }
+        let Some((text, seconds)) = answer else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if let Some(recording_id) = self.recording_ids.get(id).filter(|_| !text.is_empty()) {
+            if let Err(error) = update_recording_raw(recording_id, &text) {
+                out.push(EngineEvent::Error {
+                    id: Some(id.to_string()),
+                    msg: format!("save raw transcript: {error:#}"),
+                });
+            }
+        }
+        out.push(EngineEvent::AsrResult {
+            id: Some(id.to_string()),
+            text,
+            seconds,
+            partial: false,
+        });
+        out
+    }
+
     pub fn stream_start(&mut self, id: Option<&str>) -> Result<()> {
+        if let (true, Some(stream_id)) = (self.stream_refine && self.llm_ready, id) {
+            self.segment_streams.clear();
+            self.segment_streams
+                .insert(stream_id.to_string(), Vec::new());
+            self.stream_screen_text = None;
+            // a dictation the bar finished but never sent a WAV for (empty capture)
+            self.finishing.clear();
+            self.stream_envelope = None;
+            if let Some(polisher) = self.polisher.as_mut() {
+                polisher.stream_reset()?;
+            }
+            return self.asr.stream_start_segments(id);
+        }
         self.asr.stream_start(id)
+    }
+
+    /// Screen text for the stream `id` (captured at key down); later commits use it.
+    pub fn stream_screen_context(&mut self, id: &str, text: &str) {
+        if self.segment_streams.contains_key(id) {
+            self.stream_screen_text = Some((id.to_string(), text.to_string()));
+        }
+    }
+
+    /// The transcript so far of an open segment stream (a segment closed at a pause, or a
+    /// speculative round reaching the present): send it to the correction sidecar to refine
+    /// in the background. Returns an error message to report.
+    fn commit_segment(&mut self, id: Option<&str>, index: usize, text: String) -> Option<String> {
+        let seen = self.segment_streams.get_mut(id?)?;
+        if seen.len() != index {
+            return Some(format!("stream text {index} arrived after {}", seen.len()));
+        }
+        let text = text.trim().to_string();
+        seen.push(text.clone());
+        if text.is_empty() {
+            return None;
+        }
+        let screen = match (&self.stream_screen_text, id) {
+            (Some((screen_id, screen)), Some(id)) if screen_id == id => screen.clone(),
+            _ => String::new(),
+        };
+        if matches!(&self.stream_envelope, Some((t, s, _)) if *t == text && *s == screen) {
+            return None; // a round that heard nothing new: the sidecar has this one already
+        }
+        let input = self
+            .dictionary
+            .prepare_polish_input_with_context(&text, &screen);
+        let polisher = self.polisher.as_mut()?;
+        let error = polisher
+            .stream_commit(&input)
+            .err()
+            .map(|error| format!("stream commit: {error:#}"));
+        self.stream_envelope = Some((text, screen, input));
+        error
+    }
+
+    /// A reloaded dictionary; envelopes built from the old one are dropped.
+    pub fn set_dictionary(&mut self, dictionary: data::DictionaryFile) {
+        self.dictionary = dictionary;
+        self.stream_envelope = None;
+    }
+
+    /// The dictionary envelope for a polish: the open stream's last one when the transcript
+    /// and screen text are the same, else built now.
+    fn polish_envelope(&self, text: &str, screen_text: &str) -> String {
+        match &self.stream_envelope {
+            Some((last_text, last_screen, input))
+                if last_text == text && last_screen == screen_text =>
+            {
+                input.clone()
+            }
+            _ => self
+                .dictionary
+                .prepare_polish_input_with_context(text, screen_text),
+        }
     }
 
     pub fn stream_chunk(&mut self, pcm16: &str, id: Option<&str>) -> Result<()> {
@@ -552,15 +833,13 @@ impl Engine {
         textbox: Option<&serde_json::Value>,
         keep_context: bool,
     ) -> Result<()> {
-        let Some(polisher) = self.polisher.as_mut() else {
+        if self.polisher.is_none() {
             bail!("the required local correction model is unavailable");
-        };
+        }
         if !self.llm_ready {
             bail!("the correction model is not ready yet");
         }
-        let input = self
-            .dictionary
-            .prepare_polish_input_with_context(text, screen_text);
+        let input = self.polish_envelope(text, screen_text);
         let app = app.and_then(app_context::AppContext::from_request);
         // Re-parsed only when settings.json changes, so an approval applies
         // to the very next dictation without a read per preview.
@@ -579,6 +858,9 @@ impl Engine {
             textbox,
             keep_context,
         });
+        let Some(polisher) = self.polisher.as_mut() else {
+            bail!("the required local correction model is unavailable");
+        };
         if let Err(error) = polisher.polish_with_context(&input, context.as_ref()) {
             self.polish_requests.pop();
             return Err(error);
@@ -687,6 +969,36 @@ fn normalized_words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Streaming refine with nothing set: on with 16 GB of memory or more (a "16 GB" Mac reports
+/// exactly 16 GiB), off below or when the size is unknown.
+fn stream_refine_default(memory_bytes: Option<u64>) -> bool {
+    memory_bytes.is_some_and(|bytes| bytes >= 16 << 30)
+}
+
+/// Physical memory (macOS `hw.memsize`); None where sysctl is missing or says nothing.
+fn physical_memory_bytes() -> Option<u64> {
+    let out = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// Streaming refine: PHONON_STREAM_REFINE ("1"/"true"/"on" or "0"/"false"/"off") when set,
+/// else the settings.json value (or the memory default when that is absent).
+fn stream_refine_setting(env: Option<String>, setting: bool) -> bool {
+    match env
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("1" | "true" | "on") => true,
+        Some("0" | "false" | "off") => false,
+        _ => setting,
+    }
+}
+
 fn asr_smoke_passed(text: &str) -> bool {
     let words = normalized_words(text);
     words.iter().any(|word| word == "hello")
@@ -779,6 +1091,14 @@ fn llm_prime_passed(text: &str) -> bool {
 
 /// Long-lived CLI: `phonon engine` — JSONL on stdin/stdout for the floating bar.
 pub fn run_engine_serve() -> Result<()> {
+    // The bar appends this process's stderr to ~/Library/Logs/Phonon/engine.log; the
+    // sidecars' stderr goes there too, labeled, so a failure leaves evidence.
+    phonon_asr::pass_stderr_through(true);
+    eprintln!(
+        "phonon engine {} (pid {}) starting",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
     let root = project_root();
     let mut eng = Engine::start(&root)?;
 
@@ -797,21 +1117,31 @@ pub fn run_engine_serve() -> Result<()> {
         "msg": "Loading the correction model"
     }));
 
+    // Commands and sidecar wake-ups share one channel, so the loop blocks until either arrives
+    // instead of sleeping 15 ms between polls (up to 15 ms on every hop of a dictation: ASR
+    // result out, polish command in, polish result out). A wake-up is an empty line.
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
+    eng.set_waker(cmd_tx.clone());
     thread::spawn(move || {
         let stdin = std::io::stdin();
         let mut lock = stdin.lock();
-        let mut input = String::new();
+        let mut input = Vec::new();
         loop {
             input.clear();
-            match lock.read_line(&mut input) {
-                Ok(0) => break,
+            // Bytes, not read_line: a line that is not valid UTF-8 is an error there, which
+            // used to read as the end of input and stop the engine.
+            match lock.read_until(b'\n', &mut input) {
+                Ok(0) | Err(_) => {
+                    // The wakers keep the channel open, so say so explicitly.
+                    let _ = cmd_tx.send(STDIN_CLOSED.to_string());
+                    break;
+                }
                 Ok(_) => {
-                    if cmd_tx.send(input.clone()).is_err() {
+                    let line = String::from_utf8_lossy(&input).into_owned();
+                    if cmd_tx.send(line).is_err() {
                         break;
                     }
                 }
-                Err(_) => break,
             }
         }
     });
@@ -820,7 +1150,12 @@ pub fn run_engine_serve() -> Result<()> {
         for ev in eng.poll() {
             emit_engine_event(&ev);
         }
-        match cmd_rx.try_recv() {
+        match cmd_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(cmd_line) if cmd_line == STDIN_CLOSED => {
+                eprintln!("phonon engine: stdin closed, shutting down");
+                eng.shutdown();
+                return Ok(());
+            }
             Ok(cmd_line) => {
                 let cmd_line = cmd_line.trim().to_string();
                 if cmd_line.is_empty() {
@@ -870,6 +1205,17 @@ pub fn run_engine_serve() -> Result<()> {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
                         }
                     }
+                    "stream_finish" => {
+                        let id = v.get("id").and_then(|x| x.as_str());
+                        if let Err(e) = eng.stream_finish(id) {
+                            emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
+                        }
+                    }
+                    "screen_context" => {
+                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                        let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                        eng.stream_screen_context(id, text);
+                    }
                     "polish" => {
                         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
                         let context = v.get("context").and_then(|x| x.as_str()).unwrap_or("");
@@ -917,7 +1263,7 @@ pub fn run_engine_serve() -> Result<()> {
                     "reload_dictionary" => match data::DictionaryFile::load() {
                         Ok(dictionary) => {
                             let entries = dictionary.entries.len();
-                            eng.dictionary = dictionary;
+                            eng.set_dictionary(dictionary);
                             emit(&json!({
                                 "type": "status",
                                 "kind": "dictionary",
@@ -930,6 +1276,7 @@ pub fn run_engine_serve() -> Result<()> {
                         })),
                     },
                     "shutdown" => {
+                        eprintln!("phonon engine: shutdown requested");
                         eng.shutdown();
                         emit(&json!({"type":"status","msg":"bye"}));
                         return Ok(());
@@ -937,10 +1284,8 @@ pub fn run_engine_serve() -> Result<()> {
                     _ => emit(&json!({"type":"error","msg":format!("unknown cmd: {cmd}")})),
                 }
             }
-            Err(TryRecvError::Empty) => {
-                thread::sleep(Duration::from_millis(15));
-            }
-            Err(TryRecvError::Disconnected) => {
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
                 eng.shutdown();
                 return Ok(());
             }
@@ -948,9 +1293,13 @@ pub fn run_engine_serve() -> Result<()> {
     }
 }
 
+const STDIN_CLOSED: &str = "\u{0}stdin closed";
+
 fn emit(v: &serde_json::Value) {
-    println!("{v}");
-    let _ = std::io::stdout().flush();
+    // Not println!: that panics when the bar has already gone (a quit closes our stdout).
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{v}");
+    let _ = out.flush();
 }
 
 fn emit_engine_event(ev: &EngineEvent) {
@@ -969,7 +1318,9 @@ fn emit_engine_event(ev: &EngineEvent) {
             "msg": msg,
             "load_ms": load_ms,
         })),
-        EngineEvent::AllReady => emit(&json!({"type": "ready"})),
+        EngineEvent::AllReady { stream_refine } => {
+            emit(&json!({"type": "ready", "stream_refine": stream_refine}))
+        }
         EngineEvent::AsrResult {
             id,
             text,
@@ -1012,9 +1363,60 @@ fn emit_engine_event(ev: &EngineEvent) {
 mod tests {
     use super::{
         asr_smoke_passed, llm_audio_smoke_passed, llm_checking_message, llm_loading_pct,
-        llm_prime_passed, llm_smoke_passed, safe_polish_output,
+        llm_prime_passed, llm_smoke_passed, physical_memory_bytes, safe_polish_output,
+        stream_refine_default, stream_refine_setting, StreamFinish,
     };
     use crate::data::{DictionaryEntry, DictionaryFile};
+
+    #[test]
+    fn a_stream_finished_at_key_up_waits_for_both_its_text_and_the_gate() {
+        // text first, then the gate finds speech
+        let mut finish = StreamFinish {
+            text: Some(("hello there".into(), 0.05)),
+            ..StreamFinish::default()
+        };
+        assert_eq!(finish.resolve(), (None, false));
+        finish.speech = Some(true);
+        assert_eq!(finish.resolve(), (Some(("hello there".into(), 0.05)), true));
+        // gate first, then the text
+        let mut finish = StreamFinish {
+            speech: Some(true),
+            ..StreamFinish::default()
+        };
+        assert_eq!(finish.resolve(), (None, false));
+        finish.text = Some(("hi".into(), 0.04));
+        assert_eq!(finish.resolve(), (Some(("hi".into(), 0.04)), true));
+        // no speech: an empty answer at once, and the hallucination that follows is dropped
+        let mut finish = StreamFinish {
+            speech: Some(false),
+            ..StreamFinish::default()
+        };
+        assert_eq!(finish.resolve(), (Some((String::new(), 0.0)), false));
+        finish.text = Some(("thank you".into(), 0.04));
+        assert_eq!(finish.resolve(), (None, true));
+    }
+
+    #[test]
+    fn streaming_refine_defaults_on_from_16_gb() {
+        assert!(!stream_refine_default(Some(8 << 30)));
+        assert!(!stream_refine_default(Some((16 << 30) - (1 << 20))));
+        assert!(stream_refine_default(Some(16 << 30)));
+        assert!(stream_refine_default(Some(36 << 30)));
+        assert!(!stream_refine_default(None));
+        if cfg!(target_os = "macos") {
+            assert!(physical_memory_bytes().is_some_and(|bytes| bytes >= 4 << 30));
+        }
+    }
+
+    #[test]
+    fn stream_refine_follows_the_setting_unless_the_environment_says() {
+        assert!(stream_refine_setting(None, true));
+        assert!(!stream_refine_setting(None, false));
+        assert!(stream_refine_setting(Some(" On ".into()), false));
+        assert!(!stream_refine_setting(Some("0".into()), true));
+        assert!(!stream_refine_setting(Some("false".into()), true));
+        assert!(stream_refine_setting(Some("maybe".into()), true));
+    }
 
     #[test]
     fn startup_smoke_validation_rejects_empty_or_collapsed_results() {

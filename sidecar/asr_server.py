@@ -1,15 +1,37 @@
 #!/usr/bin/env python3
-"""JSONL ASR sidecar: load Parakeet MLX, transcribe wav paths."""
+"""JSONL ASR sidecar: load Parakeet MLX, transcribe wav paths.
+
+Segment streaming ({"cmd":"stream_start","id":..,"segments":true}): stream_chunk audio goes
+through a causal energy VAD (stream_vad.py) instead of parakeet-mlx's chunked streaming. Each
+time a pause closes a speech segment, that segment is transcribed as a batch and emitted as
+{"type":"segment","id":..,"index":i,"text":..} plus a partial result with the text so far.
+stream_stop keeps the state; {"cmd":"stream_finish","id":..,"path":wav} appends any audio the
+wav holds beyond what was streamed, transcribes the open segment, and emits the final
+{"type":"result","partial":false,"text": all segments joined}. At key release only the open
+segment is transcribed instead of the whole recording.
+"""
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import time
 import traceback
 import wave
 from pathlib import Path
+
+# The sidecar's own modules (linereader, stream_asr, ...) live inside the signed app bundle;
+# a __pycache__ written next to them breaks the bundle's code signature.
+sys.dont_write_bytecode = True
+
+
+def stream_refine_enabled() -> bool:
+    """Streaming refine's ASR side: the engine sets PHONON_STREAM_REFINE (1/true/on) from
+    settings.json `stream_refine` or its own environment."""
+    value = os.environ.get("PHONON_STREAM_REFINE", "")
+    return value.strip().lower() in ("1", "true", "on")
 
 
 def emit(obj: dict) -> None:
@@ -56,10 +78,86 @@ def read_wav(path: str, sample_rate: int):
     return samples
 
 
+def metal_asr_config() -> dict | None:
+    """Parakeet on Metal (pa: the GPU log-mel, encoder and TDT decode) instead of MLX, or None.
+
+    Default: the helper bundled with the app, Contents/Helpers/pa with Contents/Resources/asr/{pa.metal,
+    melfb.npy} (package-bar.sh), when present. PHONON_METAL_ASR=0 (or off / false / no) keeps MLX.
+    PHONON_METAL_ASR=<dir>: a development layout (<dir>/bin/pa, <dir>/pa.metal, <dir>/melfb.npy,
+    <dir>/pa_client.py). pa reads the pinned snapshot's model.safetensors itself, so MLX's Parakeet weights are
+    never loaded (pa_client.LightModel reads config.json); MLX loads only if a window needs the fallback (over
+    82 s, a decode barrier timeout, or the helper exiting)."""
+    value = os.environ.get("PHONON_METAL_ASR", "").strip()
+    if value.lower() in ("0", "off", "false", "no"):
+        return None
+    if value:
+        return {
+            "pa": os.path.join(value, "bin", "pa"),
+            "pa_dir": value,
+            "client": value,
+        }
+    here = Path(__file__).resolve().parent  # Contents/Resources/sidecar
+    pa = here.parent.parent / "Helpers" / "pa"
+    shaders = here.parent / "asr"
+    if (
+        pa.is_file()
+        and (shaders / "pa.metal").is_file()
+        and (shaders / "melfb.npy").is_file()
+    ):
+        return {"pa": str(pa), "pa_dir": str(shaders), "client": str(here)}
+    return None
+
+
+def load_metal_asr(cfg: dict, source: str):
+    """MetalParakeet over the bundled (or development) helper, or None when it does not pass its startup self-test
+    on this Mac (the caller then loads the MLX model, as before)."""
+    weights = os.path.join(source, "model.safetensors")
+    if not os.path.isfile(weights):
+        return None, "no model.safetensors in the Parakeet snapshot"
+    if cfg["client"] not in sys.path:
+        sys.path.insert(0, cfg["client"])
+    from pa_client import LightModel, MetalParakeet
+
+    model = MetalParakeet(
+        LightModel(source),
+        weights=weights,
+        pa=cfg["pa"],
+        pa_dir=cfg["pa_dir"],
+        log=os.environ.get("PHONON_METAL_ASR_LOG"),
+        # PHONON_METAL_ASR_TERMS=<file, one term per line>: in-kernel dictionary boosting (asr_bias_v0 cb446)
+        terms=os.environ.get("PHONON_METAL_ASR_TERMS") or None,
+    )
+    ok, ms = model.self_test()
+    if not ok:
+        try:
+            model.close()
+        except Exception:  # noqa: BLE001  (a helper that failed its self-test may already be gone)
+            traceback.print_exc(file=sys.stderr)
+        return None, f"Metal ASR self-test failed ({ms:.0f} ms)"
+    return model, f"Metal ASR ready (self-test {ms:.1f} ms)"
+
+
+def transcribe_samples(model, samples):
+    """Batch transcription of mono float samples at the model's rate."""
+    # MetalParakeet: the same AlignedResult as generate()
+    if hasattr(model, "transcribe_samples"):
+        return model.transcribe_samples(samples)
+    import mlx.core as mx
+    import numpy as np
+    from parakeet_mlx.audio import get_logmel
+
+    if len(samples) < 1600:  # the STFT needs a few frames; pad a tiny tail with silence
+        samples = np.concatenate(
+            [samples, np.zeros(1600 - len(samples), dtype=np.float32)]
+        )
+    # float32, matching what parakeet-mlx's own loader hands the preprocessor.
+    # bfloat16 changes the FFT layout and the mel matmul fails on shape.
+    mel = get_logmel(mx.array(samples, dtype=mx.float32), model.preprocessor_config)
+    return model.generate(mel)[0]
+
+
 def transcribe_file(model, path: str):
     """Batch transcription without an ffmpeg dependency where possible."""
-    import mlx.core as mx
-
     rate = model.preprocessor_config.sample_rate
     samples = None
     if path.lower().endswith(".wav"):
@@ -71,12 +169,32 @@ def transcribe_file(model, path: str):
         # Not something we can decode ourselves; parakeet-mlx will use ffmpeg,
         # and its own error says so plainly when ffmpeg is absent.
         return model.transcribe(path)
-    from parakeet_mlx.audio import get_logmel
+    return transcribe_samples(model, samples)
 
-    # float32, matching what parakeet-mlx's own loader hands the preprocessor.
-    # bfloat16 changes the FFT layout and the mel matmul fails on shape.
-    mel = get_logmel(mx.array(samples, dtype=mx.float32), model.preprocessor_config)
-    return model.generate(mel)[0]
+
+def stream_transcriber(model, req: dict):
+    """StreamTranscriber over this model with stream_asr.SCHEME; stream_start may override its
+    settings."""
+    from stream_asr import SCHEME, StreamTranscriber, words_of
+
+    def transcribe_words(samples, offset_s):
+        return words_of(transcribe_samples(model, samples), offset_s)
+
+    settings = dict(SCHEME)
+    for key in (
+        "pause_s",
+        "before_s",
+        "after_s",
+        "release_before_s",
+        "release_overlap_s",
+        "soft_max_s",
+        "soft_overlap_s",
+    ):
+        if req.get(key) is not None:
+            settings[key] = float(req[key])
+    if req.get("round_every") is not None:
+        settings["round_every"] = int(req["round_every"])
+    return StreamTranscriber(transcribe_words, **settings)
 
 
 def main() -> None:
@@ -112,15 +230,27 @@ def main() -> None:
         }
     )
     t0 = time.perf_counter()
+    metal_cfg = metal_asr_config()
+    metal = False
     try:
         # parakeet_mlx has no revision argument, so pin by resolving the exact
         # snapshot first and loading it from disk.
         source = model_id
-        if revision:
+        if revision or metal_cfg:
             from huggingface_hub import snapshot_download
 
             source = snapshot_download(model_id, revision=revision)
-        model = from_pretrained(source)
+        model = None
+        if metal_cfg:
+            try:
+                model, note = load_metal_asr(metal_cfg, source)
+            except Exception as e:  # noqa: BLE001  (the helper did not start): MLX, as before
+                model, note = None, f"Metal ASR unavailable: {e}"
+                traceback.print_exc(file=sys.stderr)
+            metal = model is not None
+            emit({"type": "status", "phase": "loading", "pct": 0.3, "msg": note})
+        if model is None:
+            model = from_pretrained(source)
     except Exception as e:  # noqa: BLE001
         emit({"type": "error", "msg": f"load failed: {e}"})
         traceback.print_exc(file=sys.stderr)
@@ -142,7 +272,12 @@ def main() -> None:
         # 1 GB keeps short clips at 39.7 ms median (256 MB: 43.0 ms; clearing every call:
         # 51.6 ms; M4 Max, 52 clips under 4 s).
         mx.set_cache_limit(1 << 30)
-        mx.eval(model.parameters())
+        if not metal:  # Metal: the self-test already ran windows through pa serve
+            mx.eval(model.parameters())
+        if stream_refine_enabled():  # MLX path (or Metal's fallback model)
+            import fast_tdt
+
+            fast_tdt.install()  # same tokens, fewer GPU round trips per decode step
     except Exception as e:  # noqa: BLE001
         emit({"type": "error", "msg": f"weight materialization failed: {e}"})
         traceback.print_exc(file=sys.stderr)
@@ -159,28 +294,148 @@ def main() -> None:
 
     streamer = None
     stream_id = None
+    segments = None  # StreamTranscriber while a segment stream is open
+    segment_seq = 0
+    stable_commits = False
 
     def close_stream() -> None:
-        nonlocal streamer, stream_id
+        nonlocal streamer, stream_id, segments
         if streamer is not None:
             streamer.__exit__(None, None, None)
         streamer = None
         stream_id = None
+        segments = None
 
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError as e:
-            emit({"type": "error", "msg": f"bad json: {e}"})
+    from linereader import LineReader
+
+    reader = LineReader(sys.stdin.fileno())
+    pending: list = []
+    while True:
+        if not pending:
+            pending = reader.poll(None)
+            if not pending:
+                if reader.eof:
+                    break
+                continue
+        req = pending.pop(0)
+        if isinstance(req, str):
+            emit({"type": "error", "msg": f"bad json: {req[:80]}"})
             continue
         cmd = req.get("cmd")
         if cmd == "shutdown":
             close_stream()
             emit({"type": "status", "phase": "shutdown", "pct": 1.0, "msg": "bye"})
             break
+        if cmd == "stream_start" and req.get("segments"):
+            close_stream()
+            stream_id = req.get("id")
+            segment_seq = 0
+            stable_commits = bool(req.get("stable_commits", False))
+            try:
+                segments = stream_transcriber(model, req)
+                emit({"type": "stream_started", "id": stream_id, "segments": True})
+            except Exception as e:  # noqa: BLE001
+                close_stream()
+                emit(
+                    {
+                        "type": "error",
+                        "id": stream_id,
+                        "msg": f"stream start failed: {e}",
+                    }
+                )
+            continue
+        if cmd == "stream_chunk" and segments is not None:
+            rid = req.get("id")
+            if rid != stream_id:
+                emit({"type": "error", "id": rid, "msg": "no matching ASR stream"})
+                continue
+            try:
+                t1 = time.perf_counter()
+                # Fold every chunk already waiting for this stream into one pass: the audio and
+                # the VAD take all of them, the transcription work runs once, and not at all when
+                # a stream_finish is already queued (the release window covers that audio).
+                pending += reader.poll(0.0)
+                chunks = [req]
+                while (
+                    pending
+                    and isinstance(pending[0], dict)
+                    and pending[0].get("cmd") == "stream_chunk"
+                    and pending[0].get("id") == rid
+                ):
+                    chunks.append(pending.pop(0))
+                finishing = any(
+                    isinstance(p, dict)
+                    and p.get("cmd") == "stream_finish"
+                    and p.get("id") == rid
+                    for p in pending
+                )
+                texts = []
+                for i, chunk in enumerate(chunks):
+                    work = i == len(chunks) - 1 and not finishing
+                    texts = (
+                        segments.feed(decode_pcm16(chunk.get("pcm16") or ""), work=work)
+                        or texts
+                    )
+                for text in texts:
+                    # the transcript so far for the correction stage to refine early ("text"
+                    # leaves out the last words the release may still revise; "preview" has all)
+                    emit(
+                        {
+                            "type": "segment",
+                            "id": rid,
+                            "index": segment_seq,
+                            "text": segments.stable if stable_commits else text,
+                            "preview": text,
+                            "seconds": time.perf_counter() - t1,
+                        }
+                    )
+                    emit(
+                        {
+                            "type": "result",
+                            "id": rid,
+                            "text": text,
+                            "partial": True,
+                            "seconds": time.perf_counter() - t1,
+                        }
+                    )
+                    segment_seq += 1
+            except Exception as e:  # noqa: BLE001
+                emit({"type": "error", "id": rid, "msg": f"stream chunk failed: {e}"})
+                traceback.print_exc(file=sys.stderr)
+            continue
+        if cmd == "stream_stop" and segments is not None:
+            continue  # the stream stays until stream_finish
+        if cmd == "stream_finish":
+            rid = req.get("id")
+            if segments is None or rid != stream_id:
+                emit({"type": "error", "id": rid, "msg": "no matching segment stream"})
+                continue
+            t1 = time.perf_counter()
+            try:
+                tail = None
+                path = req.get("path") or ""
+                if path and Path(path).is_file():
+                    # the recorder sends audio in 0.4 s chunks, so the last part of the
+                    # recording is only in the wav
+                    full = read_wav(path, model.preprocessor_config.sample_rate)
+                    if full is not None and len(full) > segments.n:
+                        tail = full[segments.n :]
+                text = segments.finish(tail)
+                emit(
+                    {
+                        "type": "result",
+                        "id": rid,
+                        "text": text,
+                        "partial": False,
+                        "segments": len(segments.pieces) + 1,
+                        "seconds": time.perf_counter() - t1,
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                emit({"type": "error", "id": rid, "msg": f"stream finish failed: {e}"})
+                traceback.print_exc(file=sys.stderr)
+            close_stream()
+            continue
         if cmd == "stream_start":
             close_stream()
             stream_id = req.get("id")
@@ -209,6 +464,14 @@ def main() -> None:
 
                 audio = decode_pcm16(req.get("pcm16") or "")
                 if audio.size:
+                    if audio.size < 1600:
+                        # the recorder's last partial chunk can be tiny; parakeet-mlx's STFT
+                        # fails under a few frames, so pad it with silence
+                        import numpy as np
+
+                        audio = np.concatenate(
+                            [audio, np.zeros(1600 - audio.size, dtype=audio.dtype)]
+                        )
                     t1 = time.perf_counter()
                     streamer.add_audio(mx.array(audio, dtype=mx.bfloat16))
                     text = (getattr(streamer.result, "text", "") or "").strip()

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// RELEASE: the revision is the Hugging Face commit of the upload; set it
 /// after the upload and before tagging.
 pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
-pub const POLISH_MODEL_REVISION: &str = "52f391734f8f45022cc952ed2a5b5b470bcd009c";
+pub const POLISH_MODEL_REVISION: &str = "74ea4b61501a791a342a0ebc40f32827049e7393";
 /// Pinned runtime, for the same reason.
 pub const POLISH_RUNTIME_REQUIREMENT: &str = "mlx-lm==0.31.3";
 

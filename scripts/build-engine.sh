@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the native refiner engine `pe` from engine/ and llama.cpp at the pinned
-# upstream commit plus third_party/llama.cpp/phonon-engine.patch, for the app's
-# minimum macOS. Output: target/engine/{pe,mk.metal,df.metal}, which
+# upstream commit plus third_party/llama.cpp/phonon-engine.patch, and the Metal
+# Parakeet helper `pa` from engine/asr, for the app's minimum macOS. Output:
+# target/engine/{pe,mk.metal,df.metal,pa,asr/pa.metal,asr/melfb.npy}, which
 # package-bar.sh bundles. Needs git, cmake and ninja.
 #
 # On a Mac whose Xcode linker is older than its Command Line Tools SDK, run it
@@ -53,3 +54,16 @@ mv "$out_dir/pe.new" "$out_dir/pe"
 cp "$project_dir/engine/mk.metal" "$project_dir/engine/df.metal" "$out_dir/"
 printf '%s (minimum macOS %s)\n' "$out_dir/pe" \
 	"$(otool -l "$out_dir/pe" | awk '/LC_BUILD_VERSION/ {found = 1} found && $1 == "minos" {print $2; exit}')"
+
+# Metal Parakeet `pa` (engine/asr): the ASR sidecar's encoder + TDT decode on the GPU. Like pe it compiles its
+# shader source (pa.metal) at startup; melfb.npy is get_logmel's slaney filterbank (128 x 257) for its GPU log-mel.
+# It reads the pinned Parakeet snapshot's model.safetensors directly (no converted weights). Metal and Foundation
+# only, no llama.cpp. Output: target/engine/pa and target/engine/asr/{pa.metal,melfb.npy}.
+mkdir -p "$out_dir/asr"
+# shellcheck disable=SC2086 # prefix_map is two flags
+clang++ -std=c++17 -O2 -mcpu=apple-m1 -fobjc-arc $prefix_map "$project_dir/engine/asr/pa.mm" -o "$out_dir/pa.new" \
+	-framework Metal -framework Foundation
+mv "$out_dir/pa.new" "$out_dir/pa"
+cp "$project_dir/engine/asr/pa.metal" "$project_dir/engine/asr/melfb.npy" "$out_dir/asr/"
+printf '%s (minimum macOS %s)\n' "$out_dir/pa" \
+	"$(otool -l "$out_dir/pa" | awk '/LC_BUILD_VERSION/ {found = 1} found && $1 == "minos" {print $2; exit}')"

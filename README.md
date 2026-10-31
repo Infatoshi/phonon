@@ -72,9 +72,14 @@ The correction model is the Phonon refiner 1.7B, fine-tuned from LiquidAI's
 LFM3-1.7B on public audio only; no personal dictation went into it. It runs on
 Phonon's native Metal engine (a decode megakernel with a speculative drafter,
 prefill through a patched llama.cpp), and falls back to an MLX copy of the same
-model when the engine cannot run. On an M4 Max, key-up to typed text takes
-about 0.3 s (median, dictations under 30 s), and the engine path is about 1.6x
-faster than the earlier MLX refiner on the same weights.
+model when the engine cannot run. Parakeet also runs on Phonon's own Metal
+kernels, with MLX as the fallback. On Macs with 16 GB or more, both stages work
+while you talk: Parakeet re-transcribes the recording every 0.4 s and the
+refiner corrects the transcript so far, so at key-up only the last seconds are
+transcribed again. On an M4 Max that took the median from key release to
+corrected text from about 215 ms to about 30 ms (40 real dictations, measured in
+the engine; pasting adds a few ms), with the same text as transcribing the whole
+recording at once.
 `sidecar/polish_server.py` drives it. Correction is a pipeline stage, not a
 provider setting: there is no way to point it at a remote model.
 

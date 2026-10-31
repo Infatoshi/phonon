@@ -33,6 +33,10 @@ fi
 cp -L "$uv_bin" "$staged_app/Contents/Helpers/uv"
 cp "$project_dir/sidecar/asr_server.py" "$staged_app/Contents/Resources/sidecar/asr_server.py"
 cp "$project_dir/sidecar/polish_server.py" "$staged_app/Contents/Resources/sidecar/polish_server.py"
+# modules the two sidecars import (streaming refine: SPEC "Streaming refine")
+for module in linereader fast_tdt stream_asr stream_vad stream_decode stream_draft stream_refiner pa_client; do
+	cp "$project_dir/sidecar/$module.py" "$staged_app/Contents/Resources/sidecar/$module.py"
+done
 mkdir -p "$staged_app/Contents/Resources/sidecar/models"
 cp "$project_dir"/sidecar/models/*.py "$staged_app/Contents/Resources/sidecar/models/"
 cp "$project_dir/assets/startup.wav" "$staged_app/Contents/Resources/assets/startup.wav"
@@ -71,6 +75,28 @@ elif [[ ${PHONON_REQUIRE_ENGINE:-0} == 1 ]]; then
 else
 	printf 'note: no native refiner engine in %s; this build corrects on the MLX refiner\n' "$engine_dir" >&2
 fi
+# Metal Parakeet: `pa` plus its shader source and mel filterbank (scripts/build-engine.sh writes them next to pe).
+# The ASR sidecar runs it when present (PHONON_METAL_ASR=0 opts out) and keeps MLX as its fallback, so a build
+# without it still transcribes; PHONON_REQUIRE_ENGINE=1 (the DMG release) makes a missing helper an error.
+if [[ -x "$engine_dir/pa" && -f "$engine_dir/asr/pa.metal" && -f "$engine_dir/asr/melfb.npy" ]]; then
+	lipo "$engine_dir/pa" -verify_arch arm64
+	pa_minos=$(otool -l "$engine_dir/pa" | awk '/LC_BUILD_VERSION/ {found = 1} found && $1 == "minos" {print $2; exit}')
+	app_minos=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$bar_dir/Resources/Info.plist")
+	if [[ "$(printf '%s\n%s\n' "$pa_minos" "$app_minos" | sort -V | tail -n 1)" != "$app_minos" ]]; then
+		printf 'pa minimum macOS %s is newer than the app minimum %s; rebuild it with scripts/build-engine.sh\n' \
+			"$pa_minos" "$app_minos" >&2
+		exit 1
+	fi
+	mkdir -p "$staged_app/Contents/Resources/asr"
+	cp "$engine_dir/pa" "$staged_app/Contents/Helpers/pa"
+	chmod 755 "$staged_app/Contents/Helpers/pa"
+	cp "$engine_dir/asr/pa.metal" "$engine_dir/asr/melfb.npy" "$staged_app/Contents/Resources/asr/"
+elif [[ ${PHONON_REQUIRE_ENGINE:-0} == 1 ]]; then
+	printf 'Metal Parakeet helper not found in %s; run scripts/build-engine.sh\n' "$engine_dir" >&2
+	exit 1
+else
+	printf 'note: no Metal Parakeet helper in %s; this build transcribes on MLX\n' "$engine_dir" >&2
+fi
 "$script_dir/make-app-icon.sh" "$staged_app/Contents/Resources/Phonon.icns"
 chmod 755 "$staged_app/Contents/MacOS/PhononBar" \
 	"$staged_app/Contents/Helpers/phonon" "$staged_app/Contents/Helpers/uv"
@@ -102,6 +128,10 @@ codesign --force --sign "$identity" --options runtime "${timestamp_args[@]}" \
 if [[ -f "$staged_app/Contents/Helpers/pe" ]]; then
 	codesign --force --sign "$identity" --options runtime "${timestamp_args[@]}" \
 		"$staged_app/Contents/Helpers/pe"
+fi
+if [[ -f "$staged_app/Contents/Helpers/pa" ]]; then
+	codesign --force --sign "$identity" --options runtime "${timestamp_args[@]}" \
+		"$staged_app/Contents/Helpers/pa"
 fi
 codesign --force --sign "$identity" --identifier com.infatoshi.phonon \
 	--options runtime "${timestamp_args[@]}" \
