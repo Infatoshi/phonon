@@ -1016,7 +1016,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phonon-asr"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "serde",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-audio"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "serde",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "phonon-asr",
@@ -1063,11 +1063,11 @@ dependencies = [
 
 [[package]]
 name = "phonon-hotkey"
-version = "0.2.2"
+version = "0.2.3"
 
 [[package]]
 name = "phonon-llm"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "phonon-asr",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-mine"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-profile"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "phonon-llm",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-win"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "bzip2",
