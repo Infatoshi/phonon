@@ -663,6 +663,14 @@ struct SettingsView: View {
                         Text("Control Space toggle").tag("control_space")
                     }
                     .pickerStyle(.menu)
+                    if ShortcutPolicy.allows(mode: store.settings.shortcutMode, source: "right-option") {
+                        Text(
+                            "Hold Option to talk; release to insert. Double-tap to keep "
+                                + "recording, then tap once to stop."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                     if store.settings.shortcutMode.hasPrefix("fn") {
                         Text(
                             "Hold Globe to talk; release to insert. Double-tap to keep "

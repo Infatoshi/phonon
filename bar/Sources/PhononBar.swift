@@ -1787,6 +1787,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var optionDown = false
     private var fnDown = false
     private var fnTapLatch = HoldKeyTapLatch()
+    private var optionTapLatch = HoldKeyTapLatch()
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var toggleHotKey: EventHotKeyRef?
@@ -3042,17 +3043,25 @@ final class AppController: NSObject, NSApplicationDelegate {
             let callbackNs = DispatchTime.now().uptimeNanoseconds
             Task { @MainActor in
                 if self.shortcutAllows(source: "right-option") {
+                    // Same tap logic as the Globe key: hold to talk, double-tap to
+                    // keep recording hands-free, tap once to stop.
+                    if self.optionTapLatch.latched && !self.isRecording {
+                        self.optionTapLatch.reset()
+                    }
                     if anyAlt && !self.optionDown {
                         self.optionDown = true
-                        self.startDictation(
+                        self.applyHoldKey(
+                            self.optionTapLatch.keyDown(at: eventNs),
                             source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
                     } else if !anyAlt && self.optionDown {
                         self.optionDown = false
-                        self.stopDictation(
+                        self.applyHoldKey(
+                            self.optionTapLatch.keyUp(at: eventNs),
                             source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
                     }
                 } else {
                     self.optionDown = false
+                    self.optionTapLatch.reset()
                 }
                 if self.shortcutAllows(source: "fn") {
                     // Something else (Ctrl+Space, the menu) may have ended a
