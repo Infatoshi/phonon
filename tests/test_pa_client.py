@@ -115,21 +115,27 @@ def test_over_capacity_is_mlx_but_keeps_the_helper(fake_pa):
     m.close()
 
 
-def test_self_test_runs_its_second_window_under_load(fake_pa, tmp_path):
+def test_self_test_runs_its_last_window_under_load(fake_pa, tmp_path):
     m, log = fake_pa("ok")
     t = time.monotonic()
     ok, ms = m.self_test()
     assert ok and ms == 3.0
+    # the busy process is stopped, not waited out (it would run 10 s)
+    assert time.monotonic() - t < 5
+    # 1 s sample windows: cold, warm, then the load starts and the last one runs under it
+    assert requests(log) == [0x80000000 | 16000] * 3
+    events = (tmp_path / "events.log").read_text().split()
+    assert events == ["request", "request", "busy", "request"]
+    m.close()
+
+
+def test_self_test_budgets(fake_pa):
+    m, _ = fake_pa("ok")
+    assert m.self_test(budget_ms=2.0)[0] is False  # the warm window (3 ms) over budget
     assert (
-        time.monotonic() - t < 5
-    )  # the busy process is stopped, not waited out (it would run 10 s)
-    assert requests(log) == [0x80000000 | 16000] * 2  # two 1 s sample windows
-    # idle window, then the load starts, then the window under it
-    assert (tmp_path / "events.log").read_text().split() == [
-        "request",
-        "busy",
-        "request",
-    ]
+        m.self_test(load_budget_ms=2.0)[0] is False
+    )  # the window under load over its budget
+    assert m.self_test(load=False) == (True, 3.0)
     m.close()
 
 

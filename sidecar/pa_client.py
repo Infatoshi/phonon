@@ -171,22 +171,31 @@ class MetalParakeet:
         """One short window: the Metal pipelines and the weight pages ready before the first dictation."""
         self.transcribe_samples(np.zeros(16000, dtype=np.float32))
 
-    def self_test(self, budget_ms=250.0, load=True):
-        """Startup gate: two 1 s windows through the helper itself (not the fallback), the second while `pa busy`
-        (another process) keeps 16 threadgroups spinning on the GPU, as the refiner's persistent kernel does
-        during a dictation. Passes when both answer and the second takes under budget_ms of helper wall time;
-        otherwise the caller stays on MLX, so a Mac that cannot run the decode under load finds out at startup,
-        not mid-dictation."""
+    def self_test(self, budget_ms=250.0, load=True, load_budget_ms=1000.0):
+        """Startup gate: 1 s windows through the helper itself (not the fallback): a cold one, a warm one that
+        must take under budget_ms of helper wall time, then one while `pa busy` (another process) keeps 16
+        threadgroups spinning on the GPU, as the refiner's persistent kernel does during a dictation, which must
+        answer within load_budget_ms (a stall guard: a shared GPU only slows the decode, and MLX would share it
+        too). Returns (passed, warm window ms); on a failure the caller stays on MLX, so a Mac that cannot run
+        the decode under load finds out at startup, not mid-dictation."""
         x = (np.random.default_rng(0).standard_normal(16000) * 0.01).astype(np.float32)
         busy = None
         try:
+            for _ in range(2):
+                if self.tokens(x, samples=True) is None:
+                    return False, self.last_ms[2]
+            warm = self.last_ms[2]
+            if not load:
+                return warm < budget_ms, warm
+            busy = self._busy()
             if self.tokens(x, samples=True) is None:
-                return False, self.last_ms[2]
-            if load:
-                busy = self._busy()
-            if self.tokens(x, samples=True) is None:
-                return False, self.last_ms[2]
-            return self.last_ms[2] < budget_ms, self.last_ms[2]
+                return False, warm
+            loaded = self.last_ms[2]
+            print(
+                f"pa_client: self-test {warm:.1f} ms, {loaded:.1f} ms under load",
+                file=sys.stderr,
+            )
+            return warm < budget_ms and loaded < load_budget_ms, warm
         except Exception as ex:  # noqa: BLE001  (the helper exited or did not answer)
             self._off(f"self-test: {ex!r}", stuck=isinstance(ex, TimeoutError))
             return False, -1.0
