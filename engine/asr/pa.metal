@@ -525,22 +525,36 @@ kernel void subflat(constant Sub & P [[buffer(0)]], device float * A [[buffer(2)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// TDT greedy decode (fast_tdt semantics) in one persistent dispatch of NTG threadgroups x 1024 threads, no host sync.
-// Prediction net: 2-layer LSTM(640) on the last emitted token (zero input and state before the first), run only
-// when a token is emitted; joint: z = relu(E[step] + pred(h)), logits = J z (1024 tokens + blank, 5 durations).
-// Each threadgroup owns NU = 640 / NTG hidden units (their 4 gate rows and cell state, kept in threadgroup memory)
-// and a slice of the pred / joint rows; vectors cross threadgroups through device atomics (no stale L1) and a
-// monotonic grid barrier. Every threadgroup reduces the joint partials itself, so all take the same branch.
+// TDT greedy decode (fast_tdt semantics) as ordinary dispatches in one serial compute encoder: no threadgroup ever
+// waits on another, so it runs on any Apple GPU under any load (the dispatch boundary is the only synchronization).
+// Prediction net: 2-layer LSTM(640) on the last emitted token (zero input and state before the first), run only when
+// a token is emitted; joint: z = relu(E[step] + pred(h)), logits = J z (1024 tokens + blank, 5 durations).
+// One decode slot is five indirect dispatches whose sizes the previous slot's tdt_decide wrote:
+//   tdt_l0, tdt_l1, tdt_pred (HD / LNU threadgroups each, or none when no token was emitted): layer 0, layer 1 and
+//     the pred projection g; each threadgroup owns LNU hidden units (their 4 gate rows and cell state);
+//   tdt_joint (NSL x nf threadgroups): the joint for the frames base .. base + nf - 1 (a run of blanks visits frames
+//     that all share g), NSL row slices per frame, each slice's argmax / softmax / boosting partials;
+//   tdt_decide (one threadgroup): reduces the partials frame by frame and takes tdt_decode.decode's decisions (blank:
+//     next frame; token: emit; dictionary walks, commits and rollbacks) until it emits a token, rolls back, runs past
+//     the batch or ends the window, then sizes the next slot (all zero once done).
+// The host encodes slots in chunks until the done flag is set; a slot past the end is five empty dispatches. Every
+// value is computed by the same expressions in the same order as the persistent kernel this replaced (one dispatch
+// of 20 co-resident threadgroups on a spin barrier, which stalled when the GPU was small or shared), so tokens,
+// durations, frames, confidences and spans are identical.
 // The MLX app runs in bf16: h, c, the pred / enc projections, z and the logits are rounded to bf16 where MLX rounds.
-#ifndef NTG
-#define NTG 20
-#endif
 #define HD 640
-#define NU (HD / NTG)
 #define NOUT 1030
 #define NTOK 1025
-#define RPT ((NOUT + NTG - 1) / NTG)
-#define PSTRIDE 12  // uints per threadgroup partial: max, argmax, Z, Sx, duration max / argmax, runner-up, best child
+#define NSL 20                        // joint row slices per frame (fixed: the order of the softmax partial sums)
+#define RPT ((NOUT + NSL - 1) / NSL)
+#define PSTRIDE 12  // uints per slice partial: max, argmax, Z, Sx, duration max / argmax, runner-up, best child
+#ifndef TDT_LNU
+#define TDT_LNU 8                     // LSTM units per threadgroup (HD / TDT_LNU threadgroups of 256 threads)
+#endif
+#ifndef TDT_KF
+#define TDT_KF 16                     // max frames per joint batch
+#endif
+#define NU TDT_LNU
 
 struct Tdt {
     uint E, T, S, out, maxout;            // float offsets: E [T][640] (joint.enc output), state S, output
@@ -551,6 +565,25 @@ struct Tdt {
     uint xtab;                            // ~0 or the float offset of b0 + Wx0 embed[t], [1025][2560]
     uint trie, spans, maxspans;           // dictionary boosting: ~0 or the trie table (uint offset), committed spans out
 };
+
+// decoder control at S (written only by tdt_decide and the host; pa.mm's TdtCtl mirrors it)
+struct TdtCtl {
+    uint lstm_args[3], joint_args[3], decide_args[3];  // the next slot's indirect dispatch sizes
+    uint done, step, need, tok, run, iter, nout, new_symbols, plain, boost_live, node, ck_step, ck_nout, nspans, n_flips,
+        n_rollbacks;
+    int no_boost_until;
+    uint changed, dumped, base, nf, slots, pad;  // slots: tdt_decide runs (the slots the decode used)
+    long deficit;
+};
+// state vectors (floats) after the 64-word control block: h0 [2][640], h1 [2][640] (ping-pong on run), g, c0, c1, the
+// walk checkpoint of h0, h1, g, c0, c1, then the joint partials [TDT_KF][NSL][PSTRIDE]
+#define ST_H0 64
+#define ST_H1 (ST_H0 + 2 * HD)
+#define ST_G (ST_H1 + 2 * HD)
+#define ST_C0 (ST_G + HD)
+#define ST_C1 (ST_C0 + HD)
+#define ST_K (ST_C1 + HD)  // checkpoint: h0, h1, g, c0, c1 (HD each)
+#define ST_PART (ST_K + 5 * HD)
 
 // Dictionary boosting (asr_bias_v0 tdt_decode.py, config cb446: --variants case --s-start 4 --s-cont 4 --budget 6).
 // Flat trie, uint words at P.trie: header [0] nodes, [1] edges, [2] s_start, [3] s_cont, [4] budget (float bits),
@@ -625,235 +658,207 @@ inline float lstm_cell(threadgroup const float * gate, threadgroup float * c, ui
     return bf16r(o * bf16r(tanh_c(cn)));
 }
 
-// grid barrier, as the refiner megakernel's (mk.metal): seq_cst device fences around a counter that only grows, the
-// spin reads it with fetch_add(0) (on the M1 a spinning atomic_load never observes other cores' increments), and a
-// spin limit sets the fail flag S[1] instead of hanging when the threadgroups are not co-resident (the host then
-// falls back). Returns false when the launch failed.
-#ifndef SPIN_LIMIT
-#define SPIN_LIMIT (1u << 20)
-#endif
-#ifndef GBAR_FENCE
-#define GBAR_FENCE 1  // the cross-threadgroup data moves through device atomics, so the fences are belt and braces
-#endif
-inline bool gbar(device atomic_uint * ctr, thread uint & nb, uint tid, threadgroup uint * ok) {
-#ifdef GBAR_SIMPLE
-    ++nb;
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
-    if (tid == 0) {
-        atomic_fetch_add_explicit(ctr, 1u, memory_order_relaxed);
-        while (atomic_load_explicit(ctr, memory_order_relaxed) < nb * NTG) {}
+#define TDT_ARGS constant Tdt & P [[buffer(0)]], device const half * W [[buffer(1)]], device float * A [[buffer(2)]], \
+    uint tid [[thread_index_in_threadgroup]], ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]
+
+// layer 0: x = embed[tok] (zeros before the first token), h = h0. MLX rounding: the first run (zero float32 input, no
+// state) is float32 throughout and only its final h / c are cast to bf16; later runs are bf16 op by op: addmm(b, x,
+// Wx^T), addmm(., h, Wh^T), the activations, f * c, i * g, their sum, tanh(c), o * tanh(c). States are read back
+// rounded (bf16 casts). 256 threads; reads h0[run & 1], writes h0[run & 1 ^ 1].
+kernel void tdt_l0(TDT_ARGS, uint tg [[threadgroup_position_in_grid]]) {
+    device const TdtCtl & C = *(device const TdtCtl *) (A + P.S);
+    device float * S = A + P.S;
+    threadgroup float xv[HD], hv[HD], gate[4 * NU], cc[NU];
+    const uint p = C.run & 1, q = p ^ 1;
+    const bool first = C.run == 0;
+    const int tok = (int) C.tok;
+    // P.xtab: b0 + Wx0 embed[t] for every token, precomputed (float [1025][2560]): one row read replaces the 3.3 MB
+    // input-projection matvec per emitted token
+    const bool tab = P.xtab != ~0u && tok >= 0;
+    for (uint k = tid; k < HD; k += 256) {
+        if (!tab) xv[k] = tok < 0 ? 0.f : (float) W[P.emb + (uint) tok * HD + k];
+        hv[k] = RB(S[ST_H0 + p * HD + k]);
     }
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
-    return true;
-#endif
-    ++nb;
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
-    if (tid == 0) {
-        if (GBAR_FENCE) atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
-        atomic_fetch_add_explicit(ctr, 1u, memory_order_relaxed);
-        // spin on plain atomic loads (cheap: fetch_add(0) from 20 spinners costs 0.2 ms per 1.7 s decode on the M4
-        // Max), with a fetch_add(0) every 64 spins so a core whose load never refreshes (the M1) still gets through
-        uint spins = 0, good = 1;
-        for (;;) {
-            const uint seen = (spins & 63) == 63 ? atomic_fetch_add_explicit(ctr, 0u, memory_order_relaxed)
-                                                 : atomic_load_explicit(ctr, memory_order_relaxed);
-            if (seen >= nb * NTG) break;
-            if (++spins > SPIN_LIMIT || ((spins & 63) == 0 && atomic_load_explicit(ctr + 1, memory_order_relaxed))) {
-                atomic_store_explicit(ctr + 1, 1u, memory_order_relaxed);
-                good = 0;
-                break;
-            }
-        }
-        if (GBAR_FENCE) atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
-        *ok = good;
+    if (tid < NU) cc[tid] = S[ST_C0 + tg * NU + tid];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint lr = sg; lr < 4 * NU; lr += 8) {
+        const uint row = (lr / NU) * HD + tg * NU + lr % NU;
+        const float sh = rowdot(W + P.wh0 + row * HD, hv, lane);
+        const float sx = tab ? A[P.xtab + (uint) tok * 4 * HD + row] : rowdot(W + P.wx0 + row * HD, xv, lane);
+        if (lane == 0) gate[lr] = lstm_gate(sx, sh, tab ? 0.f : (float) W[P.b0 + row], first, true);
     }
-    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
-    return *ok != 0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < NU) {
+        const float h = lstm_cell(gate, cc, tid, first);  // first run: unrounded h0 feeds layer 1 in float32
+        S[ST_C0 + tg * NU + tid] = cc[tid];
+        S[ST_H0 + q * HD + tg * NU + tid] = h;
+    }
 }
 
-// state S (uints): [0] barrier counter, [1] fail flag, [64..) h0[2][640], h1[2][640], g[640], partials [2][NTG][8]
+// layer 1: x = the new h0, h = h1; writes h1[run & 1 ^ 1] (the decoder output)
+kernel void tdt_l1(TDT_ARGS, uint tg [[threadgroup_position_in_grid]]) {
+    device const TdtCtl & C = *(device const TdtCtl *) (A + P.S);
+    device float * S = A + P.S;
+    threadgroup float xv[HD], hv[HD], gate[4 * NU], cc[NU];
+    const uint p = C.run & 1, q = p ^ 1;
+    const bool first = C.run == 0;
+    for (uint k = tid; k < HD; k += 256) {
+        xv[k] = S[ST_H0 + q * HD + k];
+        hv[k] = S[ST_H1 + p * HD + k];
+    }
+    if (tid < NU) cc[tid] = S[ST_C1 + tg * NU + tid];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint lr = sg; lr < 4 * NU; lr += 8) {
+        const uint row = (lr / NU) * HD + tg * NU + lr % NU;
+        const float sx = rowdot(W + P.wx1 + row * HD, xv, lane), sh = rowdot(W + P.wh1 + row * HD, hv, lane);
+        if (lane == 0) gate[lr] = lstm_gate(sx, sh, (float) W[P.b1 + row], first, false);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < NU) {
+        const float h = RB(lstm_cell(gate, cc, tid, first));  // decoder output and state (bf16 run: bf16)
+        S[ST_C1 + tg * NU + tid] = cc[tid];
+        S[ST_H1 + q * HD + tg * NU + tid] = h;
+    }
+}
+
+// pred projection of the decoder output (the new h1): g rows tg * NU .. + NU
+kernel void tdt_pred(TDT_ARGS, uint tg [[threadgroup_position_in_grid]]) {
+    device const TdtCtl & C = *(device const TdtCtl *) (A + P.S);
+    device float * S = A + P.S;
+    threadgroup float xv[HD];
+    const uint q = (C.run & 1) ^ 1;
+    for (uint k = tid; k < HD; k += 256) xv[k] = S[ST_H1 + q * HD + k];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint r = sg; r < NU; r += 8) {
+        const uint row = tg * NU + r;
+        const float s = rowdot(W + P.pw + row * HD, xv, lane);
+        if (lane == 0) S[ST_G + row] = RB(s + (float) W[P.pb + row]);
+    }
+}
+
+// the joint at frame base + fi: z = relu(E[frame] + g), slice sl's logit rows, its argmax / softmax / boosting partials
+kernel void tdt_joint(TDT_ARGS, uint2 tgp [[threadgroup_position_in_grid]]) {
+    device const TdtCtl & C = *(device const TdtCtl *) (A + P.S);
+    device float * S = A + P.S;
+    const uint sl = tgp.x, fi = tgp.y, frame = C.base + fi;
+    threadgroup float xv[HD], lg[RPT];
+    for (uint k = tid; k < HD; k += 256) xv[k] = max(RB(RB(A[P.E + frame * HD + k]) + S[ST_G + k]), 0.f);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint r0 = sl * RPT, r1 = min((uint) NOUT, r0 + RPT);
+    for (uint r = r0 + sg; r < r1; r += 8) {
+        const float s = rowdot(W + P.jw + r * HD, xv, lane);
+        if (lane == 0) lg[r - r0] = RB(s + (float) W[P.jb + r]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (frame == P.dbg_step && !C.dumped) {  // debug: kept from the batch in which tdt_decide first visits the frame
+        for (uint r = r0 + tid; r < r1; r += 256) A[P.dbgl + r] = lg[r - r0];
+        if (sl == 0)
+            for (uint k = tid; k < HD; k += 256) {
+                A[P.dbgl + NOUT + k] = xv[k];
+                A[P.dbgl + NOUT + HD + k] = S[ST_G + k];
+            }
+    }
+    if (tid != 0) return;
+    device uint * part = (device uint *) S + ST_PART + (fi * NSL + sl) * PSTRIDE;
+    float m = -INFINITY, dm = -INFINITY;
+    uint mi = 0, di = 0;
+    for (uint r = r0; r < r1; ++r) {
+        const float v = lg[r - r0];
+        if (r < NTOK) { if (v > m) { m = v; mi = r; } }
+        else if (v > dm) { dm = v; di = r - NTOK; }
+    }
+    // boosting: the best boostable child of the current trie node among this slice's tokens (lowest token on ties,
+    // as ct[argmax] over the sorted children)
+    float bl = -INFINITY;
+    uint bc = ~0u;
+    if (C.boost_live) {
+        const TrieV TR = trie_view((device const uint *) A + P.trie);
+        const uint node = C.node, rt = min(r1, (uint) NTOK);
+        if (node == 0) {
+            for (uint r = r0; r < rt; ++r) {
+                const uint c = TR.root[r];
+                if (c != ~0u && (c >> 31) && lg[r - r0] > bl) { bl = lg[r - r0]; bc = r; }
+            }
+        } else {
+            const uint off = TR.nd[4 * node], cnt = TR.nd[4 * node + 1];
+            for (uint j = 0; j < cnt; ++j) {
+                const uint tk = TR.ed[3 * (off + j)];
+                if (TR.ed[3 * (off + j) + 2] && tk >= r0 && tk < rt && lg[tk - r0] > bl) { bl = lg[tk - r0]; bc = tk; }
+            }
+        }
+    }
+    part[7] = as_type<uint>(bl);
+    part[8] = bc;
+    float Z = 0.f, Sx = 0.f;
+    for (uint r = r0; r < min(r1, (uint) NTOK); ++r) { const float d = lg[r - r0] - m, e = exp(d); Z += e; Sx += e * d; }
+    part[0] = as_type<uint>(m);
+    part[1] = mi;
+    part[2] = as_type<uint>(Z);
+    part[3] = as_type<uint>(Sx);
+    part[4] = as_type<uint>(dm);
+    part[5] = di;
+    // second-best token logit of the slice (debug: the margin of the argmax)
+    float m2 = -INFINITY;
+    for (uint r = r0; r < min(r1, (uint) NTOK); ++r) if (r != mi) m2 = max(m2, lg[r - r0]);
+    part[6] = as_type<uint>(m2);
+}
+
+// the decisions over the joint batch (one threadgroup of 256: thread 0 decides, all copy the checkpoint state)
 // output (uints): [0] count, then per token: id, duration index, step, confidence (float bits)
-kernel void tdt(constant Tdt & P [[buffer(0)]], device const half * W [[buffer(1)]], device float * A [[buffer(2)]],
-                uint tg [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
-                ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
-    device atomic_uint * S = (device atomic_uint *) A + P.S;
-    device atomic_uint * ctr = S;
-    device atomic_uint * H0 = S + 64, * H1 = H0 + 2 * HD, * G = H1 + 2 * HD, * PART = G + HD;
+kernel void tdt_decide(TDT_ARGS) {
+    device TdtCtl & C = *(device TdtCtl *) (A + P.S);
+    device float * S = A + P.S;
     device uint * out = (device uint *) A + P.out;
-    threadgroup float xv[HD], hv[HD], gate[4 * NU], c0[NU], c1[NU], lg[RPT];
-    threadgroup float ck_h0[NU], ck_h1[NU], ck_g[NU], ck_c0[NU], ck_c1[NU];  // walk checkpoint: this slice of the state
-    threadgroup uint dec[4], ctl[4];
-    uint nb = 0, run = 0, iter = 0, nout = 0;
-    int tok = -1;
-    bool need = true;
-    uint step = 0, new_symbols = 0;
-    bool dumped = false;
-    // boosting state (kept by thread 0 of every threadgroup, identical across them)
-    const bool trie_on = P.trie != ~0u;
-    TrieV TR = trie_view((device const uint *) A + (trie_on ? P.trie : 0));
-    bool plain = false, boost_live = trie_on, changed = false;
-    uint node = 0, ck_step = 0, ck_nout = 0, nspans = 0, n_flips = 0, n_rollbacks = 0;
-    int no_boost_until = -1;
-    long deficit = 0;
-    if (tid < NU) { c0[tid] = 0.f; c1[tid] = 0.f; }
-    const float max_entropy = log((float) NTOK);
-    while (step < P.T) {
-        if (need) {
-            const uint p = run & 1, q = p ^ 1;
-            // layer 0: x = embed[tok] (zeros before the first token), h = h0
-            // MLX rounding: the first run (zero float32 input, no state) is float32 throughout and only its final
-            // h / c are cast to bf16; later runs are bf16 op by op: addmm(b, x, Wx^T), addmm(., h, Wh^T), the
-            // activations, f * c, i * g, their sum, tanh(c), o * tanh(c). States are read back rounded (bf16 casts).
-            const bool first = run == 0;
-            // P.xtab: b0 + Wx0 embed[t] for every token, precomputed (float [1025][2560]): one row read replaces the
-            // 3.3 MB input-projection matvec per emitted token
-            const bool tab = P.xtab != ~0u && tok >= 0;
-            for (uint k = tid; k < HD; k += 1024) {
-                if (!tab) xv[k] = tok < 0 ? 0.f : (float) W[P.emb + (uint) tok * HD + k];
-                hv[k] = RB(as_type<float>(atomic_load_explicit(H0 + p * HD + k, memory_order_relaxed)));
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            for (uint lr = sg; lr < 4 * NU; lr += 32) {
-                const uint row = (lr / NU) * HD + tg * NU + lr % NU;
-                const float sh = rowdot(W + P.wh0 + row * HD, hv, lane);
-                const float sx = tab ? A[P.xtab + (uint) tok * 4 * HD + row] : rowdot(W + P.wx0 + row * HD, xv, lane);
-                if (lane == 0) gate[lr] = lstm_gate(sx, sh, tab ? 0.f : (float) W[P.b0 + row], first, true);
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            if (tid < NU) {
-                const float h = lstm_cell(gate, c0, tid, first);  // first run: unrounded h0 feeds layer 1 in float32
-                atomic_store_explicit(H0 + q * HD + tg * NU + tid, as_type<uint>(h), memory_order_relaxed);
-            }
-            if (!gbar(ctr, nb, tid, &dec[3])) return;
-            // layer 1: x = new h0, h = h1
-            for (uint k = tid; k < HD; k += 1024) {
-                xv[k] = as_type<float>(atomic_load_explicit(H0 + q * HD + k, memory_order_relaxed));
-                hv[k] = as_type<float>(atomic_load_explicit(H1 + p * HD + k, memory_order_relaxed));
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            for (uint lr = sg; lr < 4 * NU; lr += 32) {
-                const uint row = (lr / NU) * HD + tg * NU + lr % NU;
-                const float sx = rowdot(W + P.wx1 + row * HD, xv, lane), sh = rowdot(W + P.wh1 + row * HD, hv, lane);
-                if (lane == 0) gate[lr] = lstm_gate(sx, sh, (float) W[P.b1 + row], first, false);
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            if (tid < NU) {
-                const float h = RB(lstm_cell(gate, c1, tid, first));  // decoder output and state (bf16 run: bf16)
-                atomic_store_explicit(H1 + q * HD + tg * NU + tid, as_type<uint>(h), memory_order_relaxed);
-            }
-            if (!gbar(ctr, nb, tid, &dec[3])) return;
-            // pred projection of the decoder output (new h1)
-            for (uint k = tid; k < HD; k += 1024) xv[k] = as_type<float>(atomic_load_explicit(H1 + q * HD + k, memory_order_relaxed));
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            for (uint r = sg; r < NU; r += 32) {
-                const uint row = tg * NU + r;
-                const float s = rowdot(W + P.pw + row * HD, xv, lane);
-                if (lane == 0) atomic_store_explicit(G + row, as_type<uint>(RB(s + (float) W[P.pb + row])), memory_order_relaxed);
-            }
-            if (!gbar(ctr, nb, tid, &dec[3])) return;
-            ++run;
-            need = false;
-        }
-        // joint at this step: z = relu(E[step] + g), this threadgroup's logit rows, partial argmax / softmax stats
-        for (uint k = tid; k < HD; k += 1024) {
-            const float g = as_type<float>(atomic_load_explicit(G + k, memory_order_relaxed));
-            xv[k] = max(RB(RB(A[P.E + step * HD + k]) + g), 0.f);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        const uint r0 = tg * RPT, r1 = min((uint) NOUT, r0 + RPT);
-        for (uint r = r0 + sg; r < r1; r += 32) {
-            const float s = rowdot(W + P.jw + r * HD, xv, lane);
-            if (lane == 0) lg[r - r0] = RB(s + (float) W[P.jb + r]);
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (step == P.dbg_step && !dumped) {
-            dumped = true;
-            for (uint r = r0 + tid; r < r1; r += 1024) A[P.dbgl + r] = lg[r - r0];
-            if (tg == 0)
-                for (uint k = tid; k < HD; k += 1024) {
-                    A[P.dbgl + NOUT + k] = xv[k];
-                    A[P.dbgl + NOUT + HD + k] = as_type<float>(atomic_load_explicit(G + k, memory_order_relaxed));
-                }
-        }
-        device atomic_uint * part = PART + ((iter & 1) * NTG + tg) * PSTRIDE;
-        if (tid == 0) {
-            float m = -INFINITY, dm = -INFINITY;
-            uint mi = 0, di = 0;
-            for (uint r = r0; r < r1; ++r) {
-                const float v = lg[r - r0];
-                if (r < NTOK) { if (v > m) { m = v; mi = r; } }
-                else if (v > dm) { dm = v; di = r - NTOK; }
-            }
-            // boosting: the best boostable child of the current trie node among this slice's tokens (lowest token
-            // on ties, as ct[argmax] over the sorted children)
-            float bl = -INFINITY;
-            uint bc = ~0u;
-            if (boost_live) {
-                const uint rt = min(r1, (uint) NTOK);
-                if (node == 0) {
-                    for (uint r = r0; r < rt; ++r) {
-                        const uint c = TR.root[r];
-                        if (c != ~0u && (c >> 31) && lg[r - r0] > bl) { bl = lg[r - r0]; bc = r; }
-                    }
-                } else {
-                    const uint off = TR.nd[4 * node], cnt = TR.nd[4 * node + 1];
-                    for (uint j = 0; j < cnt; ++j) {
-                        const uint tk = TR.ed[3 * (off + j)];
-                        if (TR.ed[3 * (off + j) + 2] && tk >= r0 && tk < rt && lg[tk - r0] > bl) { bl = lg[tk - r0]; bc = tk; }
-                    }
-                }
-            }
-            atomic_store_explicit(part + 7, as_type<uint>(bl), memory_order_relaxed);
-            atomic_store_explicit(part + 8, bc, memory_order_relaxed);
-            float Z = 0.f, Sx = 0.f;
-            for (uint r = r0; r < min(r1, (uint) NTOK); ++r) { const float d = lg[r - r0] - m, e = exp(d); Z += e; Sx += e * d; }
-            atomic_store_explicit(part + 0, as_type<uint>(m), memory_order_relaxed);
-            atomic_store_explicit(part + 1, mi, memory_order_relaxed);
-            atomic_store_explicit(part + 2, as_type<uint>(Z), memory_order_relaxed);
-            atomic_store_explicit(part + 3, as_type<uint>(Sx), memory_order_relaxed);
-            atomic_store_explicit(part + 4, as_type<uint>(dm), memory_order_relaxed);
-            atomic_store_explicit(part + 5, di, memory_order_relaxed);
-            // second-best token logit of the slice (debug: the margin of the argmax)
-            float m2 = -INFINITY;
-            for (uint r = r0; r < min(r1, (uint) NTOK); ++r) if (r != mi) m2 = max(m2, lg[r - r0]);
-            atomic_store_explicit(part + 6, as_type<uint>(m2), memory_order_relaxed);
-        }
-        if (!gbar(ctr, nb, tid, &dec[3])) return;
-        if (tid == 0) {
+    threadgroup uint copy[2];  // [0] checkpoint the state, [1] restore it (after the checkpoint when both)
+    if (tid == 0) {
+        const bool trie_on = P.trie != ~0u;
+        const TrieV TR = trie_view((device const uint *) A + (trie_on ? P.trie : 0));
+        uint step = C.step, run = C.run, iter = C.iter, nout = C.nout, new_symbols = C.new_symbols, node = C.node;
+        uint ck_step = C.ck_step, ck_nout = C.ck_nout, nspans = C.nspans, n_flips = C.n_flips, n_rollbacks = C.n_rollbacks;
+        bool need = C.need != 0, plain = C.plain != 0, boost_live = C.boost_live != 0, changed = C.changed != 0, dumped = C.dumped != 0;
+        int tok = (int) C.tok, no_boost_until = C.no_boost_until;
+        long deficit = C.deficit;
+        const uint base = C.base, nf = C.nf;
+        bool do_ck = false, do_rs = false, done = false;
+        if (need) { ++run; need = false; }  // this slot ran the prediction net
+        const float max_entropy = log((float) NTOK);
+        while (step - base < nf) {
+            if (step == P.dbg_step && !dumped) dumped = true;
+            device const uint * PART = (device const uint *) S + ST_PART + (step - base) * NSL * PSTRIDE;
             float m = -INFINITY, dm = -INFINITY, BL = -INFINITY;
             uint mi = 0, di = 0, BC = ~0u;
-            float pm[NTG], pz[NTG], ps[NTG];
-            for (uint t = 0; t < NTG; ++t) {
-                device atomic_uint * pt = PART + ((iter & 1) * NTG + t) * PSTRIDE;
-                const float b = as_type<float>(atomic_load_explicit(pt + 7, memory_order_relaxed));
-                if (b > BL) { BL = b; BC = atomic_load_explicit(pt + 8, memory_order_relaxed); }
-                pm[t] = as_type<float>(atomic_load_explicit(pt + 0, memory_order_relaxed));
-                pz[t] = as_type<float>(atomic_load_explicit(pt + 2, memory_order_relaxed));
-                ps[t] = as_type<float>(atomic_load_explicit(pt + 3, memory_order_relaxed));
-                if (pm[t] > m) { m = pm[t]; mi = atomic_load_explicit(pt + 1, memory_order_relaxed); }
-                const float d = as_type<float>(atomic_load_explicit(pt + 4, memory_order_relaxed));
-                if (d > dm) { dm = d; di = atomic_load_explicit(pt + 5, memory_order_relaxed); }
+            float pm[NSL], pz[NSL], ps[NSL];
+            for (uint t = 0; t < NSL; ++t) {
+                device const uint * pt = PART + t * PSTRIDE;
+                const float b = as_type<float>(pt[7]);
+                if (b > BL) { BL = b; BC = pt[8]; }
+                pm[t] = as_type<float>(pt[0]);
+                pz[t] = as_type<float>(pt[2]);
+                ps[t] = as_type<float>(pt[3]);
+                if (pm[t] > m) { m = pm[t]; mi = pt[1]; }
+                const float d = as_type<float>(pt[4]);
+                if (d > dm) { dm = d; di = pt[5]; }
             }
             float Z = 0.f, Sx = 0.f;
-            for (uint t = 0; t < NTG; ++t) {
+            for (uint t = 0; t < NSL; ++t) {
                 if (pz[t] == 0.f) continue;  // no token rows in this slice
                 const float sc = exp(pm[t] - m);
                 Z += pz[t] * sc;
                 Sx += sc * (ps[t] + (pm[t] - m) * pz[t]);
             }
             const float H = log(Z) - Sx / Z;
-            dec[0] = mi; dec[1] = di; dec[2] = as_type<uint>(1.f - H / max_entropy);
-            float m2 = -INFINITY;  // runner-up over all slices
-            for (uint t = 0; t < NTG; ++t) {
-                device atomic_uint * pt = PART + ((iter & 1) * NTG + t) * PSTRIDE;
-                m2 = max(m2, as_type<float>(atomic_load_explicit(pt + 6, memory_order_relaxed)));
-                if (atomic_load_explicit(pt + 1, memory_order_relaxed) != mi && pm[t] > -INFINITY) m2 = max(m2, pm[t]);
-            }
-            if (tg == 0 && P.dbg != ~0u && iter < 512) {  // per iteration: step, argmax, duration index, margin to runner-up
+            const uint conf = as_type<uint>(1.f - H / max_entropy);
+            if (P.dbg != ~0u && iter < 512) {  // per iteration: step, argmax, duration index, margin to runner-up
+                float m2 = -INFINITY;
+                for (uint t = 0; t < NSL; ++t) {
+                    device const uint * pt = PART + t * PSTRIDE;
+                    m2 = max(m2, as_type<float>(pt[6]));
+                    if (pt[1] != mi && pm[t] > -INFINITY) m2 = max(m2, pm[t]);
+                }
                 device uint * D = (device uint *) A + P.dbg + 4 * iter;
                 D[0] = step; D[1] = mi; D[2] = di; D[3] = as_type<uint>(m - m2);
             }
-            // ---- the step's decision (tdt_decode.decode), the same in every threadgroup ----
+            // ---- the step's decision (tdt_decode.decode) ----
             uint k = mi, d = di, act = 0;
             float delta = 0.f;
             bool flip = false;
@@ -887,7 +892,7 @@ kernel void tdt(constant Tdt & P [[buffer(0)]], device const half * W [[buffer(1
                                 emit = false;
                                 ++n_rollbacks;
                             } else if (ok) {  // a committed term: span [walk start, here) -> canonical spelling
-                                if (tg == 0 && nspans < P.maxspans) {
+                                if (nspans < P.maxspans) {
                                     device uint * sp = (device uint *) A + P.spans + 1 + 4 * nspans;
                                     sp[0] = ck_nout; sp[1] = nout; sp[2] = TR.nd[4 * node + 3]; sp[3] = changed;
                                 }
@@ -906,8 +911,8 @@ kernel void tdt(constant Tdt & P [[buffer(0)]], device const half * W [[buffer(1
                     }
                 }
                 if (emit) {
-                    if (tg == 0 && nout < P.maxout) {
-                        out[1 + 4 * nout] = k; out[2 + 4 * nout] = d; out[3 + 4 * nout] = step; out[4 + 4 * nout] = dec[2];
+                    if (nout < P.maxout) {
+                        out[1 + 4 * nout] = k; out[2 + 4 * nout] = d; out[3 + 4 * nout] = step; out[4 + 4 * nout] = conf;
                     }
                     n_flips += flip;
                     ++nout;
@@ -920,77 +925,69 @@ kernel void tdt(constant Tdt & P [[buffer(0)]], device const half * W [[buffer(1
                 }
             }
             boost_live = trie_on && !plain;
-            ctl[0] = step; ctl[1] = need; ctl[2] = (uint) tok; ctl[3] = act;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        step = ctl[0]; need = ctl[1] != 0; tok = (int) ctl[2];
-        const uint act = ctl[3];
-        if (act == 1 && tid < NU) {  // checkpoint this threadgroup's slice of the decoder state
-            const uint pp = (run & 1) * HD + tg * NU + tid;
-            ck_h0[tid] = as_type<float>(atomic_load_explicit(H0 + pp, memory_order_relaxed));
-            ck_h1[tid] = as_type<float>(atomic_load_explicit(H1 + pp, memory_order_relaxed));
-            ck_g[tid] = as_type<float>(atomic_load_explicit(G + tg * NU + tid, memory_order_relaxed));
-            ck_c0[tid] = c0[tid];
-            ck_c1[tid] = c1[tid];
-        }
-        if (act == 2) {  // restore it, then every threadgroup must see the whole restored state
-            if (tid < NU) {
-                const uint pp = (run & 1) * HD + tg * NU + tid;
-                atomic_store_explicit(H0 + pp, as_type<uint>(ck_h0[tid]), memory_order_relaxed);
-                atomic_store_explicit(H1 + pp, as_type<uint>(ck_h1[tid]), memory_order_relaxed);
-                atomic_store_explicit(G + tg * NU + tid, as_type<uint>(ck_g[tid]), memory_order_relaxed);
-                c0[tid] = ck_c0[tid];
-                c1[tid] = ck_c1[tid];
-            }
-            if (!gbar(ctr, nb, tid, &dec[3])) return;
-        }
-        ++iter;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (step >= P.T && tid == 0) {
-            // end of the window inside a walk (tdt_decode: no boundary check): commit, or roll back and decode the
-            // rest plainly (decode_from: no boosting, no trie)
-            ctl[3] = 0;
-            if (trie_on && !plain && node != 0) {
-                const bool ok = TR.nd[4 * node + 2] && deficit <= TR.budget_fx;
-                if (!ok && changed) {
-                    step = ck_step; nout = ck_nout; need = false; new_symbols = 0;
-                    plain = true; boost_live = false; ++n_rollbacks;
-                    ctl[3] = 2;
-                } else if (ok) {
-                    if (tg == 0 && nspans < P.maxspans) {
-                        device uint * sp = (device uint *) A + P.spans + 1 + 4 * nspans;
-                        sp[0] = ck_nout; sp[1] = nout; sp[2] = TR.nd[4 * node + 3]; sp[3] = changed;
+            do_ck = do_ck || act == 1;
+            do_rs = do_rs || act == 2;
+            ++iter;
+            if (step >= P.T) {
+                // end of the window inside a walk (tdt_decode: no boundary check): commit, or roll back and decode
+                // the rest plainly (decode_from: no boosting, no trie)
+                if (trie_on && !plain && node != 0) {
+                    const bool ok = TR.nd[4 * node + 2] && deficit <= TR.budget_fx;
+                    if (!ok && changed) {
+                        step = ck_step; nout = ck_nout; need = false; new_symbols = 0;
+                        plain = true; boost_live = false; ++n_rollbacks;
+                        do_rs = true;
+                    } else if (ok) {
+                        if (nspans < P.maxspans) {
+                            device uint * sp = (device uint *) A + P.spans + 1 + 4 * nspans;
+                            sp[0] = ck_nout; sp[1] = nout; sp[2] = TR.nd[4 * node + 3]; sp[3] = changed;
+                        }
+                        ++nspans;
                     }
-                    ++nspans;
+                    node = 0; changed = false; deficit = 0;
                 }
-                node = 0; changed = false; deficit = 0;
+                if (step >= P.T) { done = true; break; }
             }
-            ctl[0] = step; ctl[1] = need;
+            if (need || do_rs) break;  // a token (the prediction net runs next) or a rollback (the joint reruns)
         }
-        if (step >= P.T) {
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            step = ctl[0]; need = ctl[1] != 0;
-            if (ctl[3] == 2) {
-                if (tid < NU) {
-                    const uint pp = (run & 1) * HD + tg * NU + tid;
-                    atomic_store_explicit(H0 + pp, as_type<uint>(ck_h0[tid]), memory_order_relaxed);
-                    atomic_store_explicit(H1 + pp, as_type<uint>(ck_h1[tid]), memory_order_relaxed);
-                    atomic_store_explicit(G + tg * NU + tid, as_type<uint>(ck_g[tid]), memory_order_relaxed);
-                    c0[tid] = ck_c0[tid];
-                    c1[tid] = ck_c1[tid];
-                }
-                if (!gbar(ctr, nb, tid, &dec[3])) return;
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-        }
-    }
-    if (tg == 0 && tid == 0) {
+        C.step = step; C.need = need; C.tok = (uint) tok; C.run = run; C.iter = iter; C.nout = nout;
+        C.new_symbols = new_symbols; C.plain = plain; C.boost_live = boost_live; C.node = node; C.ck_step = ck_step;
+        C.ck_nout = ck_nout; C.nspans = nspans; C.n_flips = n_flips; C.n_rollbacks = n_rollbacks;
+        C.no_boost_until = no_boost_until; C.changed = changed; C.dumped = dumped; C.deficit = deficit;
+        C.done = done;
+        C.slots += 1;
+        const uint nf2 = done ? 0 : min((uint) TDT_KF, P.T - step);
+        C.base = step; C.nf = nf2;
+        C.lstm_args[0] = !done && need ? HD / NU : 0; C.lstm_args[1] = 1; C.lstm_args[2] = 1;
+        C.joint_args[0] = done ? 0 : NSL; C.joint_args[1] = done ? 0 : nf2; C.joint_args[2] = 1;
+        C.decide_args[0] = done ? 0 : 1; C.decide_args[1] = 1; C.decide_args[2] = 1;
         out[0] = nout;
         if (P.spans != ~0u) {
             device uint * sp = (device uint *) A + P.spans;
             sp[0] = min(nspans, P.maxspans);
             sp[1 + 4 * P.maxspans] = n_flips;
             sp[2 + 4 * P.maxspans] = n_rollbacks;
+        }
+        copy[0] = do_ck; copy[1] = do_rs;
+    }
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    if (!copy[0] && !copy[1]) return;
+    const uint cur = (C.run & 1) * HD;  // the newest h0 / h1 (run was advanced above)
+    if (copy[0])  // checkpoint the decoder state before the walk's first piece
+        for (uint u = tid; u < HD; u += 256) {
+            S[ST_K + u] = S[ST_H0 + cur + u];
+            S[ST_K + HD + u] = S[ST_H1 + cur + u];
+            S[ST_K + 2 * HD + u] = S[ST_G + u];
+            S[ST_K + 3 * HD + u] = S[ST_C0 + u];
+            S[ST_K + 4 * HD + u] = S[ST_C1 + u];
+        }
+    if (copy[1]) {  // restore it (the same thread copies a unit both ways, so no barrier between)
+        for (uint u = tid; u < HD; u += 256) {
+            S[ST_H0 + cur + u] = S[ST_K + u];
+            S[ST_H1 + cur + u] = S[ST_K + HD + u];
+            S[ST_G + u] = S[ST_K + 2 * HD + u];
+            S[ST_C0 + u] = S[ST_K + 3 * HD + u];
+            S[ST_C1 + u] = S[ST_K + 4 * HD + u];
         }
     }
 }

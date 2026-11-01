@@ -86,7 +86,7 @@ def metal_asr_config() -> dict | None:
     PHONON_METAL_ASR=<dir>: a development layout (<dir>/bin/pa, <dir>/pa.metal, <dir>/melfb.npy,
     <dir>/pa_client.py). pa reads the pinned snapshot's model.safetensors itself, so MLX's Parakeet weights are
     never loaded (pa_client.LightModel reads config.json); MLX loads only if a window needs the fallback (over
-    82 s, a decode barrier timeout, or the helper exiting)."""
+    82 s, or the helper failing a window, not answering or exiting: then MLX for the rest of the session)."""
     value = os.environ.get("PHONON_METAL_ASR", "").strip()
     if value.lower() in ("0", "off", "false", "no"):
         return None

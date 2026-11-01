@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -30,6 +31,18 @@ struct Sub { uint32_t x, y, w, b, Ti, Fi, To, Fo, C, Tvalid, mode; };
 struct MelP { uint32_t wav, n, pow, lmel, mel, fb, tw, frames; };
 struct Tdt { uint32_t E, T, S, out, maxout, emb, wx0, wh0, b0, wx1, wh1, b1, pw, pb, jw, jb, max_symbols, dbg, dbg_step, dbgl, xtab,
              trie, spans, maxspans; };
+// pa.metal's TdtCtl: the decode's control block at the start of the state (tdt_decide writes it between dispatches)
+struct TdtCtl {
+    uint32_t lstm_args[3], joint_args[3], decide_args[3];  // the next slot's indirect dispatch sizes
+    uint32_t done, step, need, tok, run, iter, nout, new_symbols, plain, boost_live, node, ck_step, ck_nout, nspans, n_flips, n_rollbacks;
+    int32_t no_boost_until;
+    uint32_t changed, dumped, base, nf, slots, pad;  // slots: tdt_decide runs (the slots the decode used)
+    int64_t deficit;
+};
+static_assert(sizeof(TdtCtl) == 136 && offsetof(TdtCtl, deficit) == 128, "TdtCtl layout must match pa.metal");
+// decode geometry, as pa.metal's: LSTM units per threadgroup (HD / TDT_LNU threadgroups), frames per joint batch,
+// joint row slices, uints per slice partial; the state after the 64-word control block (see pa.metal ST_*)
+static const uint32_t TDT_LNU = 8, TDT_KF = 16, TDT_NSL = 20, TDT_PSTRIDE = 12;
 
 static std::vector<double> json_nums(const std::string & s, const char * key) {  // "key": [1, 2.5, ...]
     std::vector<double> v;
@@ -193,9 +206,53 @@ static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<M
     return true;
 }
 
+// `pa busy [TGS [SECS]]`: a GPU load in its own process for the sidecar's startup self-test, standing in for the
+// refiner's persistent kernel (its threadgroups spin on the GPU during a dictation): TGS (16, pe's grid on a base
+// M4) threadgroups of up to 1024 threads that spin on ALU work, dispatched back to back (two in flight) for SECS (10)
+// seconds or until killed. Prints "busy: running" once the first dispatch has run. (A second queue in the pa
+// process itself is not a load: Metal runs it before or after pa's own work, never beside it.)
+static int busy_main(int argc, char ** argv) {
+    const int tgs = argc > 2 ? atoi(argv[2]) : 16;
+    const double secs = argc > 3 ? atof(argv[3]) : 10.0;
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    NSString * src = @"#include <metal_stdlib>\nusing namespace metal;\n"
+                      "kernel void busy(device uint * F [[buffer(0)]], uint tid [[thread_index_in_threadgroup]]) {\n"
+                      "    float x = (float) tid;\n"
+                      "    for (uint i = 0; i < (1u << 18); ++i) x = fma(x, 0.999f, 1.f);\n"
+                      "    if (x == 12345.f) F[0] = 1;\n"
+                      "}\n";
+    NSError * err = nil;
+    id<MTLLibrary> lib = [dev newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
+    id<MTLComputePipelineState> p = lib ? [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"busy"] error:&err] : nil;
+    if (!p) { fprintf(stderr, "busy: %s\n", err.localizedDescription.UTF8String); return 1; }
+    id<MTLBuffer> f = [dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
+    const NSUInteger threads = std::min<NSUInteger>(1024, p.maxTotalThreadsPerThreadgroup);
+    const double t0 = now();
+    id<MTLCommandBuffer> prev = nil;
+    bool said = false;
+    while (now() - t0 < secs) {
+        id<MTLCommandBuffer> cb = [q commandBuffer];
+        id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+        [e setComputePipelineState:p];
+        [e setBuffer:f offset:0 atIndex:0];
+        [e dispatchThreadgroups:MTLSizeMake(tgs, 1, 1) threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+        [e endEncoding];
+        [cb commit];
+        if (prev) {
+            [prev waitUntilCompleted];
+            if (!said) { printf("busy: running\n"); fflush(stdout); said = true; }
+        }
+        prev = cb;
+    }
+    [prev waitUntilCompleted];
+    return 0;
+}
+
 int main(int argc, char ** argv) {
     @autoreleasepool {
-        if (argc < 4) { fprintf(stderr, "usage: pa WEIGHTS.bin MEL.npy OUT.npy [reps [bucket]] | pa WEIGHTS.bin serve MAXMEL\n"); return 1; }
+        if (argc >= 2 && !strcmp(argv[1], "busy")) return busy_main(argc, argv);
+        if (argc < 4) { fprintf(stderr, "usage: pa WEIGHTS.bin MEL.npy OUT.npy [reps [bucket]] | pa WEIGHTS.bin serve MAXMEL | pa busy [TGS [SECS]]\n"); return 1; }
         const int reps = argc > 4 ? atoi(argv[4]) : 5;
         // PA_BF16=1: mimic an all-bf16 MLX run (bf16 mel) instead of the app's path (float32 mel, so float32
         // activations against bf16 weights: asr_server.transcribe_samples)
@@ -407,10 +464,11 @@ int main(int argc, char ** argv) {
         const uint32_t aX = take((size_t) pad32(cT) * D), aXn = take((size_t) pad32(cT) * D), aH = take((size_t) pad32(cT) * FF),
                        aQKV = take((size_t) pad32(cT) * 3 * D), aPe = take((size_t) pad32(PT) * D), aP = take((size_t) 24 * pslot),
                        aAt = take((size_t) pad32(cT) * D), aG = take((size_t) pad32(cT) * 2 * D), aCm = take((size_t) pad32(cT) * D);
-        // decode: joint.enc projection E [T][640], decoder state (barrier counter, h0 / h1 ping-pong, g, partials), output
-        const int ntg = getenv("PA_NTG") ? atoi(getenv("PA_NTG")) : 20;
+        // decode: joint.enc projection E [T][640], decoder state (control block, h0 / h1 ping-pong, g, c0, c1, the walk
+        // checkpoint, joint partials), output
         const uint32_t HDd = 640;
-        const uint32_t aE = take((size_t) pad32(cT) * HDd), nS = 64 + 5 * HDd + 2 * ntg * 12, aS = take(nS), aOut = take(1 + 4 * cmaxout),
+        const uint32_t aE = take((size_t) pad32(cT) * HDd), nS = 64 + 12 * HDd + TDT_KF * TDT_NSL * TDT_PSTRIDE, aS = take(nS),
+                       aOut = take(1 + 4 * cmaxout),
                        aDbg = take(4 * 512), aDbgL = take(1030 + 2 * 640);
         // GPU log-mel: samples, power spectrum [frames][257], log mel [frames][128], filterbank [128][257], cos / sin / window
         const uint32_t aWav = take((size_t) cap_mel * 160 + 1024), aPow = take((size_t) cap_mel * 257), aLmel = take((size_t) cap_mel * F0),
@@ -476,10 +534,8 @@ int main(int argc, char ** argv) {
         const int lin_v = 4, tn2 = getenv("PA_TN2") ? atoi(getenv("PA_TN2")) : 2;
         // PA_UNROLL=n: unroll lin4's k loop n times (measured at T 22: no gain, within the 0.1 ms noise)
         const std::string unroll = getenv("PA_UNROLL") && *getenv("PA_UNROLL") ? std::string("#define LIN4_UNROLL _Pragma(\"clang loop unroll_count(") + getenv("PA_UNROLL") + ")\")\n" : "";
-        const int gfence = getenv("PA_GBAR_FENCE") ? atoi(getenv("PA_GBAR_FENCE")) : 1;  // decode grid-barrier fences
-        src = [[NSString stringWithFormat:@"#define TN2 %d\n#define NTG %d\n#define DEC_BF16 %d\n#define GBAR_FENCE %d\n%s%s", tn2, ntg, bf16_run, gfence,
-                                          unroll.c_str(), getenv("PA_GBAR_SIMPLE") ? "#define GBAR_SIMPLE\n" : ""]
-            stringByAppendingString:src];
+        src = [[NSString stringWithFormat:@"#define TN2 %d\n#define DEC_BF16 %d\n#define TDT_LNU %u\n#define TDT_KF %u\n%s", tn2, bf16_run, TDT_LNU, TDT_KF,
+                                          unroll.c_str()] stringByAppendingString:src];
         id<MTLLibrary> lib = [dev newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
         if (!lib) { fprintf(stderr, "%s\n", err.localizedDescription.UTF8String); return 1; }
         auto pso = [&](const char * n) {
@@ -488,10 +544,14 @@ int main(int argc, char ** argv) {
             return p;
         };
         id<MTLComputePipelineState> pLin = pso("lin"), pLin2 = pso("lin2"), pNorm = pso("layernorm"), pAtt = pso("attn"), pConv = pso("convmid"),
-                                    pSub = pso("subconv"), pFlat = pso("subflat"), pTdt = pso("tdt");
+                                    pSub = pso("subconv"), pFlat = pso("subflat");
         id<MTLComputePipelineState> pAtt8 = pso("attn8"), pMelPow = pso("melpow"), pMelFb = pso("melfb"), pMelNorm = pso("melnorm");
+        // the TDT decode: prediction net (3 kernels), joint, decisions; all 256-thread threadgroups
+        id<MTLComputePipelineState> pTdtL0 = pso("tdt_l0"), pTdtL1 = pso("tdt_l1"), pTdtPred = pso("tdt_pred"), pTdtJoint = pso("tdt_joint"),
+                                    pTdtDecide = pso("tdt_decide");
+        for (id<MTLComputePipelineState> p : @[ pTdtL0, pTdtL1, pTdtPred, pTdtJoint, pTdtDecide ])
+            if (p.maxTotalThreadsPerThreadgroup < 256) { fprintf(stderr, "tdt: max %lu threads per threadgroup\n", (unsigned long) p.maxTotalThreadsPerThreadgroup); return 1; }
         const uint32_t att8_from = getenv("PA_ATT8_FROM") ? (uint32_t) atoi(getenv("PA_ATT8_FROM")) : 48;  // attn8 when Tv > this (measured: slower at T 22, faster at 71+)
-        if (pTdt.maxTotalThreadsPerThreadgroup < 1024) { fprintf(stderr, "tdt: max %lu threads per threadgroup\n", (unsigned long) pTdt.maxTotalThreadsPerThreadgroup); return 1; }
         // lin4_<x>_<y>_<row tiles>_<8-wide n tiles>: TN tn2 (PA_TN2, default 2), narrow n <= 1024 projections TN tns (PA_TNS, default 1)
         const int tns = getenv("PA_TNS") ? atoi(getenv("PA_TNS")) : 1;
         const uint32_t ks1 = getenv("PA_KS1") ? atoi(getenv("PA_KS1")) : 1, ks4 = getenv("PA_KS4") ? atoi(getenv("PA_KS4")) : 1;  // k splits
@@ -684,13 +744,47 @@ int main(int argc, char ** argv) {
         }
 
         // one pass over the window in A + aMel (set_window done): command buffer 1 = encoder + joint.enc projection,
-        // 2 = the persistent TDT decode (one dispatch). Returns GPU ms of each, wall ms, CPU encode ms.
+        // then the TDT decode: command buffers of decode slots (pa.metal: five indirect dispatches each, sized by the
+        // previous slot; ordinary dispatches only, so it cannot stall on a small or shared GPU) until the done flag.
+        // Returns GPU ms of the encoder and of the decode, wall ms, CPU encode ms.
         const bool dec_on = !only;
         uint32_t * U = (uint32_t *) A;
+        TdtCtl * CT = (TdtCtl *) (U + aS);
+        int last_slots = 0, last_chunks = 0;
+        auto encode_slots = [&](id<MTLComputeCommandEncoder> e, int n) {
+            [e setBytes:&TD length:sizeof TD atIndex:0];
+            [e setBuffer:wbuf offset:0 atIndex:1];
+            [e setBuffer:abuf offset:0 atIndex:2];
+            const NSUInteger ctl = (NSUInteger) aS * 4, la = ctl + offsetof(TdtCtl, lstm_args), ja = ctl + offsetof(TdtCtl, joint_args),
+                             da = ctl + offsetof(TdtCtl, decide_args);
+            const MTLSize tpg = MTLSizeMake(256, 1, 1);
+            for (int i = 0; i < n; ++i) {
+                [e setComputePipelineState:pTdtL0];
+                [e dispatchThreadgroupsWithIndirectBuffer:abuf indirectBufferOffset:la threadsPerThreadgroup:tpg];
+                [e setComputePipelineState:pTdtL1];
+                [e dispatchThreadgroupsWithIndirectBuffer:abuf indirectBufferOffset:la threadsPerThreadgroup:tpg];
+                [e setComputePipelineState:pTdtPred];
+                [e dispatchThreadgroupsWithIndirectBuffer:abuf indirectBufferOffset:la threadsPerThreadgroup:tpg];
+                [e setComputePipelineState:pTdtJoint];
+                [e dispatchThreadgroupsWithIndirectBuffer:abuf indirectBufferOffset:ja threadsPerThreadgroup:tpg];
+                [e setComputePipelineState:pTdtDecide];
+                [e dispatchThreadgroupsWithIndirectBuffer:abuf indirectBufferOffset:da threadsPerThreadgroup:tpg];
+            }
+        };
         auto run_pass = [&](double & g1, double & g2, double & wall, double & cpu) -> bool {
             TD.T = Tv;
             TD.maxout = maxout;
             memset(U + aS, 0, (size_t) nS * 4);
+            // the first slot: the prediction net on no token (zero input and state), then the joint from frame 0
+            CT->need = 1;
+            CT->tok = ~0u;
+            CT->boost_live = !trie.empty();
+            CT->no_boost_until = -1;
+            CT->nf = std::min(TDT_KF, Tv);
+            for (int i = 0; i < 3; ++i) CT->lstm_args[i] = CT->joint_args[i] = CT->decide_args[i] = 1;
+            CT->lstm_args[0] = 640 / TDT_LNU;
+            CT->joint_args[0] = TDT_NSL;
+            CT->joint_args[1] = CT->nf;
             const double t0 = now();
             id<MTLCommandBuffer> cb = [queue commandBufferWithUnretainedReferences];
             id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
@@ -698,25 +792,35 @@ int main(int argc, char ** argv) {
             [e endEncoding];
             const double t1 = now();
             [cb commit];
-            id<MTLCommandBuffer> cb2 = nil;
+            g2 = 0;
+            last_slots = last_chunks = 0;
             if (dec_on) {
-                cb2 = [queue commandBufferWithUnretainedReferences];
-                id<MTLComputeCommandEncoder> e2 = [cb2 computeCommandEncoder];
-                [e2 setComputePipelineState:pTdt];
-                [e2 setBytes:&TD length:sizeof TD atIndex:0];
-                [e2 setBuffer:wbuf offset:0 atIndex:1];
-                [e2 setBuffer:abuf offset:0 atIndex:2];
-                [e2 dispatchThreadgroups:MTLSizeMake(ntg, 1, 1) threadsPerThreadgroup:MTLSizeMake(1024, 1, 1)];
-                [e2 endEncoding];
-                [cb2 commit];
-                [cb2 waitUntilCompleted];
-            } else [cb waitUntilCompleted];
+                // a slot per emitted token, plus one per run of blanks longer than a joint batch, plus rollbacks.
+                // Measured on 402 windows (public and owner, with and without the dictionary): at most 0.73 slots
+                // per frame on windows under 82 s, so 0.6 T + 12 covers them in one chunk; a slot past the end costs
+                // five empty dispatches (~1-3 us), another chunk a round trip (~1 ms). Cap: a runaway.
+                int n = (int) (Tv * 3 / 5 + 12);
+                const int cap = (int) (4 * (maxout + Tv) + 64);
+                for (;;) {
+                    id<MTLCommandBuffer> c2 = [queue commandBufferWithUnretainedReferences];
+                    id<MTLComputeCommandEncoder> e2 = [c2 computeCommandEncoder];
+                    encode_slots(e2, n);
+                    [e2 endEncoding];
+                    [c2 commit];
+                    [c2 waitUntilCompleted];
+                    if (c2.status == MTLCommandBufferStatusError) { fprintf(stderr, "GPU error: %s\n", c2.error.localizedDescription.UTF8String); return false; }
+                    g2 += (c2.GPUEndTime - c2.GPUStartTime) * 1e3;
+                    last_slots += n;
+                    ++last_chunks;
+                    if (CT->done) break;
+                    if (last_slots >= cap) { fprintf(stderr, "tdt: decode not done after %d slots\n", last_slots); return false; }
+                    n = std::min(cap - last_slots, std::max(16, (int) ((Tv - CT->step) * 3 / 5 + 12)));
+                }
+            }
+            [cb waitUntilCompleted];
             const double t2 = now();
-            for (id<MTLCommandBuffer> c in cb2 ? @[ cb, cb2 ] : @[ cb ])
-                if (c.status == MTLCommandBufferStatusError) { fprintf(stderr, "GPU error: %s\n", c.error.localizedDescription.UTF8String); return false; }
-            if (dec_on && U[aS + 1]) { fprintf(stderr, "tdt: grid barrier timed out (threadgroups not co-resident)\n"); return false; }
+            if (cb.status == MTLCommandBufferStatusError) { fprintf(stderr, "GPU error: %s\n", cb.error.localizedDescription.UTF8String); return false; }
             g1 = (cb.GPUEndTime - cb.GPUStartTime) * 1e3;
-            g2 = cb2 ? (cb2.GPUEndTime - cb2.GPUStartTime) * 1e3 : 0;
             wall = (t2 - t0) * 1e3;
             cpu = (t1 - t0) * 1e3;
             return true;
@@ -761,6 +865,7 @@ int main(int argc, char ** argv) {
                 double g1 = 0, g2 = 0, wall = 0, cpu = 0;
                 uint32_t cnt = ~0u;
                 if (ok && set_window(frames) && run_pass(g1, g2, wall, cpu)) cnt = std::min(U[aOut], maxout);
+                if (getenv("PA_VERBOSE")) fprintf(stderr, "pa serve: T %u, decode %u of %d slots in %d chunks, %.3f ms\n", Tv, CT->slots, last_slots, last_chunks, g2);
                 fwrite(&cnt, 4, 1, stdout);
                 if (cnt != ~0u) fwrite(U + aOut + 1, 4, (size_t) 4 * cnt, stdout);
                 const float ms[3] = { (float) g1, (float) g2, (float) wall };
@@ -790,7 +895,7 @@ int main(int argc, char ** argv) {
         }
         printf("pa%s%s: mel %u -> T %u frames (bucket %u), %d dispatches, GEMM weights %.1f MB/pass (weights resident %.1f MB); encoder GPU min %.3f ms",
                qv.empty() ? "" : " ", qv.c_str(), Tm, Tv, T, n_disp, wbytes_pass / 1e6, (wsize - qsrc_bytes + qbytes) / 1e6, best_gpu);
-        if (dec_on) printf(", decode GPU min %.3f ms", best_dec);
+        if (dec_on) printf(", decode GPU min %.3f ms (%u of %d slots, %d chunks)", best_dec, CT->slots, last_slots, last_chunks);
         printf(", wall min %.3f ms (encode %.3f ms)\n", best_wall, enc_cpu);
         save_npy(argv[3], A + aX, Tv, D);
         if (getenv("PA_DUMP_E")) save_npy(getenv("PA_DUMP_E"), A + aE, Tv, HDd);  // debug: the joint's encoder projection
