@@ -127,7 +127,10 @@ def load_metal_asr(cfg: dict, source: str):
         # PHONON_METAL_ASR_TERMS=<file, one term per line>: in-kernel dictionary boosting (asr_bias_v0 cb446)
         terms=os.environ.get("PHONON_METAL_ASR_TERMS") or None,
     )
-    ok, ms = model.self_test()
+    # no window under `pa busy` here: the refiner probes its grid at the same moment, and a spinning load would make
+    # it settle on a smaller grid for the session. The decode has no barrier left to stall; a stuck window at run
+    # time still hits pa_client's timeout and the sticky MLX fallback.
+    ok, ms = model.self_test(load=False)
     if not ok:
         try:
             model.close()
