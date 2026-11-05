@@ -151,13 +151,6 @@ it, and exports everything including the corpus.
 Model weights are unaffected. They live in `~/.cache/huggingface`, are named
 after the models rather than the app, and no uninstaller touches them.
 
-## Known issues
-
-- Opening Phonon can pull a connected Bluetooth headset into the hands-free
-  profile, which degrades its output quality. Reselect the input in System
-  Settings › Sound as a workaround.
-  See [#9](https://github.com/Infatoshi/phonon/issues/9).
-
 ## Local data
 
 Nothing is retained until you say so. On first launch the app asks once whether
@@ -228,7 +221,8 @@ Recording if screen context is on.
 
 ### Native app
 
-`phonon` opens a regular macOS Dock app. Its Home, History, Dictionary, and
+`phonon` opens a macOS Dock app (Settings › System › Show in Dock off keeps it in
+the menu bar only). Its Home, History, Dictionary, and
 Settings pages read and write the same JSON files and recordings as the engine
 and the CLI. Settings › Model status shows whether both models are loaded. The
 `ϕ` in the menu bar stays available as a shortcut while the app runs.

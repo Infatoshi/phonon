@@ -177,6 +177,17 @@ input changes, and reads back the input unit's live device before each
 capture, because AVAudioEngine can silently move the unit to the new
 default when it rebuilds its graph.
 
+## Capsule and Dock (macOS, since 1.0.1)
+
+- The capsule and its panels sit above the Dock: the panel frame's bottom is the screen's visible frame
+  (`PanelGeometry.clearOfDock`), so a visible Dock never covers them; with the Dock hidden nothing moves.
+- Settings › Dictation › "Show the bar between dictations" (settings.json `show_idle_capsule`, default on). Off
+  hides the capsule when idle; it still shows while dictating, while correcting, and while meeting notes record
+  (the red light and stop button live in it).
+- Settings › System › "Show in Dock" (settings.json `show_in_dock`, default on), also in the ϕ menu. Off runs
+  Phonon as a menu-bar-only (accessory) app; the window opens from the ϕ menu.
+- Both keys are app-side; phonon-core keeps them through its unknown-key passthrough.
+
 ## Competing dictation apps
 
 Two apps holding fn taps means both record and both insert. Phonon detects
