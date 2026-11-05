@@ -210,11 +210,13 @@ final class MeetingPlayer: ObservableObject {
     }
 
     func start(_ note: MeetingNote, generation: Int? = nil) async {
-        load(note)
         let token: Int
         if let generation {
+            guard !Task.isCancelled, loadGeneration == generation, noteID == note.id else { return }
             token = generation
         } else {
+            guard !Task.isCancelled else { return }
+            load(note)
             loadGeneration += 1
             token = loadGeneration
         }
@@ -230,35 +232,32 @@ final class MeetingPlayer: ObservableObject {
             return
         }
         guard !Task.isCancelled, loadGeneration == token, noteID == note.id else { return }
+        let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: item))
+        if position > 0 {
+            if position >= duration - 0.05 {
+                position = 0
+                await newPlayer.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            } else {
+                await newPlayer.seek(to: CMTime(seconds: position, preferredTimescale: 600))
+            }
+            guard !Task.isCancelled, loadGeneration == token, noteID == note.id else { return }
+        }
         if let observer { player?.removeTimeObserver(observer) }
         observer = nil
         player?.pause()
-        let player = AVPlayer(playerItem: AVPlayerItem(asset: item))
-        self.player = player
-        observer = player.addPeriodicTimeObserver(
+        self.player = newPlayer
+        observer = newPlayer.addPeriodicTimeObserver(
             forInterval: CMTime(value: 1, timescale: 20), queue: .main
         ) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.loadGeneration == token else { return }
                 self.position = time.seconds
                 if self.position >= self.duration - 0.05 {
                     self.playing = false
                 }
             }
         }
-        if position > 0 {
-            if position >= duration - 0.05 {
-                position = 0
-                await player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-            } else {
-                await player.seek(to: CMTime(seconds: position, preferredTimescale: 600))
-            }
-            guard !Task.isCancelled, loadGeneration == token, noteID == note.id else {
-                stop()
-                return
-            }
-        }
-        player.play()
+        newPlayer.play()
         playing = true
     }
 

@@ -298,21 +298,34 @@ enum ShortcutPolicy {
 
     /// Updated `optionDown` state for `"right-option"` after a `.flagsChanged` event.
     /// Left Option (`kVK_Option == 58`) must never trigger Right Option (`kVK_RightOption == 61`
-    /// or `NX_DEVICERALTKEYMASK == 0x40`).
-    static func rightOptionHoldState(wasDown: Bool, keyCode: Int, flags: CGEventFlags) -> Bool {
+    /// or `NX_DEVICERALTKEYMASK == 0x40`). `rightKeyDown` tracks physical Right Option state across
+    /// overlapping Left/Right Option presses and modifier cancellations.
+    static func rightOptionHoldState(
+        wasDown: Bool, rightKeyDown: inout Bool, keyCode: Int, flags: CGEventFlags
+    ) -> Bool {
         let hasOtherModifier =
             flags.contains(.maskCommand)
             || flags.contains(.maskControl)
             || flags.contains(.maskShift)
-        guard flags.contains(.maskAlternate), !hasOtherModifier else { return false }
+        guard flags.contains(.maskAlternate) else {
+            rightKeyDown = false
+            return false
+        }
         let hasDeviceMask = (flags.rawValue & anyOptionDeviceMask) != 0
+        let previouslyDown = rightKeyDown
         if hasDeviceMask {
-            return (flags.rawValue & rightOptionDeviceMask) != 0
+            rightKeyDown = (flags.rawValue & rightOptionDeviceMask) != 0
+        } else if keyCode == kVK_RightOption {
+            rightKeyDown.toggle()
         }
-        if wasDown {
-            return keyCode != kVK_Option
-        }
-        return keyCode == kVK_RightOption
+        guard rightKeyDown, !hasOtherModifier else { return false }
+        return wasDown || !previouslyDown
+    }
+
+    static func rightOptionHoldState(wasDown: Bool, keyCode: Int, flags: CGEventFlags) -> Bool {
+        var rightKeyDown = wasDown
+        return rightOptionHoldState(
+            wasDown: wasDown, rightKeyDown: &rightKeyDown, keyCode: keyCode, flags: flags)
     }
 
     /// Updated `fnDown` state for `"fn"` after a `.flagsChanged` event.
@@ -1977,6 +1990,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var rawText = ""
     private var isRecording = false
     private var optionDown = false
+    private var rightOptionKeyDown = false
     private var fnDown = false
     private var fnTapLatch = HoldKeyTapLatch()
     private var optionTapLatch = HoldKeyTapLatch()
@@ -3448,7 +3462,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                         self.optionTapLatch.reset()
                     }
                     let rightAlt = ShortcutPolicy.rightOptionHoldState(
-                        wasDown: self.optionDown, keyCode: keyCode, flags: flags)
+                        wasDown: self.optionDown, rightKeyDown: &self.rightOptionKeyDown,
+                        keyCode: keyCode, flags: flags)
                     if rightAlt && !self.optionDown {
                         self.optionDown = true
                         self.applyHoldKey(
@@ -3462,6 +3477,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     }
                 } else {
                     self.optionDown = false
+                    self.rightOptionKeyDown = false
                     self.optionTapLatch.reset()
                 }
                 if self.shortcutAllows(source: "fn") {
