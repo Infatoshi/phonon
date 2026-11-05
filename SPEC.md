@@ -522,7 +522,18 @@ refine: a round runs every 0.4 s over up to 80 s of audio, and a key release tha
 a round of a long dictation waits for it (Metal: dictations of 45 s and longer p50 130-134 ms
 against 28-37 ms by length band below 45 s; MLX rounds cost more, p50 295-298 ms over 45 s).
 
-## Live text (settings.json `live_text`, on by default since 1.0)
+## Live text (settings.json `live_text`, off by default; on in 1.0 only)
+
+Off by default since 2026-11-05 (owner: the text mid-dictation is a lot to look at and makes them
+second-guess themselves); the default feedback is the capsule's energy. Since then the card has one
+look (`live_text_style` still round-trips but is ignored, no picker): every word fades from 0.2 and
+rises 3 pt in 120 ms when it first shows, as the ASR tail or as a draft; rewrites morph and glow as
+below; an ember dot after the last word glows and swells with the mic level and slides 120 ms to
+the new end; the card wakes on the first voice, before any word. The last word's ".", "?" or "!"
+shows after 0.35 s of quiet or at key up; at the paste the card shows the pasted text at once,
+holds 250 ms and fades out over 150 ms. The text below describes the 1.0 card where it differs.
+Every paste (live text or not) types one trailing space (`Typer.spaced`), none after a space or
+newline, so back-to-back dictations do not run together.
 
 While the key is held, a non-activating panel just above the capsule shows the corrected text
 so far; each background refine replaces it, so later words can rewrite earlier ones. It needs

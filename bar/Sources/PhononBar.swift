@@ -1647,6 +1647,13 @@ enum Typer {
     /// after this, and only if nothing else was copied meanwhile.
     static let restoreDelay: TimeInterval = 0.6
 
+    /// The text as typed: one trailing space, so the next dictation flows on without a check
+    /// of timing or of what is in the field (owner, 2026-11-05). Not after a space or newline.
+    static func spaced(_ text: String) -> String {
+        guard let last = text.last, !last.isWhitespace else { return text }
+        return text + " "
+    }
+
     @MainActor
     static func emit(_ text: String, target: NSRunningApplication?, restoreClipboard: Bool = false)
         throws
@@ -2523,7 +2530,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     } else {
                         do {
                             try Typer.emit(
-                                final, target: insertionTarget,
+                                Typer.spaced(final), target: insertionTarget,
                                 restoreClipboard: appStore.settings.clipboardAfterPaste == .restore)
                             insertionSucceeded = true
                         } catch {
@@ -2540,14 +2547,22 @@ final class AppController: NSObject, NSApplicationDelegate {
                     // Live text ends on the pasted text itself, so a last-second revision
                     // ("scratch that") shows as the paste lands and a pending tail resolves
                     // into it. It is updated after the paste, so the paste never waits on it.
-                    if !liveText.isEmpty {
+                    if liveText.showsCard {
                         liveText.applyFinal(final)
                         liveTrace.record(
                             "final", input: final, applied: true, card: liveText.shownWords)
+                        // the card fades out as the paste lands, not with the capsule
+                        let pass = activeId
+                        DispatchQueue.main.asyncAfter(
+                            deadline: .now() + LiveTextMotion.hold + LiveTextMotion.leave + 0.02
+                        ) { [weak self] in
+                            guard let self, self.activeId == pass, !self.isRecording else { return }
+                            self.hideLiveText()
+                        }
                     }
                     if insertionSucceeded, let editSnapshot, let id {
                         editLearning.didPaste(
-                            editSnapshot, passID: id, pasted: final,
+                            editSnapshot, passID: id, pasted: Typer.spaced(final),
                             record: appStore.settings.localHistory)
                     }
                     if let record = e2eTrace?.finish(
@@ -2797,7 +2812,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         liveTextPass =
             appStore.settings.liveText && engineStreamRefine && state.streamingPreviewEnabled
         if liveTextPass { liveTrace.begin() }
-        liveText.style = appStore.settings.liveTextStyle
         let denylist = appStore.settings.screenContextDenylist
         let target = DictationTarget.resolve(
             bundleID: insertionTarget?.bundleIdentifier, name: insertionTarget?.localizedName,
@@ -2828,7 +2842,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self.state.level = a
                 self.checkMicSilence()
                 let voice = self.voiceDetector.isVoice(a)
-                if voice { self.liveText.noteVoice() }
+                if self.liveTextPass {
+                    // the dot answers the voice at once, before any word is recognized
+                    self.liveText.noteLevel(a)
+                    if voice, self.liveText.noteVoice() { self.presentLiveText() }
+                } else if voice {
+                    self.liveText.noteVoice()
+                }
                 self.liveTrace.voice(voice)
             }
         }
@@ -2879,7 +2899,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         micSilenceCheck?.cancel()
         if case .micSilent = notPasted.current { notPasted.dismiss() }
         heldSeconds = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
-        liveText.listening = false  // the caret goes; a pending tail waits for the final text
+        liveText.listening = false  // the dot goes; a pending tail waits for the final text
+        liveText.showEndMark()
         stopScreenSwitchWatch()
         if streamActive {
             let streamId = activeId ?? "p\(pass)"

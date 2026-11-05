@@ -1026,25 +1026,11 @@ struct SettingsView: View {
                     }
                     SettingRow(
                         "Show live text while dictating",
-                        help: "While you hold the key, show the corrected text so far above the "
-                            + "bar. Later words can rewrite earlier ones; what is typed at the end "
-                            + "does not change. Needs Streaming. Applies from the next dictation."
+                        help: "While you hold the key, show the text so far above the bar, with "
+                            + "a dot that lights up as you speak. Later words can rewrite earlier "
+                            + "ones; at the end it shows what was typed. Needs Streaming. Applies "
+                            + "from the next dictation."
                     ) { toggle(\.liveText) }
-                    SettingRow(
-                        "Live text style",
-                        help: "Fade in: corrected words fade in and the words not corrected yet "
-                            + "are dimmed. Blur to sharp: the words not corrected yet are blurred "
-                            + "and sharpen once corrected. Rewritten words morph and glow in both."
-                    ) {
-                        ChoiceChips(
-                            options: LiveTextStyle.allCases.map { ($0, $0.title) },
-                            selection: store.settings.liveTextStyle
-                        ) { value in
-                            store.updateSettings { $0.liveTextStyle = value }
-                            onSettingsChanged()
-                        }
-                        .disabled(!store.settings.liveText)
-                    }
                     SettingRow(
                         "After a paste, the clipboard holds",
                         help: "Your dictation: press ⌘V to paste it again anywhere. What you "

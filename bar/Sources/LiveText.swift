@@ -3,8 +3,8 @@ import SwiftUI
 
 // MARK: - Live text (settings.json `live_text`, `live_text_style`)
 
-/// How live text streams in (settings.json `live_text_style`). Rewrites of words already
-/// shown always morph and glow; this only picks how new words and the uncorrected tail look.
+/// settings.json `live_text_style`, still read and written so older settings files round-trip.
+/// Since 1.0.1 the card has one look (owner, 2026-11-05: one fixed config) and ignores it.
 enum LiveTextStyle: String, Codable, CaseIterable, Identifiable {
     /// New corrected words fade up from 0.35 opacity; the uncorrected tail is dimmed.
     case fade
@@ -35,8 +35,10 @@ enum LiveTextMetrics {
     /// The card grows to this many lines, then scrolls to keep the newest line in view.
     static let maxLines = 5
     static let textWidth = cardWidth - 2 * (paddingH + border)
-    static let caretWidth: CGFloat = 2
-    static let caretGap: CGFloat = 1
+    /// The ember dot after the last word: its diameter, and the room it takes on the line.
+    static let dotSize: CGFloat = 6
+    static let dotWidth: CGFloat = 8
+    static let dotGap: CGFloat = 3
 
     static func cardHeight(lines: CGFloat) -> CGFloat {
         max(lines, 1) * lineHeight + 2 * (paddingV + border)
@@ -53,10 +55,20 @@ enum LiveTextMetrics {
     }
 }
 
-/// Durations and curves, from the mock's CSS.
+/// Durations and curves. One look (owner, 2026-11-05): every word fades and rises in the moment
+/// it first shows, heard or corrected; rewrites morph and glow; the ember dot after the last
+/// word follows the mic level; at key up the card shows the pasted text and fades out.
 enum LiveTextMotion {
-    static let fade: TimeInterval = 0.14
-    static let sharpen: TimeInterval = 0.16
+    /// A new word: opacity from `appearFrom` to full and up from `rise` points below.
+    static let appear: TimeInterval = 0.12
+    static let appearFrom: Double = 0.2
+    static let rise: CGFloat = 3
+    /// The dot slides to the new end of the text.
+    static let dotMove: TimeInterval = 0.12
+    /// Key up: the pasted text holds this long (long enough to see its end), then the card
+    /// fades out over `leave`.
+    static let hold: TimeInterval = 0.25
+    static let leave: TimeInterval = 0.15
     static let morph: TimeInterval = 0.20
     /// The morph slot goes back to flowing words a little after its transition ends.
     static let morphHold: TimeInterval = 0.23
@@ -70,6 +82,10 @@ enum LiveTextMotion {
     /// about 0.4-0.8 s after the words it covers, and nothing moves while the user is
     /// silent (background noise can change a partial or a refine pass, never the card).
     static let voiceWindow: TimeInterval = 1.5
+    /// Quiet this long, the last word's ".", "?" or "!" shows: a pause ends a sentence,
+    /// mid-speech the refiner's mark after every chunk would flicker (owner, 2026-11-05: the
+    /// card never showed the question mark the paste had).
+    static let endPause: TimeInterval = 0.35
     /// Mid-dictation, a change that is only case or punctuation applies to the last this
     /// many shown words (the join with the new words); further back it waits for key up.
     static let cosmeticReach = 2
@@ -156,9 +172,10 @@ struct LiveRGB: Equatable {
     static let ink = LiveRGB(0xf3e7dc)
     static let white = LiveRGB(0xffffff)
     static let glow = LiveRGB(0xffd2b0)
-    static let rawBlur = LiveRGB(0xd8c8b8)
     static let muted = LiveRGB(0x8f8377)
-    static let caret = LiveRGB(0xf08a4b)
+    /// The dot at rest (the capsule's brown) and lit by a loud voice.
+    static let dotRest = LiveRGB(0x6b2a10)
+    static let dotLit = LiveRGB(0xffa060)
 }
 
 /// One corrected word and the effect it is in, by start time.
@@ -199,7 +216,8 @@ struct LivePlacedToken: Identifiable, Equatable {
     enum Kind: Equatable {
         case text(String, LiveLook)
         case morph(old: String, oldLook: LiveLook, new: String, newLook: LiveLook)
-        case caret(visible: Bool)
+        /// The ember dot; `lit` is the voice level, 0 to 1.
+        case dot(lit: Double)
     }
 
     let id: Int
@@ -216,6 +234,8 @@ struct LiveTextFrame: Equatable {
     var cardHeight: CGFloat
     /// Lines scrolled off the top.
     var scroll: CGFloat
+    /// The whole card's opacity: 1, fading to 0 after key up.
+    var opacity: Double = 1
 }
 
 /// A value easing from `from` to `to` along the card curve.
@@ -223,11 +243,16 @@ struct LiveEased: Equatable {
     var from: CGFloat
     var to: CGFloat
     var start: TimeInterval
+    var duration: TimeInterval = LiveTextMotion.height
 
     func value(at t: TimeInterval) -> CGFloat {
-        let p = LiveTextMotion.card(
-            LiveTextMotion.progress(t, from: start, over: LiveTextMotion.height))
+        let p = LiveTextMotion.card(LiveTextMotion.progress(t, from: start, over: duration))
         return from + (to - from) * CGFloat(p)
+    }
+
+    /// Heads for `target` from wherever it is at `now`; unchanged when already headed there.
+    func retargeted(_ target: CGFloat, at now: TimeInterval) -> LiveEased {
+        target == to ? self : LiveEased(from: value(at: now), to: target, start: now, duration: duration)
     }
 }
 
@@ -259,12 +284,15 @@ enum LiveTextPolicy {
     /// every 0.4 s ("cropped." then "cropped in", "set?" then "settings?", owner traces
     /// 2026-11-04). It shows once the next sentence starts, or with the final text.
     /// A trailing "..." (a hesitation the refiner drops once the next word comes) goes too.
-    static func openWords(_ text: String) -> [String] {
+    /// `keepEnd` (the speaker paused: a real sentence end) keeps ".", "?" and "!".
+    static func openWords(_ text: String, keepEnd: Bool = false) -> [String] {
         var out = words(text)
         guard var last = out.last else { return out }
         if last.hasSuffix("...") {
             last = String(last.dropLast(3))
-        } else if let mark = last.last, mark == "." || mark == "?", !last.hasSuffix("..") {
+        } else if !keepEnd, let mark = last.last, mark == "." || mark == "?" || mark == "!",
+            !last.hasSuffix("..")
+        {
             last = String(last.dropLast())
         }
         if !last.isEmpty { out[out.count - 1] = last }
@@ -473,15 +501,26 @@ final class LiveTextState: ObservableObject {
     @Published private(set) var tail: [String] = []
     /// The draft stopped at the refiner's output budget, so its end is missing.
     @Published private(set) var complete = true
-    /// The key is held: the caret shows. Off from key up.
+    /// The key is held: the dot shows. Off from key up.
     @Published var listening = true
-    @Published var style: LiveTextStyle = .fade
     /// Something is moving; the view's timeline runs at display rate only then.
     @Published private(set) var animating = false
+    /// The mic heard a voice this dictation: the card shows, with only the dot until words come.
+    @Published private(set) var awake = false
+    /// Key up: when the card started fading out.
+    @Published private(set) var leaving: TimeInterval?
+    /// The dot's glow, 0 to 1, from the mic level (fast attack, slower release).
+    private(set) var lit: Double = 0
 
     private(set) var height = LiveEased(from: 0, to: 0, start: 0)
     private(set) var scroll = LiveEased(from: 0, to: 0, start: 0)
+    private var dotX = LiveEased(from: 0, to: 0, start: 0, duration: LiveTextMotion.dotMove)
+    private var dotLine = LiveEased(from: 0, to: 0, start: 0, duration: LiveTextMotion.dotMove)
+    private var dotPlaced = false
     private(set) var settledLines = 0
+    /// When each tail word first showed, and the card position of the tail's first word then.
+    private var tailAppeared: [TimeInterval] = []
+    private var tailBase = 0
     private var transcript: [String] = []
     private var covered = 0
     /// The transcript the shown draft was refined from, when the engine sent it.
@@ -493,6 +532,9 @@ final class LiveTextState: ObservableObject {
     private var lastVoice: TimeInterval?
     /// The last draft's words, which a rewrite far back must match to show.
     private var lastDraft: [String]?
+    /// The latest draft and partial as sent, end marks included (for `showEndMark`).
+    private var lastDraftText: String?
+    private var lastTranscriptText: String?
     /// Rewrites the card showed this dictation.
     private var changedSpans: [LiveTextPolicy.Change] = []
     private var widths: [String: CGFloat] = [:]
@@ -503,6 +545,9 @@ final class LiveTextState: ObservableObject {
     }
 
     var isEmpty: Bool { items.isEmpty && tail.isEmpty }
+
+    /// Whether the card is on screen: words to show, or a voice heard while the key is held.
+    var showsCard: Bool { !isEmpty || (awake && listening) }
 
     /// The corrected words as they read once every effect settles.
     var correctedWords: [String] {
@@ -527,16 +572,41 @@ final class LiveTextState: ObservableObject {
         settledLines = 0
         height = LiveEased(from: 0, to: 0, start: 0)
         scroll = LiveEased(from: 0, to: 0, start: 0)
+        dotX = LiveEased(from: 0, to: 0, start: 0, duration: LiveTextMotion.dotMove)
+        dotLine = dotX
+        dotPlaced = false
+        tailAppeared = []
+        tailBase = 0
         settleWork?.cancel()
         animating = false
+        awake = false
+        leaving = nil
+        lit = 0
         lastVoice = nil
         lastDraft = nil
+        lastDraftText = nil
+        lastTranscriptText = nil
         changedSpans = []
     }
 
-    /// The mic heard a voice just now (the bar calls this from the level meter).
-    func noteVoice() {
-        lastVoice = clock()
+    /// The mic heard a voice just now (the bar calls this from the level meter). The first
+    /// one wakes the card, so it answers the voice before any word is recognized. Returns
+    /// whether it woke it.
+    @discardableResult
+    func noteVoice() -> Bool {
+        let now = clock()
+        lastVoice = now
+        guard !awake, listening else { return false }
+        awake = true
+        relayout(at: now)
+        return true
+    }
+
+    /// The mic level (0 = -55 dBFS, 1 = 0 dBFS), every audio buffer: the dot's glow. Speech
+    /// sits around 0.3-0.7 on the meter; the glow spans about -44 to -19 dBFS.
+    func noteLevel(_ level: Double) {
+        let target = min(max((level - 0.2) / 0.45, 0), 1)
+        lit = target > lit ? lit + (target - lit) * 0.7 : lit + (target - lit) * 0.25
     }
 
     /// Whether the card may change now: the user spoke within `voiceWindow`.
@@ -545,13 +615,20 @@ final class LiveTextState: ObservableObject {
         return now - lastVoice <= LiveTextMotion.voiceWindow
     }
 
+    /// The speaker has been quiet for `LiveTextMotion.endPause`: the sentence's end mark shows.
+    private func paused(at now: TimeInterval) -> Bool {
+        guard let lastVoice else { return false }
+        return now - lastVoice >= LiveTextMotion.endPause
+    }
+
     /// The latest speech-recognition partial (the whole transcript so far). Ignored while
     /// the user is silent, so noise never adds or swaps words.
     @discardableResult
     func setTranscript(_ text: String) -> Bool {
         let now = clock()
         guard voiced(at: now) else { return false }
-        transcript = LiveTextPolicy.openWords(text)
+        transcript = LiveTextPolicy.openWords(text, keepEnd: paused(at: now))
+        lastTranscriptText = text
         updateTail(at: now)
         return true
     }
@@ -567,11 +644,12 @@ final class LiveTextState: ObservableObject {
     ) -> Bool {
         let now = clock()
         guard voiced(at: now) else { return false }
-        let draft = LiveTextPolicy.openWords(text)
+        let draft = LiveTextPolicy.openWords(text, keepEnd: paused(at: now))
         let words = LiveTextPolicy.stabilized(
             old: correctedWords, new: draft, previous: lastDraft,
             shown: correctedWords.count + tail.count, changed: &changedSpans)
         lastDraft = draft
+        lastDraftText = text
         covered = coveredWords
         coveredSource = source
         self.complete = complete
@@ -594,7 +672,8 @@ final class LiveTextState: ObservableObject {
     /// Every word the card shows: the corrected words, then the uncorrected tail.
     var shownWords: [String] { correctedWords + tail }
 
-    /// The pasted text: it covers everything, so any pending tail resolves into it.
+    /// The pasted text, once it landed: the card shows exactly it at once (no morph: the field
+    /// already has it) and fades out over `LiveTextMotion.leave`.
     func applyFinal(_ text: String) {
         let now = clock()
         complete = true
@@ -602,7 +681,29 @@ final class LiveTextState: ObservableObject {
         transcript = []
         covered = 0
         coveredSource = nil
-        setCorrected(LiveTextPolicy.words(text), at: now)
+        let words = LiveTextPolicy.words(text)
+        if words != correctedWords || !tail.isEmpty {
+            items = words.map { .word(makeWord($0)) }
+        }
+        leaving = now + LiveTextMotion.hold
+        updateTail(at: now)
+    }
+
+    /// Key up ends the sentence: the last word's ".", "?" or "!" shows at once, from the
+    /// latest draft and partial, before the paste lands (the owner lets go about 50 ms after
+    /// the last word, so the `endPause` never comes).
+    func showEndMark() {
+        let now = clock()
+        if let text = lastTranscriptText {
+            transcript = LiveTextPolicy.openWords(text, keepEnd: true)
+        }
+        if let text = lastDraftText {
+            let words = LiveTextPolicy.stabilized(
+                old: correctedWords, new: LiveTextPolicy.openWords(text, keepEnd: true),
+                previous: lastDraft, shown: correctedWords.count + tail.count,
+                changed: &changedSpans)
+            setCorrected(words, at: now)
+        }
         updateTail(at: now)
     }
 
@@ -610,7 +711,17 @@ final class LiveTextState: ObservableObject {
         let next =
             coveredSource.map { LiveTextPolicy.tail(transcript: transcript, source: $0) }
             ?? LiveTextPolicy.tail(transcript: transcript, covered: covered)
+        // A tail word keeps the time it first showed at its card position; a new one starts now.
+        let base = correctedWords.count
+        let seen = tail.map(LiveTextPolicy.normalized)
+        let times = next.enumerated().map { i, word -> TimeInterval in
+            let old = base + i - tailBase
+            return old >= 0 && old < seen.count && seen[old] == LiveTextPolicy.normalized(word)
+                && old < tailAppeared.count ? tailAppeared[old] : now
+        }
         if next != tail { tail = next }
+        tailAppeared = times
+        tailBase = base
         relayout(at: now)
     }
 
@@ -668,16 +779,15 @@ final class LiveTextState: ObservableObject {
         relayout(at: now)
     }
 
-    /// New words at the end: they fade or sharpen in, except that in the fade style a word
-    /// the card already showed as the tail stays as it is (only its ink firms up).
+    /// New words at the end: they fade and rise in, except that a word the card already showed
+    /// as the tail carries on from when it showed (only its ink firms up).
     private func appended(
         _ added: some Collection<String>, shownTail: [String], at now: TimeInterval
     ) -> [LiveItem] {
         added.enumerated().map { k, word in
-            let wasTail =
-                style == .fade && k < shownTail.count
-                && shownTail[k] == LiveTextPolicy.normalized(word)
-            return .word(makeWord(word, fresh: wasTail ? nil : now))
+            let wasTail = k < shownTail.count && shownTail[k] == LiveTextPolicy.normalized(word)
+            let shown = wasTail && k < tailAppeared.count ? tailAppeared[k] : now
+            return .word(makeWord(word, fresh: shown))
         }
     }
 
@@ -691,20 +801,31 @@ final class LiveTextState: ObservableObject {
 
     /// The settled layout's line count sets the card's height and scroll targets.
     private func relayout(at now: TimeInterval) {
-        let lines = layout(tokens(at: .infinity)).lines
+        let settled = layout(tokens(at: .infinity))
+        let lines = settled.lines
         let visible = CGFloat(min(max(lines, 1), LiveTextMetrics.maxLines))
         let targetHeight = LiveTextMetrics.cardHeight(lines: visible)
         let targetScroll = CGFloat(max(lines - LiveTextMetrics.maxLines, 0))
+        let dot = settled.placed.last { $0.id == Self.dotID }
         if settledLines == 0 || height.to == 0 {
             // The card appears one line tall at once; only growth eases.
             height = LiveEased(from: targetHeight, to: targetHeight, start: now)
             scroll = LiveEased(from: targetScroll, to: targetScroll, start: now)
         } else {
-            if targetHeight != height.to {
-                height = LiveEased(from: height.value(at: now), to: targetHeight, start: now)
-            }
-            if targetScroll != scroll.to {
-                scroll = LiveEased(from: scroll.value(at: now), to: targetScroll, start: now)
+            height = height.retargeted(targetHeight, at: now)
+            scroll = scroll.retargeted(targetScroll, at: now)
+        }
+        if let dot {
+            if dotPlaced {
+                dotX = dotX.retargeted(dot.x, at: now)
+                dotLine = dotLine.retargeted(CGFloat(dot.line), at: now)
+            } else {
+                // where it first shows, it is at once
+                dotX = LiveEased(from: dot.x, to: dot.x, start: now, duration: LiveTextMotion.dotMove)
+                dotLine = LiveEased(
+                    from: CGFloat(dot.line), to: CGFloat(dot.line), start: now,
+                    duration: LiveTextMotion.dotMove)
+                dotPlaced = true
             }
         }
         settledLines = isEmpty ? 0 : lines
@@ -731,31 +852,40 @@ final class LiveTextState: ObservableObject {
         var glued = false
     }
 
+    static let dotID = -1
+
     func frame(at t: TimeInterval) -> LiveTextFrame {
-        let laid = layout(tokens(at: t))
+        var laid = layout(tokens(at: t))
+        // The dot slides to the end of the text rather than jumping with each word.
+        if let k = laid.placed.lastIndex(where: { $0.id == Self.dotID }) {
+            laid.placed[k].x = dotX.value(at: t)
+            laid.placed[k].line = Int(dotLine.value(at: t).rounded())
+        }
         let scrolled = scroll.value(at: t)
         let first = Int(scrolled.rounded(.down))
         let visible = laid.placed.filter {
             $0.line >= first && $0.line <= first + LiveTextMetrics.maxLines
         }
+        let fade = leaving.map {
+            1 - LiveTextMotion.easeOut(LiveTextMotion.progress(t, from: $0, over: LiveTextMotion.leave))
+        }
         return LiveTextFrame(
-            tokens: visible, lines: laid.lines, cardHeight: height.value(at: t), scroll: scrolled)
+            tokens: visible, lines: laid.lines, cardHeight: height.value(at: t), scroll: scrolled,
+            opacity: fade ?? 1)
+    }
+
+    /// A word that first showed at `shown`: it fades and rises in.
+    private func appearing(_ look: inout LiveLook, shown: TimeInterval, at t: TimeInterval) {
+        let e = LiveTextMotion.easeOut(
+            LiveTextMotion.progress(t, from: shown, over: LiveTextMotion.appear))
+        look.opacity *= LiveTextMotion.appearFrom + (1 - LiveTextMotion.appearFrom) * e
+        look.dy = LiveTextMotion.rise * CGFloat(1 - e)
     }
 
     private func wordLook(_ word: LiveWord, at t: TimeInterval) -> LiveLook {
         var look = LiveLook()
         if let fresh = word.fresh {
-            switch style {
-            case .fade:
-                let e = LiveTextMotion.easeOut(
-                    LiveTextMotion.progress(t, from: fresh, over: LiveTextMotion.fade))
-                look.opacity = 0.35 + 0.65 * e
-            case .blur:
-                let e = LiveTextMotion.easeOut(
-                    LiveTextMotion.progress(t, from: fresh, over: LiveTextMotion.sharpen))
-                look.opacity = 0.7 + 0.3 * e
-                look.blur = 1.6 * CGFloat(1 - e)
-            }
+            appearing(&look, shown: fresh, at: t)
         }
         if let glow = word.glow {
             let e = LiveTextMotion.easeOut(
@@ -815,24 +945,18 @@ final class LiveTextState: ObservableObject {
         // No "…" for a draft cut at the output budget: the tail and the final text cover
         // it, and a placeholder read as noise.
         for (index, word) in tail.enumerated() {
+            // Plain ink, a touch softer: these are the words as heard, not a guess.
             var look = LiveLook()
-            switch style {
-            case .fade:
-                // Plain ink, a touch softer: these are the words as heard, not a guess.
-                look.opacity = 0.85
-            case .blur:
-                look.color = .rawBlur
-                look.opacity = 0.75
-                look.blur = 1.6
+            look.opacity = 0.85
+            if index < tailAppeared.count {
+                appearing(&look, shown: tailAppeared[index], at: t)
             }
             out.append(Token(id: -100 - index, kind: .text(word, look), width: width(word)))
         }
         if listening {
-            // steps(2) over 1 s: on for the first half of each second.
-            let on = t.isInfinite || (t - t.rounded(.down)) < 0.5
             out.append(
                 Token(
-                    id: -1, kind: .caret(visible: on), width: LiveTextMetrics.caretWidth,
+                    id: Self.dotID, kind: .dot(lit: lit), width: LiveTextMetrics.dotWidth,
                     space: 0, glued: true))
         }
         return out
@@ -846,7 +970,7 @@ final class LiveTextState: ObservableObject {
         for token in tokens {
             let gap =
                 token.glued
-                ? LiveTextMetrics.caretGap : LiveTextMetrics.spaceWidth * max(token.space, 0)
+                ? LiveTextMetrics.dotGap : LiveTextMetrics.spaceWidth * max(token.space, 0)
             if x > 0, !token.glued, x + gap + token.width > LiveTextMetrics.textWidth {
                 line += 1
                 x = 0
@@ -870,13 +994,15 @@ struct LiveTextView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !state.isEmpty {
+            if state.showsCard {
                 if let fixedTime {
                     LiveTextCard(frame: state.frame(at: fixedTime))
                 } else {
+                    // Display rate while something moves; 60 Hz while only the dot follows
+                    // the voice.
                     TimelineView(
                         .animation(
-                            minimumInterval: state.animating ? nil : 0.1,
+                            minimumInterval: state.animating ? nil : 1.0 / 60,
                             paused: !state.animating && !state.listening)
                     ) { context in
                         LiveTextCard(
@@ -928,6 +1054,7 @@ struct LiveTextCard: View {
                 .strokeBorder(LiveRGB(0x4a2a16).color, lineWidth: LiveTextMetrics.border)
         )
         .shadow(color: .black.opacity(0.67), radius: 12, y: 10)
+        .opacity(frame.opacity)
     }
 
     @ViewBuilder
@@ -950,11 +1077,16 @@ struct LiveTextCard: View {
                         width: max(token.width, 0) + 2 * LiveTextMetrics.spaceWidth,
                         height: LiveTextMetrics.lineHeight + 16)
             )
-        case .caret(let visible):
-            RoundedRectangle(cornerRadius: 1)
-                .fill(LiveRGB.caret.color)
-                .frame(width: LiveTextMetrics.caretWidth, height: LiveTextMetrics.fontSize * 1.05)
-                .opacity(visible ? 1 : 0)
+        case .dot(let lit):
+            // brown at rest; louder speech lights it, swells it and spreads its glow
+            let color = LiveRGB.dotRest.mixed(.dotLit, lit).color
+            Circle()
+                .fill(color)
+                .frame(width: LiveTextMetrics.dotSize, height: LiveTextMetrics.dotSize)
+                .scaleEffect(1 + 0.4 * lit)
+                .shadow(color: LiveRGB.dotLit.color.opacity(lit), radius: 1 + 5 * lit)
+                .frame(width: LiveTextMetrics.dotWidth, alignment: .center)
+                .offset(y: 1)
         }
     }
 

@@ -107,7 +107,7 @@ struct NativeSettings: Codable, Equatable {
         meetingAutoStart: Bool = false,
         checkForUpdates: Bool = true,
         updateAnnounced: String = "",
-        liveText: Bool = true,
+        liveText: Bool = false,
         liveTextStyle: LiveTextStyle = .fade,
         writingStyle: WritingStyle = .app,
         streamRefine: Bool? = nil,
@@ -181,7 +181,7 @@ struct NativeSettings: Codable, Equatable {
         checkForUpdates = try values.decodeIfPresent(Bool.self, forKey: .checkForUpdates) ?? true
         updateAnnounced =
             try values.decodeIfPresent(String.self, forKey: .updateAnnounced) ?? ""
-        liveText = try values.decodeIfPresent(Bool.self, forKey: .liveText) ?? true
+        liveText = try values.decodeIfPresent(Bool.self, forKey: .liveText) ?? false
         liveTextStyle =
             (try? values.decodeIfPresent(String.self, forKey: .liveTextStyle))
             .flatMap { $0 }.flatMap(LiveTextStyle.init(rawValue:)) ?? .fade

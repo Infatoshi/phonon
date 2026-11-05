@@ -452,7 +452,7 @@ impl StylePreferenceCache {
     pub fn new(path: Option<std::path::PathBuf>) -> Self {
         Self {
             path,
-            live_text: true,
+            live_text: false,
             ..Self::default()
         }
     }
@@ -491,7 +491,7 @@ impl StylePreferenceCache {
             self.stamp = None;
             self.content = None;
             self.styles.clear();
-            self.live_text = true;
+            self.live_text = false;
             self.writing_mode = None;
             return;
         };
@@ -906,15 +906,15 @@ mod tests {
             "an approval applies next time"
         );
         assert_eq!(cache.loads, 2);
-        // live text: on when absent (since 1.0), and a flipped setting applies at the next ask
-        assert!(cache.live_text());
+        // live text: off when absent, and a flipped setting applies at the next ask
+        assert!(!cache.live_text());
+        std::fs::write(&path, r#"{"schema_version":2,"live_text":true}"#).unwrap();
+        assert!(cache.live_text(), "flipped on: the next dictation shows it");
         std::fs::write(&path, r#"{"schema_version":2,"live_text":false}"#).unwrap();
         assert!(
             !cache.live_text(),
             "flipped off: the next dictation shows no live text"
         );
-        std::fs::write(&path, r#"{"schema_version":2,"live_text":true}"#).unwrap();
-        assert!(cache.live_text());
         // writing style: follows the app unless one refiner mode is picked
         assert_eq!(cache.writing_mode(), None);
         for (style, mode) in [
@@ -935,7 +935,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert_eq!(cache.writing_mode(), None);
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
-        assert!(cache.live_text(), "no file: the default");
+        assert!(!cache.live_text(), "no file: the default");
         let _ = std::fs::remove_dir_all(&directory);
     }
 

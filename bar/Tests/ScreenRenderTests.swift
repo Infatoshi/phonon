@@ -313,7 +313,8 @@ final class ScreenRenderTests: XCTestCase {
     }
 
     /// Live text above the capsule, each at a fixed instant: one, three and six lines
-    /// (scrolled), the fade and blur tails, and a rewrite halfway through its morph.
+    /// (scrolled), the heard tail settled and mid-fade, the dot alone (a voice, no words yet)
+    /// and lit, and a rewrite halfway through its morph.
     func testLiveTextOverlayRenders() throws {
         let sentence =
             "Schedule the texture build for Friday at 4 and make sure the ImageMagick script "
@@ -321,41 +322,40 @@ final class ScreenRenderTests: XCTestCase {
         let three = Array(repeating: sentence, count: 2).joined(separator: " ")
         let six = Array(repeating: sentence, count: 4).joined(separator: " ")
         let rewriteStart: TimeInterval = 2_000
-        let scenes: [(String, LiveTextStyle, TimeInterval, (LiveTextState) -> Void)] = [
-            ("live_text_1_line", .fade, 1_001, { state in
+        let tailScene: (LiveTextState) -> Void = { state in
+            state.applyDraft(
+                "Schedule the texture build for Friday at 4 and make sure the ImageMagick "
+                    + "script runs before", coveredWords: 17, complete: true)
+            state.setTranscript(
+                "schedule the texture build for friday at four and make sure the image "
+                    + "magic script runs before the mod upload")
+        }
+        let scenes: [(String, TimeInterval, (LiveTextState) -> Void)] = [
+            ("live_text_1_line", 1_001, { state in
                 state.applyDraft("Schedule the texture build for Friday at 4", coveredWords: 8,
                     complete: true)
             }),
-            ("live_text_3_lines", .fade, 1_001, { state in
+            ("live_text_3_lines", 1_001, { state in
                 state.applyDraft(three, coveredWords: 40, complete: true)
             }),
-            ("live_text_6_lines_scrolled", .fade, 1_001, { state in
+            ("live_text_6_lines_scrolled", 1_001, { state in
                 state.applyDraft(six, coveredWords: 80, complete: true)
             }),
-            ("live_text_tail_fade", .fade, 1_001, { state in
-                state.applyDraft(
-                    "Schedule the texture build for Friday at 4 and make sure the ImageMagick "
-                        + "script runs before", coveredWords: 17, complete: true)
-                state.setTranscript(
-                    "schedule the texture build for friday at four and make sure the image "
-                        + "magic script runs before the mod upload")
+            ("live_text_tail", 1_001, tailScene),
+            ("live_text_tail_appearing_040ms", 1_000.04, tailScene),
+            ("live_text_dot_only", 1_000, { state in state.noteVoice() }),
+            ("live_text_dot_lit", 1_001, { state in
+                state.noteVoice()
+                state.applyDraft("Schedule the texture build", coveredWords: 4, complete: true)
+                for _ in 0..<6 { state.noteLevel(0.7) }
             }),
-            ("live_text_tail_blur", .blur, 1_001, { state in
-                state.applyDraft(
-                    "Schedule the texture build for Friday at 4 and make sure the ImageMagick "
-                        + "script runs before", coveredWords: 17, complete: true)
-                state.setTranscript(
-                    "schedule the texture build for friday at four and make sure the image "
-                        + "magic script runs before the mod upload")
-            }),
-            ("live_text_morph_060ms", .fade, rewriteStart + 0.06, { _ in }),
-            ("live_text_morph_mid", .fade, rewriteStart + 0.1, { _ in }),
-            ("live_text_morph_160ms", .fade, rewriteStart + 0.16, { _ in }),
+            ("live_text_morph_060ms", rewriteStart + 0.06, { _ in }),
+            ("live_text_morph_mid", rewriteStart + 0.1, { _ in }),
+            ("live_text_morph_160ms", rewriteStart + 0.16, { _ in }),
         ]
-        for (name, style, at, build) in scenes {
+        for (name, at, build) in scenes {
             var clock: TimeInterval = 1_000
             let state = LiveTextState(clock: { clock })
-            state.style = style
             if name.hasPrefix("live_text_morph") {
                 state.applyDraft(
                     "Schedule the texture build for Thursday at three.", coveredWords: 8,

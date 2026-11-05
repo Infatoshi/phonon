@@ -7,10 +7,15 @@ import XCTest
 final class LiveTextTests: XCTestCase {
     private var now: TimeInterval = 1_000
 
-    private func makeState(_ style: LiveTextStyle = .fade) -> LiveTextState {
-        let state = LiveTextState(clock: { [unowned self] in self.now })
-        state.style = style
-        return state
+    private func makeState() -> LiveTextState {
+        LiveTextState(clock: { [unowned self] in self.now })
+    }
+
+    private func dot(_ frame: LiveTextFrame) -> (token: LivePlacedToken, lit: Double)? {
+        for token in frame.tokens {
+            if case .dot(let lit) = token.kind { return (token, lit) }
+        }
+        return nil
     }
 
     private func texts(_ frame: LiveTextFrame) -> [(String, LiveLook)] {
@@ -22,9 +27,9 @@ final class LiveTextTests: XCTestCase {
 
     func testLiveTextSettingsDefaultAndRoundTrip() throws {
         let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
-        XCTAssertTrue(empty.liveText, "on by default since 1.0")
+        XCTAssertFalse(empty.liveText, "off by default: the capsule's energy is the feedback")
         XCTAssertEqual(empty.liveTextStyle, .fade)
-        XCTAssertTrue(NativeSettings().liveText)
+        XCTAssertFalse(NativeSettings().liveText)
         var settings = NativeSettings()
         settings.liveText = false
         settings.liveTextStyle = .blur
@@ -73,10 +78,10 @@ final class LiveTextTests: XCTestCase {
         XCTAssertEqual(state.tail, [])
         state.setTranscript("so schedule the texture build")
         XCTAssertEqual(state.tail, ["texture", "build"])
-        let frame = state.frame(at: now)
+        let frame = state.frame(at: now + 1)
         XCTAssertEqual(texts(frame).map(\.0), ["Schedule", "the", "texture", "build"])
         let tail = texts(frame).last!.1
-        XCTAssertEqual(tail.opacity, 0.85)
+        XCTAssertEqual(tail.opacity, 0.85, accuracy: 0.001)
         XCTAssertEqual(tail.color, .ink, "the tail is the words as heard, not a placeholder")
         XCTAssertEqual(tail.blur, 0)
         // Key up with the tail pending: the final text resolves it.
@@ -86,15 +91,18 @@ final class LiveTextTests: XCTestCase {
         XCTAssertEqual(state.correctedText, "Schedule the texture build.")
     }
 
-    func testFadeStyleNewWordsAreReadableAtOnceAndFullIn140ms() {
-        let state = makeState(.fade)
+    func testNewWordsFadeAndRiseInWithin120ms() {
+        let state = makeState()
         state.applyDraft("Schedule the", coveredWords: 3, complete: true)
         now += 1
         state.applyDraft("Schedule the texture build", coveredWords: 5, complete: true)
         let first = texts(state.frame(at: now))
         XCTAssertEqual(first[0].1.opacity, 1, "kept words do not animate again")
-        XCTAssertEqual(first[2].1.opacity, 0.35, accuracy: 0.001)
-        XCTAssertEqual(texts(state.frame(at: now + 0.14))[2].1.opacity, 1, accuracy: 0.001)
+        XCTAssertEqual(first[2].1.opacity, LiveTextMotion.appearFrom, accuracy: 0.001)
+        XCTAssertEqual(first[2].1.dy, LiveTextMotion.rise, accuracy: 0.001)
+        let done = texts(state.frame(at: now + LiveTextMotion.appear))[2].1
+        XCTAssertEqual(done.opacity, 1, accuracy: 0.001)
+        XCTAssertEqual(done.dy, 0, accuracy: 0.001)
         XCTAssertNil(
             state.frame(at: now).tokens.first {
                 if case .morph = $0.kind { return true }
@@ -102,17 +110,118 @@ final class LiveTextTests: XCTestCase {
             }, "a pure append never morphs")
     }
 
-    func testBlurStyleBlursTheTailAndSharpensNewWordsIn160ms() {
-        let state = makeState(.blur)
+    func testHeardWordsFadeInOnceAndTheDraftDoesNotReplayIt() {
+        // The words usually show first as the tail (as heard); that is where they fade in.
+        let state = makeState()
         state.applyDraft("Schedule the", coveredWords: 2, complete: true)
-        state.setTranscript("schedule the texture")
         now += 1
-        let tail = texts(state.frame(at: now)).last!
-        XCTAssertEqual(tail.0, "texture")
-        XCTAssertEqual(tail.1.blur, 1.6, accuracy: 0.001)
+        state.setTranscript("schedule the texture")
+        let start = now
+        XCTAssertEqual(
+            texts(state.frame(at: start)).last!.1.opacity, 0.85 * LiveTextMotion.appearFrom,
+            accuracy: 0.001)
+        now += 0.05
+        state.setTranscript("schedule the texture build")
+        let mid = texts(state.frame(at: now))
+        XCTAssertGreaterThan(mid[2].1.opacity, 0.85 * LiveTextMotion.appearFrom, "still fading")
+        XCTAssertEqual(
+            mid[3].1.opacity, 0.85 * LiveTextMotion.appearFrom, accuracy: 0.001,
+            "a newer word starts its own fade")
+        // The draft covers the tail: the words carry on from when they first showed.
+        now = start + 1
+        state.applyDraft("Schedule the texture build", coveredWords: 4, complete: true)
+        let covered = texts(state.frame(at: now))
+        XCTAssertEqual(covered[2].1.opacity, 1, accuracy: 0.001)
+        XCTAssertEqual(covered[2].1.dy, 0, accuracy: 0.001)
+    }
+
+    func testTheDotWakesWithTheVoiceAndLightsWithItsLevel() throws {
+        let state = makeState()
+        XCTAssertFalse(state.showsCard)
+        XCTAssertTrue(state.noteVoice(), "the first voice wakes the card")
+        XCTAssertFalse(state.noteVoice())
+        XCTAssertTrue(state.showsCard, "the card shows before any word is recognized")
+        let quiet = try XCTUnwrap(dot(state.frame(at: now)))
+        XCTAssertEqual(quiet.lit, 0)
+        for _ in 0..<4 { state.noteLevel(0.7) }
+        let loud = try XCTUnwrap(dot(state.frame(at: now)))
+        XCTAssertGreaterThan(loud.lit, 0.9, "speech lights it within a few buffers")
+        for _ in 0..<4 { state.noteLevel(0.05) }
+        let after = try XCTUnwrap(dot(state.frame(at: now))).lit
+        XCTAssertLessThan(after, loud.lit)
+        XCTAssertGreaterThan(after, 0, "it dims more slowly than it lights")
+        // It sits after the last word and slides there when words come.
         state.applyDraft("Schedule the texture", coveredWords: 3, complete: true)
-        XCTAssertEqual(texts(state.frame(at: now))[2].1.blur, 1.6, accuracy: 0.001)
-        XCTAssertEqual(texts(state.frame(at: now + 0.16))[2].1.blur, 0, accuracy: 0.001)
+        let moving = try XCTUnwrap(dot(state.frame(at: now + 0.04))).token.x
+        let settled = try XCTUnwrap(dot(state.frame(at: now + LiveTextMotion.dotMove))).token
+        XCTAssertGreaterThan(moving, 0)
+        XCTAssertLessThan(moving, settled.x)
+        XCTAssertEqual(
+            settled.x,
+            LiveTextMetrics.measure("Schedule") + LiveTextMetrics.measure("the")
+                + LiveTextMetrics.measure("texture") + 2 * LiveTextMetrics.spaceWidth
+                + LiveTextMetrics.dotGap, accuracy: 0.5)
+        // Key up: the dot goes; a card with no words goes with it.
+        state.listening = false
+        XCTAssertNil(dot(state.frame(at: now + 1)))
+        let silent = makeState()
+        silent.noteVoice()
+        silent.listening = false
+        XCTAssertFalse(silent.showsCard)
+    }
+
+    func testTheEndMarkShowsOnceTheSpeakerPauses() {
+        let state = makeState()
+        state.noteVoice()
+        state.applyDraft("How snappy is this?", coveredWords: 4, complete: true)
+        XCTAssertEqual(state.correctedText, "How snappy is this", "mid-speech the mark waits")
+        now += LiveTextMotion.endPause + 0.1
+        state.applyDraft("How snappy is this?", coveredWords: 4, complete: true)
+        XCTAssertEqual(state.correctedText, "How snappy is this?", "a pause ends the sentence")
+        state.noteVoice()
+        now += 0.2
+        state.applyDraft("How snappy is this on a scale", coveredWords: 7, complete: true)
+        XCTAssertEqual(state.correctedText, "How snappy is this on a scale")
+    }
+
+    func testAtKeyUpTheCardShowsThePasteAtOnceAndFadesOut() {
+        let state = makeState()
+        state.applyDraft("Build for Thursday at three", coveredWords: 5, complete: true)
+        state.setTranscript("build for thursday at three wait")
+        now += 1
+        state.listening = false
+        state.applyFinal("Build for Friday at four.")
+        XCTAssertEqual(state.shownWords, ["Build", "for", "Friday", "at", "four."])
+        let landed = state.frame(at: now)
+        XCTAssertEqual(texts(landed).map(\.1.opacity), [1, 1, 1, 1, 1], "no morph: it is typed")
+        XCTAssertEqual(landed.opacity, 1)
+        let fade = now + LiveTextMotion.hold
+        XCTAssertEqual(state.frame(at: fade).opacity, 1, "it holds long enough to read the end")
+        XCTAssertLessThan(state.frame(at: fade + 0.07).opacity, 1)
+        XCTAssertEqual(state.frame(at: fade + LiveTextMotion.leave).opacity, 0, accuracy: 0.001)
+    }
+
+    func testKeyUpShowsTheEndMarkAtOnce() {
+        // The owner lets go ~50 ms after the last word: no pause, so key up ends the sentence.
+        let state = makeState()
+        state.noteVoice()
+        state.setTranscript("what else is messed up about this card that's hiding it?")
+        state.applyDraft("What else is messed up about this card", coveredWords: 8, complete: true)
+        XCTAssertEqual(state.shownWords.last, "it")
+        state.listening = false
+        state.showEndMark()
+        XCTAssertEqual(state.shownWords.last, "it?")
+        state.applyDraft("What else is messed up about this card that's hiding it?",
+            coveredWords: 11, complete: true)
+        state.showEndMark()
+        XCTAssertEqual(state.correctedText, "What else is messed up about this card that's hiding it?")
+    }
+
+    func testPastesEndWithOneSpace() {
+        XCTAssertEqual(Typer.spaced("Okay, Anvil is fixed."), "Okay, Anvil is fixed. ")
+        XCTAssertEqual(Typer.spaced("ends in a space "), "ends in a space ")
+        XCTAssertEqual(Typer.spaced("a list\n"), "a list\n")
+        XCTAssertEqual(Typer.spaced(""), "")
     }
 
     func testARewriteMorphsThenGlowsAndSettles() throws {
@@ -248,6 +357,9 @@ final class LiveTextTests: XCTestCase {
         state.applyFinal("Very cropped. Then upload.")
         XCTAssertEqual(state.correctedWords.last, "upload.")
         XCTAssertEqual(LiveTextPolicy.openWords("the settings?"), ["the", "settings"])
+        XCTAssertEqual(
+            LiveTextPolicy.openWords("the settings?", keepEnd: true), ["the", "settings?"])
+        XCTAssertEqual(LiveTextPolicy.openWords("it is...", keepEnd: true), ["it", "is"])
     }
 
     func testARewriteFarBackShowsOnlyOnceTwoDraftsAgree() {

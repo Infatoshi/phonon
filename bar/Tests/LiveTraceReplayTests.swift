@@ -34,7 +34,9 @@ final class LiveTraceReplayTests: XCTestCase {
             .split(separator: "\n")
         let pick = env["PHONON_LIVE_REPLAY_LINE"] ?? ""
         let indices = pick == "all" ? Array(1...lines.count) : [Int(pick) ?? lines.count]
-        var totals = (near: 0, far: 0, frozen: 0, vanished: 0, flips: 0)
+        var totals = (
+            near: 0, far: 0, frozen: 0, vanished: 0, flips: 0, stale: 0, cosmetic: 0, words: 0
+        )
         for index in indices {
             let line = try JSONDecoder().decode(Line.self, from: Data(lines[index - 1].utf8))
             let r = replay(line, debugMs: env["PHONON_LIVE_REPLAY_DEBUG_MS"])
@@ -43,20 +45,25 @@ final class LiveTraceReplayTests: XCTestCase {
             totals.frozen += r.frozen
             totals.vanished += r.vanished
             totals.flips += r.flips
+            totals.stale += r.stale
+            totals.cosmetic += r.staleCosmetic
             print(
                 "replay \(index) \(line.started): \(r.near) changes within \(Self.farBack) words of the end, "
                     + "\(r.far.count) further back (\(r.frozen) past \(LiveTextMotion.freezeReach)), "
-                    + "\(r.vanished) vanished, \(r.flips) flipped back")
-            for row in r.far { print("  " + row) }
+                    + "\(r.vanished) vanished, \(r.flips) flipped back, "
+                    + "key up rewrote \(r.stale) words + \(r.staleCosmetic) punctuation")
+            if env["PHONON_LIVE_REPLAY_QUIET"] == nil { for row in r.far { print("  " + row) } }
         }
         print(
             "replay total: near \(totals.near), far \(totals.far), past freeze \(totals.frozen), "
-                + "vanished \(totals.vanished), flipped back \(totals.flips)")
+                + "vanished \(totals.vanished), flipped back \(totals.flips), "
+                + "key up rewrote \(totals.stale) words + \(totals.cosmetic) punctuation")
     }
 
     @MainActor
     private func replay(_ line: Line, debugMs: String?) -> (
-        near: Int, far: [String], frozen: Int, vanished: Int, flips: Int
+        near: Int, far: [String], frozen: Int, vanished: Int, flips: Int, stale: Int,
+        staleCosmetic: Int
     ) {
         var clock: TimeInterval = 1000
         let state = LiveTextState(clock: { clock })
@@ -67,6 +74,8 @@ final class LiveTraceReplayTests: XCTestCase {
         var frozen = 0
         var vanished = 0
         var flips = 0
+        var stale = 0
+        var staleCosmetic = 0
         // what each card position held before its last change
         var before: [Int: String] = [:]
         for event in line.events {
@@ -95,6 +104,19 @@ final class LiveTraceReplayTests: XCTestCase {
                 if debugMs == String(event.ms) {
                     print("debug before: \(before)\ndebug draft:  \(text)\ndebug after:  \(state.correctedText)")
                 }
+            case "final":
+                // how much of the paste the card did not show yet at key up
+                let final = LiveTextPolicy.words(text)
+                for step in LiveTextPolicy.steps(old: state.shownWords, new: final) {
+                    if case .changed(let o, let n) = step,
+                        !LiveTextPolicy.sameWords(state.shownWords[o], final[n])
+                    {
+                        stale += max(o.count, n.count)
+                    } else if case .changed(let o, let n) = step {
+                        staleCosmetic += max(o.count, n.count)
+                    }
+                }
+                continue
             default:
                 continue
             }
@@ -140,6 +162,6 @@ final class LiveTraceReplayTests: XCTestCase {
             }
             shown = now
         }
-        return (near, far, frozen, vanished, flips)
+        return (near, far, frozen, vanished, flips, stale, staleCosmetic)
     }
 }
