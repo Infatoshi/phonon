@@ -17,7 +17,7 @@ use phonon_llm::{
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 const DEFAULT_CLIPS: &[&str] = &[
@@ -348,16 +348,9 @@ fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
         bail!("missing {}", script.display());
     }
     let uv = crate::resolve_runtime_tool("uv").context("uv not found")?;
-    let mut child = Command::new(uv)
-        .args([
-            "run",
-            "--python",
-            phonon_asr::PYTHON_REQUIREMENT,
-            "--with",
-            phonon_asr::ASR_RUNTIME_REQUIREMENT,
-            "python",
-            script.to_str().unwrap(),
-        ])
+    let mut child = phonon_asr::locked_run(&uv, root, phonon_asr::ASR_RUNTIME)?
+        .arg("python")
+        .arg(&script)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

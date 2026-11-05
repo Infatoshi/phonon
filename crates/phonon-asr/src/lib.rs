@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -35,7 +35,12 @@ impl Waker {
 /// change what shipped users run.
 pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
+/// The ASR runtime's one direct requirement. It must match
+/// `runtime/asr/pyproject.toml`; the lock beside that file pins everything
+/// this package pulls in.
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
+/// The ASR sidecar's locked environment, `runtime/asr` (see [`locked_run`]).
+pub const ASR_RUNTIME: &str = "asr";
 
 /// Pinned interpreter for both sidecars. Without this, uv falls back to whatever
 /// `python3` it finds, which on a Mac with no developer tooling is the system
@@ -164,16 +169,9 @@ impl AsrSidecar {
         }
         let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
         let started = Instant::now();
-        let mut command = Command::new(&uv);
+        let mut command = locked_run(&uv, root, ASR_RUNTIME)?;
         command
-            .args([
-                "run",
-                "--python",
-                PYTHON_REQUIREMENT,
-                "--with",
-                ASR_RUNTIME_REQUIREMENT,
-                "python",
-            ])
+            .arg("python")
             .arg(&script)
             .args(["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION])
             .env(
@@ -184,7 +182,7 @@ impl AsrSidecar {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        apply_offline_policy(&mut command, &uv, ASR_RUNTIME_REQUIREMENT);
+        apply_offline_policy(&mut command, &uv, root, ASR_RUNTIME);
         let mut child = command.spawn().context("spawn ASR")?;
         let stdout = child.stdout.take().context("asr stdout")?;
         let stdin = child.stdin.take().context("asr stdin")?;
@@ -330,23 +328,67 @@ pub fn resolve_uv() -> Option<std::path::PathBuf> {
     })
 }
 
-/// True when uv can assemble the sidecar environment for `requirement` from
-/// its cache alone. Without this, uv revalidates its PyPI index entry once the
-/// entry goes stale, and with no network that fails after three retries
-/// (about 33 s) even though every wheel is already on disk. Costs 50-150 ms.
-pub fn uv_offline_ready(uv: &Path, requirement: &str) -> bool {
-    Command::new(uv)
+/// A sidecar runtime's uv project: `runtime/<runtime>` under the project root
+/// (`Contents/Resources/runtime/<runtime>` in the app). It holds the
+/// runtime's `pyproject.toml` and the `uv.lock` that pins every package,
+/// transitive dependencies included, to an exact version and SHA-256.
+pub fn runtime_project(root: &Path, runtime: &str) -> PathBuf {
+    root.join("runtime").join(runtime)
+}
+
+/// Where a runtime's virtual environment is installed. uv would otherwise put
+/// it in `.venv` inside the project, which for the app is the signed bundle
+/// and must not be written to.
+pub fn runtime_environment(runtime: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library/Application Support/Phonon/runtime")
+            .join(runtime),
+    )
+}
+
+/// `uv run` inside a runtime's locked environment; the caller appends the
+/// command (`python ...`). `--frozen` installs exactly what `uv.lock` names
+/// and checks every downloaded file against the SHA-256 recorded there, so
+/// nothing PyPI publishes later reaches a user unreviewed. `--exact` removes
+/// anything in the environment the lock does not name. A missing lock is an
+/// error rather than a fall back to resolving afresh.
+pub fn locked_run(uv: &Path, root: &Path, runtime: &str) -> Result<Command> {
+    let project = runtime_project(root, runtime);
+    let lock = project.join("uv.lock");
+    if !(lock.is_file() && project.join("pyproject.toml").is_file()) {
+        bail!("missing the locked {runtime} runtime: {}", lock.display());
+    }
+    let mut command = Command::new(uv);
+    command
         .args([
             "run",
-            "--offline",
+            "--frozen",
+            "--exact",
+            "--no-dev",
             "--python",
             PYTHON_REQUIREMENT,
-            "--with",
-            requirement,
-            "python",
-            "-c",
-            "",
+            "--project",
         ])
+        .arg(&project);
+    if let Some(environment) = runtime_environment(runtime) {
+        command.env("UV_PROJECT_ENVIRONMENT", environment);
+    }
+    Ok(command)
+}
+
+/// True when uv can assemble a runtime's locked environment from its cache
+/// alone. Without this, uv revalidates its PyPI index entry once the entry
+/// goes stale, and with no network that fails after three retries (about
+/// 33 s) even though every wheel is already on disk. Costs 50-150 ms.
+pub fn uv_offline_ready(uv: &Path, root: &Path, runtime: &str) -> bool {
+    let Ok(mut command) = locked_run(uv, root, runtime) else {
+        return false;
+    };
+    command
+        .args(["python", "-c", ""])
+        .env("UV_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -357,9 +399,9 @@ pub fn uv_offline_ready(uv: &Path, requirement: &str) -> bool {
 
 /// Pin a sidecar launch to uv's cache when the cache is enough, so a Mac with
 /// no network or a captive portal starts dictation instead of waiting on
-/// PyPI. A first launch with nothing cached still resolves online.
-pub fn apply_offline_policy(command: &mut Command, uv: &Path, requirement: &str) {
-    if uv_offline_ready(uv, requirement) {
+/// PyPI. A first launch with nothing cached still downloads, from the lock.
+pub fn apply_offline_policy(command: &mut Command, uv: &Path, root: &Path, runtime: &str) {
+    if uv_offline_ready(uv, root, runtime) {
         command.env("UV_OFFLINE", "1");
     }
 }
@@ -384,5 +426,45 @@ mod tests {
         waker.wake();
         assert_eq!(rx.try_recv().as_deref(), Ok(""));
         assert!(rx.try_recv().is_err());
+    }
+
+    fn checkout() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    #[test]
+    fn the_asr_runtime_is_locked_to_the_pinned_requirement() {
+        let project = super::runtime_project(&checkout(), super::ASR_RUNTIME);
+        let pyproject = std::fs::read_to_string(project.join("pyproject.toml")).unwrap();
+        assert!(pyproject.contains(&format!("\"{}\"", super::ASR_RUNTIME_REQUIREMENT)));
+        let lock = std::fs::read_to_string(project.join("uv.lock")).unwrap();
+        let (name, version) = super::ASR_RUNTIME_REQUIREMENT.split_once("==").unwrap();
+        assert!(lock.contains(&format!("name = \"{name}\"\nversion = \"{version}\"")));
+        assert!(lock.contains("hash = \"sha256:"));
+    }
+
+    #[test]
+    fn a_locked_run_installs_from_the_lock_only() {
+        let command =
+            super::locked_run(std::path::Path::new("uv"), &checkout(), super::ASR_RUNTIME).unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert_eq!(args[..2], ["run", "--frozen"]);
+        assert!(!args.iter().any(|arg| arg == "--with"));
+        let environment = command
+            .get_envs()
+            .find(|(key, _)| *key == "UV_PROJECT_ENVIRONMENT")
+            .and_then(|(_, value)| value);
+        if let Some(environment) = environment {
+            assert!(!environment.to_string_lossy().contains(".app/"));
+        }
+    }
+
+    #[test]
+    fn a_missing_lock_is_an_error_not_a_fresh_resolve() {
+        let root = std::env::temp_dir().join("phonon-asr-no-lock");
+        assert!(super::locked_run(std::path::Path::new("uv"), &root, super::ASR_RUNTIME).is_err());
     }
 }
