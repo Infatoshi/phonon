@@ -362,7 +362,18 @@ class StreamSession:
 
     `prompter` supplies prompt_tokens(text), open_prompt_tokens(text), budget(text) and
     text_tokens(text) for one request (vocabulary already bound, or carried in `text`).
+
+    Long dictations: a prompter that also has fits(text), words(text) and with_words(text,
+    words) lets the session freeze a head. When the transcript's prompt plus its output budget
+    would pass the backend's context, the session refines the transcript's older sentences
+    (all but the last KEEP_WORDS words) once, keeps that output, and from then on streams only
+    the words after them. The answer is the frozen outputs then the tail's output (`pieces`).
     """
+
+    KEEP_WORDS = 80  # words a freeze leaves streaming (about 30 s of speech)
+    # A tail longer than this freezes too, so key up refines at most this many words: on the
+    # owner's 6.2 min dictation a tail of about 400 words took 761 ms at key up.
+    FREEZE_WORDS = 200
 
     def __init__(
         self,
@@ -393,18 +404,90 @@ class StreamSession:
         self.ladder = ladder
         self.draft: list[int] | None = None
         self.draft_prompt: list[int] | None = None  # the prompt the draft answers
+        self.draft_text: str | None = None  # and its request (the tail of a long one)
         self.commits = 0
         # speculative work thrown away: cached prompt tokens rolled back because the transcript
         # was revised, and draft tokens a later draft no longer contains
         self.waste = {"rolled_back": 0, "draft_revised": 0, "forwarded": 0}
+        self.head: list[str] = []  # transcript words frozen so far
+        self.head_out: list[list[int]] = []  # their outputs, one per freeze
 
     def reset(self, prompter=None) -> None:
         if prompter is not None:
             self.p = prompter
         self.draft = None
         self.draft_prompt = None
+        self.draft_text = None
         self.commits = 0
         self.waste = {"rolled_back": 0, "draft_revised": 0, "forwarded": 0}
+        self.head = []
+        self.head_out = []
+
+    def pieces(self, tail: list[int] | None) -> list[list[int]]:
+        """The answer in parts: each frozen head's output, then the tail's."""
+        return self.head_out + ([tail] if tail is not None else [])
+
+    # -- long dictations -----------------------------------------------------
+    def _freezes(self) -> bool:
+        return all(hasattr(self.p, m) for m in ("fits", "words", "with_words"))
+
+    @staticmethod
+    def _norm(word: str) -> str:
+        return "".join(c for c in word.lower() if c.isalnum())
+
+    def _tail(self, text: str) -> str:
+        """The request for the words after the frozen head. A transcript whose start no longer
+        matches the head (a deep revision) unfreezes it."""
+        if not self.head:
+            return text
+        words = self.p.words(text)
+        n = len(self.head)
+        if [self._norm(w) for w in words[:n]] != [self._norm(w) for w in self.head]:
+            self.head, self.head_out = [], []
+            self.draft = self.draft_prompt = self.draft_text = None
+            return text
+        return self.p.with_words(text, words[n:])
+
+    def _split(self, text: str) -> int:
+        """Words of `text` to freeze: up to the last sentence end that leaves KEEP_WORDS
+        streaming and whose request fits; 0 when no such split exists."""
+        words = self.p.words(text)
+        last = len(words) - self.KEEP_WORDS
+        ends = [i + 1 for i in range(last) if words[i][-1:] in ".?!"]
+        for k in reversed(ends or [last]):
+            if k > 0 and self.p.fits(self.p.with_words(text, words[:k])):
+                return k
+        k = last
+        while k > 0 and not self.p.fits(self.p.with_words(text, words[:k])):
+            k //= 2
+        return max(k, 0)
+
+    def _fit(self, text: str, should_abort=None) -> str:
+        """Freeze heads until the request for the rest fits; returns that request."""
+        tail = self._tail(text)
+        while self._freezes() and (
+            not self.p.fits(tail) or len(self.p.words(tail)) > self.FREEZE_WORDS
+        ):
+            k = self._split(tail)
+            if k <= 0:
+                break
+            words = self.p.words(tail)
+            head = self.p.with_words(tail, words[:k])
+            # the previous draft drafts it: that draft opens with the head's answer
+            out, info = self.e.speculative(
+                self.p.prompt_tokens(head),
+                self.p.budget(head),
+                self._proposer(head, self.draft, background=True),
+                block=512,
+                fuse=bool(self.draft),
+                should_abort=should_abort,
+            )
+            self.waste["forwarded"] += sum(info.get("passes", []))
+            self.head += words[:k]
+            self.head_out.append(out)
+            self.draft = self.draft_prompt = self.draft_text = None  # it answered more
+            tail = self.p.with_words(tail, words[k:])
+        return tail
 
     def _proposer(
         self, text: str, primary: list[int] | None, background: bool = False
@@ -432,6 +515,7 @@ class StreamSession:
 
     def commit(self, text: str, should_abort=None) -> dict:
         self.commits += 1
+        text = self._fit(text, should_abort)
         op = self.p.open_prompt_tokens(text)
         if self.redraft_every and self.commits % self.redraft_every == 0:
             fp = self.p.prompt_tokens(text)
@@ -451,6 +535,7 @@ class StreamSession:
             self.waste["forwarded"] += sum(info.get("passes", []))
             self.draft = out
             self.draft_prompt = fp
+            self.draft_text = text
             keep = 0
             while keep < min(len(op), len(fp)) and op[keep] == fp[keep]:
                 keep += 1
@@ -464,6 +549,8 @@ class StreamSession:
         return {"passes": []}
 
     def final(self, text: str) -> tuple[list[int], dict]:
+        """The tail's output; the whole answer is pieces(out)."""
+        text = self._fit(text)
         fp = self.p.prompt_tokens(text)
         if self.draft is not None and fp == self.draft_prompt:
             # the last background job refined exactly this prompt (the speaker stopped before

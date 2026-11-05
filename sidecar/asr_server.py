@@ -124,8 +124,6 @@ def load_metal_asr(cfg: dict, source: str):
         pa=cfg["pa"],
         pa_dir=cfg["pa_dir"],
         log=os.environ.get("PHONON_METAL_ASR_LOG"),
-        # PHONON_METAL_ASR_TERMS=<file, one term per line>: in-kernel dictionary boosting (asr_bias_v0 cb446)
-        terms=os.environ.get("PHONON_METAL_ASR_TERMS") or None,
     )
     # no window under `pa busy` here: the refiner probes its grid at the same moment, and a spinning load would make
     # it settle on a smaller grid for the session. The decode has no barrier left to stall; a stuck window at run
@@ -325,6 +323,18 @@ def main() -> None:
             emit({"type": "error", "msg": f"bad json: {req[:80]}"})
             continue
         cmd = req.get("cmd")
+        # the user's dictionary for in-decode boosting (Metal only), from the engine
+        if cmd == "terms":
+            try:
+                if hasattr(model, "set_terms"):
+                    note = model.set_terms(req.get("terms") or [])
+                else:
+                    note = "dictionary not applied: speech recognition runs on MLX"
+            except Exception as e:  # noqa: BLE001  (a bad list must not take the sidecar down)
+                note = f"dictionary not applied: {e}"
+                traceback.print_exc(file=sys.stderr)
+            print(f"asr_server: {note}", file=sys.stderr, flush=True)
+            continue
         if cmd == "shutdown":
             close_stream()
             emit({"type": "status", "phase": "shutdown", "pct": 1.0, "msg": "bye"})

@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 
 /// Pinned correction model: Phonon's public refiner, fine-tuned from
-/// LiquidAI/LFM3-1.7B on public audio only. One repository holds the
+/// LiquidAI/LFM3-1.7B on public and synthetic transcripts, with writing
+/// modes (`phonon_refiner.json` `writing_modes`). One repository holds the
 /// native engine's GGUF target and drafter (`phonon_engine.json`) and the MLX
 /// weights the sidecar falls back to. The revision is exact so an upstream
 /// re-upload cannot change what shipped users run.
 /// RELEASE: the revision is the Hugging Face commit of the upload; set it
 /// after the upload and before tagging.
 pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
-pub const POLISH_MODEL_REVISION: &str = "74ea4b61501a791a342a0ebc40f32827049e7393";
+pub const POLISH_MODEL_REVISION: &str = "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e";
 /// Pinned runtime, for the same reason.
 pub const POLISH_RUNTIME_REQUIREMENT: &str = "mlx-lm==0.31.3";
 

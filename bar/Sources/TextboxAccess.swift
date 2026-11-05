@@ -56,6 +56,34 @@ enum TextboxAccess {
         return element
     }
 
+    static let textRoles: Set<String> = [
+        kAXTextFieldRole as String, kAXTextAreaRole as String, kAXComboBoxRole as String,
+        "AXSearchField", "AXWebArea",
+    ]
+
+    /// True only when a paste into `pid` now would surely land nowhere: the app has no
+    /// focused window (every window closed), or it is Finder with no text field focused
+    /// (the desktop or a file list). Anything unclear, such as an app that is slow to
+    /// answer or exposes no focused element, counts as a target, so a paste is never
+    /// withheld from a field that might take it. Wispr withholds on any non-editable
+    /// focus; terminals and canvas apps would trip that here.
+    static func pasteHasNoTarget(pid: pid_t, bundleID: String?) -> Bool {
+        guard AXIsProcessTrusted(), pid > 0 else { return false }
+        // A launcher's field (Spotlight, Raycast) takes keys without its app being frontmost.
+        let focused = focusedElement()
+        if let focused, textRoles.contains(string(focused, kAXRoleAttribute) ?? "") {
+            return false
+        }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        var window: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            app, kAXFocusedWindowAttribute as CFString, &window)
+        if status == .noValue { return true }
+        // Finder with no text field focused (checked above): the desktop or a file list.
+        return bundleID == "com.apple.finder"
+    }
+
     /// The title of an app's focused window. Blocking AX.
     static func focusedWindowTitle(pid: pid_t) -> String? {
         guard AXIsProcessTrusted() else { return nil }

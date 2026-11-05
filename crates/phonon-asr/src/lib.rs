@@ -269,6 +269,12 @@ impl AsrSidecar {
         Ok(())
     }
 
+    /// Dictionary terms for the recognizer to favor (Metal Parakeet's in-decode boosting).
+    /// Replaces the previous list; an empty list turns boosting off.
+    pub fn set_terms(&mut self, terms: &[String]) -> Result<()> {
+        self.send(json!({"cmd":"terms", "terms":terms}))
+    }
+
     pub fn transcribe(&mut self, path: &Path, id: Option<&str>) -> Result<()> {
         self.send(json!({"cmd":"transcribe", "path":path, "id":id}))
     }

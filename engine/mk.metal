@@ -45,8 +45,8 @@ using namespace metal;
 #define SP_MAX 2
 #endif
 #define SP (NB <= SP_MAX)
-#if !SP && NB != 8
-#error "the MMA path is built for exactly 8 token rows (verify: 1 + 7 drafted)"
+#if !SP && NB != 8 && NB != 16
+#error "the MMA path is built for 8 or 16 token rows (verify: 1 + 7 drafted; a user turn + draft: up to 16)"
 #endif
 // rows per simdgroup work unit: 2 (as ggml) on the single-row path, 8 (one MMA tile) on the MMA path
 #ifndef RU_SP
@@ -67,13 +67,22 @@ using namespace metal;
 #ifndef Q4M_SHARE
 #define Q4M_SHARE 0  // SwiGLU gate/up and conv B/C/X tiles in one pass over y: no gain on the M4 Max, spills on the M1
 #endif
-#define SCR_LEN (SP ? 1 : NSG * TN * 32 * 2 * 2)  // float2 partials x 2 (SwiGLU: gate, up)
-#define NBT 1
-#define NBP 8
-#define WS 64
+#ifndef ATT_ORDER
+#define ATT_ORDER 1  // attention units that share a K/V chunk are consecutive (op_attn)
+#endif
+#ifndef NORM_DIST
+#define NORM_DIST 1  // norm-only phases (MMA path): one token row per threadgroup (prologue_rows)
+#endif
+#ifndef NORM_PREFETCH
+#define NORM_PREFETCH 1  // and their residual rows and weights touched during the barrier before them (prefetch_next)
+#endif
+// MMA path token blocks: NB = 16 runs two 8-token B tiles against each dequantized weight fragment
+#define NBT (SP ? 1 : NB / 8)
+#define SCR_LEN (SP ? 1 : NSG * TN * 32 * 2 * 2 * NBT)  // float2 partials x 2 (SwiGLU: gate, up) x token blocks
 // Matvec inputs (normalized y, conv output, SwiGLU output, attention output) on the MMA path are stored in the
-// q4m fragment order YQ(i, b): each lane's B fragments of a 64-column chunk are 16 contiguous floats. Everything
-// else (and everything on the single-row path) is row-major: token row b at b * dim.
+// q4m fragment order YQ(i, b): each lane's B fragments of a 64-column chunk are 16 contiguous floats; with NB = 16,
+// token block b / 8 at (b / 8) * 8 * dim (YQ2). Everything else (and everything on the single-row path) is
+// row-major: token row b at b * dim.
 inline uint frag_lane(uint r, uint c) { return 16 * (r / 4) + 8 * (c / 4) + 2 * (r % 4) + (c % 4) / 2; }
 inline uint YQ(uint k, uint b) {
     const uint kl = k % 64, s4 = kl / 32, w = kl % 32;
@@ -81,7 +90,8 @@ inline uint YQ(uint k, uint b) {
     const uint s = 4 * s4 + 2 * ((w % 8) / 4) + w % 2;   // step
     return (k / 64) * 512 + frag_lane(i, b) * 16 + s * 2 + b % 2;
 }
-#define YI(i, b, dim) (SP ? (b) * (dim) + (i) : YQ(i, b))
+inline uint YQ2(uint k, uint b, uint dim) { return (b / 8) * 8 * dim + YQ(k, b % 8); }
+#define YI(i, b, dim) (SP ? (b) * (dim) + (i) : YQ2(i, b, dim))
 
 typedef struct {
     half d, dmin;
@@ -368,25 +378,29 @@ inline void dot_q4m(uint wtype, device const uchar * w0, uint rb, uint n_rows, u
         device const uchar * w = t < NT1 ? w0 : t < 2 * NT1 ? w1 : w2;
         rows[t] = w + min(8 * (t % NT1) + r, n_rows - 1) * rb;
     }
+    const uint ystride = c1 * 64 * 8;  // token block bt of y at y + bt * 8 * k (YQ2); c1 = k / 64
     for (uint ch = c0; ch < c1; ch += cstep) {
         const uint blk = ch / 4, p = ch % 4;
-        // B fragments of this chunk: 16 contiguous floats per lane
-        device const float4 * yq = (device const float4 *) (y + ch * 512 + lane * 16);
-        const float4 y0 = yq[0], y1 = yq[1], y2 = yq[2], y3 = yq[3];
-        simdgroup_float8x8 bm[8];
-        bm[0].thread_elements()[0] = y0[0]; bm[0].thread_elements()[1] = y0[1];
-        bm[1].thread_elements()[0] = y0[2]; bm[1].thread_elements()[1] = y0[3];
-        bm[2].thread_elements()[0] = y1[0]; bm[2].thread_elements()[1] = y1[1];
-        bm[3].thread_elements()[0] = y1[2]; bm[3].thread_elements()[1] = y1[3];
-        bm[4].thread_elements()[0] = y2[0]; bm[4].thread_elements()[1] = y2[1];
-        bm[5].thread_elements()[0] = y2[2]; bm[5].thread_elements()[1] = y2[3];
-        bm[6].thread_elements()[0] = y3[0]; bm[6].thread_elements()[1] = y3[1];
-        bm[7].thread_elements()[0] = y3[2]; bm[7].thread_elements()[1] = y3[3];
-        // per-token sums of y over each sub-block (lanes sharing columns c, c + 1 differ in lane bits 1, 2, 4)
-        float2 s0 = float2(y0[0] + y0[2] + y1[0] + y1[2], y0[1] + y0[3] + y1[1] + y1[3]);
-        float2 s1 = float2(y2[0] + y2[2] + y3[0] + y3[2], y2[1] + y2[3] + y3[1] + y3[3]);
-        s0 += simd_shuffle_xor(s0, 2); s0 += simd_shuffle_xor(s0, 4); s0 += simd_shuffle_xor(s0, 16);
-        s1 += simd_shuffle_xor(s1, 2); s1 += simd_shuffle_xor(s1, 4); s1 += simd_shuffle_xor(s1, 16);
+        // B fragments of this chunk per token block: 16 contiguous floats per lane
+        simdgroup_float8x8 bm[NBT][8];
+        float2 s0[NBT], s1[NBT];
+        FOR_UNROLL (uint bt = 0; bt < NBT; ++bt) {
+            device const float4 * yq = (device const float4 *) (y + bt * ystride + ch * 512 + lane * 16);
+            const float4 y0 = yq[0], y1 = yq[1], y2 = yq[2], y3 = yq[3];
+            bm[bt][0].thread_elements()[0] = y0[0]; bm[bt][0].thread_elements()[1] = y0[1];
+            bm[bt][1].thread_elements()[0] = y0[2]; bm[bt][1].thread_elements()[1] = y0[3];
+            bm[bt][2].thread_elements()[0] = y1[0]; bm[bt][2].thread_elements()[1] = y1[1];
+            bm[bt][3].thread_elements()[0] = y1[2]; bm[bt][3].thread_elements()[1] = y1[3];
+            bm[bt][4].thread_elements()[0] = y2[0]; bm[bt][4].thread_elements()[1] = y2[1];
+            bm[bt][5].thread_elements()[0] = y2[2]; bm[bt][5].thread_elements()[1] = y2[3];
+            bm[bt][6].thread_elements()[0] = y3[0]; bm[bt][6].thread_elements()[1] = y3[1];
+            bm[bt][7].thread_elements()[0] = y3[2]; bm[bt][7].thread_elements()[1] = y3[3];
+            // per-token sums of y over each sub-block (lanes sharing columns c, c + 1 differ in lane bits 1, 2, 4)
+            s0[bt] = float2(y0[0] + y0[2] + y1[0] + y1[2], y0[1] + y0[3] + y1[1] + y1[3]);
+            s1[bt] = float2(y2[0] + y2[2] + y3[0] + y3[2], y2[1] + y2[3] + y3[1] + y3[3]);
+            s0[bt] += simd_shuffle_xor(s0[bt], 2); s0[bt] += simd_shuffle_xor(s0[bt], 4); s0[bt] += simd_shuffle_xor(s0[bt], 16);
+            s1[bt] += simd_shuffle_xor(s1[bt], 2); s1[bt] += simd_shuffle_xor(s1[bt], 4); s1[bt] += simd_shuffle_xor(s1[bt], 16);
+        }
         FOR_UNROLL (uint t = 0; t < NTL; ++t) {
             device const uchar * b = rows[t] + blk * bsz;
             const uint4 hdr = *(device const uint4 *) b;
@@ -402,18 +416,20 @@ inline void dot_q4m(uint wtype, device const uchar * w0, uint rb, uint n_rows, u
             const half2 a2 = h1024(qa.y & 0x00FF00FFu), a3 = h1024((qa.y >> 8) & 0x00FF00FFu);
             const half2 a4 = h1024(qb.x & 0x00FF00FFu), a5 = h1024((qb.x >> 8) & 0x00FF00FFu);
             const half2 a6 = h1024(qb.y & 0x00FF00FFu), a7 = h1024((qb.y >> 8) & 0x00FF00FFu);
-            simdgroup_float8x8 P0 = make_filled_simdgroup_matrix<float, 8, 8>(0.f), P1 = P0;
-            simdgroup_half8x8 am;
+            FOR_UNROLL (uint bt = 0; bt < NBT; ++bt) {
+                simdgroup_float8x8 P0 = make_filled_simdgroup_matrix<float, 8, 8>(0.f), P1 = P0;
+                simdgroup_half8x8 am;
 #define Q4M_MMA(P, a, i) am.thread_elements()[0] = a[0]; am.thread_elements()[1] = a[1]; \
-                         simdgroup_multiply_accumulate(P, am, bm[i], P);
-            Q4M_MMA(P0, a0, 0) Q4M_MMA(P0, a1, 1) Q4M_MMA(P0, a2, 2) Q4M_MMA(P0, a3, 3)
-            Q4M_MMA(P1, a4, 4) Q4M_MMA(P1, a5, 5) Q4M_MMA(P1, a6, 6) Q4M_MMA(P1, a7, 7)
+                         simdgroup_multiply_accumulate(P, am, bm[bt][i], P);
+                Q4M_MMA(P0, a0, 0) Q4M_MMA(P0, a1, 1) Q4M_MMA(P0, a2, 2) Q4M_MMA(P0, a3, 3)
+                Q4M_MMA(P1, a4, 4) Q4M_MMA(P1, a5, 5) Q4M_MMA(P1, a6, 6) Q4M_MMA(P1, a7, 7)
 #undef Q4M_MMA
-            const float2 dm = float2(as_type<half2>(hdr.x));
-            const float2 m0 = sc_min(hdr, 2 * p), m1 = sc_min(hdr, 2 * p + 1);
-            const float2 p0 = float2(P0.thread_elements()[0], P0.thread_elements()[1]);
-            const float2 p1 = float2(P1.thread_elements()[0], P1.thread_elements()[1]);
-            acc[t] += (dm.x * m0.x) * p0 - (dm.y * m0.y) * s0 + (dm.x * m1.x) * p1 - (dm.y * m1.y) * s1;
+                const float2 dm = float2(as_type<half2>(hdr.x));  // (here, after the multiplies: NB = 8 stays bit-identical)
+                const float2 m0 = sc_min(hdr, 2 * p), m1 = sc_min(hdr, 2 * p + 1);
+                const float2 p0 = float2(P0.thread_elements()[0], P0.thread_elements()[1]);
+                const float2 p1 = float2(P1.thread_elements()[0], P1.thread_elements()[1]);
+                acc[bt * NTL + t] += (dm.x * m0.x) * p0 - (dm.y * m0.y) * s0[bt] + (dm.x * m1.x) * p1 - (dm.y * m1.y) * s1[bt];
+            }
         }
     }
 }
@@ -542,12 +558,18 @@ inline void prologue_norm(constant Phase & P, constant Params & prm, device cons
 
 // Multi-row prologue: one simdgroup per token row (rows are independent), so the rows' reductions run
 // in parallel and need no threadgroup barriers. Same arithmetic as prologue_norm, summed per lane.
+// dist (a norm-only phase): row b on simdgroup 0 of threadgroup b % n_tg, so the rows' loads and stores spread over
+// several cores instead of all eight rows on threadgroup 0's; same arithmetic per row. With the prefetch before it
+// (prefetch_next), M4 Max verify-8 step 6.36 -> 5.91 ms (2 A/B pairs, context 400; 49 norm-only phases).
 inline void prologue_rows(constant Phase & P, constant Params & prm, device const uchar * W, device float * A,
-                          device float * y, uint tg, ushort sg, ushort lane) {
+                          device float * y, uint tg, ushort sg, ushort lane, bool dist = false, uint n_tg = 1) {
     device const float4 * wpost = (device const float4 *) (W + P.w_post);
     device const float4 * wpre = (device const float4 *) (W + P.w_pre);
     constexpr uint E = H / 4 / 32;  // float4s per lane
-    for (uint b = sg; b < NB; b += NSG) {
+    if (dist && sg != 0) return;
+    for (uint b = dist ? 0 : sg; b < NB; b += dist ? 1 : NSG) {
+        if (dist && b % n_tg != tg) continue;
+        const bool store_h = dist || tg == 0;
         device const float4 * fin = (device const float4 *) (A + P.in + b * H);
         device const float4 * hin = (device const float4 *) (A + P.hres + b * H);
         float4 hv[E];
@@ -569,7 +591,7 @@ inline void prologue_rows(constant Phase & P, constant Params & prm, device cons
             const uint i = lane + 32 * e;
             const float4 v = (hv[e] * scale) * wpre[i];
             for (uint j = 0; j < 4; ++j) y[YI(4 * i + j, b, H)] = v[j];
-            if (tg == 0) ((device float4 *) (A + P.hout + b * H))[i] = hv[e];
+            if (store_h) ((device float4 *) (A + P.hout + b * H))[i] = hv[e];
         }
     }
 }
@@ -617,7 +639,11 @@ inline void op_matvec(constant Phase & P, device const uchar * W, device float *
 inline uint q4m_lane_row(uint l) { return (l / 16) * 4 + (l % 8) / 2; }
 inline uint q4m_lane_col(uint l) { return ((l % 16) / 8) * 4 + (l % 2) * 2; }
 
-// sum the SPLIT partials of entry i (tile t = i / 32, lane l = i % 32) of matrix m for unit group gi
+// sum the SPLIT partials of entry i (tile t = i / 32, lane l = i % 32) of matrix m for unit group gi. With NBT token
+// blocks, "matrix" m here is matrix * NBT + token block: entry ((m * NSG + sg) * TN + t) * 32 + lane.
+#if Q4M_SHARE && NB > 8
+#error "Q4M_SHARE is built for 8 token rows"
+#endif
 inline float2 q4m_sum(threadgroup const float2 * scr, uint m, uint gi, uint i) {
     float2 s = 0.f;
     for (uint g = 0; g < SPLIT; ++g) s += scr[((m * NSG + gi * SPLIT + g) * TN) * 32 + i];
@@ -655,31 +681,33 @@ inline void op_matvec8(constant Phase & P, device const uchar * W, device float 
                     scr[((NSG + sg) * TN + t) * 32 + lane] = acc[TN + t];
                 }
             } else {
-                float2 acc[TN];
-                FOR_UNROLL (uint t = 0; t < TN; ++t) acc[t] = 0.f;
+                float2 acc[TN * NBT];
+                FOR_UNROLL (uint t = 0; t < TN * NBT; ++t) acc[t] = 0.f;
                 Q4M_DOT(TN, 1, S.wtype, W + S.w + (ulong) r0 * rb, rb, S.n_rows - r0, part, nch, y, lane, acc);
-                FOR_UNROLL (uint t = 0; t < TN; ++t) scr[(sg * TN + t) * 32 + lane] = acc[t];
+                FOR_UNROLL (uint bt = 0; bt < NBT; ++bt) FOR_UNROLL (uint t = 0; t < TN; ++t)
+                    scr[((bt * NSG + sg) * TN + t) * 32 + lane] = acc[bt * TN + t];
                 if (swiglu) {
                     constant Seg & S1 = P.seg[1];
                     const uint rb1 = row_bytes_of(S1.wtype, P.k);
-                    FOR_UNROLL (uint t = 0; t < TN; ++t) acc[t] = 0.f;
+                    FOR_UNROLL (uint t = 0; t < TN * NBT; ++t) acc[t] = 0.f;
                     Q4M_DOT(TN, 1, S1.wtype, W + S1.w + (ulong) r0 * rb1, rb1, S1.n_rows - r0, part, nch, y, lane, acc);
-                    FOR_UNROLL (uint t = 0; t < TN; ++t) scr[((NSG + sg) * TN + t) * 32 + lane] = acc[t];
+                    FOR_UNROLL (uint bt = 0; bt < NBT; ++bt) FOR_UNROLL (uint t = 0; t < TN; ++t)
+                        scr[(((NBT + bt) * NSG + sg) * TN + t) * 32 + lane] = acc[bt * TN + t];
                 }
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (u < total) {
             constant Seg & S = P.seg[s];
-            for (uint i = part * 32 + lane; i < TN * 32; i += SPLIT * 32) {
-                const uint t = i / 32, l = i % 32;
-                const uint row = r0 + 8 * t + q4m_lane_row(l), col = q4m_lane_col(l);
+            for (uint i = part * 32 + lane; i < NBT * TN * 32; i += SPLIT * 32) {
+                const uint bt = i / (TN * 32), ii = i % (TN * 32), t = ii / 32, l = ii % 32;
+                const uint row = r0 + 8 * t + q4m_lane_row(l), col = 8 * bt + q4m_lane_col(l);
                 if (row >= S.n_rows) continue;
-                const float2 v = q4m_sum(scr, 0, gi, i);
+                const float2 v = q4m_sum(scr, bt, gi, ii);
                 if (swiglu) {  // feeds the down matvec: q4m order
-                    const float2 up = q4m_sum(scr, 1, gi, i);
-                    A[S.out + YQ(row, col)] = silu(v[0]) * up[0];
-                    A[S.out + YQ(row, col + 1)] = silu(v[1]) * up[1];
+                    const float2 up = q4m_sum(scr, NBT + bt, gi, ii);
+                    A[S.out + YQ2(row, col, S.n_rows)] = silu(v[0]) * up[0];
+                    A[S.out + YQ2(row, col + 1, S.n_rows)] = silu(v[1]) * up[1];
                 } else {
                     A[S.out + col * S.n_rows + row] = v[0];
                     A[S.out + (col + 1) * S.n_rows + row] = v[1];
@@ -739,11 +767,11 @@ inline void op_conv8(constant Phase & P, constant Params & prm, device const uch
     const uint rl = prm.ring, rm = rl - 1;
     device float * rg = ring + (ulong) P.aux[0] * rl;
     const uint total = H / Q4M_ROWS;
-    threadgroup float * cbx = cv + gi * 2 * Q4M_ROWS * 8, * ccc = cbx + Q4M_ROWS * 8;  // [channel][token]
+    threadgroup float * cbx = cv + gi * 2 * Q4M_ROWS * NB, * ccc = cbx + Q4M_ROWS * NB;  // [channel][token]
     for (uint base = tg * UGROUPS; base < total; base += n_tg * UGROUPS) {
         const uint u = base + gi, c0 = u * Q4M_ROWS;
-        float2 acc[3][TN];  // B, C, X partials of this simdgroup (one pass over y: the three share its fragments)
-        FOR_UNROLL (uint m = 0; m < 3; ++m) FOR_UNROLL (uint t = 0; t < TN; ++t) acc[m][t] = 0.f;
+        float2 acc[3][TN * NBT];  // B, C, X partials of this simdgroup ([token block * TN + tile])
+        FOR_UNROLL (uint m = 0; m < 3; ++m) FOR_UNROLL (uint t = 0; t < TN * NBT; ++t) acc[m][t] = 0.f;
         if (u < total) {
             if (Q4M_SHARE) {
                 Q4M_DOT(TN, 3, S.wtype, W + S.w + (ulong) c0 * rb, rb, Q4M_ROWS, part, nch, y, lane, &acc[0][0],
@@ -758,20 +786,21 @@ inline void op_conv8(constant Phase & P, constant Params & prm, device const uch
         // B * X), then C
         FOR_UNROLL (uint r = 0; r < 3; ++r) {
             const uint m = r == 0 ? 0 : r == 1 ? 2 : 1;
-            FOR_UNROLL (uint t = 0; t < TN; ++t) scr[(sg * TN + t) * 32 + lane] = acc[m][t];
+            FOR_UNROLL (uint bt = 0; bt < NBT; ++bt) FOR_UNROLL (uint t = 0; t < TN; ++t)
+                scr[((bt * NSG + sg) * TN + t) * 32 + lane] = acc[m][bt * TN + t];
             threadgroup_barrier(mem_flags::mem_threadgroup);
             if (u < total) {
-                for (uint i = part * 32 + lane; i < TN * 32; i += SPLIT * 32) {
-                    const uint t = i / 32, l = i % 32;
-                    const uint ch = 8 * t + q4m_lane_row(l), col = q4m_lane_col(l);
-                    const float2 v = q4m_sum(scr, 0, gi, i);
+                for (uint i = part * 32 + lane; i < NBT * TN * 32; i += SPLIT * 32) {
+                    const uint bt = i / (TN * 32), ii = i % (TN * 32), t = ii / 32, l = ii % 32;
+                    const uint ch = 8 * t + q4m_lane_row(l), col = 8 * bt + q4m_lane_col(l);
+                    const float2 v = q4m_sum(scr, bt, gi, ii);
                     threadgroup float * dst = r == 2 ? ccc : cbx;
                     if (r == 1) {
-                        dst[ch * 8 + col] *= v[0];
-                        dst[ch * 8 + col + 1] *= v[1];
+                        dst[ch * NB + col] *= v[0];
+                        dst[ch * NB + col + 1] *= v[1];
                     } else {
-                        dst[ch * 8 + col] = v[0];
-                        dst[ch * 8 + col + 1] = v[1];
+                        dst[ch * NB + col] = v[0];
+                        dst[ch * NB + col + 1] = v[1];
                     }
                 }
             }
@@ -788,12 +817,12 @@ inline void op_conv8(constant Phase & P, constant Params & prm, device const uch
                 x[j] = q >= 0 ? hist[q & rm] : 0.f;
             }
             FOR_UNROLL (uint b = 0; b < NB; ++b) {
-                const float bx = cbx[ti * 8 + b];
+                const float bx = cbx[ti * NB + b];
                 x[CONV_L - 1 + b] = bx;
                 hist[(prm.pos + b) & rm] = bx;
                 float s = 0.f;
                 FOR_UNROLL (int j = 0; j < CONV_L; ++j) s += x[b + j] * wc[j];
-                A[S.out + YQ(ch, b)] = ccc[ti * 8 + b] * s;  // feeds out_proj
+                A[S.out + YQ2(ch, b, H)] = ccc[ti * NB + b] * s;  // feeds out_proj
             }
         }
         // the next round's reduction overwrites cbx / ccc only after its own first barrier
@@ -856,6 +885,25 @@ inline void op_attn(constant Phase & P, constant Params & prm, device float * A,
     device float * part = A + P.aux[7];
     const ulong layer = (ulong) P.aux[4] * prm.ctx;
     uint n_units = 0;
+#if ATT_ORDER
+    // units ordered chunk-major, then kv head, then row and query head: the NB * (NQH / NKVH) units that read the same
+    // K/V chunk are consecutive, so they run on the simdgroups of one or two threadgroups and share the core's cache
+    // (row-major order spread them a whole row of chunks apart). Units past a row's chunk count are skipped. M4 Max
+    // verify-8 step at context 1000: 6.19 -> 6.02 ms; decode unchanged.
+    constexpr uint GQ = NQH / NKVH;
+    uint ncmax = 0;
+    for (uint b = 0; b < NB; ++b) {
+        const uint end = prm.pos + b + 1, start = window && end > window ? end - window : 0;
+        ncmax = max(ncmax, (end - start + ATT_CH - 1) / ATT_CH);
+    }
+    n_units = ncmax * NKVH * NB * GQ;
+    for (uint u = gsg; u < n_units; u += n_sg) {
+        const uint c = u / (NKVH * NB * GQ), r = u % (NKVH * NB * GQ), g = r / (NB * GQ), b = (r % (NB * GQ)) / GQ;
+        const uint h = g * GQ + r % GQ;
+        const uint end = prm.pos + b + 1, start = window && end > window ? end - window : 0;
+        const uint nch = (end - start + ATT_CH - 1) / ATT_CH;
+        if (c >= nch || (NB > 8 && b >= prm.n_valid)) continue;  // NB = 16: padding rows' attention is skipped
+#else
     for (uint b = 0; b < NB; ++b) {
         const uint end = prm.pos + b + 1, start = window && end > window ? end - window : 0;
         n_units += NQH * ((end - start + ATT_CH - 1) / ATT_CH);
@@ -870,6 +918,7 @@ inline void op_attn(constant Phase & P, constant Params & prm, device float * A,
             rem -= NQH * nch;
         }
         const uint h = rem / nch, c = rem % nch, g = h / (NQH / NKVH);
+#endif
         const uint p0 = start + c * ATT_CH, n = min(p0 + ATT_CH, end) - p0;
         float s = -INFINITY;
         if (lane < n) {
@@ -929,7 +978,17 @@ inline void op_attn(constant Phase & P, constant Params & prm, device float * A,
 
 // Touch the first weight rows this threadgroup reads in the next phase (weights never depend on
 // activations), overlapping their DRAM latency with the barrier wait.
-inline uint prefetch_next(constant Phase & P, device const uchar * W, uint tg, uint tid, uint bytes) {
+// Before a distributed norm-only phase (NORM_DIST), threadgroup b instead touches what row b reads that is already
+// final: its residual row and the two norm weights (the input row is still being written).
+inline uint prefetch_next(constant Phase & P, device const uchar * W, device const float * A, uint tg, uint tid, uint bytes) {
+    if (!SP && NORM_DIST && NORM_PREFETCH && P.op == OP_NONE && P.pro == PRO_RESID) {
+        if (tg >= NB) return 0;
+        device const uint4 * hr = (device const uint4 *) (A + P.hres + tg * H);
+        device const uint4 * wq = (device const uint4 *) (W + P.w_post), * wp = (device const uint4 *) (W + P.w_pre);
+        uint acc = 0;
+        for (uint i = tid; i < H / 4; i += NT) acc ^= hr[i].x ^ wq[i].x ^ wp[i].x;
+        return acc;
+    }
     if (bytes == 0 || P.n_seg == 0 || P.op == OP_ATTN || P.op == OP_QKROPE) return 0;
     const uint rb = row_bytes_of(P.seg[0].wtype, P.k);
     const uint first = SP ? tg * NSG * RU : tg * UGROUPS * Q4M_ROWS;  // this threadgroup's first rows (units dealt round robin)
@@ -955,7 +1014,8 @@ inline void run_phase(constant Phase & P, constant Params & prm, device const uc
     if (norm) {
         if (use_tg)      prologue_norm(P, prm, W, A, ys, red, tg, tid, sg, lane);
         else if (!SP) {  // a norm-only phase (the host splits them off on this path): one threadgroup writes y once
-            if (P.op != OP_NONE || tg == 0) prologue_rows(P, prm, W, A, A + P.ynorm, tg, sg, lane);
+            if (P.op == OP_NONE && NORM_DIST && n_tg >= NB) prologue_rows(P, prm, W, A, A + P.ynorm, tg, sg, lane, true, n_tg);
+            else if (P.op != OP_NONE || tg == 0) prologue_rows(P, prm, W, A, A + P.ynorm, tg, sg, lane);
         }
         else             prologue_norm(P, prm, W, A, (device float *) (A + P.ynorm), red, tg, tid, sg, lane);
     } else if (use_tg && P.op != OP_ATTN && P.op != OP_QKROPE) {
@@ -1001,7 +1061,7 @@ kernel void mk_run(constant Params & prm        [[buffer(0)]],
                    ushort lane                  [[thread_index_in_simdgroup]]) {
     threadgroup float ys[YS_LEN];
     threadgroup float scr[SCR_LEN];
-    threadgroup float cv[SP ? 1 : UGROUPS * 2 * Q4M_ROWS * 8];
+    threadgroup float cv[SP ? 1 : UGROUPS * 2 * Q4M_ROWS * NB];
     threadgroup float red[2 * NSG];
     threadgroup uint tg_ok;
     uint dummy = 0;
@@ -1010,7 +1070,7 @@ kernel void mk_run(constant Params & prm        [[buffer(0)]],
         run_phase(phases[ph], prm, W, A, sync, kc, vc, ring, tg, prm.n_tg, tid, sg, lane, ys, scr, cv, red);
         if (ph + 1 < prm.n_phases) {
             grid_arrive(&sync[0], tid);
-            dummy ^= prefetch_next(phases[ph + 1], W, tg, tid, prefetch);
+            dummy ^= prefetch_next(phases[ph + 1], W, A, tg, tid, prefetch);
             if (!grid_wait(&sync[0], &sync[1], (ph + 1) * prm.n_tg, prm.spin_limit, tid, &tg_ok)) return;
         }
     }
@@ -1035,7 +1095,7 @@ kernel void mk_phase(constant Params & prm        [[buffer(0)]],
                      ushort lane                  [[thread_index_in_simdgroup]]) {
     threadgroup float ys[YS_LEN];
     threadgroup float scr[SCR_LEN];
-    threadgroup float cv[SP ? 1 : UGROUPS * 2 * Q4M_ROWS * 8];
+    threadgroup float cv[SP ? 1 : UGROUPS * 2 * Q4M_ROWS * NB];
     threadgroup float red[2 * NSG];
     run_phase(phases[0], prm, W, A, sync, kc, vc, ring, tg, n_tg, tid, sg, lane, ys, scr, cv, red);
 }

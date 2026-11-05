@@ -217,6 +217,34 @@ It does not detect other dictation apps.
 Untested before shipping: Wispr helper self-exit after SIGKILL, Aqua bridge
 orphan exit, superwhisper default hotkey and idle mic state.
 
+## Update check (macOS, since 1.0)
+
+Phonon tells its users when a newer Mac release is out. It never downloads or
+installs anything itself (`bar/Sources/UpdateCheck.swift`, `UpdateController.swift`).
+
+- When: 60 s after launch, then every 24 h while it runs, if Settings › System ›
+  Check for updates is on (settings.json `check_for_updates`, default on). "Check
+  Now" in Settings and Phonon › Check for Updates… work with it off.
+- What is sent: one unauthenticated GET to
+  `api.github.com/repos/Infatoshi/phonon/releases?per_page=10`, User-Agent
+  `Phonon`, ephemeral session (no cookies or cache). No identifier, version or
+  usage. GitHub sees the IP address.
+- Which release counts: not a draft, not a prerelease, has a `Phonon.dmg` asset,
+  tag `vX.Y.Z` (so Windows betas never match), compared numerically and newer
+  than the running `CFBundleShortVersionString`. A binary without an Info.plist
+  never checks.
+- How it tells the user: one alert per version (`update_announced`), held until
+  no dictation is recording or processing (up to 10 min, else the next check).
+  After that, "Update to Phonon X.Y.Z…" stays in the menu bar menu, the sidebar
+  and Settings.
+- Update action: a Homebrew install (a `Caskroom/phonon` entry exists) gets
+  `brew upgrade --cask phonon` copied; a DMG install gets the release page.
+- Release order: attaching `Phonon.dmg` announces the release, so bump the tap's
+  cask in the same sitting, or brew users are told before `brew upgrade` can
+  see it.
+- Reach: 0.2.3 and earlier have no check. The first announcement goes out with
+  the release after 1.0.
+
 ## Windows
 
 Phonon on Windows is one executable, `phonon-win.exe`, in `crates/phonon-win`.
@@ -328,6 +356,63 @@ guard (fall back to the transcript when the output is over twice or, past 8 word
 dictations is that user's alone and is never downloaded from or published to a hub.
 `phonon doctor` names the model in use.
 
+## Dictionary boosting in speech recognition (macOS, Metal Parakeet)
+
+The engine sends the ASR sidecar `{"cmd":"terms"}` at startup and on every `reload_dictionary`:
+each entry's canonical spelling once (the replacement when there is one), minus ordinary English
+(every word in `assets/english_words.txt`, the same check the phonetic guard uses), which the
+recognizer already spells and a boost could only insert. `phonon dictionary asr-terms` prints the
+list. The sidecar builds the term trie (`sidecar/asr_terms.py`: the tokenizer's BPE from the
+model's vocabulary, case variants, bonus 4 to start and to continue a term, budget 6) and sends it
+to `pa serve` as a dictionary request, which swaps it in place between windows (room for about 11k
+terms). The greedy TDT decode follows the trie: a bonus may push it onto a term, a walk commits
+only on a complete term at a word boundary and otherwise rolls back, and a committed boosted term
+takes the dictionary's spelling. Windows answered on the MLX fallback are not boosted. Meetings are
+not transcribed in the app.
+
+Measured (owner dictations, public refiner, 2026-11-02, 733-entry dictionary, 604 terms boosted):
+real_580 WER after the refiner -0.0011 [-0.0019, -0.0003], sep -0.0011 [-0.0020, -0.0005];
+dictionary-term misses after the refiner 72 -> 54 and 90 -> 63; 1,351 public clips with the same
+list: no WER change, one extra term insertion. The in-place request matches a trie loaded at
+startup token for token (150 of 150 recent dictations).
+
+## Intended text and writing modes (the public refiner since 1.0)
+
+The refiner's target is the text the speaker intended to type, written down so a teacher, a judge and the student
+read the same definition (`intent_v0/code/intent_spec.py`). Universal rules, every mode: fix misrecognized words and
+terms only with evidence (other recognizers, the vocabulary line, unambiguous context); remove filler (hesitations,
+stutters, repeats, meaningless "like / you know / I mean", tag questions, sentence-opening linking words); keep only
+the speaker's final version of a false start or self-correction, dropping the correction words; digits and symbols
+the way an engineer types them; never invent (no unspoken word, no completed fragment, no flipped negation) and never
+drop meaning (claims, explanations, requests, examples and qualifiers stay in every mode); plain text unless the mode
+allows otherwise.
+
+Modes, chosen from the target app's category (`app_context::AppCategory`):
+- minimal (docs, other): the universal rules and nothing else; one paragraph.
+- casual (chat): the speaker's informal words kept, a restated point kept once, every sentence lowercase except
+  names, acronyms and "I", no final period.
+- formal (email): complete sentences, grammar slips fixed without rephrasing, slang to its plain form, dictated
+  greeting and sign-off on their own lines, paragraphs on topic changes; nothing added.
+- prompt (AI prompt, code): a revised, contradicted or restated request kept once in its final version; pure
+  hesitation dropped, context and explanation kept; separate steps as a numbered list; backticks around code allowed;
+  never answers or extends the request.
+The student sees the mode as one system-prompt line ("Writing mode: casual (a chat message).").
+
+In the app: a refiner trained with modes lists its lines in `phonon_refiner.json` as `"writing_modes": {mode: line}`
+(optional `"writing_modes_by_app_category"` overrides the category table). The correction sidecar puts the line of
+the request's `context.app_category` mode between the fixed instructions and the vocabulary line, exactly as in
+training (`polish_server.WRITING_MODE_BY_CATEGORY`: chat casual, email formal, ai_prompt and code prompt, docs and
+other minimal; no app named: minimal) and reports it as `diagnostics.writingMode`. A refiner without the key gets
+no line, so its prompt is unchanged. Streaming refine needs the mode before key up: the bar sends the target app
+known at key down in `stream_start` (`"app"`) and the resolved one (a browser tab's host) in `stream_app`; the
+engine sends its category with every `stream_commit`, so background drafts are refined under the same prompt as
+the final correction. A mode that changes after a draft only costs speed: the answer is the final prompt's.
+
+Measured by a blind pairwise judge (Claude Opus 5.5, both orders, a verdict only when both orders agree) that
+reads the spec, the mode and the evidence of what was said (both raw recognizers, and the creator's captions on the
+three-speaker set), ranking meaning over correct words over cleanup over register. Objective side checks: leftover
+filler per 100 words, WER against captions.
+
 ## Streaming refine (settings.json `stream_refine`; default on with 16 GB of memory or more)
 
 settings.json `"stream_refine": true` or `false` decides; without the key it is on for Macs with
@@ -436,3 +521,46 @@ greedy output of the batched forward, not bit-identical to the one-token path in
 refine: a round runs every 0.4 s over up to 80 s of audio, and a key release that lands during
 a round of a long dictation waits for it (Metal: dictations of 45 s and longer p50 130-134 ms
 against 28-37 ms by length band below 45 s; MLX rounds cost more, p50 295-298 ms over 45 s).
+
+## Live text (settings.json `live_text`, on by default since 1.0)
+
+While the key is held, a non-activating panel just above the capsule shows the corrected text
+so far; each background refine replaces it, so later words can rewrite earlier ones. It needs
+streaming refine. The engine reads `live_text` at every `stream_start` (re-parsed only when
+settings.json changed), so a flip applies from the next dictation. For that stream it adds
+`draft_id` and `draft_seq` (the commit's index) to each `stream_commit` context; the sidecar
+then adds `draftId`, `draftSeq`, `draftText` (cleaned and guarded like a run) and
+`draftComplete` (false when the draft stopped at the output budget) to the reply. Without the
+key the reply is unchanged. The engine sends `{"type":"result","kind":"draft","id","text",
+"source","complete"}` for the open stream only, after the same `finish_correction` as the
+polish result (dictionary replacements, safety fallback, approved styles); the bar applies the
+same `safeFinalText` check as for the paste. At the polish result the panel shows the pasted
+text, then hides with the capsule; it hides on an empty or failed pass and at the next key down.
+It never becomes key and ignores the mouse; what is inserted is the polish result as before.
+
+The card (bar/Sources/LiveText.swift) is 420 pt wide, 13.5 pt text at line height 1.45. It
+is top-anchored in a panel that reserves room for five lines above the capsule: it starts one
+line tall and grows down as the text wraps (height eases over 140 ms, cubic-bezier(.2,.8,.3,1)),
+then scrolls to keep the newest line in view. The capsule is the usual PillView. After the
+corrected text comes the uncorrected tail: the words of the latest ASR partial beyond the
+draft's `source` (the transcript the engine committed for it), counted in words; a draft
+covers exactly its source, so no engine field was added. At key up the caret goes and a
+pending tail resolves into the polish result, which the card shows after the paste, never
+before it. `live_text_style` (settings.json, "fade" default or "blur"; picker under the
+toggle): fade starts new corrected words at 0.35 opacity, full in 140 ms, and dims the tail to
+0.5; blur blurs the tail 1.6 pt and sharpens new words in 160 ms. A draft that changes words
+already shown (word diff against the shown corrected text, `WordDiff`) morphs each changed
+run: the old words dissolve (to 0 opacity, 2 pt blur, up 3 pt) while the new ones rise in from
+3 pt below, over 200 ms, and the slot's width eases so neighbors slide; the new words glow
+white with a #ffd2b0 halo and settle to the ink in 0.42 s. Pure appends only fade or sharpen.
+Every effect is a function of time from its start, so new text is drawn on the first frame and
+nothing waits on an animation; the view's timeline runs at display rate only while something
+moves (10 Hz for the caret otherwise).
+
+Measured (bundle `phonon engine` driven as the bar drives it, 10 owner dictations of 3.6-46 s
+at 1x, native refiner, Metal Parakeet, off/on alternating, 2 runs each): drafts every 0.40 s
+p50, 0.80 s p90; a draft is shown p50 91-117 ms, p90 206-414 ms after the end of the audio it
+covers (plus up to one 0.4 s chunk); none hit the output budget. Key-up to text p50 30.9/29.3
+ms off/on in the clean run (p90 68.9/71.6); the other run had ASR-side outliers in both arms
+(off 1 of 10, on 4 of 10, up to 2 s) not reproduced. Final text identical on 10 of 10 in all
+four arm-runs.

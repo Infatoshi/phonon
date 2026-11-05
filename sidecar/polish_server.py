@@ -2,12 +2,14 @@
 """JSONL correction sidecar: load the pinned MLX correction model, polish transcripts.
 
 Speaks the same line protocol the engine already used for the correction stage:
-  stdin:  {"command":"warmup"} | {"command":"run","inputText":"…"}
+  stdin:  {"command":"warmup"} | {"command":"run","inputText":"…","context":{…}}
           {"command":"status"} | {"command":"shutdown"} | {"command":"prewarm"}
-          {"command":"stream_commit","inputText":"…"} | {"command":"stream_reset"}
+          {"command":"stream_commit","inputText":"…","context":{…}} | {"command":"stream_reset"}
+          (`context.app_category` picks a refiner's writing mode; see WRITING_MODE_BY_CATEGORY)
   stdout: {"ok":true,"status":{"state":"ready","message":"…"}}
           {"ok":true,"outputText":"…","diagnostics":{…}}
-          {"ok":true,"stream":{…}}   (after a stream_commit job; carries no outputText)
+          {"ok":true,"stream":{…}}   (after a stream_commit job; carries no outputText;
+          with `context.draft_id` also draftId, draftSeq, draftText, draftComplete: live text)
           {"ok":false,"error":"…"}
 
 Streaming refine (refiner mode only): while the speaker is still talking the engine sends
@@ -31,6 +33,7 @@ import re
 import sys
 import time
 import traceback
+from difflib import SequenceMatcher
 
 # Gemma 4 opens a thought channel by default even when the template omits
 # `<|think|>`. Prefilling a closed thought channel puts the model straight into
@@ -44,6 +47,10 @@ NO_THINK_PREFILL = "<|channel>thought\nNo thinking needed.\n<channel|>"
 # (20 of 145 real holdout dictations) to its first 256 tokens.
 OUTPUT_TOKEN_CEILING = 2048
 OUTPUT_TOKEN_FLOOR = 48
+# The native engine's context (pe.mm CTX). A streamed request whose prompt plus output budget
+# would pass it is refined in parts (StreamSession freezes the older sentences), on either
+# backend, so the text does not depend on which one serves it.
+STREAM_CONTEXT_TOKENS = 2048
 TRANSCRIPT_PATTERN = re.compile(r"<transcript>(.*?)</transcript>", re.DOTALL)
 LEAKED_MARKER_PATTERN = re.compile(r"<\|?/?(?:channel|turn|think)\|?>?")
 
@@ -98,6 +105,21 @@ GUARD_TOK_ADD = 32
 GUARD_MAX_RATIO = 2.0
 GUARD_MIN_RATIO = 0.4
 GUARD_MIN_WORDS = 8
+# Writing modes (SPEC, "Intended text and writing modes"). A refiner trained
+# with mode lines lists them in its marker as "writing_modes": {mode: line};
+# its system prompt then carries the line of the target app's mode between the
+# fixed instructions and the vocabulary line, as in training. A refiner without
+# the key gets no mode line (its prompt is unchanged). The marker may override
+# this category -> mode table with "writing_modes_by_app_category".
+WRITING_MODE_BY_CATEGORY = {
+    "chat": "casual",  # personal chat: Discord, iMessage, WhatsApp
+    "work_chat": "formal",  # Slack, Teams, Google Chat
+    "email": "formal",
+    "ai_prompt": "prompt",
+    "code": "prompt",  # terminals and editors: mostly prompts to a coding agent
+    "docs": "minimal",
+    "other": "minimal",
+}
 # A refiner directory holding this file runs on the native refiner engine (a
 # Metal megakernel with a speculative drafter, `pe serve`) instead of MLX:
 # {"binary": path, "target": GGUF path, "draft": GGUF path, "draft_kind": str},
@@ -155,6 +177,16 @@ def transcript_payload(text: str) -> str:
     return match.group(1).strip() if match else text.strip()
 
 
+def with_transcript(text: str, words: list[str]) -> str:
+    """The envelope `text` with its transcript replaced by `words` (dictionary kept)."""
+    spoken = " ".join(words)
+    if not TRANSCRIPT_PATTERN.search(text):
+        return spoken
+    return TRANSCRIPT_PATTERN.sub(
+        lambda _: f"<transcript>\n{spoken}\n</transcript>", text, count=1
+    )
+
+
 def clean_output(text: str) -> str:
     return LEAKED_MARKER_PATTERN.sub("", text).strip()
 
@@ -188,10 +220,139 @@ def refiner_vocabulary(text: str) -> list[str]:
     return vocab[: min(80, max(30, 3 * words))]
 
 
-def refiner_system_prompt(vocab: list[str]) -> str:
+TERM_SHAPE = re.compile(r"[A-Z].*[A-Z0-9]|.*\d.*|.+-.+")
+WORD_PARTS = re.compile(r"^(\W*)(.*?)(\W*)$", re.DOTALL)
+
+
+def _norm(word: str) -> str:
+    return "".join(c for c in word.lower() if c.isalnum())
+
+
+def restore_terms(spoken: str, output: str, vocab: list[str]) -> str:
+    """Put back a one-word dictionary term the speaker said where the refiner wrote another
+    term in its place ("native mtp" -> "native MTK", "the mlp" -> "the MMLU-Pro"; MTP and
+    MLP in the dictionary; owner dictation 2026-11-04 3:25 pm, a long one). Only a
+    one-for-one swap whose new word reads as a term (two capitals, a digit or a hyphen) and
+    was not said; everything else in the output is left as it is."""
+    terms = {_norm(t): t.strip() for t in vocab if t.strip() and " " not in t.strip()}
+    if not terms:
+        return output
+    said = [_norm(w) for w in spoken.split()]
+    said_set = set(said)
+    spans = [m.span() for m in re.finditer(r"\S+", output)]
+    words = [output[a:b] for a, b in spans]
+    normed = [_norm(w) for w in words]
+    fixes: dict[int, str] = {}
+    ops = SequenceMatcher(a=said, b=normed, autojunk=False).get_opcodes()
+    for op, i1, i2, j1, j2 in ops:
+        if op != "replace" or i2 - i1 != j2 - j1:
+            continue
+        for i, j in zip(range(i1, i2), range(j1, j2)):
+            term = terms.get(said[i])
+            lead, core, trail = WORD_PARTS.match(words[j]).groups()
+            if (
+                term
+                and normed[j] not in said_set
+                and normed[j] != _norm(term)
+                and TERM_SHAPE.fullmatch(core)
+            ):
+                fixes[j] = lead + term + trail
+    if not fixes:
+        return output
+    out, last = [], 0
+    for j, (a, b) in enumerate(spans):
+        if j in fixes:
+            out += [output[last:a], fixes[j]]
+            last = b
+    return "".join(out) + output[last:]
+
+
+def refiner_system_prompt(vocab: list[str], mode_line: str = "") -> str:
+    system = REFINER_SYSTEM_PROMPT
+    if mode_line:
+        system += "\n" + mode_line
     if not vocab:
-        return REFINER_SYSTEM_PROMPT
-    return REFINER_SYSTEM_PROMPT + "\n" + REFINER_VOCAB_PREFIX + ", ".join(vocab)
+        return system
+    return system + "\n" + REFINER_VOCAB_PREFIX + ", ".join(vocab)
+
+
+def read_writing_modes(model_dir: str) -> tuple[dict[str, str], dict[str, str]]:
+    """The refiner's mode lines and the app category -> mode table; ({}, {}) for a
+    refiner trained without modes or an unreadable marker."""
+    try:
+        with open(os.path.join(model_dir, REFINER_MARKER_FILE)) as handle:
+            marker = json.load(handle)
+    except (OSError, ValueError):
+        return {}, {}
+    lines = marker.get("writing_modes") if isinstance(marker, dict) else None
+    if not isinstance(lines, dict):
+        return {}, {}
+    lines = {k: v for k, v in lines.items() if isinstance(v, str) and v.strip()}
+    table = dict(WRITING_MODE_BY_CATEGORY)
+    override = marker.get("writing_modes_by_app_category")
+    if isinstance(override, dict):
+        table.update({k: v for k, v in override.items() if isinstance(v, str)})
+    return lines, table
+
+
+def writing_mode(
+    lines: dict[str, str], table: dict[str, str], context
+) -> tuple[str | None, str]:
+    """(mode, line) for a request's `context`: the app category's mode, the
+    "other" mode when the request names no app, no mode for a refiner without
+    mode lines. A `writing_mode` the user picked (Settings > Advanced > Writing style)
+    wins over the category when the refiner has that mode."""
+    if not lines:
+        return None, ""
+    forced = context.get("writing_mode") if isinstance(context, dict) else None
+    if isinstance(forced, str) and forced in lines:
+        return forced, lines[forced]
+    category = context.get("app_category") if isinstance(context, dict) else None
+    mode = table.get(category or "other") or table.get("other")
+    return (mode, lines[mode]) if mode in lines else (None, "")
+
+
+def draft_request(context) -> dict | None:
+    """Live text: a stream_commit whose context has `draft_id` (and the engine's `draft_seq`,
+    the commit's place in the stream) wants the draft's text back, tagged with both. Absent,
+    the reply carries no text and costs nothing extra."""
+    if not isinstance(context, dict):
+        return None
+    wanted = context.get("draft_id")
+    if not isinstance(wanted, str) or not wanted:
+        return None
+    tag = {"draftId": wanted}
+    seq = context.get("draft_seq")
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        tag["draftSeq"] = seq
+    return tag
+
+
+def draft_fields(
+    wanted: dict | None,
+    ids: list[int] | None,
+    budget: int,
+    decode,
+    spoken: str,
+    head: list[list[int]] = (),
+    vocab: list[str] = (),
+) -> dict:
+    """Live-text keys for a stream_commit reply: the background draft cleaned and guarded
+    exactly like a run's output (run_streamed), so the overlay and the paste share one path.
+    `head`: outputs of a long dictation's frozen parts, which come before the draft.
+    `vocab`: the request's dictionary terms (restore_terms).
+    `draftComplete` is false when the draft stopped at the output budget instead of the end
+    of its answer."""
+    if wanted is None or ids is None:
+        return {}
+    text, _ = guard_output(spoken, decode_pieces(decode, [*head, ids]))
+    text = restore_terms(spoken, text, list(vocab))
+    return {**wanted, "draftText": text, "draftComplete": len(ids) < budget}
+
+
+def decode_pieces(decode, pieces: list[list[int]]) -> str:
+    """A streamed answer's parts (frozen heads, then the tail) as one text."""
+    return " ".join(t for t in (clean_output(decode(p)) for p in pieces) if t)
 
 
 def refiner_token_budget(input_tokens: int) -> int:
@@ -660,6 +821,7 @@ def main() -> None:
         emit({"ok": False, "error": f"correction model download failed: {error}"})
         return
     refiner = os.path.isfile(os.path.join(local_dir, REFINER_MARKER_FILE))
+    mode_lines, mode_table = read_writing_modes(local_dir) if refiner else ({}, {})
     engine_config = read_engine_config(local_dir) if refiner else None
     engine_spec = (
         engine_command(
@@ -809,9 +971,9 @@ def main() -> None:
     else:
         prompt_prefix, prompt_suffix = split_rendered_prompt(render, system_prompt)
 
-    def build_prompt(text: str) -> str:
+    def build_prompt(text: str, mode_line: str = "") -> str:
         if refiner:
-            system = refiner_system_prompt(refiner_vocabulary(text))
+            system = refiner_system_prompt(refiner_vocabulary(text), mode_line)
             return render(system, transcript_payload(text)) + think_prefill
         if args.transcript_only:
             text = transcript_payload(text)
@@ -862,8 +1024,8 @@ def main() -> None:
         budget = math.ceil(spoken_tokens * 1.8) + 24
         return max(OUTPUT_TOKEN_FLOOR, min(OUTPUT_TOKEN_CEILING, budget))
 
-    def run_engine(text: str) -> dict:
-        prompt = build_prompt(text)
+    def run_engine(text: str, mode: tuple = (None, "")) -> dict:
+        prompt = build_prompt(text, mode[1])
         max_tokens = output_budget(text)
         started_at = time.perf_counter()
         reply = engine.generate(prompt, max_tokens)
@@ -874,6 +1036,9 @@ def main() -> None:
             raise RuntimeError(f"refiner engine: {reply}")
         output, guard_fired = guard_output(
             transcript_payload(text), clean_output(reply["text"])
+        )
+        output = restore_terms(
+            transcript_payload(text), output, refiner_vocabulary(text)
         )
         generated = int(reply["tokens"])
         return {
@@ -896,6 +1061,7 @@ def main() -> None:
                 ),
                 "profileTokenCount": profile_report["blockTokens"],
                 "refiner": refiner,
+                "writingMode": mode[0],
                 "guardFired": guard_fired,
                 "engine": "native",
                 "draftedTokenCount": int(reply.get("drafted", 0)),
@@ -928,13 +1094,16 @@ def main() -> None:
             )
 
         class EnvelopePrompter:
-            """Refiner prompt pieces for an engine envelope (vocabulary + transcript)."""
+            """Refiner prompt pieces for an engine envelope (vocabulary + transcript), with
+            the writing-mode line of the request being served (set before each job)."""
+
+            mode_line = ""
 
             def prompt_tokens(self, text: str) -> list[int]:
-                return encode_prompt(build_prompt(text))
+                return encode_prompt(build_prompt(text, self.mode_line))
 
             def open_prompt_tokens(self, text: str) -> list[int]:
-                system = refiner_system_prompt(refiner_vocabulary(text))
+                system = refiner_system_prompt(refiner_vocabulary(text), self.mode_line)
                 rendered = render(
                     system, transcript_payload(text) + PROMPT_SPLIT_SENTINEL
                 )
@@ -947,6 +1116,19 @@ def main() -> None:
                 return tokenizer.encode(
                     " " + transcript_payload(text), add_special_tokens=False
                 )
+
+            # Long dictations (StreamSession freezes a head when a request stops fitting).
+            def fits(self, text: str) -> bool:
+                return (
+                    len(self.prompt_tokens(text)) + self.budget(text)
+                    <= STREAM_CONTEXT_TOKENS
+                )
+
+            def words(self, text: str) -> list[str]:
+                return transcript_payload(text).split()
+
+            def with_words(self, text: str, words: list[str]) -> str:
+                return with_transcript(text, words)
 
         stream_prefix = encode_prompt(prompt_prefix)[:-1]
         eos = getattr(tokenizer, "eos_token_ids", None) or {tokenizer.eos_token_id}
@@ -985,44 +1167,64 @@ def main() -> None:
         else:
             stream.e.rollback(len(stream_prefix))
 
-    def stream_commit(text: str, should_abort) -> dict:
+    def stream_commit(
+        text: str, should_abort, mode: tuple = (None, ""), wanted: dict | None = None
+    ) -> dict:
         started_at = time.perf_counter()
         aborted = False
         info: dict = {}
+        stream.p.mode_line = mode[1]
         try:
             info = stream.commit(text, should_abort=should_abort)
         except Aborted:
             aborted = True
             # Keep only the part of the state that matches this commit's prompt prefix.
             stream.e.rollback(stream.e.common_prefix(stream.p.open_prompt_tokens(text)))
-        return {
-            "ok": True,
-            "stream": {
-                "commits": stream.commits,
-                "aborted": aborted,
-                "milliseconds": (time.perf_counter() - started_at) * 1000,
-                "draftTokenCount": len(stream.draft or []),
-                "forwardPasses": info.get("passes", []),
-            },
+        reply = {
+            "commits": stream.commits,
+            "aborted": aborted,
+            "milliseconds": (time.perf_counter() - started_at) * 1000,
+            "draftTokenCount": len(stream.draft or []),
+            "forwardPasses": info.get("passes", []),
         }
+        # Live text: an aborted pass left the previous draft, which the engine already has.
+        if not aborted:
+            reply.update(
+                draft_fields(
+                    wanted,
+                    stream.draft,
+                    output_budget(stream.draft_text or text),
+                    tokenizer.decode,
+                    transcript_payload(text),
+                    head=stream.head_out,
+                    vocab=refiner_vocabulary(text),
+                )
+            )
+        return {"ok": True, "stream": reply}
 
-    def run_streamed(text: str) -> dict:
+    def run_streamed(text: str, mode: tuple = (None, "")) -> dict:
         max_tokens = output_budget(text)
         started_at = time.perf_counter()
         commits, draft_tokens = stream.commits, len(stream.draft or [])
         cached = len(stream.e.tokens)
+        # A draft made under another mode line still drafts; the answer is this prompt's.
+        stream.p.mode_line = mode[1]
         try:
             ids, info = stream.final(text)
         except EngineError as error:
             # e.g. the session's context cap: the one-shot request continues past it
             print(f"stream: {error}; one-shot refine", file=sys.stderr)
             stream_reset(lost=True)
-            return run_engine(text)
+            return run_engine(text, mode)
         latency_ms = (time.perf_counter() - started_at) * 1000
         prompt_tokens = len(stream.p.prompt_tokens(text))
+        pieces = stream.pieces(ids)
         stream_reset()
-        output = clean_output(tokenizer.decode(ids))
+        output = decode_pieces(tokenizer.decode, pieces)
         output, guard_fired = guard_output(transcript_payload(text), output)
+        output = restore_terms(
+            transcript_payload(text), output, refiner_vocabulary(text)
+        )
         return {
             "ok": True,
             "outputText": output,
@@ -1040,6 +1242,7 @@ def main() -> None:
                 "cachedPromptTokenCount": min(cached, prompt_tokens),
                 "profileTokenCount": profile_report["blockTokens"],
                 "refiner": refiner,
+                "writingMode": mode[0],
                 "guardFired": guard_fired,
                 "engine": "native session" if engine is not None else "mlx",
                 "streamCommits": commits,
@@ -1047,15 +1250,17 @@ def main() -> None:
                 "releaseForwardPasses": info.get("passes", []),
                 # tokens of background work thrown away because the transcript was revised
                 "streamWaste": info.get("waste"),
+                # parts of a long dictation refined before the last one (0: one request)
+                "streamFrozenParts": len(pieces) - 1,
             },
         }
 
-    def run(text: str, streamed: bool = True) -> dict:
+    def run(text: str, streamed: bool = True, mode: tuple = (None, "")) -> dict:
         if streamed and stream is not None and stream.commits:
-            return run_streamed(text)
+            return run_streamed(text, mode)
         if engine is not None:
-            return run_engine(text)
-        prompt = build_prompt(text)
+            return run_engine(text, mode)
+        prompt = build_prompt(text, mode[1])
         max_tokens = output_budget(text)
         started_at = time.perf_counter()
         tokens = encode_prompt(prompt)
@@ -1090,6 +1295,9 @@ def main() -> None:
         guard_fired = False
         if refiner:
             output, guard_fired = guard_output(transcript_payload(text), output)
+            output = restore_terms(
+                transcript_payload(text), output, refiner_vocabulary(text)
+            )
         return {
             "ok": True,
             "outputText": output,
@@ -1107,6 +1315,7 @@ def main() -> None:
                 "cachedPromptTokenCount": cached,
                 "profileTokenCount": profile_report["blockTokens"],
                 "refiner": refiner,
+                "writingMode": mode[0],
                 "guardFired": guard_fired,
             },
         }
@@ -1114,6 +1323,8 @@ def main() -> None:
     ready_message = f"{args.model} loaded in {load_seconds:.1f}s"
     if refiner:
         ready_message += "; refiner prompt and word-count guard"
+    if mode_lines:
+        ready_message += "; writing modes " + ", ".join(sorted(mode_lines))
     if engine is not None:
         ready_message += "; native refiner engine"
         if engine_config.get("draft"):
@@ -1172,8 +1383,9 @@ def main() -> None:
                 stream_reset()
                 emit({"ok": False, "error": "empty inputText"})
                 return True
+            mode = writing_mode(mode_lines, mode_table, request.get("context"))
             try:
-                emit(run(text))
+                emit(run(text, mode=mode))
             except Exception as error:  # noqa: BLE001
                 stream_reset(lost=True)
                 emit({"ok": False, "error": f"correction failed: {error}"})
@@ -1231,8 +1443,10 @@ def main() -> None:
             take(reader.poll(0.0))
             return bool(queue)
 
+        context = request.get("context")
+        mode = writing_mode(mode_lines, mode_table, context)
         try:
-            emit(stream_commit(text, should_abort))
+            emit(stream_commit(text, should_abort, mode, draft_request(context)))
         except Exception as error:  # noqa: BLE001
             # A failed background commit must not surface as a correction error.
             stream_reset(lost=True)

@@ -20,8 +20,10 @@
 //   pe TARGET.gguf gen "PROMPT"                one prompt (already chat-formatted) -> greedy text on stdout
 //   pe TARGET.gguf logits PROMPTS.jsonl N      logit probe: megakernel NB=1 / NB=8 vs llama.cpp decode / batch-8
 //   pe TARGET.gguf prof                        stack GPU time NB=1 / NB=8 (PE_ONLY=kind: one phase kind x10)
+//   pe TARGET.gguf kubench                     session-step cost NB=1 / NB=8 at contexts 100/400/1000 (PE_KB_*)
+//   pe TARGET.gguf logitdump OUT.bin           raw megakernel logits, for bit-equality checks between builds
 // env: PE_DIR (mk.metal / df.metal; default next to the binary), PE_NSG, PE_TG, PE_TG8, PE_TN, PE_SPLIT, PE_MAX_TPT,
-//      PE_MAX_TPT8, PE_MM (override the per-device tuning table), PE_DEFS / PE_DEFINE (extra shader #defines), PE_NOFA,
+//      PE_MAX_TPT8, PE_PREFETCH (barrier-time weight prefetch bytes per threadgroup, default 4096), PE_MM (override the per-device tuning table), PE_DEFS / PE_DEFINE (extra shader #defines), PE_NOFA,
 //      PE_VERBOSE, PE_ROWS (run: per-request rows file), PE_SESSION_LLAMA (sessions: every forward through llama.cpp)
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -95,8 +97,8 @@ static const int CTX = 2048;             // context cap: >= 99.9% of real reques
 // (13 layers x 2048 channels x 2048 positions f32 = 218 MB; Target::full_ring)
 static const int RING_SHORT = 64;
 static const int ATT_CH = 32, ATT_MAXCH = CTX / ATT_CH;  // mk.metal ATT_CH
-static const int SHAPES[] = { 1, 8 };  // rows per launch: decode, verify (1 + 7 drafted)
-static const int MAX_NB = 8;
+static const int SHAPES[] = { 1, 8, 16 };  // rows per launch: decode, verify (1 + 7 drafted), user turn + draft (<= 16)
+static const int MAX_NB = 16;
 static const int SP_MAX = 3;             // rows <= SP_MAX: ggml's single-row matvec (bit-identical decode)
 
 static uint32_t fbits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
@@ -142,7 +144,7 @@ struct Target {
     }
     NSString * src;
     int nsg = 8, n_tg = 0, n_vocab = 0, tn = 2, split = 8;  // tn, split: q4m verify tiles (mk.metal TN, SPLIT)
-    int max_tpt = 0, max_tpt8 = 0, tg_fixed = 0, tg8_fixed = 0, n_tg8 = 0;
+    int max_tpt = 0, max_tpt8 = 0, tg_fixed = 0, tg8_fixed = 0, n_tg8 = 0, n_tg16 = 0;
     uint32_t prefetch = 4096;
     float eps = 1e-5f;
     std::vector<bool> is_attn, is_swa;
@@ -207,6 +209,7 @@ struct Target {
         max_tpt8 = getenv("PE_MAX_TPT8") ? atoi(getenv("PE_MAX_TPT8")) : max_tpt;  // the verify variant's register cap
         tg_fixed = getenv("PE_TG") ? atoi(getenv("PE_TG")) : tu.tg;
         tn = getenv("PE_TN") ? atoi(getenv("PE_TN")) : tu.tn;
+        if (getenv("PE_PREFETCH")) prefetch = (uint32_t) atoi(getenv("PE_PREFETCH"));  // bytes per threadgroup (mk_run)
         split = getenv("PE_SPLIT") ? atoi(getenv("PE_SPLIT")) : std::min(tu.split, nsg);
         for (auto & kv : g.tensors) {  // the verify path (q4m) reads Q4_K and Q5_K matrices only
             const GGUFTensor & t = kv.second;
@@ -462,7 +465,10 @@ struct Target {
     bool step(const int * tokens, int nb, int n_valid, int pos, bool with_head = true, bool retry = true,
               const std::function<void(id<MTLCommandBuffer>)> & then = nullptr) {
         Variant & v = variant(nb);
-        int & grid = nb == 1 || n_tg8 == 0 ? n_tg : n_tg8;  // the verify variant may have its own grid (register cap)
+        // the verify variants may have their own grids (register cap); NB = 16 keeps its own copy so a barrier
+        // timeout there (fewer co-resident threadgroups) halves only its grid
+        if (nb == 16 && n_tg16 == 0) n_tg16 = getenv("PE_TG16") ? atoi(getenv("PE_TG16")) : n_tg8 ? n_tg8 : n_tg;
+        int & grid = nb == 16 ? n_tg16 : nb == 1 || n_tg8 == 0 ? n_tg : n_tg8;
         Params p;
         memset(&p, 0, sizeof p);
         p.n_phases = v.n_phases;
@@ -1249,6 +1255,10 @@ struct Engine {
     std::vector<int> prefix;
     std::vector<uint8_t> prefix_state;
     std::vector<float> prefix_feat;
+    std::vector<uint16_t> prefix_k, prefix_v;  // [attention layer][position][NKVH * HD], f16
+    size_t prefix_kv_size(size_t np) const {
+        return (size_t) std::count(T.is_attn.begin(), T.is_attn.end(), true) * np * NKVH * HD;
+    }
     bool dft_has_prefix = false;
     int n_prefix_hits = 0;
 
@@ -1257,6 +1267,20 @@ struct Engine {
         llama_memory_clear(llama_get_memory(lctx), true);
         llama_forward(P, 0, prefix_feat, capture_bx ? &prefix_bx : nullptr);
         if (!capture_bx) prefix_bx.clear();
+        // K/V of every prefix position for session_open: a restored state keeps only the last 256 positions of the
+        // sliding-window layers (swa_full or not), so a prefix past that aborted the open (2026-11-03)
+        const size_t row = (size_t) NKVH * HD, np = P.size();
+        prefix_k.assign(prefix_kv_size(np), 0);
+        prefix_v.assign(prefix_kv_size(np), 0);
+        for (int il = 0; il < NL; ++il) {
+            if (!T.is_attn[il]) continue;
+            const size_t off = (size_t) T.attn_idx[il] * np * row;
+            if (!llama_phonon_export_range(lctx, il, 0, (int) np, prefix_k.data() + off, prefix_v.data() + off, nullptr)) {
+                prefix_k.clear();
+                prefix_v.clear();
+                break;
+            }
+        }
         prefix_state.resize(llama_state_seq_get_size_ext(lctx, 0, 0));
         llama_state_seq_get_data_ext(lctx, prefix_state.data(), prefix_state.size(), 0, 0);
         dft_has_prefix = false;
@@ -1327,7 +1351,16 @@ struct Engine {
             }
             fprintf(stderr, "session open: captured conv inputs vs llama.cpp conv state, max |diff| %.3g\n", dmax);
         }
-        if (!kv_put(0, np)) { fprintf(stderr, "session open: K/V export failed\n"); exit(1); }
+        if (prefix_k.size() == prefix_kv_size(np)) {
+            const size_t row = (size_t) NKVH * HD;
+            uint16_t * kc = (uint16_t *) T.kc.contents, * vc = (uint16_t *) T.vc.contents;
+            for (int il = 0; il < NL; ++il) {
+                if (!T.is_attn[il]) continue;
+                const size_t a = (size_t) T.attn_idx[il];
+                memcpy(kc + a * CTX * row, prefix_k.data() + a * np * row, (size_t) np * row * sizeof(uint16_t));
+                memcpy(vc + a * CTX * row, prefix_v.data() + a * np * row, (size_t) np * row * sizeof(uint16_t));
+            }
+        } else if (!kv_put(0, np)) { fprintf(stderr, "session open: K/V export failed\n"); exit(1); }
         ring_put(prefix_bx.data(), np, 0, np);
         s_toks = P;
         s_lv = np;
@@ -1350,9 +1383,11 @@ struct Engine {
         std::vector<int> ids;
         const int n = (int) s_toks.size(), k = (int) toks.size();
         *cancelled = false;
-        if ((k == 1 || (k <= MAX_NB && n + MAX_NB <= CTX)) && !getenv("PE_SESSION_LLAMA")) {
+        // 1 row: decode; 2-8: the 8-row verify shape; 9-16 (a user turn + its draft): the 16-row shape
+        static const int mk_max = getenv("PE_SESSION_MK_MAX") ? atoi(getenv("PE_SESSION_MK_MAX")) : MAX_NB;
+        const int nb = k == 1 ? 1 : k <= 8 ? 8 : 16;
+        if ((k == 1 || (k <= mk_max && n + nb <= CTX)) && !getenv("PE_SESSION_LLAMA")) {
             *path = "mk";
-            const int nb = k == 1 ? 1 : MAX_NB;
             T.step(toks.data(), nb, k, n);
             for (int b = from; b < k; ++b) ids.push_back(T.pick(nb, b));
             s_toks.insert(s_toks.end(), toks.begin(), toks.end());
@@ -1898,15 +1933,258 @@ int main(int argc, char ** argv) {
             if (E.ND) printf("  tpf %.2f, %d steps, %.2f ms per step\n", tpf, n_steps_total, t_steps * 1e3 / std::max(1, n_steps_total));
         } else if (mode == "prof") {
             // GPU time of the stack (no head) for NB = 1 and 8 at position 250; with PE_ONLY, one phase kind x10
-            std::vector<int> toks(8, 1000);
-            for (int nb : { 1, 8 }) {
+            std::vector<int> toks(16, 1000);
+            const int ppos = getenv("PE_PROF_POS") ? atoi(getenv("PE_PROF_POS")) : 250;  // context position
+            for (int nb : { 1, 8, 16 }) {
                 double best = 1e9;
                 for (int rep = 0; rep < 20; ++rep) {
-                    E.T.step(toks.data(), nb, nb, 250, false);
+                    E.T.step(toks.data(), nb, nb, ppos, false);
                     if (rep > 2 && E.T.last_gpu_ms >= 0) best = std::min(best, E.T.last_gpu_ms);
                 }
                 printf("prof %s NB=%d: stack GPU %.3f ms (%u phases)\n", getenv("PE_ONLY") ? getenv("PE_ONLY") : "all", nb, best,
                        E.T.variant(nb).n_phases);
+            }
+        } else if (mode == "kldump" || mode == "klcheck") {
+            // KL acceptance test between builds. IDS.txt: one prompt per line (space-separated token ids).
+            //   pe T kldump IDS.txt REF.bin   reference: per prompt, llama.cpp prefill, 48 greedy NB = 1 steps (the
+            //                                 continuation g), then g teacher-forced in 6 NB = 8 passes; writes g and
+            //                                 both paths' 48 logit rows
+            //   pe T klcheck IDS.txt REF.bin  candidate: the same with the reference's g teacher-forced on both paths;
+            //                                 per-position KL(p_ref || p_new) in nats over the full vocab (mean, p99,
+            //                                 max per path), top-1 agreement, and its own 48-token free-run greedy vs g
+            const bool dump = mode == "kldump";
+            std::ifstream in(argv[3]);
+            FILE * rf = fopen(argv[4], dump ? "wb" : "rb");
+            if (!rf) { fprintf(stderr, "cannot open %s\n", argv[4]); return 1; }
+            const int V = E.T.n_vocab, G = 48;
+            std::vector<float> l1((size_t) G * V), l8((size_t) G * V), r1((size_t) G * V), r8((size_t) G * V);
+            std::vector<float> l16((size_t) G * V), l12((size_t) G * V);
+            std::vector<double> kl1, kl8, kl16, kl12;
+            int top1_1 = 0, top1_8 = 0, top1_16 = 0, top1_12 = 0, rows = 0, free_full = 0, n_prompts = 0;
+            long free_prefix = 0, free_pos = 0;
+            auto kl = [&](const float * p, const float * q) {  // KL(softmax(p) || softmax(q))
+                double mp = -1e30, mq = -1e30;
+                for (int j = 0; j < V; ++j) { mp = std::max(mp, (double) p[j]); mq = std::max(mq, (double) q[j]); }
+                double sp = 0, sq = 0;
+                for (int j = 0; j < V; ++j) { sp += exp(p[j] - mp); sq += exp(q[j] - mq); }
+                const double lzp = mp + log(sp), lzq = mq + log(sq);
+                double k = 0;
+                for (int j = 0; j < V; ++j) {
+                    const double lp = p[j] - lzp;
+                    k += exp(lp) * (lp - (q[j] - lzq));
+                }
+                return std::max(k, 0.0);
+            };
+            std::string line;
+            while (std::getline(in, line)) {
+                std::vector<int> p;
+                std::stringstream ss(line);
+                for (int t; ss >> t;) p.push_back(t);
+                if (p.empty()) continue;
+                const int n = (int) p.size();
+                std::vector<int> g(G + 1);
+                if (!dump && fread(g.data(), sizeof(int), G + 1, rf) != (size_t) G + 1) { fprintf(stderr, "short reference\n"); return 1; }
+                // candidate free run first (its own greedy), then the forced runs
+                if (!dump) {
+                    int t = E.prefill(p), same = 0;
+                    bool diverged = t != g[0];
+                    if (!diverged) ++same;
+                    for (int i = 0; i < G && !diverged; ++i) {
+                        E.T.step(&t, 1, 1, n + i);
+                        t = E.T.pick(1, 0);
+                        if (t == g[i + 1]) ++same; else diverged = true;
+                    }
+                    free_prefix += same;
+                    free_pos += G + 1;
+                    free_full += same == G + 1;
+                }
+                int t = E.prefill(p);
+                if (dump) g[0] = t;
+                for (int i = 0; i < G; ++i) {
+                    E.T.step(&g[i], 1, 1, n + i);
+                    memcpy(&l1[(size_t) i * V], E.T.logits(1), sizeof(float) * V);
+                    if (dump) g[i + 1] = E.T.pick(1, 0);
+                }
+                for (int j = 0; j < G / 8; ++j) {
+                    E.T.step(&g[8 * j], 8, 8, n + 8 * j);
+                    memcpy(&l8[(size_t) 8 * j * V], E.T.logits(8), sizeof(float) * 8 * V);
+                }
+                // candidate only: the 16-row shape, full (3 passes of 16) and padded (4 passes of 12 rows), scored
+                // against the reference's NB = 8 rows at the same positions
+                if (!dump) {
+                    for (int j = 0; j < G / 16; ++j) {
+                        E.T.step(&g[16 * j], 16, 16, n + 16 * j);
+                        memcpy(&l16[(size_t) 16 * j * V], E.T.logits(16), sizeof(float) * 16 * V);
+                    }
+                    for (int j = 0; j < G / 12; ++j) {
+                        E.T.step(&g[12 * j], 16, 12, n + 12 * j);
+                        memcpy(&l12[(size_t) 12 * j * V], E.T.logits(16), sizeof(float) * 12 * V);
+                    }
+                }
+                if (dump) {
+                    fwrite(g.data(), sizeof(int), G + 1, rf);
+                    fwrite(l1.data(), sizeof(float), l1.size(), rf);
+                    fwrite(l8.data(), sizeof(float), l8.size(), rf);
+                } else {
+                    if (fread(r1.data(), sizeof(float), r1.size(), rf) != r1.size() ||
+                        fread(r8.data(), sizeof(float), r8.size(), rf) != r8.size()) { fprintf(stderr, "short reference\n"); return 1; }
+                    for (int i = 0; i < G; ++i) {
+                        kl1.push_back(kl(&r1[(size_t) i * V], &l1[(size_t) i * V]));
+                        kl8.push_back(kl(&r8[(size_t) i * V], &l8[(size_t) i * V]));
+                        kl16.push_back(kl(&r8[(size_t) i * V], &l16[(size_t) i * V]));
+                        kl12.push_back(kl(&r8[(size_t) i * V], &l12[(size_t) i * V]));
+                        top1_1 += argmax(&r1[(size_t) i * V], V) == argmax(&l1[(size_t) i * V], V);
+                        top1_8 += argmax(&r8[(size_t) i * V], V) == argmax(&l8[(size_t) i * V], V);
+                        top1_16 += argmax(&r8[(size_t) i * V], V) == argmax(&l16[(size_t) i * V], V);
+                        top1_12 += argmax(&r8[(size_t) i * V], V) == argmax(&l12[(size_t) i * V], V);
+                        ++rows;
+                    }
+                }
+                ++n_prompts;
+            }
+            fclose(rf);
+            if (dump) { printf("kldump: %d prompts x %d positions, both paths\n", n_prompts, G); }
+            else {
+                auto stat = [](std::vector<double> v, const char * name) {
+                    std::sort(v.begin(), v.end());
+                    const double mean = std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+                    const double p99 = v[(size_t) (0.99 * (v.size() - 1))];
+                    printf("  %s: KL mean %.3g p99 %.3g max %.3g nats  -> %s\n", name, mean, p99, v.back(),
+                           mean <= 1e-4 && p99 <= 1e-3 ? "PASS" : "FAIL");
+                    return mean <= 1e-4 && p99 <= 1e-3;
+                };
+                printf("klcheck: %d prompts, %d positions per path\n", n_prompts, rows);
+                const bool a = stat(kl1, "NB=1"), b = stat(kl8, "NB=8");
+                const bool c = stat(kl16, "NB=16, 16 rows (vs ref NB=8)"), d = stat(kl12, "NB=16, 12 rows (vs ref NB=8)");
+                printf("  top-1 agreement NB=1 %d/%d, NB=8 %d/%d, NB=16x16 %d/%d, NB=16x12 %d/%d; free-run greedy: %d/%d prompts "
+                       "all 49 tokens equal, %.4f of tokens before the first divergence\n", top1_1, rows, top1_8, rows, top1_16, rows,
+                       top1_12, rows, free_full, n_prompts, (double) free_prefix / std::max(1L, free_pos));
+                printf("KL GATE %s\n", a && b && c && d ? "PASS" : "FAIL");
+            }
+        } else if (mode == "logitdump") {
+            // pe TARGET.gguf logitdump OUT.bin: raw megakernel logits for a bit-equality check between builds. For prompt
+            // lengths 52 / 256 / 473 / 1000 of a fixed text: llama.cpp prefill, then 16 greedy NB = 1 steps, then one
+            // NB = 8 step over the 8 tokens after the prompt (rolled back to the prompt end); every logit row in order.
+            FILE * f = fopen(argv[3], "wb");
+            std::string text;
+            for (int i = 0; i < 60; ++i) text += "okay so the plan for sprint " + std::to_string(i) + " is to fix the uh tokenizer crash and ship it to Dana. ";
+            const std::vector<int> all = E.tokenize(text);
+            const int V = E.T.n_vocab;
+            for (int n : { 52, 256, 473, 1000 }) {
+                std::vector<int> p(all.begin(), all.begin() + n);
+                int t = E.prefill(p);
+                for (int i = 0; i < 16; ++i) {
+                    E.T.step(&t, 1, 1, n + i);
+                    fwrite(E.T.logits(1), sizeof(float), V, f);
+                    t = E.T.pick(1, 0);
+                }
+                E.T.step(&all[n], 8, 8, n);
+                fwrite(E.T.logits(8), sizeof(float), (size_t) 8 * V, f);
+            }
+            fclose(f);
+        } else if (mode == "kubench") {
+            // key-up cost: megakernel steps as a session runs them (with the LM head and the GPU argmax) for NB = 1
+            // (decode) and NB = 8 (verify) at contexts 100 / 400 / 1000. Per (context, NB): R groups of 30 steps
+            // after 5 warm-up steps; prints the median over groups of each group's median wall / GPU ms, and the
+            // range of the group medians. PE_KB_REPS=R (default 5). PE_KB_PHASES=1: cumulative GPU time of the
+            // first k phases at context 400 (stack without the head), per phase kind.
+            const int R = getenv("PE_KB_REPS") ? atoi(getenv("PE_KB_REPS")) : 5, N = 30;
+            std::vector<int> toks;
+            for (int b = 0; b < 16; ++b) toks.push_back(1000 + 37 * b);
+            auto med = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
+            std::vector<int> ctxs = { 100, 400, 1000 };
+            if (getenv("PE_KB_QUICK")) ctxs = { 400 };  // tuning sweeps: context 400 only
+            // PE_KB_NB=1,8,16:9,16: shapes to time; SHAPE:ROWS runs ROWS real rows in a SHAPE-row launch (2, 3: the
+            // single-row path looped). PE_KB_NOSTACK=1: steps with the head only.
+            std::vector<std::pair<int, int>> nbs = { { 1, 1 }, { 8, 8 } };
+            if (const char * s = getenv("PE_KB_NB")) {
+                nbs.clear();
+                std::stringstream ss(s);
+                std::string it;
+                while (std::getline(ss, it, ',')) {
+                    const size_t c = it.find(':');
+                    const int a = atoi(it.c_str());
+                    nbs.push_back({ a, c == std::string::npos ? a : atoi(it.c_str() + c + 1) });
+                }
+            }
+            for (int ctx : ctxs) {
+                for (auto [nb, nv] : nbs) {
+                    for (int head = 1; head >= (getenv("PE_KB_NOSTACK") ? 1 : 0); --head) {
+                        std::vector<double> gw, gg;
+                        for (int i = 0; i < 5; ++i) E.T.step(toks.data(), nb, nv, ctx, head);
+                        for (int r = 0; r < R; ++r) {
+                            std::vector<double> w, g;
+                            for (int i = 0; i < N; ++i) {
+                                const double a = now();
+                                E.T.step(toks.data(), nb, nv, ctx, head);
+                                if (head) for (int b = 0; b < nv; ++b) (void) E.T.pick(nb, b);
+                                w.push_back((now() - a) * 1e3);
+                                if (E.T.last_gpu_ms >= 0) g.push_back(E.T.last_gpu_ms);
+                            }
+                            gw.push_back(med(w));
+                            gg.push_back(g.empty() ? -1 : med(g));
+                        }
+                        printf("kubench ctx %4d NB=%d rows %2d %s: wall %.3f ms [%.3f, %.3f]  GPU %.3f ms [%.3f, %.3f]  (%d x %d)\n",
+                               ctx, nb, nv, head ? "step " : "stack", med(gw), *std::min_element(gw.begin(), gw.end()),
+                               *std::max_element(gw.begin(), gw.end()), med(gg), *std::min_element(gg.begin(), gg.end()),
+                               *std::max_element(gg.begin(), gg.end()), R, N);
+                    }
+                }
+            }
+            if (getenv("PE_KB_PHASES")) {  // phase cost = T(first k phases) - T(first k - 1), GPU min over 9 runs
+                for (int nb : { 1, 8 }) {
+                    Target::Variant & v = E.T.variant(nb);
+                    const uint32_t np = v.n_phases;
+                    const Phase * ph = (const Phase *) v.phases.contents;
+                    std::vector<double> T(np + 1, 0.0);
+                    for (uint32_t k = 1; k <= np; ++k) {
+                        v.n_phases = k;
+                        double best = 1e9;
+                        for (int r = 0; r < 9; ++r) {
+                            E.T.step(toks.data(), nb, nb, 400, false);
+                            if (r > 0 && E.T.last_gpu_ms >= 0) best = std::min(best, E.T.last_gpu_ms);
+                        }
+                        T[k] = best;
+                    }
+                    v.n_phases = np;
+                    std::map<std::string, std::pair<double, int>> by;
+                    std::map<std::string, double> mb;  // weight MB read per kind
+                    auto rbytes = [](uint32_t t, uint32_t k) { return (double) k / 256 * (t == 12 ? 144 : t == 13 ? 176 : 210); };
+                    double total_mb = 0;
+                    for (uint32_t k = 0; k < np; ++k) {
+                        const Phase & p = ph[k];
+                        std::string kind = p.op == OP_CONV ? "conv in_proj+conv" : p.op == OP_QKROPE ? "qk norm+rope" :
+                                           p.op == OP_ATTN ? "attention" : p.op == OP_SWIGLU ? "ffn gate/up" :
+                                           p.op == OP_NONE ? "norm only" : p.n_seg == 4 ? "qkv+gate proj" :
+                                           p.k == FF ? "ffn down" : p.in == v.ar.yconv ? "conv out_proj" : "attn o_proj";
+                        if (p.pro != PRO_STAGE && p.op != OP_NONE) kind += " (+norm)";
+                        auto & e = by[kind];
+                        e.first += T[k + 1] - T[k];
+                        e.second += 1;
+                        double b = 0;
+                        if (p.op == OP_MATVEC || p.op == OP_SWIGLU || p.op == OP_CONV)
+                            for (uint32_t s = 0; s < p.n_seg; ++s) b += p.seg[s].n_rows * rbytes(p.seg[s].wtype, p.k) / 1e6;
+                        mb[kind] += b;
+                        total_mb += b;
+                    }
+                    double head_ms = 0;
+                    {
+                        double a = 1e9, b = 1e9;
+                        for (int r = 0; r < 9; ++r) {
+                            E.T.step(toks.data(), nb, nb, 400, true);
+                            if (r > 0 && E.T.last_gpu_ms >= 0) a = std::min(a, E.T.last_gpu_ms);
+                            E.T.step(toks.data(), nb, nb, 400, false);
+                            if (r > 0 && E.T.last_gpu_ms >= 0) b = std::min(b, E.T.last_gpu_ms);
+                        }
+                        head_ms = a - b;
+                    }
+                    const double head_mb = E.T.n_vocab * rbytes(E.T.wt("token_embd.weight"), H) / 1e6;
+                    printf("phases NB=%d ctx 400: stack %.3f ms over %u phases (%.0f MB weights, %.0f GB/s), head + argmax %.3f ms "
+                           "(%.0f MB, %.0f GB/s)\n", nb, T[np], np, total_mb, total_mb / T[np], head_ms, head_mb, head_mb / head_ms);
+                    for (auto & kv : by) printf("  %-28s %3d phases %7.3f ms (%5.1f us each) %6.1f MB %5.0f GB/s\n", kv.first.c_str(),
+                                                 kv.second.second, kv.second.first, kv.second.first * 1e3 / kv.second.second,
+                                                 mb[kv.first], kv.second.first > 0 ? mb[kv.first] / kv.second.first : 0.0);
+                }
             }
         } else if (mode == "sessbench") {
             // session forward cost: n new tokens appended at a cached offset (rolled back to it before each rep), and

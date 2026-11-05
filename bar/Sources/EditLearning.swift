@@ -457,6 +457,7 @@ enum EditSuggestionCopy {
     static func placeName(_ category: String) -> String {
         switch category {
         case "chat": return "in chat apps"
+        case "work_chat": return "in work chat"
         case "email": return "in email"
         case "code": return "in code and terminals"
         case "ai_prompt": return "in AI prompts"

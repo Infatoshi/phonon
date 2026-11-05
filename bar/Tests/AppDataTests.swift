@@ -293,4 +293,20 @@ final class AppDataTests: XCTestCase {
         let opted = Data("{\"schema_version\": 2, \"sound_feedback\": true}".utf8)
         XCTAssertTrue(try JSONDecoder().decode(NativeSettings.self, from: opted).soundFeedback)
     }
+
+    func testClipboardAfterPasteDefaultsToTheDictationAndRoundTrips() throws {
+        let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
+        XCTAssertEqual(empty.clipboardAfterPaste, .dictation)
+        var settings = NativeSettings()
+        settings.clipboardAfterPaste = .restore
+        let encoded = try JSONEncoder().encode(settings)
+        XCTAssertTrue(String(decoding: encoded, as: UTF8.self)
+            .contains("\"clipboard_after_paste\":\"restore\""))
+        XCTAssertEqual(
+            try JSONDecoder().decode(NativeSettings.self, from: encoded).clipboardAfterPaste,
+            .restore)
+        let unknown = try JSONDecoder().decode(
+            NativeSettings.self, from: Data(#"{"clipboard_after_paste":"both"}"#.utf8))
+        XCTAssertEqual(unknown.clipboardAfterPaste, .dictation)
+    }
 }

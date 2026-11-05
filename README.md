@@ -18,7 +18,9 @@ The cask installs the Developer ID-signed and notarized app. On first launch
 Phonon downloads Parakeet TDT 0.6B v2 for speech recognition and the Phonon
 refiner 1.7B for correction, both pinned to exact revisions. That is about
 4.9 GB (2.47 GB for Parakeet, 2.40 GB for the refiner) plus the Python packages
-`uv` installs, and the one slow start; everything after it is local and offline. Tagged releases
+`uv` installs, and the one slow start; everything after it is local and offline, apart from a
+once-a-day check of GitHub for a newer release, which carries nothing about you and can be turned off
+in Settings. Tagged releases
 also include the DMG for direct installation. To build from source instead, use
 `brew install --formula infatoshi/phonon/phonon`.
 
@@ -69,7 +71,13 @@ streaming path, that transcript goes through the correction model, and a
 representative technical correction succeeds. There is no speech-only mode.
 
 The correction model is the Phonon refiner 1.7B, fine-tuned from LiquidAI's
-LFM3-1.7B on public audio only; no personal dictation went into it. It runs on
+LFM3-1.7B on transcripts of public audio and synthetic transcripts; no personal
+dictation went into it. It writes what you meant to type: misheard terms
+fixed, filler and false starts gone, and only the final version kept when you
+correct yourself. Its writing mode follows the app you dictate into: casual in
+personal chat (Discord, Messages, WhatsApp), formal in email and work chat
+(Slack, Teams), prompt in AI assistants, terminals and editors, minimal
+everywhere else. It runs on
 Phonon's native Metal engine (a decode megakernel with a speculative drafter,
 prefill through a patched llama.cpp), and falls back to an MLX copy of the same
 model when the engine cannot run. Parakeet also runs on Phonon's own Metal
@@ -79,7 +87,11 @@ refiner corrects the transcript so far, so at key-up only the last seconds are
 transcribed again. On an M4 Max that took the median from key release to
 corrected text from about 215 ms to about 30 ms (40 real dictations, measured in
 the engine; pasting adds a few ms), with the same text as transcribing the whole
-recording at once.
+recording at once. While the key is held, a card above the capsule shows the
+corrected text so far and the words just heard after it. It changes only while
+you speak, and words more than a dozen back stay put until key-up (Settings
+turns it off). Dictations of any length stream: past about 200 words the older
+sentences are corrected once and kept, so key-up stays short.
 `sidecar/polish_server.py` drives it. Correction is a pipeline stage, not a
 provider setting: there is no way to point it at a remote model.
 

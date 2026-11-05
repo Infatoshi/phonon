@@ -41,6 +41,37 @@ pub struct ServeJsonResp {
     pub error: Option<String>,
     pub status: Option<ServeStatus>,
     pub diagnostics: Option<ServeDiagnostics>,
+    /// The reply to a background `stream_commit` (never a correction result).
+    #[serde(default)]
+    pub stream: Option<StreamReply>,
+}
+
+/// The live-text part of a `stream_commit` reply; present only when the commit's context
+/// carried a `draft_id`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamReply {
+    #[serde(default, rename = "draftId")]
+    pub draft_id: Option<String>,
+    /// The commit's place in its stream (the engine's `draft_seq`), echoed back.
+    #[serde(default, rename = "draftSeq")]
+    pub draft_seq: Option<usize>,
+    #[serde(default, rename = "draftText")]
+    pub draft_text: Option<String>,
+    #[serde(default, rename = "draftComplete")]
+    pub draft_complete: Option<bool>,
+}
+
+impl ServeJsonResp {
+    /// The background draft of a live-text commit, if this reply is one.
+    pub fn draft(&self) -> Option<PolishEvent> {
+        let stream = self.stream.as_ref()?;
+        Some(PolishEvent::Draft {
+            id: stream.draft_id.clone()?,
+            seq: stream.draft_seq,
+            text: stream.draft_text.clone()?.trim().to_string(),
+            complete: stream.draft_complete.unwrap_or(false),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -421,6 +452,15 @@ pub enum PolishEvent {
         ttft_ms: f64,
         tok_s: f64,
     },
+    /// Live text: the corrected text so far of the dictation `id` (a background refine of
+    /// the transcript so far). `complete` is false when it stopped at the output budget.
+    /// Display only: never paired with a polish request.
+    Draft {
+        id: String,
+        seq: Option<usize>,
+        text: String,
+        complete: bool,
+    },
     Error {
         msg: String,
     },
@@ -563,6 +603,8 @@ impl PolishSidecar {
                     PolishEvent::Error {
                         msg: message.error.unwrap_or_else(|| "polish error".into()),
                     }
+                } else if let Some(draft) = message.draft() {
+                    draft
                 } else if let Some(text) = message.output_text {
                     let diagnostics = message.diagnostics.as_ref();
                     PolishEvent::Result {
@@ -655,12 +697,10 @@ impl PolishSidecar {
     /// The transcript so far of a dictation still in progress (same envelope as `polish`).
     /// A refiner sidecar refines it in the background so the `polish` at key release has
     /// its prompt cached and a draft to verify; the answer is not a correction result.
-    pub fn stream_commit(&mut self, text: &str) -> Result<()> {
-        writeln!(
-            self.stdin,
-            "{}",
-            json!({"command":"stream_commit", "inputText":text})
-        )?;
+    /// `context` is the dictation's app context, so the background prompt carries the
+    /// same writing mode as the `polish` that follows.
+    pub fn stream_commit(&mut self, text: &str, context: Option<&serde_json::Value>) -> Result<()> {
+        writeln!(self.stdin, "{}", stream_commit_request(text, context))?;
         self.stdin.flush()?;
         Ok(())
     }
@@ -696,10 +736,57 @@ pub fn run_request(text: &str, context: Option<&serde_json::Value>) -> serde_jso
     request
 }
 
+/// One `stream_commit` line: a `run` line by another name, context included.
+pub fn stream_commit_request(text: &str, context: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut request = run_request(text, context);
+    request["command"] = json!("stream_commit");
+    request
+}
+
 #[cfg(test)]
 mod run_request_tests {
-    use super::run_request;
+    use super::{run_request, stream_commit_request};
+
+    #[test]
+    fn a_stream_commit_carries_the_same_context_as_its_run() {
+        let context = json!({"app_category": "ai_prompt"});
+        assert_eq!(
+            stream_commit_request("hi", Some(&context)),
+            json!({"command": "stream_commit", "inputText": "hi", "context": context})
+        );
+        assert_eq!(
+            stream_commit_request("hi", None),
+            json!({"command": "stream_commit", "inputText": "hi"})
+        );
+    }
     use serde_json::json;
+
+    #[test]
+    fn only_a_live_text_commit_reply_is_a_draft() {
+        let parse = |line: &str| serde_json::from_str::<super::ServeJsonResp>(line).unwrap();
+        // the default path: a commit reply without draft keys stays silent
+        let plain = parse(r#"{"ok":true,"stream":{"commits":2,"aborted":false}}"#);
+        assert!(plain.draft().is_none());
+        assert!(parse(r#"{"ok":true,"outputText":"Hi."}"#).draft().is_none());
+        let draft = parse(
+            r#"{"ok":true,"stream":{"commits":3,"draftId":"p4","draftSeq":2,"draftText":" So far. ","draftComplete":false}}"#,
+        );
+        match draft.draft() {
+            Some(super::PolishEvent::Draft {
+                id,
+                seq,
+                text,
+                complete,
+            }) => {
+                assert_eq!(
+                    (id.as_str(), seq, text.as_str()),
+                    ("p4", Some(2), "So far.")
+                );
+                assert!(!complete);
+            }
+            other => panic!("expected a draft, got {other:?}"),
+        }
+    }
 
     #[test]
     fn context_is_added_only_when_present() {

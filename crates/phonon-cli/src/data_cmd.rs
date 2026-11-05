@@ -143,6 +143,13 @@ pub fn list_dictionary(json: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn asr_terms() -> Result<()> {
+    for term in DictionaryFile::load()?.asr_terms() {
+        println!("{term}");
+    }
+    Ok(())
+}
+
 pub fn add_dictionary(
     phrase: String,
     replacement: Option<String>,

@@ -264,3 +264,60 @@ def test_stream_session_abort_keeps_a_consistent_state():
     assert pe.toks == e.tokens
     out, _ = s.final(text(WORDS))
     assert out == reference(WORDS)
+
+
+class LongPrompter(Prompter):
+    """A prompter that lets a session freeze a head: words may end a sentence ("41."), and a
+    request fits while its prompt plus budget stay within `limit` tokens."""
+
+    def __init__(self, limit):
+        self.limit = limit
+
+    @staticmethod
+    def words(text):
+        return text.split()
+
+    def ids(self, text):
+        return [int(w.rstrip(".")) for w in text.split()]
+
+    def prompt_tokens(self, text):
+        return prompt(self.ids(text))
+
+    def open_prompt_tokens(self, text):
+        return PREFIX + self.ids(text)
+
+    def budget(self, text):
+        return len(self.ids(text)) + 2
+
+    def text_tokens(self, text):
+        return self.ids(text)
+
+    def fits(self, text):
+        return len(self.prompt_tokens(text)) + self.budget(text) <= self.limit
+
+    def with_words(self, text, words):
+        return " ".join(words)
+
+
+@pytest.mark.parametrize("backend", ["local", "pe"])
+def test_a_long_dictation_freezes_its_head_and_never_hits_the_context_cap(backend):
+    pe = FakePe()
+    pe.CTX = 60  # a request fits up to 25 words: 6 + n + 2 prompt, n + 2 output
+    e = Local() if backend == "local" else PeEngine(pe, PREFIX, {EOS})
+    s = StreamSession(e, LongPrompter(pe.CTX))
+    s.KEEP_WORDS = 5
+    spoken = [str(20 + (i * 7) % 75) + ("." if i % 6 == 5 else "") for i in range(60)]
+    for n in range(4, len(spoken) + 1, 4):
+        s.commit(" ".join(spoken[:n]))
+        assert s.p.fits(s.draft_text)  # every background request fit
+    assert len(s.head_out) >= 2
+    # every freeze but a fallback ends on a sentence
+    assert s.head[-1].endswith(".")
+    tail, _ = s.final(" ".join(spoken))
+    # the fake model rewrites word by word, so the parts join to the one-request answer
+    assert sum(s.pieces(tail), []) == reference([int(w.rstrip(".")) for w in spoken])
+    # a short dictation is one request, as before
+    s.reset()
+    s.commit(" ".join(spoken[:10]))
+    tail, _ = s.final(" ".join(spoken[:12]))
+    assert s.pieces(tail) == [reference([int(w.rstrip(".")) for w in spoken[:12]])]

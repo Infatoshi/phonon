@@ -16,8 +16,10 @@ releases provide a Developer ID-signed and notarized DMG.
   revision. It is public, ungated, CC-BY-4.0, and approximately 2.5 GB.
 - Correction uses Phonon's public refiner, `Infatoshi/phonon-refiner-1.7b`,
   pinned by revision (`crates/phonon-llm/src/paths.rs`). It is fine-tuned from
-  LiquidAI/LFM3-1.7B on public audio only and is distributed under the LFM
-  Open License v1.0. One repository holds what the app needs, approximately
+  LiquidAI/LFM3-1.7B on transcripts of public audio and synthetic transcripts
+  (no personal dictations) and is distributed under the LFM Open License
+  v1.0. It takes a writing-mode line chosen from the target app (minimal,
+  casual, formal, prompt) and lists those lines in `phonon_refiner.json`. One repository holds what the app needs, approximately
   2.4 GB: the engine's GGUF target and DFlash2 drafter (`phonon_engine.json`),
   and the same refiner as MLX weights. First launch therefore downloads roughly
   4.9 GB in total, plus `uv`'s Python packages.
@@ -52,6 +54,9 @@ website.
   `scripts/package-bar.sh` to bundle the engine in a source build.
 - The DMG keeps the local model-download design and does not bundle model
   weights or user data.
+- From 1.0 the app checks GitHub's releases API once a day and tells the user
+  about a newer release (SPEC "Update check"). It announces a release as soon as
+  its `Phonon.dmg` is attached, so bump the tap's cask in the same sitting.
 
 ## The native refiner engine
 

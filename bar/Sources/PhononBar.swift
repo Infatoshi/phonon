@@ -69,6 +69,15 @@ final class PillState: ObservableObject {
     @Published var mode: Mode = .hidden
     @Published var level = 0.0
     @Published var streamingPreviewEnabled = true
+    /// A meeting is being recorded: the red light shows in the capsule.
+    @Published var meetingRecording = false
+    /// The pointer is over the recording capsule: the stop button replaces the light.
+    @Published var stopButtonShown = false
+
+    func apply(_ flow: MeetingFlow) {
+        if meetingRecording != flow.isRecording { meetingRecording = flow.isRecording }
+        if stopButtonShown != flow.showsStopButton { stopButtonShown = flow.showsStopButton }
+    }
 }
 
 struct ModelLoadStream: Identifiable {
@@ -87,6 +96,9 @@ final class ModelStartupState: ObservableObject {
         ModelLoadStream(id: "llm", title: "Correction model"),
     ]
     @Published private(set) var ready = false
+    /// The main window shows the loader in place of the app until startup
+    /// finishes (and again while the engine restarts).
+    @Published private(set) var loaderVisible = true
 
     var progress: Double {
         streams.map { stream in
@@ -110,8 +122,13 @@ final class ModelStartupState: ObservableObject {
         ready = true
     }
 
+    func hideLoader() {
+        loaderVisible = false
+    }
+
     func markRestarting() {
         ready = false
+        loaderVisible = true
         streams = streams.map { stream in
             var stream = stream
             stream.state = "Waiting"
@@ -179,14 +196,6 @@ struct ModelStartupView: View {
         .padding(24)
         .frame(width: 520)
         .foregroundStyle(EmberTheme.text)
-        .background(
-            EmberTheme.surface,
-            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(EmberTheme.border.opacity(0.8), lineWidth: 1)
-        )
         .preferredColorScheme(.dark)
     }
 
@@ -198,6 +207,29 @@ struct ModelStartupView: View {
         case "missing": return .secondary
         default: return .secondary
         }
+    }
+}
+
+/// The one app window: the startup loader until both models pass their checks,
+/// then the full app. The app stays mounted underneath so first-run permission
+/// and privacy sheets still appear at launch.
+struct PhononWindowRoot: View {
+    @ObservedObject var startup: ModelStartupState
+    let main: PhononMainView
+
+    var body: some View {
+        ZStack {
+            main.accessibilityHidden(startup.loaderVisible)
+            if startup.loaderVisible {
+                ZStack {
+                    EmberTheme.background
+                    ModelStartupView(state: startup)
+                }
+                .contentShape(Rectangle())
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: startup.loaderVisible)
     }
 }
 
@@ -709,10 +741,15 @@ enum ScreenContextCapture {
 
 struct PillView: View {
     @ObservedObject var state: PillState
+    /// The stop button's action while a meeting records.
+    var onStop: () -> Void = {}
+    /// Renders one instant (offscreen tests); nil follows the clock.
+    var fixedTime: Date?
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-            let energy = visualEnergy(at: context.date)
+            let date = fixedTime ?? context.date
+            let energy = visualEnergy(at: date)
             let size = shellSize(energy: energy)
             Capsule(style: .continuous)
                 .fill(
@@ -731,11 +768,17 @@ struct PillView: View {
                 )
                 .shadow(
                     color: Color(red: 0.55, green: 0.16, blue: 0.04)
-                        .opacity(state.mode == .idle ? 0 : 0.22 + energy * 0.12),
+                        .opacity(glow(energy)),
                     radius: 4,
                     y: 1
                 )
                 .frame(width: size.width, height: size.height)
+                .overlay(alignment: dictating ? .leading : .center) {
+                    if state.meetingRecording {
+                        recordingMark(at: date)
+                            .padding(.leading, dictating ? 4 : 0)
+                    }
+                }
                 .frame(width: 80, height: 16, alignment: .bottom)
                 .opacity(state.mode == .hidden ? 0 : 1)
                 .animation(
@@ -743,6 +786,36 @@ struct PillView: View {
                     value: size
                 )
         }
+    }
+
+    /// Dictating while a meeting records: the capsule keeps its energy-driven
+    /// size and warmth, and the red light moves to its dark leading end.
+    private var dictating: Bool { state.mode == .listening || state.mode == .working }
+
+    /// The red light, or on hover the stop button over it.
+    private func recordingMark(at date: Date) -> some View {
+        let light = RecordLight.opacity(at: date.timeIntervalSinceReferenceDate)
+        let shown = state.stopButtonShown
+        return ZStack {
+            Circle()
+                .fill(RecordLight.color)
+                .frame(width: RecordLight.diameter, height: RecordLight.diameter)
+                .shadow(color: RecordLight.color, radius: RecordLight.glowRadius(opacity: light))
+                .opacity(shown ? 0 : light)
+                .animation(.easeOut(duration: 0.12), value: shown)
+            Button(action: onStop) { CapsuleStopButton() }
+                .buttonStyle(.plain)
+                .scaleEffect(shown ? 1 : 0.5)
+                .opacity(shown ? 1 : 0)
+                .allowsHitTesting(shown)
+                .animation(.spring(response: 0.16, dampingFraction: 0.62), value: shown)
+        }
+        .frame(width: RecordLight.diameter, height: RecordLight.diameter)
+    }
+
+    private func glow(_ energy: Double) -> Double {
+        if state.mode == .idle { return state.meetingRecording ? 0.18 : 0 }
+        return 0.22 + energy * 0.12
     }
 
     private func visualEnergy(at date: Date) -> Double {
@@ -760,7 +833,8 @@ struct PillView: View {
     private func warmth(_ energy: Double) -> Double {
         switch state.mode {
         case .hidden, .idle:
-            return 0
+            // Recording a meeting: a faint warm glow at the idle size (mock).
+            return state.meetingRecording ? 0.35 : 0
         case .listening, .working:
             return 0.50 + energy * 0.38
         }
@@ -769,7 +843,9 @@ struct PillView: View {
     private func shellSize(energy: Double) -> CGSize {
         switch state.mode {
         case .hidden, .idle:
-            return CGSize(width: 40, height: 8)
+            // Recording a meeting: slightly larger, so the light fits inside.
+            return state.meetingRecording
+                ? CGSize(width: 46, height: 12) : CGSize(width: 40, height: 8)
         case .listening:
             return CGSize(
                 width: 66 + 14 * energy,
@@ -803,7 +879,10 @@ final class PillPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
+        // Clicks pass through to the app below, except while a meeting
+        // records (the stop button). Never key or main either way.
         ignoresMouseEvents = true
+        becomesKeyOnlyIfNeeded = true
     }
 
     static func screenFrame() -> NSRect {
@@ -1083,6 +1162,9 @@ final class MicRecorder {
     private var tapFormat: AVAudioFormat?
     private var meter = 0.0
     private var meterFrame = 0
+    /// This dictation's loudest buffer and how many frames it has captured.
+    private var peakRms = 0.0
+    private var capturedFrames = 0
     private var streamSamples: [Float] = []
     private var captureEnabled = false
     private var configuredDeviceID: AudioDeviceID?
@@ -1212,9 +1294,30 @@ final class MicRecorder {
         samples = []
         meter = 0
         meterFrame = 0
+        peakRms = 0
+        capturedFrames = 0
         streamSamples.removeAll(keepingCapacity: true)
         captureEnabled = true
         lock.unlock()
+    }
+
+    /// Below this RMS (-90 dBFS) the input is digital silence: a muted, disconnected or
+    /// blocked mic. A quiet room on a working mic sits near -60 dBFS or above.
+    static let silentRms = 3e-5
+
+    /// Whether this dictation has captured at least `seconds` of audio and all of it was
+    /// digital silence.
+    func capturedOnlySilence(atLeast seconds: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return Double(capturedFrames) >= seconds * hwSampleRate && peakRms < Self.silentRms
+    }
+
+    /// Whether this dictation has captured any audio at all.
+    var capturedAnything: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedFrames > 0
     }
 
     private func ensureHardwareRunning() throws {
@@ -1348,6 +1451,8 @@ final class MicRecorder {
         }
         meter = 0.18 * meter + 0.82 * norm
         meterFrame += 1
+        peakRms = max(peakRms, rms)
+        capturedFrames += frames
         let amp = meter
         let shouldPublishAmplitude = meterFrame.isMultiple(of: 2)
         streamSamples.append(contentsOf: chunk)
@@ -1359,7 +1464,10 @@ final class MicRecorder {
         }
 
         samples.append(contentsOf: chunk)
-        let maxSamples = Int(hwSampleRate * 120)
+        // 20 minutes (230 MB at 48 kHz, held only while recording). The old 120 s kept just
+        // the tail of longer dictations, so their corpus audio no longer matched the
+        // transcript (26 of 1,203 entries by 2026-11-04).
+        let maxSamples = Int(hwSampleRate * 1200)
         if samples.count > maxSamples {
             samples.removeFirst(samples.count - maxSamples)
         }
@@ -1535,8 +1643,14 @@ final class MicRecorder {
 // MARK: - Typer
 
 enum Typer {
+    /// The target app reads the pasteboard some time after ⌘V; the old contents come back
+    /// after this, and only if nothing else was copied meanwhile.
+    static let restoreDelay: TimeInterval = 0.6
+
     @MainActor
-    static func emit(_ text: String, target: NSRunningApplication?) throws {
+    static func emit(_ text: String, target: NSRunningApplication?, restoreClipboard: Bool = false)
+        throws
+    {
         guard !text.isEmpty else { return }
         guard AXIsProcessTrusted() else {
             throw NSError(
@@ -1545,6 +1659,15 @@ enum Typer {
         }
 
         let pasteboard = NSPasteboard.general
+        let previous: [NSPasteboardItem] =
+            restoreClipboard
+            ? (pasteboard.pasteboardItems ?? []).map { item in
+                let copy = NSPasteboardItem()
+                for type in item.types {
+                    if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+                }
+                return copy
+            } : []
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             throw NSError(
@@ -1567,6 +1690,13 @@ enum Typer {
         }
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+        guard restoreClipboard, !previous.isEmpty else { return }
+        let ours = pasteboard.changeCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) {
+            guard pasteboard.changeCount == ours else { return }
+            pasteboard.clearContents()
+            pasteboard.writeObjects(previous)
+        }
     }
 
     static func makePasteEvents() -> (CGEvent, CGEvent)? {
@@ -1772,6 +1902,39 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let modelStartupState = ModelStartupState()
     private let appStore = NativeAppStore()
     private var panel: PillPanel?
+    /// Live text: the corrected text so far above the capsule (engine `draft` results).
+    private let liveText = LiveTextState()
+    private var liveTextPanel: LiveTextPanel?
+    /// A dictation with no text box to go to shows here with a copy button; so do the
+    /// mic warnings (silent mic while held, nothing heard after).
+    private let notPasted = NotPastedController()
+    private var recordingStartedAt: Date?
+    /// Tells speech from room noise on the level meter; live text changes only on speech.
+    private var voiceDetector = VoiceDetector()
+    /// How long the key was held for the dictation being finished.
+    private var heldSeconds: TimeInterval = 0
+    private var micSilenceCheck: DispatchWorkItem?
+    /// Digital silence for this long while held shows the mic warning.
+    static let micSilenceSeconds: TimeInterval = 1.5
+    /// An empty result from a hold at least this long says "didn't hear anything"; a
+    /// shorter one was most likely an accidental tap.
+    static let notHeardMinSeconds: TimeInterval = 1.0
+
+    private func checkMicSilence() {
+        guard isRecording, let started = recordingStartedAt,
+            Date().timeIntervalSince(started) >= Self.micSilenceSeconds
+        else { return }
+        let silent =
+            !recorder.capturedAnything
+            || recorder.capturedOnlySilence(atLeast: Self.micSilenceSeconds)
+        if silent {
+            if notPasted.current == nil {
+                notPasted.show(.micSilent(mic: recorder.selectedDeviceName), stays: true)
+            }
+        } else if case .micSilent = notPasted.current {
+            notPasted.dismiss()
+        }
+    }
     private let cues = CueSounds()
     private var modelStartupWindow: NSPanel?
     private var mainWindow: NSWindow?
@@ -1804,6 +1967,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var processing = false
     private var streamActive = false
     private var latestAcousticPreview = ""
+    /// Live text is on for the open dictation, so partials show as its uncorrected tail.
+    private var liveTextPass = false
+    private var liveTrace = LiveTextTrace()
     private var e2eTrace: E2ETrace?
     private var screenContextReady = true
     private var pendingFinalPolish: (text: String, id: String)?
@@ -1836,6 +2002,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         send: { [weak self] command in self?.engine.send(command) })
     private lazy var meetings = MeetingController(store: appStore)
     private var meetingMenuItem: NSMenuItem?
+    private lazy var updates = UpdateController(store: appStore)
+    private var updateMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1862,8 +2030,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 snapshotMainWindowIfRequested()
                 return
             } else if demo == "startup" {
-                showModelStatus()
-                snapshotModelWindowIfRequested()
+                showMainWindow()
+                snapshotMainWindowIfRequested()
                 return
             } else if demo == "spam" {
                 runPanelSpamDemo()
@@ -1883,7 +2051,6 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         promptPermissions()
         showMainWindow()
-        showModelStatus()
         startEngine()
         installToggleHotKey()
         installHotkey()
@@ -1895,6 +2062,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // 3 runs); do it now, off the main thread, not at the first key-down.
         Task.detached(priority: .utility) { _ = BrowserCatalog.httpsHandlers() }
         meetings.onRecordingChanged = { [weak self] app in self?.meetingRecordingChanged(app) }
+        meetings.onFlowChanged = { [weak self] flow in self?.meetingFlowChanged(flow) }
         meetings.refresh()
 
         // A competitor quit with consent leaves Phonon's tap in place; re-install
@@ -1907,6 +2075,18 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         competitors.subscribeToLaunches()
         competitors.check(trigger: "launch")
+
+        updates.isBusy = { [weak self] in
+            guard let self else { return false }
+            return self.isRecording || self.processing
+        }
+        updates.onAvailableChanged = { [weak self] update in
+            self?.updateMenuItem?.isHidden = update == nil
+            self?.updateMenuItem?.title = update.map { "Update to Phonon \($0.version)…" } ?? ""
+        }
+        appStore.onShowUpdate = { [weak self] in self?.updates.showAvailable() }
+        appStore.onCheckForUpdates = { [weak self] in self?.updates.check(manual: true) }
+        updates.start()
     }
 
     /// The dictation-start scan defers its prompt; show it once the pipeline is
@@ -1943,12 +2123,70 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func setupPanel() {
-        let size = Self.containerSize
-        let panel = PillPanel(contentRect: PillPanel.frame(size: size))
-        let host = NSHostingController(rootView: PillView(state: state))
-        host.view.frame = NSRect(origin: .zero, size: size)
-        panel.contentView = host.view
+        let panel = PillPanel(contentRect: PillPanelLayout.frame(screen: PillPanel.screenFrame()))
+        let host = PillHostingView(
+            rootView: PillPanelContent(
+                state: state, onStop: { [weak self] in self?.meetings.stopFromUser() }))
+        host.frame = NSRect(origin: .zero, size: PillPanelLayout.size)
+        host.onHover = { [weak self] inside in self?.meetings.hover(inside) }
+        panel.contentView = host
         self.panel = panel
+        let livePanel = LiveTextPanel()
+        let liveHost = NSHostingController(rootView: LiveTextView(state: liveText))
+        liveHost.view.frame = NSRect(origin: .zero, size: LiveTextPanel.size)
+        livePanel.contentView = liveHost.view
+        liveTextPanel = livePanel
+    }
+
+    /// A draft of the open dictation: shown through the same final check as the paste. It
+    /// covers the transcript the engine committed for it (`source`); later partial words
+    /// show after it as the uncorrected tail.
+    private func showLiveText(_ text: String, source: String, complete: Bool) {
+        let shown = PreviewRevisionPolicy.safeFinalText(source: source, candidate: text)
+        let sourceWords = LiveTextPolicy.words(source)
+        let covered = sourceWords.count
+        guard liveText.draftMatches(source: sourceWords) else {
+            liveTrace.record(
+                "draft_stale", input: text, applied: false, covered: covered,
+                card: liveText.shownWords)
+            return
+        }
+        guard !shown.isEmpty else {
+            liveTrace.record(
+                "draft_rejected", input: text, applied: false, covered: covered,
+                card: liveText.shownWords)
+            return
+        }
+        let applied = liveText.applyDraft(
+            shown, coveredWords: covered, complete: complete, source: sourceWords)
+        liveTrace.record(
+            "draft", input: shown, applied: applied, covered: covered, card: liveText.shownWords)
+        presentLiveText()
+    }
+
+    /// The latest speech-recognition partial: the words no draft covers yet show as the tail.
+    private func showLiveTextTail(_ transcript: String) {
+        guard liveTextPass else { return }
+        let applied = liveText.setTranscript(transcript)
+        liveTrace.record("partial", input: transcript, applied: applied, card: liveText.shownWords)
+        if !liveText.isEmpty { presentLiveText() }
+    }
+
+    private func presentLiveText() {
+        guard let liveTextPanel else { return }
+        let target = LiveTextPanel.frame(screen: PillPanel.screenFrame())
+        if liveTextPanel.frame != target {
+            liveTextPanel.setFrame(target, display: false)
+        }
+        if !liveTextPanel.isVisible {
+            liveTextPanel.orderFrontRegardless()  // never makeKey: it must not take focus
+        }
+    }
+
+    private func hideLiveText() {
+        liveTrace.finish()
+        liveText.reset()
+        liveTextPanel?.orderOut(nil)
     }
 
     private func setupModelStartupWindow() {
@@ -1963,8 +2201,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.isOpaque = false
+        window.backgroundColor = EmberTheme.nsBackground
+        window.appearance = NSAppearance(named: .darkAqua)
         window.hasShadow = true
         window.contentViewController = host
         window.center()
@@ -1974,12 +2212,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func setupMainWindow() {
         let initialPage = ProcessInfo.processInfo.environment["PHONON_MAIN_PAGE"]
             .flatMap(NativeAppPage.init(rawValue:)) ?? .home
-        let root = PhononMainView(
-            store: appStore,
-            initialPage: initialPage,
-            onSettingsChanged: { [weak self] in self?.applySettings() },
-            onShowModelStatus: { [weak self] in self?.showModelStatus() }
-        )
+        let root = PhononWindowRoot(
+            startup: modelStartupState,
+            main: PhononMainView(
+                store: appStore,
+                initialPage: initialPage,
+                onSettingsChanged: { [weak self] in self?.applySettings() },
+                onShowModelStatus: { [weak self] in self?.showModelStatus() }
+            ))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -2008,6 +2248,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(
             NSMenuItem(title: "Open Phonon…", action: #selector(showMainWindow), keyEquivalent: ","))
+        let updateItem = NSMenuItem(title: "", action: #selector(showUpdate), keyEquivalent: "")
+        updateItem.isHidden = true
+        menu.addItem(updateItem)
+        updateMenuItem = updateItem
         menu.addItem(.separator())
         menu.addItem(
             NSMenuItem(
@@ -2043,6 +2287,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showModelStatus() {
+        // While the main window shows the loader, that is the model status.
+        if modelStartupState.loaderVisible {
+            showMainWindow()
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         modelStartupWindow?.center()
         modelStartupWindow?.orderFrontRegardless()
@@ -2090,8 +2339,23 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetingMenuItem?.title = app.map { "Stop Meeting Notes (\($0))" } ?? "Stop Meeting Notes"
     }
 
+    /// The capsule follows the meeting UI: red light while recording, the stop
+    /// button on hover, and the pointer only while recording.
+    private func meetingFlowChanged(_ flow: MeetingFlow) {
+        state.apply(flow)
+        panel?.ignoresMouseEvents = !flow.capsuleAcceptsMouse
+    }
+
     @objc private func stopMeetingNotes() {
-        meetings.stop(reason: "user_stopped")
+        meetings.stopFromUser()
+    }
+
+    @objc private func showUpdate() {
+        updates.showAvailable()
+    }
+
+    @objc private func checkForUpdates() {
+        updates.check(manual: true)
     }
 
     private func promptPermissions() {
@@ -2120,9 +2384,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         appStore.engineReady = false
         appStore.engineMessage = "Engine restarting"
         streamActive = false
+        hideLiveText()
         statusItem?.button?.title = "ϕ…"
         modelStartupState.markRestarting()
-        showModelStatus()
+        showMainWindow()
         if processing, let submittedTranscribe, submittedTranscribe.id == activeId {
             pendingTranscribe = submittedTranscribe
         } else if processing, let activeId, !rawText.isEmpty {
@@ -2162,6 +2427,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             statusItem?.button?.title = meetings.isRecording ? "ϕ ●" : "ϕ"
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 guard self?.enginesReady == true else { return }
+                self?.modelStartupState.hideLoader()
                 self?.modelStartupWindow?.orderOut(nil)
             }
             if isRecording && state.streamingPreviewEnabled && !streamActive {
@@ -2196,6 +2462,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     if e2eTrace?.passId == id, e2eTrace?.firstPreviewNs == nil {
                         e2eTrace?.firstPreviewNs = DispatchTime.now().uptimeNanoseconds
                     }
+                    showLiveTextTail(stable)
                     return
                 }
                 guard id == activeId else { return }
@@ -2211,6 +2478,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                     NSLog("phonon: empty ASR for \(pid)")
                     processing = false
                     finishRecordingRetention()
+                    if heldSeconds >= Self.notHeardMinSeconds {
+                        hideLiveText()
+                        notPasted.show(.notHeard(mic: recorder.selectedDeviceName))
+                    }
                     hideAfter(0.1)
                     return
                 }
@@ -2224,7 +2495,10 @@ final class AppController: NSObject, NSApplicationDelegate {
                     e2eTrace?.llmTokensPerSecond = ev["tok_s"] as? Double
                 }
                 let text = ev["text"] as? String ?? rawText
-                let final = PreviewRevisionPolicy.safeFinalText(source: rawText, candidate: text)
+                // A dictation that is exactly a macro's trigger types its expansion.
+                let final = MacroBook.expand(
+                    PreviewRevisionPolicy.safeFinalText(source: rawText, candidate: text),
+                    macros: appStore.macros)
                 processing = false
                 if !final.isEmpty {
                     e2eTrace?.insertionStartedNs = DispatchTime.now().uptimeNanoseconds
@@ -2236,13 +2510,41 @@ final class AppController: NSObject, NSApplicationDelegate {
                     // from the text around it after the paste.
                     let editSnapshot = id.flatMap { editLearning.takeSnapshot(passID: $0) }
                     var insertionSucceeded = false
-                    do {
-                        try Typer.emit(final, target: insertionTarget)
-                        insertionSucceeded = true
-                    } catch {
-                        NSLog("phonon insertion failed: \(error.localizedDescription)")
+                    let target = insertionTarget ?? NSWorkspace.shared.frontmostApplication
+                    if let target,
+                        TextboxAccess.pasteHasNoTarget(
+                            pid: target.processIdentifier, bundleID: target.bundleIdentifier)
+                    {
+                        // Nowhere to paste: keep it on the clipboard and show it to copy.
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(final, forType: .string)
+                        hideLiveText()
+                        notPasted.show(final)
+                    } else {
+                        do {
+                            try Typer.emit(
+                                final, target: insertionTarget,
+                                restoreClipboard: appStore.settings.clipboardAfterPaste == .restore)
+                            insertionSucceeded = true
+                        } catch {
+                            NSLog("phonon insertion failed: \(error.localizedDescription)")
+                            if !AXIsProcessTrusted() {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(final, forType: .string)
+                                hideLiveText()
+                                notPasted.show(.needsAccessibility(final))
+                            }
+                        }
                     }
                     e2eTrace?.insertionCompletedNs = DispatchTime.now().uptimeNanoseconds
+                    // Live text ends on the pasted text itself, so a last-second revision
+                    // ("scratch that") shows as the paste lands and a pending tail resolves
+                    // into it. It is updated after the paste, so the paste never waits on it.
+                    if !liveText.isEmpty {
+                        liveText.applyFinal(final)
+                        liveTrace.record(
+                            "final", input: final, applied: true, card: liveText.shownWords)
+                    }
                     if insertionSucceeded, let editSnapshot, let id {
                         editLearning.didPaste(
                             editSnapshot, passID: id, pasted: final,
@@ -2260,6 +2562,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                 } else {
                     hidePill()
                 }
+            } else if kind == "draft" {
+                // Live text: the engine sends these only with settings.json `live_text` on,
+                // for the open stream. Display only; the polish result is what gets pasted.
+                guard isRecording, id == activeId else { return }
+                showLiveText(
+                    ev["text"] as? String ?? "", source: ev["source"] as? String ?? "",
+                    complete: ev["complete"] as? Bool ?? true)
             } else if kind == "edit" {
                 editLearning.handleEngineResult(ev)
             }
@@ -2281,7 +2590,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // MARK: Visibility
 
-    private static let containerSize = NSSize(width: 80, height: 16)
+    /// The capsule's own box; the panel adds room for the stop button (PillPanelLayout).
+    private static let containerSize = PillPanelLayout.capsule
 
     private func showIdle() {
         hideWork?.cancel()
@@ -2311,8 +2621,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         // panel is never ordered out, so gating this on visibility left the
         // capsule stranded on whichever display it first appeared on. It now
         // follows the screen holding the pointer, like the rest of the UI.
-        let target = PillPanel.frame(size: Self.containerSize)
-        panel.contentView?.setFrameSize(Self.containerSize)
+        let target = PillPanelLayout.frame(screen: PillPanel.screenFrame())
+        panel.contentView?.setFrameSize(PillPanelLayout.size)
         if panel.frame != target {
             panel.setFrame(target, display: false)
         }
@@ -2324,6 +2634,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func hidePill() {
         hideWork?.cancel()
+        hideLiveText()
         guard let panel else { return }
         if !panel.isVisible {
             showIdle()
@@ -2361,10 +2672,6 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func snapshotMainWindowIfRequested() {
         snapshotWindow(mainWindow)
-    }
-
-    private func snapshotModelWindowIfRequested() {
-        snapshotWindow(modelStartupWindow)
     }
 
     private func snapshotWindow(_ window: NSWindow?) {
@@ -2456,6 +2763,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             processing = false
         }
         guard !isRecording else { return }
+        notPasted.dismiss()
         editLearning.interrupt(reason: .nextDictation)
         let ownPID = ProcessInfo.processInfo.processIdentifier
         if let frontmost = NSWorkspace.shared.frontmostApplication,
@@ -2484,6 +2792,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         // minute; waking it now hides that behind the user's speech.
         if enginesReady { engine.send(["cmd": "prewarm"]) }
         latestAcousticPreview = ""
+        hideLiveText()  // a previous pass abandoned mid-correction left its text
+        // The engine reads `live_text` at the stream start too; drafts need streaming refine.
+        liveTextPass =
+            appStore.settings.liveText && engineStreamRefine && state.streamingPreviewEnabled
+        if liveTextPass { liveTrace.begin() }
+        liveText.style = appStore.settings.liveTextStyle
         let denylist = appStore.settings.screenContextDenylist
         let target = DictationTarget.resolve(
             bundleID: insertionTarget?.bundleIdentifier, name: insertionTarget?.localizedName,
@@ -2512,8 +2826,20 @@ final class AppController: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let self, self.isRecording else { return }
                 self.state.level = a
+                self.checkMicSilence()
+                let voice = self.voiceDetector.isVoice(a)
+                if voice { self.liveText.noteVoice() }
+                self.liveTrace.voice(voice)
             }
         }
+        recordingStartedAt = Date()
+        voiceDetector = VoiceDetector()
+        // No buffers at all never calls onAmplitude, so check on a timer too.
+        micSilenceCheck?.cancel()
+        let check = DispatchWorkItem { [weak self] in self?.checkMicSilence() }
+        micSilenceCheck = check
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.micSilenceSeconds + 0.3, execute: check)
         recorder.onStreamPCM16 = { [weak self] pcm in
             Task { @MainActor in
                 guard let self, self.isRecording, self.streamActive else { return }
@@ -2550,6 +2876,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         e2eTrace?.keyUpHandledNs = DispatchTime.now().uptimeNanoseconds
         isRecording = false
         processing = true
+        micSilenceCheck?.cancel()
+        if case .micSilent = notPasted.current { notPasted.dismiss() }
+        heldSeconds = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        liveText.listening = false  // the caret goes; a pending tail waits for the final text
         stopScreenSwitchWatch()
         if streamActive {
             let streamId = activeId ?? "p\(pass)"
@@ -2677,6 +3007,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             }.value
             guard let self, !Task.isCancelled, self.activeId == pass, let pass else { return }
             self.dictationTarget = target
+            if self.streamActive, self.isRecording, !target.enginePayload.isEmpty {
+                self.engine.send(["cmd": "stream_app", "id": pass, "app": target.enginePayload])
+            }
             self.dictationTextbox = field.textbox
             self.editLearning.store(field.editSnapshot, passID: pass)
             if target.denied {
@@ -2889,10 +3222,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             localHistory: appStore.settings.localHistory)
     }
 
+    /// The target app rides along so the engine's background refines use the writing mode
+    /// of the final correction; a browser tab's host follows in `stream_app`.
     private func startAsrStream() {
         guard !streamActive else { return }
         let id = activeId ?? "p\(pass)"
-        engine.send(["cmd": "stream_start", "id": id])
+        var command: [String: Any] = ["cmd": "stream_start", "id": id]
+        if let app = dictationTarget?.enginePayload, !app.isEmpty { command["app"] = app }
+        engine.send(command)
         streamActive = true
     }
 
@@ -3099,6 +3436,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         appMenu.addItem(
             withTitle: "About Phonon",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let checkUpdates = NSMenuItem(
+            title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        checkUpdates.target = self
+        appMenu.addItem(checkUpdates)
         appMenu.addItem(.separator())
         let settings = NSMenuItem(
             title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")

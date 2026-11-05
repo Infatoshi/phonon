@@ -16,7 +16,10 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AppCategory {
+    /// Personal chat (Discord, iMessage, WhatsApp): casual.
     Chat,
+    /// Work chat (Slack, Teams, Google Chat): formal, like email.
+    WorkChat,
     Email,
     /// Editors, IDEs and terminals (including agent CLIs run in them).
     Code,
@@ -31,6 +34,7 @@ impl AppCategory {
     pub fn as_str(self) -> &'static str {
         match self {
             AppCategory::Chat => "chat",
+            AppCategory::WorkChat => "work_chat",
             AppCategory::Email => "email",
             AppCategory::Code => "code",
             AppCategory::AiPrompt => "ai_prompt",
@@ -99,24 +103,26 @@ fn bundle_matches(bundle: &str, pattern: &str) -> bool {
     }
 }
 
-const CHAT_HOSTS: &[&str] = &[
+const WORK_CHAT_HOSTS: &[&str] = &[
     "slack.com",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "chat.google.com",
+    "zulip.com",
+    "app.intercom.com",
+];
+const CHAT_HOSTS: &[&str] = &[
     "discord.com",
     "web.whatsapp.com",
     "messages.google.com",
     "web.telegram.org",
-    "teams.microsoft.com",
-    "teams.live.com",
     "messenger.com",
-    "chat.google.com",
     "x.com",
     "twitter.com",
     "linkedin.com",
     "reddit.com",
     "app.beeper.com",
     "chat.beeper.com",
-    "zulip.com",
-    "app.intercom.com",
 ];
 const EMAIL_HOSTS: &[&str] = &[
     "mail.google.com",
@@ -184,9 +190,13 @@ const DOCS_HOSTS: &[&str] = &[
     "hackmd.io",
 ];
 
-const CHAT_BUNDLES: &[&str] = &[
+const WORK_CHAT_BUNDLES: &[&str] = &[
     "com.tinyspeck.slackmacgap",
     "com.slack.Slack",
+    "com.microsoft.teams",
+    "com.microsoft.teams2",
+];
+const CHAT_BUNDLES: &[&str] = &[
     "com.hnc.Discord",
     "com.discordapp.Discord",
     "org.whispersystems.signal-desktop",
@@ -195,8 +205,6 @@ const CHAT_BUNDLES: &[&str] = &[
     "net.whatsapp.WhatsApp",
     "desktop.WhatsApp",
     "com.apple.MobileSMS",
-    "com.microsoft.teams",
-    "com.microsoft.teams2",
     "com.facebook.archon",
     "im.beeper",
     "com.tencent.xinWeChat",
@@ -271,9 +279,10 @@ const DOCS_BUNDLES: &[&str] = &[
 /// The category of a dictation target. A known host wins; a browser on an
 /// unknown site is `Other`, never the browser's own category.
 pub fn categorize(bundle_id: &str, url_host: Option<&str>) -> AppCategory {
-    let host_table: [(&[&str], AppCategory); 5] = [
+    let host_table: [(&[&str], AppCategory); 6] = [
         (AI_HOSTS, AppCategory::AiPrompt),
         (EMAIL_HOSTS, AppCategory::Email),
+        (WORK_CHAT_HOSTS, AppCategory::WorkChat),
         (CHAT_HOSTS, AppCategory::Chat),
         (CODE_HOSTS, AppCategory::Code),
         (DOCS_HOSTS, AppCategory::Docs),
@@ -291,9 +300,10 @@ pub fn categorize(bundle_id: &str, url_host: Option<&str>) -> AppCategory {
             return AppCategory::Other;
         }
     }
-    let bundle_table: [(&[&str], AppCategory); 5] = [
+    let bundle_table: [(&[&str], AppCategory); 6] = [
         (AI_BUNDLES, AppCategory::AiPrompt),
         (EMAIL_BUNDLES, AppCategory::Email),
+        (WORK_CHAT_BUNDLES, AppCategory::WorkChat),
         (CHAT_BUNDLES, AppCategory::Chat),
         (CODE_BUNDLES, AppCategory::Code),
         (DOCS_BUNDLES, AppCategory::Docs),
@@ -395,6 +405,19 @@ pub fn polish_context(
     Some(context)
 }
 
+/// settings.json `writing_style` values that pin one refiner mode; anything
+/// else (`app`, absent, unknown) follows the app's category.
+const WRITING_STYLES: &[&str] = &["minimal", "casual", "formal"];
+
+/// Add the user's fixed writing mode to a sidecar `context` (the sidecar then
+/// uses it instead of the app category's mode).
+pub fn with_writing_mode(context: Option<Value>, mode: Option<&str>) -> Option<Value> {
+    let Some(mode) = mode else { return context };
+    let mut context = context.unwrap_or_else(|| json!({}));
+    context["writing_mode"] = json!(mode);
+    Some(context)
+}
+
 /// The approved style preferences from settings.json, parsed again only
 /// when the file changes (size or modification time). Every polish request
 /// asks, previews included, so reading and parsing the file each time was
@@ -408,6 +431,11 @@ pub struct StylePreferenceCache {
     /// Hash of bytes that failed to parse, so they are not parsed again.
     failed: Option<u64>,
     styles: std::collections::BTreeMap<String, Vec<String>>,
+    /// `live_text` from the same file (asked once per dictation, at `stream_start`).
+    live_text: bool,
+    /// `writing_style` from the same file when it names one refiner mode
+    /// (Settings > Advanced); None follows the app.
+    writing_mode: Option<String>,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
     /// File reads and parse attempts (for tests and diagnostics).
@@ -424,6 +452,7 @@ impl StylePreferenceCache {
     pub fn new(path: Option<std::path::PathBuf>) -> Self {
         Self {
             path,
+            live_text: true,
             ..Self::default()
         }
     }
@@ -436,6 +465,19 @@ impl StylePreferenceCache {
             .unwrap_or_default()
     }
 
+    /// settings.json `live_text` as the file says now (parsed again only when it changed).
+    pub fn live_text(&mut self) -> bool {
+        self.refresh();
+        self.live_text
+    }
+
+    /// The one writing mode the user picked for every app (`minimal`,
+    /// `casual` or `formal`), or None to follow the app (the default).
+    pub fn writing_mode(&mut self) -> Option<String> {
+        self.refresh();
+        self.writing_mode.clone()
+    }
+
     fn refresh(&mut self) {
         let Some(path) = self
             .path
@@ -445,10 +487,12 @@ impl StylePreferenceCache {
             return;
         };
         let Ok(meta) = std::fs::metadata(&path) else {
-            // No file: no preferences.
+            // No file: no preferences, and the defaults.
             self.stamp = None;
             self.content = None;
             self.styles.clear();
+            self.live_text = true;
+            self.writing_mode = None;
             return;
         };
         let stamp = Some((meta.modified().ok(), meta.len()));
@@ -485,12 +529,110 @@ impl StylePreferenceCache {
             Ok(settings) => {
                 self.loads += 1;
                 self.styles = settings.style_preferences;
+                self.live_text = settings.live_text;
+                self.writing_mode = settings
+                    .extra
+                    .get("writing_style")
+                    .and_then(Value::as_str)
+                    .filter(|mode| WRITING_STYLES.contains(mode))
+                    .map(str::to_string);
                 self.content = Some(hash);
                 self.failed = None;
             }
             Err(_) => self.failed = Some(hash),
         }
     }
+}
+
+const GREETINGS: &[&str] = &[
+    "Hi",
+    "Hello",
+    "Hey",
+    "Dear",
+    "Good morning",
+    "Good afternoon",
+    "Good evening",
+];
+const SIGN_OFFS: &[&str] = &[
+    "Best regards",
+    "Kind regards",
+    "Warm regards",
+    "All the best",
+    "Many thanks",
+    "Thank you",
+    "Thanks",
+    "Regards",
+    "Best",
+    "Cheers",
+    "Sincerely",
+];
+
+/// Lay a corrected email out the way one is typed: a dictated greeting
+/// ("Hi Sarah,") and sign-off ("Best, Alex" or a closing "Thanks") on their
+/// own lines. Only separators change; the words are the model's. Text
+/// without a greeting or sign-off is returned unchanged.
+pub fn email_layout(text: &str) -> String {
+    let text = text.trim();
+    let mut head = String::new();
+    let mut body = text;
+    // greeting: a greeting word, up to three name words, then a comma, then more text
+    if let Some(greeting) = GREETINGS.iter().find(|g| {
+        body.strip_prefix(**g)
+            .is_some_and(|rest| rest.starts_with([' ', ',']))
+    }) {
+        let rest = &body[greeting.len()..];
+        if let Some(comma) = rest.find(',') {
+            let name = &rest[..comma];
+            let after = rest[comma + 1..].trim_start();
+            let words = name.split_whitespace().count();
+            if (1..=3).contains(&words) && !after.is_empty() && !name.contains(['.', '?', '!']) {
+                head = format!("{greeting}{name},");
+                body = after;
+            }
+        }
+    }
+    // sign-off: after a sentence end, a closing phrase, optionally ", Name" (one to
+    // three capitalized words), then the end of the text
+    let mut tail = String::new();
+    for sign in SIGN_OFFS {
+        let Some(at) = body.rfind(sign) else { continue };
+        let before = body[..at].trim_end();
+        if !(before.is_empty() || before.ends_with(['.', '?', '!'])) {
+            continue;
+        }
+        let rest = body[at + sign.len()..]
+            .trim_end_matches(['.', '!'])
+            .trim_end();
+        let name = match rest.strip_prefix(',') {
+            Some(name) => name.trim(),
+            None if rest.is_empty() => "",
+            None => continue,
+        };
+        let words: Vec<&str> = name.split_whitespace().collect();
+        let names = words.len() <= 3
+            && words
+                .iter()
+                .all(|w| w.chars().next().is_some_and(char::is_uppercase));
+        if !names || (before.is_empty() && head.is_empty()) {
+            continue;
+        }
+        tail = if name.is_empty() {
+            format!("{sign}{}", body[at + sign.len()..].trim_end())
+        } else {
+            format!("{sign},\n{name}")
+        };
+        body = before;
+        break;
+    }
+    if head.is_empty() && tail.is_empty() {
+        return text.to_string();
+    }
+    [head.as_str(), body, tail.as_str()]
+        .iter()
+        .filter(|part| !part.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Apply the style preferences the user approved for this category to a
@@ -574,12 +716,17 @@ mod tests {
     }
 
     #[test]
-    fn apps_fall_into_the_six_categories() {
+    fn apps_fall_into_the_seven_categories() {
         assert_eq!(
             categorize("com.tinyspeck.slackmacgap", None),
-            AppCategory::Chat
+            AppCategory::WorkChat
+        );
+        assert_eq!(
+            categorize("com.microsoft.teams2", None),
+            AppCategory::WorkChat
         );
         assert_eq!(categorize("com.hnc.Discord", None), AppCategory::Chat);
+        assert_eq!(categorize("com.apple.MobileSMS", None), AppCategory::Chat);
         assert_eq!(categorize("com.apple.mail", None), AppCategory::Email);
         assert_eq!(categorize("com.mitchellh.ghostty", None), AppCategory::Code);
         assert_eq!(
@@ -596,6 +743,50 @@ mod tests {
     }
 
     #[test]
+    fn a_picked_writing_style_rides_along_in_the_sidecar_context() {
+        use super::with_writing_mode;
+        assert_eq!(with_writing_mode(None, None), None);
+        assert_eq!(
+            with_writing_mode(Some(json!({"app_category": "chat"})), None),
+            Some(json!({"app_category": "chat"}))
+        );
+        assert_eq!(
+            with_writing_mode(Some(json!({"app_category": "chat"})), Some("formal")),
+            Some(json!({"app_category": "chat", "writing_mode": "formal"}))
+        );
+        assert_eq!(
+            with_writing_mode(None, Some("minimal")),
+            Some(json!({"writing_mode": "minimal"}))
+        );
+    }
+
+    #[test]
+    fn an_email_gets_its_greeting_and_sign_off_on_their_own_lines() {
+        use super::email_layout;
+        assert_eq!(
+            email_layout("Hi Sarah, Thanks for sending the contract over. Could we change section 4? Then I can sign it this week. Best, Alex"),
+            "Hi Sarah,\n\nThanks for sending the contract over. Could we change section 4? Then I can sign it this week.\n\nBest,\nAlex"
+        );
+        assert_eq!(
+            email_layout("Can you double-check the changelog before then? Thanks"),
+            "Can you double-check the changelog before then?\n\nThanks"
+        );
+        assert_eq!(
+            email_layout("Dear Dr. Lee, the results are attached. Kind regards, Sam Ortiz."),
+            "Dear Dr. Lee, the results are attached.\n\nKind regards,\nSam Ortiz"
+        );
+        // nothing to lay out: unchanged, including "thanks" inside a sentence
+        for text in [
+            "The deploy failed again. Can someone take a look?",
+            "Thanks for the notes, I will send the draft on Friday.",
+            "Hey, I'm going to push the release tomorrow.",
+            "Thanks",
+        ] {
+            assert_eq!(email_layout(text), text);
+        }
+    }
+
+    #[test]
     fn a_browser_takes_the_category_of_its_site() {
         let chrome = "com.google.Chrome";
         assert_eq!(
@@ -608,9 +799,13 @@ mod tests {
         );
         assert_eq!(
             categorize(chrome, Some("acme.slack.com")),
-            AppCategory::Chat
+            AppCategory::WorkChat
         );
-        assert_eq!(categorize(chrome, Some("app.slack.com")), AppCategory::Chat);
+        assert_eq!(
+            categorize(chrome, Some("app.slack.com")),
+            AppCategory::WorkChat
+        );
+        assert_eq!(categorize(chrome, Some("discord.com")), AppCategory::Chat);
         assert_eq!(categorize(chrome, Some("notslack.com")), AppCategory::Other);
         assert_eq!(categorize(chrome, Some("github.com")), AppCategory::Code);
         assert_eq!(
@@ -626,7 +821,7 @@ mod tests {
         // An Electron app's own web area does not demote it to Other.
         assert_eq!(
             categorize("com.tinyspeck.slackmacgap", Some("example.com")),
-            AppCategory::Chat
+            AppCategory::WorkChat
         );
     }
 
@@ -711,8 +906,36 @@ mod tests {
             "an approval applies next time"
         );
         assert_eq!(cache.loads, 2);
+        // live text: on when absent (since 1.0), and a flipped setting applies at the next ask
+        assert!(cache.live_text());
+        std::fs::write(&path, r#"{"schema_version":2,"live_text":false}"#).unwrap();
+        assert!(
+            !cache.live_text(),
+            "flipped off: the next dictation shows no live text"
+        );
+        std::fs::write(&path, r#"{"schema_version":2,"live_text":true}"#).unwrap();
+        assert!(cache.live_text());
+        // writing style: follows the app unless one refiner mode is picked
+        assert_eq!(cache.writing_mode(), None);
+        for (style, mode) in [
+            ("app", None),
+            ("formal", Some("formal")),
+            ("casual", Some("casual")),
+            ("minimal", Some("minimal")),
+            ("prompt", None),
+            ("loud", None),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"schema_version":2,"writing_style":"{style}"}}"#),
+            )
+            .unwrap();
+            assert_eq!(cache.writing_mode().as_deref(), mode, "{style}");
+        }
         std::fs::remove_file(&path).unwrap();
+        assert_eq!(cache.writing_mode(), None);
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
+        assert!(cache.live_text(), "no file: the default");
         let _ = std::fs::remove_dir_all(&directory);
     }
 

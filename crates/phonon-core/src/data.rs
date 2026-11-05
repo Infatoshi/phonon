@@ -160,6 +160,20 @@ impl DictionaryFile {
         matches.into_iter().map(|(entry, _)| entry).collect()
     }
 
+    /// The written forms speech recognition boosts (the ASR sidecar's `terms`): each
+    /// entry's canonical spelling once, minus ordinary English, which the recognizer
+    /// already spells right and which a boost could only insert where it was not said.
+    pub fn asr_terms(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        self.entries
+            .iter()
+            .map(|entry| entry.canonical().trim())
+            .filter(|term| !term.is_empty() && !is_ordinary_english(term))
+            .filter(|term| seen.insert(term.to_string()))
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn prepare_polish_input(&self, transcript: &str) -> String {
         self.prepare_polish_input_with_context(transcript, "")
     }
@@ -499,6 +513,16 @@ pub struct SettingsFile {
     /// `PHONON_STREAM_REFINE=0` or `=1` overrides both for one engine run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_refine: Option<bool>,
+    /// Live text: show the corrected text so far above the bar while the key is held
+    /// (each background refine replaces it). On by default since 1.0; needs streaming refine.
+    /// The engine reads it at every `stream_start`, so a change applies to the next dictation.
+    #[serde(default = "default_live_text")]
+    pub live_text: bool,
+    /// How live text streams in: "fade" (new words fade in, the uncorrected tail is
+    /// dimmed) or "blur" (the tail is blurred and sharpens once corrected). Display only:
+    /// the bar reads it; the engine keeps it on a rewrite.
+    #[serde(default = "default_live_text_style")]
+    pub live_text_style: String,
     /// Style preferences the user approved, by app category
     /// (`{"chat": ["lowercase_start"]}`).
     #[serde(default)]
@@ -524,6 +548,8 @@ impl Default for SettingsFile {
             profile_prefix: default_profile_prefix(),
             edit_learning: true,
             stream_refine: None,
+            live_text: default_live_text(),
+            live_text_style: default_live_text_style(),
             style_preferences: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
@@ -551,6 +577,14 @@ fn default_microphone_priority() -> Vec<String> {
 
 fn default_shortcut_mode() -> String {
     "fn".into()
+}
+
+fn default_live_text() -> bool {
+    true
+}
+
+fn default_live_text_style() -> String {
+    "fade".into()
 }
 
 impl SettingsFile {
@@ -1422,6 +1456,38 @@ mod tests {
         assert_eq!(settings.competitor_quit_muted, ["com.electron.wispr-flow"]);
         let json = serde_json::to_string(&settings).unwrap();
         assert!(json.contains(r#""competitor_quit_muted":["com.electron.wispr-flow"]"#));
+    }
+
+    #[test]
+    fn live_text_defaults_on_and_round_trips() {
+        let absent: SettingsFile = serde_json::from_str(r#"{"schema_version":2}"#).unwrap();
+        assert!(absent.live_text);
+        assert!(SettingsFile::default().live_text);
+        let off: SettingsFile =
+            serde_json::from_str(r#"{"schema_version":2,"live_text":false}"#).unwrap();
+        assert!(!off.live_text);
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert_eq!(json["live_text"], false);
+        assert!(!json.as_object().unwrap().contains_key("extra"));
+        let back: SettingsFile = serde_json::from_value(json).unwrap();
+        assert_eq!(back, off);
+    }
+
+    #[test]
+    fn live_text_style_defaults_to_fade_and_round_trips() {
+        let absent: SettingsFile = serde_json::from_str(r#"{"schema_version":2}"#).unwrap();
+        assert_eq!(absent.live_text_style, "fade");
+        assert_eq!(SettingsFile::default().live_text_style, "fade");
+        let blur: SettingsFile =
+            serde_json::from_str(r#"{"schema_version":2,"live_text_style":"blur"}"#).unwrap();
+        assert_eq!(blur.live_text_style, "blur");
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&blur).unwrap()).unwrap();
+        assert_eq!(json["live_text_style"], "blur");
+        assert!(blur.extra.is_empty(), "a typed field, not an unknown key");
+        let back: SettingsFile = serde_json::from_value(json).unwrap();
+        assert_eq!(back, blur);
     }
 
     #[test]

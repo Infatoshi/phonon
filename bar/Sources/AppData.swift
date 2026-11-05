@@ -40,6 +40,25 @@ struct NativeSettings: Codable, Equatable {
     /// Start recording a detected call without asking. Off by default:
     /// recording other people needs their consent in some places.
     var meetingAutoStart: Bool
+    /// Ask GitHub once a day whether a newer release is out (SPEC "Update check").
+    var checkForUpdates: Bool
+    /// The last version whose update alert was shown, so each release is
+    /// announced once; the menu and sidebar keep offering it afterwards.
+    var updateAnnounced: String
+    /// Live text: show the corrected text so far above the capsule while the key is held.
+    /// The engine reads it from settings.json at every dictation start. On by default
+    /// since 1.0.
+    var liveText: Bool
+    /// How live text streams in: "fade" (default) or "blur". Unknown values read as fade.
+    var liveTextStyle: LiveTextStyle
+    /// Settings > Advanced > Writing style: follow the app (default) or one mode
+    /// everywhere. The engine reads it from settings.json for every request.
+    var writingStyle: WritingStyle
+    /// Streaming refine; nil leaves it to the engine (on with 16 GB or more).
+    var streamRefine: Bool?
+    /// What the clipboard holds after a paste: the dictation (default, so ⌘V pastes it
+    /// again) or what was copied before. Asked at first run with the privacy choices.
+    var clipboardAfterPaste: ClipboardAfterPaste
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -59,6 +78,13 @@ struct NativeSettings: Codable, Equatable {
         case textboxContext = "textbox_context"
         case meetingCapture = "meeting_capture"
         case meetingAutoStart = "meeting_auto_start"
+        case checkForUpdates = "check_for_updates"
+        case updateAnnounced = "update_announced"
+        case liveText = "live_text"
+        case liveTextStyle = "live_text_style"
+        case writingStyle = "writing_style"
+        case streamRefine = "stream_refine"
+        case clipboardAfterPaste = "clipboard_after_paste"
     }
 
     init(
@@ -78,7 +104,14 @@ struct NativeSettings: Codable, Equatable {
         screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
         textboxContext: Bool = false,
         meetingCapture: Bool = false,
-        meetingAutoStart: Bool = false
+        meetingAutoStart: Bool = false,
+        checkForUpdates: Bool = true,
+        updateAnnounced: String = "",
+        liveText: Bool = true,
+        liveTextStyle: LiveTextStyle = .fade,
+        writingStyle: WritingStyle = .app,
+        streamRefine: Bool? = nil,
+        clipboardAfterPaste: ClipboardAfterPaste = .dictation
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -97,6 +130,13 @@ struct NativeSettings: Codable, Equatable {
         self.textboxContext = textboxContext
         self.meetingCapture = meetingCapture
         self.meetingAutoStart = meetingAutoStart
+        self.checkForUpdates = checkForUpdates
+        self.updateAnnounced = updateAnnounced
+        self.liveText = liveText
+        self.liveTextStyle = liveTextStyle
+        self.writingStyle = writingStyle
+        self.streamRefine = streamRefine
+        self.clipboardAfterPaste = clipboardAfterPaste
     }
 
     init(from decoder: Decoder) throws {
@@ -138,6 +178,70 @@ struct NativeSettings: Codable, Equatable {
         meetingCapture = try values.decodeIfPresent(Bool.self, forKey: .meetingCapture) ?? false
         meetingAutoStart =
             try values.decodeIfPresent(Bool.self, forKey: .meetingAutoStart) ?? false
+        checkForUpdates = try values.decodeIfPresent(Bool.self, forKey: .checkForUpdates) ?? true
+        updateAnnounced =
+            try values.decodeIfPresent(String.self, forKey: .updateAnnounced) ?? ""
+        liveText = try values.decodeIfPresent(Bool.self, forKey: .liveText) ?? true
+        liveTextStyle =
+            (try? values.decodeIfPresent(String.self, forKey: .liveTextStyle))
+            .flatMap { $0 }.flatMap(LiveTextStyle.init(rawValue:)) ?? .fade
+        writingStyle =
+            (try? values.decodeIfPresent(String.self, forKey: .writingStyle))
+            .flatMap { $0 }.flatMap(WritingStyle.init(rawValue:)) ?? .app
+        streamRefine = try? values.decodeIfPresent(Bool.self, forKey: .streamRefine)
+        clipboardAfterPaste =
+            (try? values.decodeIfPresent(String.self, forKey: .clipboardAfterPaste))
+            .flatMap { $0 }.flatMap(ClipboardAfterPaste.init(rawValue:)) ?? .dictation
+    }
+}
+
+/// settings.json `clipboard_after_paste`.
+enum ClipboardAfterPaste: String, Codable, CaseIterable, Identifiable {
+    /// The dictation stays on the clipboard: ⌘V pastes it again.
+    case dictation
+    /// What was copied before comes back once the paste has landed.
+    case restore
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dictation: return "Your dictation"
+        case .restore: return "What you copied before"
+        }
+    }
+}
+
+/// settings.json `writing_style`. `app` lets each app pick its mode (Slack and
+/// email formal, Discord casual, terminals and AI tools as prompts); the others
+/// use that one refiner mode everywhere.
+enum WritingStyle: String, Codable, CaseIterable, Identifiable {
+    case app, minimal, casual, formal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .app: return "Follow the app"
+        case .minimal: return "Minimal"
+        case .casual: return "Casual"
+        case .formal: return "Formal"
+        }
+    }
+}
+
+/// The app a dictation went into, as the engine keeps it in the corpus entry.
+struct NativeAppContext: Codable, Equatable {
+    var bundleID: String
+    var appName: String?
+    var urlHost: String?
+    var category: String?
+
+    enum CodingKeys: String, CodingKey {
+        case bundleID = "bundle_id"
+        case appName = "app_name"
+        case urlHost = "url_host"
+        case category
     }
 }
 
@@ -250,10 +354,13 @@ struct NativeRecordingMetadata: Codable, Equatable {
     /// What the user did to the dictation after it was typed, when edit
     /// learning watched it (the engine's `user_edit`).
     var userEdit: NativeUserEdit?
+    /// The app it was pasted into (kept only with local history on).
+    var appContext: NativeAppContext?
 
     enum CodingKeys: String, CodingKey {
         case id, source, microphone, llm
         case userEdit = "user_edit"
+        case appContext = "app_context"
         case createdAtUnixMs = "created_at_unix_ms"
         case audioFile = "audio_file"
         case audioDurationMs = "audio_duration_ms"
@@ -285,6 +392,7 @@ struct NativeRecordingMetadata: Codable, Equatable {
         llm = try values.decodeIfPresent(NativeLlmMetadata.self, forKey: .llm)
         // A malformed record must not hide the dictation from History.
         userEdit = try? values.decodeIfPresent(NativeUserEdit.self, forKey: .userEdit)
+        appContext = try? values.decodeIfPresent(NativeAppContext.self, forKey: .appContext)
     }
 }
 
@@ -405,6 +513,10 @@ final class NativeAppStore: ObservableObject {
     @Published private(set) var dictionaryEntries: [NativeDictionaryEntry] = []
     @Published private(set) var history: [NativeHistoryItem] = []
     @Published private(set) var usage = NativeUsageStats()
+    /// macros.json: whole-dictation triggers and what to type instead.
+    @Published private(set) var macros: [PhononMacro] = []
+    /// Recorded meetings under Meetings/, newest first.
+    @Published private(set) var meetings: [MeetingNote] = []
     @Published var engineReady = false
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
@@ -417,9 +529,15 @@ final class NativeAppStore: ObservableObject {
     @Published var pageRequest: NativeAppPage?
     /// Last known state of the off-Library copy. See `PhononDataMirror`.
     @Published private(set) var mirrorManifest: MirrorManifest?
+    /// A newer release found by the update check. See `UpdateController`.
+    @Published var availableUpdate: AvailableUpdate?
     var onDictionaryChanged: (() -> Void)?
     var onMicrophonePermissionGranted: (() -> Void)?
     var onPermissionsRefresh: (() -> Void)?
+    /// Show the update alert (sidebar and Settings buttons).
+    var onShowUpdate: (() -> Void)?
+    /// Check GitHub now and report the result (Settings button).
+    var onCheckForUpdates: (() -> Void)?
 
     private let fileManager: FileManager
     private let supportDirectory: URL
@@ -460,7 +578,126 @@ final class NativeAppStore: ObservableObject {
         loadSettings()
         loadDictionary()
         loadHistory()
+        loadMacros()
+        loadMeetings()
         refreshAvailableMicrophones()
+    }
+
+    // MARK: Macros
+
+    func loadMacros() {
+        macros = MacroBook.load(from: macrosURL)
+    }
+
+    /// Add a macro, or replace the one with the same trigger.
+    func upsertMacro(trigger: String, expansion: String, replacing oldID: String? = nil) {
+        let trigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expansion = expansion.trimmingCharacters(in: .newlines)
+        guard !MacroBook.normalize(trigger).isEmpty,
+            !expansion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        let macro = PhononMacro(trigger: trigger, expansion: expansion)
+        var list = macros.filter { $0.id != macro.id && $0.id != oldID }
+        if let oldID, let index = macros.firstIndex(where: { $0.id == oldID }) {
+            list.insert(macro, at: min(index, list.count))
+        } else {
+            list.insert(macro, at: 0)
+        }
+        saveMacros(list)
+    }
+
+    func removeMacro(id: String) {
+        saveMacros(macros.filter { $0.id != id })
+    }
+
+    private func saveMacros(_ list: [PhononMacro]) {
+        do {
+            try MacroBook.save(list, to: macrosURL)
+            macros = list
+            lastError = nil
+            captureMirror()
+        } catch {
+            lastError = "Could not save macros: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: Meetings
+
+    func loadMeetings() {
+        meetings = MeetingNote.loadAll(
+            from: supportDirectory.appendingPathComponent("Meetings", isDirectory: true),
+            fileManager: fileManager)
+    }
+
+    // MARK: Dictionary chips
+
+    /// The Dictionary page's add field: "misheard → right" (or "->") becomes a
+    /// replacement; anything else is a term to spell right.
+    func addDictionaryText(_ text: String) {
+        if let (heard, right) = Self.parseFix(text) {
+            upsertDictionary(originalID: nil, phrase: heard, replacement: right, spokenForms: [])
+        } else {
+            upsertDictionary(originalID: nil, phrase: text, replacement: nil, spokenForms: [])
+        }
+    }
+
+    static func parseFix(_ text: String) -> (String, String)? {
+        for arrow in ["→", "->", "=>"] {
+            let parts = text.components(separatedBy: arrow)
+            guard parts.count == 2 else { continue }
+            let heard = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let right = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !heard.isEmpty, !right.isEmpty else { return nil }
+            return (heard, right)
+        }
+        return nil
+    }
+
+    /// Merge another dictionary: a Phonon dictionary.json (or a bare list of
+    /// entries), or a text file with one term or "misheard → right" per line.
+    /// Entries already here are left as they are. Returns how many were added.
+    @discardableResult
+    func importDictionary(from url: URL) -> Int {
+        guard let data = try? Data(contentsOf: url) else {
+            lastError = "Could not read \(url.lastPathComponent)."
+            return 0
+        }
+        var incoming: [NativeDictionaryEntry] = []
+        let decoder = JSONDecoder()
+        if let file = try? decoder.decode(NativeDictionaryFile.self, from: data) {
+            incoming = file.entries
+        } else if let list = try? decoder.decode([NativeDictionaryEntry].self, from: data) {
+            incoming = list
+        } else if let text = String(data: data, encoding: .utf8) {
+            for line in text.split(whereSeparator: \.isNewline) {
+                let line = line.trimmingCharacters(in: .whitespaces)
+                guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+                if let (heard, right) = Self.parseFix(line) {
+                    incoming.append(NativeDictionaryEntry(phrase: heard, replacement: right))
+                } else {
+                    incoming.append(NativeDictionaryEntry(phrase: line))
+                }
+            }
+        }
+        var entries = dictionaryEntries
+        var added = 0
+        for entry in incoming {
+            let phrase = entry.phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !phrase.isEmpty,
+                !entries.contains(where: {
+                    $0.phrase.caseInsensitiveCompare(phrase) == .orderedSame
+                        && ($0.replacement ?? "") == (entry.replacement ?? "")
+                })
+            else { continue }
+            var copy = entry
+            copy.phrase = phrase
+            copy.usageCount = 0
+            copy.source = "import"
+            entries.append(copy)
+            added += 1
+        }
+        if added > 0 { saveDictionary(entries) }
+        return added
     }
 
     /// The microphone list is whatever CoreAudio reports right now, so a device
@@ -629,10 +866,13 @@ final class NativeAppStore: ObservableObject {
     var needsPrivacyChoice: Bool { !settings.privacyChoiceMade }
 
     /// Record the first-run answer for the two settings that retain data.
-    func recordPrivacyChoice(localHistory: Bool, screenContext: Bool) {
+    func recordPrivacyChoice(
+        localHistory: Bool, screenContext: Bool, clipboard: ClipboardAfterPaste = .dictation
+    ) {
         updateSettings {
             $0.localHistory = localHistory
             $0.screenContext = screenContext
+            $0.clipboardAfterPaste = clipboard
             $0.privacyChoiceMade = true
         }
     }
@@ -942,6 +1182,7 @@ final class NativeAppStore: ObservableObject {
 
     private var settingsURL: URL { supportDirectory.appendingPathComponent("settings.json") }
     private var dictionaryURL: URL { supportDirectory.appendingPathComponent("dictionary.json") }
+    private var macrosURL: URL { supportDirectory.appendingPathComponent(MacroBook.fileName) }
     private var corpusURL: URL {
         supportDirectory.appendingPathComponent("Corpus", isDirectory: true)
     }

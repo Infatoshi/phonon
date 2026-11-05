@@ -152,10 +152,9 @@ final class EditHistoryRenderTests: XCTestCase {
             ))
         let plain = try item("b", final: "Ship it on Friday.", edit: nil)
         let rows = VStack(alignment: .leading, spacing: 0) {
-            HistoryRow(item: edited)
-            Divider()
-            HistoryRow(item: plain)
+            HomeDictationRow(item: edited, open: .constant(true))
+            HomeDictationRow(item: plain)
         }
-        _ = try render(rows, width: 330, name: "history_rows")
+        _ = try render(rows, width: 640, name: "home_rows")
     }
 }

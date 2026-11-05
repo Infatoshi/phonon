@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 import time
+import types
 
 import numpy as np
 import pytest
@@ -32,6 +33,12 @@ while True:
     if n == 0:
         break
     log.write(f"{{n}}\\n"); log.flush()
+    if n == 0xFFFFFFFF:  # a dictionary: words m, m words -> status (WEIGHTS "big": over capacity)
+        (m,) = struct.unpack("<I", inp.read(4))
+        inp.read(4 * m)
+        log.write(f"trie {{m}}\\n"); log.flush()
+        out.write(struct.pack("<I", 1 if mode.endswith("big") else 0)); out.flush()
+        continue
     events.write("request\\n"); events.flush()
     words = n & 0x7FFFFFFF if n >> 31 else n * 128
     inp.read(4 * words)
@@ -64,7 +71,19 @@ def fake_pa(tmp_path):
 
 
 def requests(log):
-    return [int(x) for x in log.read_text().split()] if os.path.exists(log) else []
+    if not os.path.exists(log):
+        return []
+    return [
+        int(x)
+        for x in log.read_text().split("\n")
+        if x.strip() and not x.startswith("trie")
+    ]
+
+
+def trie_sizes(log):
+    return [
+        int(x.split()[1]) for x in log.read_text().split("\n") if x.startswith("trie")
+    ]
 
 
 SAMPLES = np.zeros(16000, dtype=np.float32)
@@ -142,3 +161,47 @@ def test_self_test_budgets(fake_pa):
 def test_self_test_fails_when_the_helper_cannot_decode(fake_pa):
     m, _ = fake_pa("fail")
     assert m.self_test()[0] is False
+
+
+def toy_model():
+    v = ["<unk>", "▁"] + list("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    return types.SimpleNamespace(
+        vocabulary=v + [f"<pad{i}>" for i in range(1024 - len(v))]
+    )
+
+
+def test_set_terms_sends_the_trie_and_keeps_the_spellings(fake_pa, tmp_path):
+    path = tmp_path / "pa"
+    m = MetalParakeet(toy_model(), weights=str(tmp_path / "ok"), pa=str(path))
+    note = m.set_terms(["vLLM", " vLLM ", "cuBLAS", ""])
+    assert m.terms == [
+        "vLLM",
+        "cuBLAS",
+    ]  # deduplicated: a span's canonical index is a position in this list
+    assert "boosting 2 terms" in note
+    assert m.set_terms([]) == "dictionary boosting off" and m.terms is None
+    sizes = trie_sizes(tmp_path / "ok.log")
+    assert (
+        len(sizes) == 2 and sizes[0] > 3089 and sizes[1] == 0
+    )  # a trie, then none (off)
+    assert m.metal_rows(SAMPLES, FRAMES) == [
+        (7, 1, 0, 0.5)
+    ]  # windows still answer after a dictionary request
+    m.close()
+
+
+def test_a_refused_dictionary_keeps_the_old_one(tmp_path, fake_pa):
+    path = tmp_path / "pa"
+    m = MetalParakeet(toy_model(), weights=str(tmp_path / "big"), pa=str(path))
+    m.terms = ["kept"]
+    assert "refused (too large)" in m.set_terms(["vLLM"])
+    assert m.terms == ["kept"] and not m.dead
+    m.close()
+
+
+def test_set_terms_on_a_dead_helper_does_nothing(fake_pa, tmp_path):
+    m, log = fake_pa("exit")
+    m.metal_rows(SAMPLES, FRAMES)
+    assert m.dead
+    assert "Metal ASR is off" in m.set_terms(["vLLM"])
+    assert m.terms is None

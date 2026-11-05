@@ -32,9 +32,11 @@ packages are still downloaded into the user's normal caches on first launch.
   permits redistribution of fine-tuned weights. Commercial use is licensed
   only to organizations under 10 million US dollars in annual revenue; a
   larger organization's commercial use of these weights is not licensed by it.
-- Training data: public YouTube technical audio transcribed by Parakeet and
-  labeled by DeepSeek-V4.1-Flash-1017 (MIT) run locally, plus synthetic
-  term-repair rows. No personal dictations. The audio is not redistributed.
+- Training data: public YouTube technical audio and programming livestreams
+  transcribed by Parakeet, and synthetic dictation-style transcripts, labeled by
+  DeepSeek-V4.1-Flash-1017 (MIT), run locally for the 0.2.3 rows and through
+  DeepSeek's hosted API for the writing-mode rows, plus synthetic term-repair
+  rows. No personal dictations. The audio is not redistributed.
 - Files: the engine's GGUF target and DFlash2 drafter, and the MLX weights
   used when the engine cannot run. The model card lists sizes and checksums.
 

@@ -178,6 +178,8 @@ enum DictionaryCommands {
         /// Text file to read (default: dictionary_new_terms.txt in Phonon's data folder).
         path: Option<PathBuf>,
     },
+    /// Print the terms speech recognition boosts, one per line.
+    AsrTerms,
     /// Show which dictionary terms and replacements would apply to some text.
     Test {
         /// Transcript text to test.
@@ -369,6 +371,7 @@ fn run_dictionary(command: DictionaryCommands) -> Result<()> {
                 .unwrap_or_else(data_cmd::default_dictionary_terms_path)?;
             data_cmd::import_txt(&path)
         }
+        DictionaryCommands::AsrTerms => data_cmd::asr_terms(),
         DictionaryCommands::Test {
             text,
             context,

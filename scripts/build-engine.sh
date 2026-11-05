@@ -20,6 +20,20 @@ min_macos=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$project
 # and dyld then refuses the engine on every older Mac.
 export MACOSX_DEPLOYMENT_TARGET=$min_macos
 
+# Command Line Tools 27.0 ship a MacOSX27 SDK whose stubs their own ld-1267
+# cannot read ("unknown architecture arm64e.x1"): without an SDKROOT, use the
+# newest installed SDK that links Foundation.
+if [[ -z ${SDKROOT:-} ]] &&
+	! printf 'int main(void){return 0;}' | clang -x c - -o /dev/null -framework Foundation 2>/dev/null; then
+	for sdk in $(ls -d "$(xcode-select -p)"/SDKs/MacOSX[0-9]*.sdk /Library/Developer/CommandLineTools/SDKs/MacOSX[0-9]*.sdk 2>/dev/null | sort -rV); do
+		if printf 'int main(void){return 0;}' | SDKROOT=$sdk clang -x c - -o /dev/null -framework Foundation 2>/dev/null; then
+			export SDKROOT=$sdk
+			printf 'default SDK does not link; using %s\n' "$sdk"
+			break
+		fi
+	done
+fi
+
 if [[ ! -f "$llama_dir/.phonon-patched" ]]; then
 	rm -rf "$llama_dir"
 	mkdir -p "$llama_dir"

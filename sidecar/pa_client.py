@@ -80,16 +80,14 @@ class MetalParakeet:
         env=None,
         gpu_mel=True,
         log=None,
-        terms=None,
         rewrite="boosted",
         pa_dir=None,
         timeout_s=10.0,
     ):
         """weights: the Parakeet snapshot's model.safetensors (pa converts it at startup) or an exported .bin;
-        pa_dir: pa.metal and melfb.npy (default: the dev layout, the directory above bin/pa); terms: the dictionary
-        (one term per line) for in-kernel boosting (asr_bias_v0 cb446: case variants, s_start 4, s_cont 4,
-        budget 6; needs bias/ next to this file); rewrite: boosted (default, the ASR lane's cb446: only committed
-        walks a bonus pushed take the dictionary spelling, tdt_decode.detok --rewrite boosted), all, none.
+        pa_dir: pa.metal and melfb.npy (default: the dev layout, the directory above bin/pa); rewrite: boosted
+        (default, the ASR lane's cb446: only committed walks a bonus pushed take the dictionary spelling,
+        tdt_decode.detok --rewrite boosted), all, none. Dictionary boosting starts off; set_terms turns it on.
         A window over capacity is answered on the MLX model (loaded on first use). Any failure of the helper (a
         window it could not decode, no answer within timeout_s, it exits) answers that window on MLX and keeps
         the helper off for the rest of the session (sticky: the next window does not pay the failure again)."""
@@ -108,35 +106,6 @@ class MetalParakeet:
             **(env or {}),
         )
         self.terms, self.rewrite = None, rewrite
-        if terms:
-            try:
-                import tempfile
-
-                sys.path.insert(0, f"{HERE}/bias")
-                import make_trie  # tdt_decode's trie, flattened
-                import sentencepiece as spm
-                import tdt_decode as td
-
-                with open(terms) as f:
-                    self.terms = [t for t in (line.strip() for line in f) if t]
-                sp = spm.SentencePieceProcessor(
-                    model_file=f"{HERE}/bias/tokenizer_v2.model"
-                )
-                flat = make_trie.flatten(
-                    td.build_trie(sp, self.terms, "case"),
-                    td.Pieces(sp),
-                    4.0,
-                    4.0,
-                    6.0,
-                    False,
-                )
-                fd, self.trie_path = tempfile.mkstemp(suffix=".trie")
-                os.close(fd)
-                flat.tofile(self.trie_path)
-                e["PA_TRIE"] = self.trie_path
-            except Exception as ex:  # noqa: BLE001
-                self.terms = None
-                print(f"pa_client: dictionary boosting off ({ex})", file=sys.stderr)
         self.p = subprocess.Popen(
             [pa, weights, "serve", str(max_mel)],
             stdin=subprocess.PIPE,
@@ -159,13 +128,42 @@ class MetalParakeet:
             "rewrite",
             "last_spans",
             "last_boost",
-            "trie_path",
             "dead",
             "timeout_s",
             "pa_bin",
         ):
             raise AttributeError(name)
         return getattr(self.model, name)
+
+    def set_terms(self, terms):
+        """Boost these dictionary terms (canonical spellings) from the next window on; an empty list turns boosting
+        off. Returns a line for the log. The MLX fallback does not boost."""
+        try:  # the sidecar dir on sys.path, or imported as a package
+            import asr_terms
+        except ImportError:
+            from . import asr_terms
+
+        terms = [t for t in dict.fromkeys(t.strip() for t in terms) if t]
+        if self.dead:
+            return "dictionary not applied: Metal ASR is off"
+        flat = asr_terms.flat_trie(self.model.vocabulary, terms) if terms else None
+        words = flat if flat is not None else np.zeros(0, dtype=np.uint32)
+        try:
+            self.p.stdin.write(
+                struct.pack("<2I", 0xFFFFFFFF, len(words))
+                + words.astype("<u4").tobytes()
+            )
+            self.p.stdin.flush()
+            (st,) = struct.unpack("<I", self._read(4, first=True))
+        except Exception as ex:  # noqa: BLE001  (the helper exited or did not answer)
+            self._off(f"dictionary: {ex!r}", stuck=isinstance(ex, TimeoutError))
+            return "dictionary not applied: Metal ASR is off"
+        if st != 0:
+            return f"dictionary of {len(terms)} terms refused ({'too large' if st == 1 else 'malformed'})"
+        self.terms = terms if flat is not None else None
+        if not self.terms:
+            return "dictionary boosting off"
+        return f"dictionary boosting {len(terms)} terms ({len(words) * 4 // 1024} KB)"
 
     def warmup(self):
         """One short window: the Metal pipelines and the weight pages ready before the first dictation."""

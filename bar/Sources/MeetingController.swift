@@ -16,10 +16,17 @@ final class MeetingController {
     private var recordingApp: String?
     /// The process whose microphone use defines the call being recorded.
     private var recordingBundleID: String?
-    private let panel = SuggestionPanelController(raisedBy: 70)
+    /// The logo-only popup just above the capsule, and "Saved to Notes".
+    private let popup = MeetingPopupController()
     private var checking = false
+    /// What the popup and the capsule show (MeetingPopup.swift).
+    private(set) var flow = MeetingFlow() {
+        didSet { if flow != oldValue { onFlowChanged?(flow) } }
+    }
     /// Tells the menu bar item whether a meeting is being recorded.
     var onRecordingChanged: ((String?) -> Void)?
+    /// Tells the capsule: recording light, stop button, pointer.
+    var onFlowChanged: ((MeetingFlow) -> Void)?
 
     init(store: NativeAppStore) {
         self.store = store
@@ -93,19 +100,38 @@ final class MeetingController {
             start(meeting: meeting, bundleID: bundleID)
             return
         }
-        panel.present(
-            title: "Meeting detected in \(meeting): take notes?",
-            detail: "Phonon records your microphone and the call audio on this Mac.",
-            approveLabel: "Take notes",
-            onApprove: { [weak self] in
-                self?.panel.dismiss()
-                self?.start(meeting: meeting, bundleID: bundleID)
-            },
-            onReject: { [weak self] in
-                self?.prompts.declined(meeting, now: Self.now())
-                self?.panel.dismiss()
-            },
-            onExpire: {})
+        flow.ask(app: meeting, bundleID: bundleID)
+        popup.ask(
+            icon: MeetingAppIcon.image(app: meeting, bundleID: bundleID),
+            onNotNow: { [weak self] in self?.notNow() },
+            onRecord: { [weak self] in self?.record() },
+            onExpire: { [weak self] in self?.flow.expire() })
+    }
+
+    /// "Not now": not again for this app for a while (MeetingPromptPolicy).
+    func notNow() {
+        guard let meeting = flow.notNow() else { return }
+        prompts.declined(meeting, now: Self.now())
+        popup.dismiss()
+    }
+
+    /// "Record" on the popup.
+    func record() {
+        guard let call = flow.record() else { return }
+        popup.dismiss()
+        start(meeting: call.app, bundleID: call.bundleID)
+    }
+
+    /// The pointer entered or left the capsule.
+    func hover(_ inside: Bool) {
+        flow.hover(inside)
+    }
+
+    /// The capsule's stop button or the menu's Stop item: the same stop as
+    /// before, then "Saved to Notes" above the capsule.
+    func stopFromUser() {
+        guard recorder != nil else { return }
+        stop(reason: "user_stopped")
     }
 
     /// Record the call now. The metadata names the app holding the
@@ -153,6 +179,7 @@ final class MeetingController {
             recordingApp = meeting
             recordingBundleID = bundleID
             endPolicy = MeetingEndPolicy(now: Self.now())
+            flow.started(app: meeting)
             onRecordingChanged?(meeting)
             Task { [weak self] in
                 do {
@@ -184,7 +211,12 @@ final class MeetingController {
         endPolicy = nil
         recordingApp = nil
         recordingBundleID = nil
+        let byUser = reason == "user_stopped"
+        flow.stopped(byUser: byUser)
         onRecordingChanged?(nil)
+        if byUser {
+            popup.saved(onExpire: { [weak self] in self?.flow.expire() })
+        }
         Task { await recorder.stop(reason: reason) }
     }
 

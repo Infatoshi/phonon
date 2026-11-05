@@ -486,7 +486,9 @@ int main(int argc, char ** argv) {
             tf.seekg(0);
             tf.read((char *) trie.data(), trie.size() * 4);
         }
-        const uint32_t aTrie = take(std::max<size_t>(trie.size(), 1)), aSpans = take(3 + 4 * (size_t) cmaxout);
+        // serve keeps room for a dictionary sent later (request ~0 below): 1M words, about 11k terms with case variants
+        const size_t trie_cap = std::max<size_t>(trie.size(), serve ? (size_t) 1 << 20 : 1);
+        const uint32_t aTrie = take(trie_cap), aSpans = take(3 + 4 * (size_t) cmaxout);
         const uint32_t dbg_step = getenv("PA_DBG_STEP") ? (uint32_t) atoi(getenv("PA_DBG_STEP")) : ~0u;
         id<MTLBuffer> abuf = [dev newBufferWithLength:(size_t) o * 4 options:MTLResourceStorageModeShared];
         float * A = (float *) abuf.contents;
@@ -778,7 +780,7 @@ int main(int argc, char ** argv) {
             // the first slot: the prediction net on no token (zero input and state), then the joint from frame 0
             CT->need = 1;
             CT->tok = ~0u;
-            CT->boost_live = !trie.empty();
+            CT->boost_live = TD.trie != ~0u;
             CT->no_boost_until = -1;
             CT->nf = std::min(TDT_KF, Tv);
             for (int i = 0; i < 3; ++i) CT->lstm_args[i] = CT->joint_args[i] = CT->decide_args[i] = 1;
@@ -852,9 +854,26 @@ int main(int argc, char ** argv) {
             fprintf(stderr, "pa serve: ready, capacity %u mel frames (%u encoder frames)\n", cap_mel, cT);
             // a request whose n has the top bit set carries n & 0x7fffffff audio samples (16 kHz float32, >= 1600)
             // instead of mel frames: the log-mel then runs on the GPU in the same command buffer
+            // n = ~0: a dictionary for the windows after it: uint32 words m, m x uint32 (a flat trie as PA_TRIE's; m = 0:
+            // boosting off) -> uint32 0 (in use), 1 (over capacity) or 2 (sizes do not add up); on 1 or 2 the old one stays
             for (;;) {
                 uint32_t n = 0;
                 if (fread(&n, 4, 1, stdin) != 1 || n == 0) break;
+                if (n == ~0u) {
+                    uint32_t m = 0;
+                    if (fread(&m, 4, 1, stdin) != 1) break;
+                    std::vector<uint32_t> t(m);
+                    if (m && fread(t.data(), 4, m, stdin) != m) break;
+                    uint32_t st = m > trie_cap ? 1 : 0;
+                    if (!st && m && (m < 16 || (uint64_t) t[0] * 4 + (uint64_t) t[1] * 3 + 16 + 1025 + 2 * 1032 != m)) st = 2;
+                    if (!st) {
+                        if (m) memcpy((uint32_t *) A + aTrie, t.data(), (size_t) m * 4);
+                        TD.trie = m ? aTrie : ~0u;
+                    }
+                    fwrite(&st, 4, 1, stdout);
+                    fflush(stdout);
+                    continue;
+                }
                 gpu_mel = (n >> 31) != 0;
                 n &= 0x7fffffffu;
                 const uint32_t frames = gpu_mel ? (n + 272) / 160 : n, words = gpu_mel ? n : n * F0;

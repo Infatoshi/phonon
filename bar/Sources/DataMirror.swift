@@ -23,6 +23,7 @@ enum PhononDataMirror {
     /// recovered by reinstalling. Together they are about 128 KB.
     static let mirroredFiles = [
         "dictionary.json",
+        "macros.json",
         "settings.json",
         "History.json",
         "Vocabulary.txt",
@@ -141,14 +142,26 @@ enum PhononDataMirror {
 
     // MARK: - Export
 
-    /// Copy the whole store, corpus included, somewhere the owner picked.
+    /// Not the user's data: downloaded model weights (gigabytes, fetched again
+    /// on demand) and the running bar's lock file.
+    static let exportSkipped: Set<String> = ["models", "bar.lock"]
+
+    /// Copy the user's data somewhere the owner picked: dictations (Corpus),
+    /// meeting notes with their audio (Meetings), the dictionary, macros and
+    /// settings. Model weights are left out.
     static func exportAll(
         from support: URL, to destination: URL, fileManager: FileManager = .default
     ) throws {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
-        try fileManager.copyItem(at: support, to: destination)
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        let items = try fileManager.contentsOfDirectory(
+            at: support, includingPropertiesForKeys: nil, options: [])
+        for item in items where !exportSkipped.contains(item.lastPathComponent) {
+            try fileManager.copyItem(
+                at: item, to: destination.appendingPathComponent(item.lastPathComponent))
+        }
     }
 
     // MARK: - Counting

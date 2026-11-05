@@ -4,21 +4,28 @@ import sys
 from sidecar.polish_server import (
     PROFILE_LEAD_IN,
     REFINER_ENGINE_FILE,
+    REFINER_MARKER_FILE,
     REFINER_SYSTEM_PROMPT,
     RefinerEngine,
     build_profile_block,
     describe_profile,
+    draft_fields,
+    draft_request,
     engine_command,
     engine_probe_passed,
     guard_output,
     has_mlx_weights,
     read_engine_config,
+    read_writing_modes,
     refiner_system_prompt,
     refiner_token_budget,
     refiner_vocabulary,
     resolve_model_dir,
+    restore_terms,
+    with_transcript,
     snapshot_is_complete,
     split_rendered_prompt,
+    writing_mode,
 )
 
 
@@ -134,6 +141,84 @@ def test_refiner_system_prompt_matches_the_training_format():
     assert refiner_system_prompt(["vLLM", "cuBLAS"]) == (
         REFINER_SYSTEM_PROMPT + "\nVocabulary the speaker may use: vLLM, cuBLAS"
     )
+    # intent_v0 mix_build.py: refiner prompt, mode line, then the vocabulary line
+    line = "Writing mode: casual (a chat message)."
+    assert refiner_system_prompt([], line) == REFINER_SYSTEM_PROMPT + "\n" + line
+    assert refiner_system_prompt(["vLLM"], line) == (
+        REFINER_SYSTEM_PROMPT + "\n" + line + "\nVocabulary the speaker may use: vLLM"
+    )
+
+
+MODE_LINES = {
+    "minimal": "Writing mode: minimal (notes and documents).",
+    "casual": "Writing mode: casual (a chat message).",
+    "formal": "Writing mode: formal (an email or document).",
+    "prompt": "Writing mode: prompt (an instruction to an AI assistant).",
+}
+
+
+def test_a_refiner_without_modes_gets_no_mode_line(tmp_path):
+    assert read_writing_modes(str(tmp_path)) == ({}, {})
+    (tmp_path / REFINER_MARKER_FILE).write_text(json.dumps({"name": "legacy"}))
+    lines, table = read_writing_modes(str(tmp_path))
+    assert (lines, table) == ({}, {})
+    assert writing_mode(lines, table, {"app_category": "chat"}) == (None, "")
+    (tmp_path / REFINER_MARKER_FILE).write_text("{not json")
+    assert read_writing_modes(str(tmp_path)) == ({}, {})
+
+
+def test_writing_mode_follows_the_app_category(tmp_path):
+    (tmp_path / REFINER_MARKER_FILE).write_text(
+        json.dumps({"writing_modes": MODE_LINES})
+    )
+    lines, table = read_writing_modes(str(tmp_path))
+    pick = lambda context: writing_mode(lines, table, context)[0]  # noqa: E731
+    assert pick({"app_category": "chat"}) == "casual"
+    assert pick({"app_category": "work_chat"}) == "formal"
+    assert pick({"app_category": "email"}) == "formal"
+    assert pick({"app_category": "ai_prompt"}) == "prompt"
+    assert pick({"app_category": "code"}) == "prompt"
+    assert pick({"app_category": "docs"}) == "minimal"
+    assert pick({"app_category": "other"}) == "minimal"
+    # no app, an unknown category, or no context: the "other" mode
+    assert pick({}) == pick({"app_category": "game"}) == pick(None) == "minimal"
+    assert (
+        writing_mode(lines, table, {"app_category": "chat"})[1] == MODE_LINES["casual"]
+    )
+
+
+def test_a_picked_writing_style_overrides_the_app(tmp_path):
+    (tmp_path / REFINER_MARKER_FILE).write_text(
+        json.dumps({"writing_modes": MODE_LINES})
+    )
+    lines, table = read_writing_modes(str(tmp_path))
+    pick = lambda context: writing_mode(lines, table, context)  # noqa: E731
+    assert pick({"app_category": "chat", "writing_mode": "formal"}) == (
+        "formal",
+        MODE_LINES["formal"],
+    )
+    assert pick({"writing_mode": "casual"})[0] == "casual"
+    # a mode the refiner does not have, or junk: the category decides
+    assert pick({"app_category": "chat", "writing_mode": "shouty"})[0] == "casual"
+    assert pick({"app_category": "email", "writing_mode": 3})[0] == "formal"
+    # a refiner without modes still gets no mode line
+    assert writing_mode({}, {}, {"writing_mode": "formal"}) == (None, "")
+
+
+def test_the_marker_can_remap_categories(tmp_path):
+    marker = {
+        "writing_modes": {
+            "minimal": MODE_LINES["minimal"],
+            "prompt": MODE_LINES["prompt"],
+        },
+        "writing_modes_by_app_category": {"code": "minimal", "chat": "casual"},
+    }
+    (tmp_path / REFINER_MARKER_FILE).write_text(json.dumps(marker))
+    lines, table = read_writing_modes(str(tmp_path))
+    assert writing_mode(lines, table, {"app_category": "code"})[0] == "minimal"
+    assert writing_mode(lines, table, {"app_category": "ai_prompt"})[0] == "prompt"
+    # a mode the refiner has no line for gives no line
+    assert writing_mode(lines, table, {"app_category": "chat"}) == (None, "")
 
 
 def test_refiner_token_budget():
@@ -150,6 +235,63 @@ def test_guard_falls_back_on_runaway_and_collapse():
         False,
     )
     assert guard_output("hi there", "") == ("", False)
+
+
+def test_a_said_dictionary_term_survives_a_swap_for_another_term():
+    # owner dictation 2026-11-04 3:25 pm: MTP and MLP in the dictionary
+    vocab = ["MLP", "MTP", "MoE", "DSpark"]
+    spoken = "then we would test native mtp versus d spark, the mlp or the moe"
+    out = "Then we would test native MTK versus DSpark, the MMLU-Pro or the MoE."
+    assert restore_terms(spoken, out, vocab) == (
+        "Then we would test native MTP versus DSpark, the MLP or the MoE."
+    )
+    # a term that was said stays; a rewrite into ordinary words stays; no vocab, no change
+    assert restore_terms("mtp or mtk", "MTP or MTK.", vocab) == "MTP or MTK."
+    assert restore_terms("the mtp path", "the fast path", vocab) == "the fast path"
+    assert restore_terms(spoken, out, []) == out
+    # line breaks in the output are kept
+    assert (
+        restore_terms("hi sam the mtp", "Hi Sam,\nthe MTK", vocab) == "Hi Sam,\nthe MTP"
+    )
+
+
+def test_a_long_dictations_parts_share_the_envelope():
+    text = "<phonon_dictionary>\nlikely_terms: MTP\n</phonon_dictionary>\n<transcript>\na b c\n</transcript>"
+    part = with_transcript(text, ["b", "c"])
+    assert part.startswith("<phonon_dictionary>\nlikely_terms: MTP")
+    assert part.endswith("<transcript>\nb c\n</transcript>")
+    assert with_transcript("a b c", ["c"]) == "c"
+
+
+def test_live_text_is_sent_only_when_the_engine_asks():
+    assert draft_request(None) is None
+    assert draft_request({"app_category": "chat"}) is None  # the default path: no text
+    assert draft_request({"draft_id": ""}) is None
+    assert draft_request({"draft_id": 7}) is None
+    assert draft_request({"draft_id": "p3", "draft_seq": True}) == {"draftId": "p3"}
+    wanted = draft_request({"app_category": "chat", "draft_id": "p3", "draft_seq": 5})
+    assert wanted == {"draftId": "p3", "draftSeq": 5}
+
+    def decode(ids):
+        return " ".join(f"w{i}" for i in ids) + "<turn|>"
+
+    spoken = "w1 w2 w3"
+    assert draft_fields(None, [1, 2, 3], 40, decode, spoken) == {}
+    assert draft_fields(wanted, None, 40, decode, spoken) == {}
+    # cleaned like a run's output; complete when it ended before the budget
+    assert draft_fields(wanted, [1, 2, 3], 40, decode, spoken) == {
+        "draftId": "p3",
+        "draftSeq": 5,
+        "draftText": "w1 w2 w3",
+        "draftComplete": True,
+    }
+    # stopped at the output budget: shown, but marked incomplete
+    assert draft_fields(wanted, [1, 2, 3], 3, decode, spoken)["draftComplete"] is False
+    # the run's guard applies too: a collapsed draft shows the spoken text
+    long_spoken = " ".join(f"w{i}" for i in range(1, 21))
+    assert (
+        draft_fields(wanted, [1], 40, decode, long_spoken)["draftText"] == long_spoken
+    )
 
 
 # Stands in for `pe serve`: same handshake and reply shapes, echoes the prompt.

@@ -5,11 +5,12 @@
 //!   {"cmd":"transcribe","path":"/tmp/x.wav","id":"..."}
 //!   {"cmd":"polish","text":"...","id":"...","context":"<ocr>","app":{"bundle_id":"...","name":"...","url_host":"..."},"textbox":{...}}
 //!   {"cmd":"prewarm"}  — dictation started; no event in reply
-//!   {"cmd":"stream_start","id":"..."} / {"cmd":"stream_chunk","id":"...","pcm16":"<base64>"} /
+//!   {"cmd":"stream_start","id":"...","app":{...}} / {"cmd":"stream_chunk","id":"...","pcm16":"<base64>"} /
 //!   {"cmd":"stream_stop","id":"..."}  — live audio; with streaming refine a segment stream
 //!   {"cmd":"stream_finish","id":"..."}  — key up of a segment stream with all its audio sent:
 //!   the release transcription starts now; the `transcribe` that follows releases the result
 //!   {"cmd":"screen_context","id":"...","text":"..."}  — screen text for the open stream
+//!   {"cmd":"stream_app","id":"...","app":{...}}  — the open stream's target app, once resolved
 //!   {"cmd":"reload_dictionary"}
 //!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
@@ -21,6 +22,8 @@
 //!   (the bar then sends the last partial chunk at key up and {"cmd":"screen_context"})
 //!   {"type":"result","kind":"asr|polish","id":"...","text":"...","seconds":0.1,"latency_ms":70,"ttft_ms":30,"tok_s":200}
 //!   {"type":"result","kind":"edit","id":"...","outcome":"correction","suggestions":[...],"recorded":false}
+//!   {"type":"result","kind":"draft","id":"...","text":"...","source":"...","complete":true}  — live
+//!   text (settings.json `live_text`): the open stream's corrected text so far, display only
 //!   {"type":"error","id":"...","msg":"..."}
 
 pub mod app_context;
@@ -78,6 +81,16 @@ pub enum EngineEvent {
         tok_s: f64,
         app_category: Option<app_context::AppCategory>,
     },
+    /// Live text: the corrected text so far of the open stream `id`, from a background
+    /// refine. Display only; the polish result is still what gets inserted.
+    /// `text` went through the same correction path as a polish result (`finish_correction`);
+    /// `source` is the transcript so far it refines, for the bar's own final check.
+    DraftResult {
+        id: String,
+        text: String,
+        source: String,
+        complete: bool,
+    },
     Error {
         id: Option<String>,
         msg: String,
@@ -123,15 +136,25 @@ pub struct Engine {
     /// envelope). Building one costs about 0.18 ms per word (M4 Max, 40 ms at 228 words);
     /// when the speaker stops inside the last chunk the final polish asks for the same one.
     stream_envelope: Option<(String, String, String)>,
+    /// The open stream's target app category (`stream_start` / `stream_app`), so background
+    /// commits carry the writing mode the final polish will use; and the category the last
+    /// commit went out with.
+    stream_category: Option<(String, app_context::AppCategory)>,
+    stream_commit_category: Option<app_context::AppCategory>,
+    /// The open stream whose background drafts go out as `draft` results: settings.json
+    /// `live_text` as of its `stream_start` (re-read only when the file changed), so a
+    /// flipped setting applies from the next dictation without an engine restart.
+    live_text_stream: Option<String>,
 }
+
+/// Words a recognizer must produce for a clip the energy gate called silent to go out anyway.
+const MIN_WORDS_PAST_GATE: usize = 3;
 
 /// The two halves of a streamed dictation's final transcript (see `Engine::finishing`).
 #[derive(Debug, Default)]
 struct StreamFinish {
     text: Option<(String, f64)>,
     speech: Option<bool>,
-    /// An empty result already went out (the gate found no speech); the ASR text is dropped.
-    answered: bool,
     /// The sidecar could not finish the stream: the WAV is transcribed the usual way instead.
     failed: bool,
     /// The WAV, once the bar's `transcribe` has named it.
@@ -140,14 +163,16 @@ struct StreamFinish {
 
 impl StreamFinish {
     /// What to send now (text, seconds), if anything, and whether the entry is finished.
-    /// The ASR text goes out only once the gate found speech; no speech sends an empty
-    /// result at once and drops the ASR text whenever it arrives.
+    /// Both the ASR text and the gate are needed. When the energy gate finds no speech, the
+    /// recognizer's words decide: `MIN_WORDS_PAST_GATE` or more go out, anything shorter
+    /// (the "thank you" a recognizer makes of silence) becomes an empty result. The gate
+    /// alone dropped quiet speech: 13 of the owner's 49 rejected clips over 1 s held 3-28
+    /// words, while the rejected clips without speech gave Parakeet 0-1 words (2026-11-03).
     fn resolve(&mut self) -> (Option<(String, f64)>, bool) {
         match (self.speech, self.text.take()) {
-            (Some(false), text) => {
-                let answer = (!self.answered).then(|| (String::new(), 0.0));
-                self.answered = true;
-                (answer, text.is_some())
+            (Some(false), Some(text)) => {
+                let spoken = text.0.split_whitespace().count() >= MIN_WORDS_PAST_GATE;
+                (Some(if spoken { text } else { (String::new(), 0.0) }), true)
             }
             (Some(true), Some(text)) => (Some(text), true),
             (_, text) => {
@@ -193,7 +218,11 @@ impl Engine {
             "phonon engine: streaming refine {}",
             if stream_refine { "on" } else { "off" }
         );
-        let asr = AsrSidecar::spawn_with(root, stream_refine)?;
+        let mut asr = AsrSidecar::spawn_with(root, stream_refine)?;
+        let dictionary = data::DictionaryFile::load()?;
+        if let Err(error) = asr.set_terms(&dictionary.asr_terms()) {
+            eprintln!("phonon engine: ASR dictionary terms not sent: {error:#}");
+        }
         let mut polish_config = data::polish_config()?;
         polish_config.stream_refine = stream_refine;
         let polisher = PolishSidecar::spawn_with(root, &polish_config)?
@@ -207,7 +236,7 @@ impl Engine {
             root: root.to_path_buf(),
             started: Instant::now(),
             polish_requests: Vec::new(),
-            dictionary: data::DictionaryFile::load()?,
+            dictionary,
             styles: app_context::StylePreferenceCache::new(None),
             repeated_edits: edits::RepeatedEdits::default(),
             recording_ids: HashMap::new(),
@@ -224,6 +253,9 @@ impl Engine {
             stream_screen_text: None,
             finishing: HashMap::new(),
             stream_envelope: None,
+            stream_category: None,
+            stream_commit_category: None,
+            live_text_stream: None,
         })
     }
 
@@ -486,14 +518,16 @@ impl Engine {
                                 });
                             }
                         } else {
-                            let mut corrected =
-                                safe_polish_output(&self.dictionary, &request.source_text, &text);
-                            corrected.text = app_context::apply_style(
-                                &corrected.text,
-                                &request.style,
+                            let mut corrected = finish_correction(
                                 &self.dictionary,
+                                &request.source_text,
+                                &text,
+                                &request.style,
                             );
                             let app_category = request.app.as_ref().map(|app| app.category);
+                            if app_category == Some(app_context::AppCategory::Email) {
+                                corrected.text = app_context::email_layout(&corrected.text);
+                            }
                             if let Some(recording_id) = id
                                 .as_ref()
                                 .and_then(|request_id| self.recording_ids.get(request_id))
@@ -526,6 +560,36 @@ impl Engine {
                                 app_category,
                             });
                         }
+                    }
+                    PolishEvent::Draft {
+                        id,
+                        seq,
+                        text,
+                        complete,
+                    } => {
+                        // Live text, for the open stream only: a draft from a finished or
+                        // replaced dictation, or of an unknown commit, is dropped.
+                        let Some(source) = draft_source(
+                            self.live_text_stream.as_deref(),
+                            &self.segment_streams,
+                            &id,
+                            seq,
+                        ) else {
+                            continue;
+                        };
+                        let style = match &self.stream_category {
+                            Some((stream_id, category)) if *stream_id == id => {
+                                self.styles.styles_for(*category)
+                            }
+                            _ => Vec::new(),
+                        };
+                        let corrected = finish_correction(&self.dictionary, &source, &text, &style);
+                        out.push(EngineEvent::DraftResult {
+                            id,
+                            text: corrected.text,
+                            source,
+                            complete,
+                        });
                     }
                     PolishEvent::Error { msg } => {
                         // drop matching id if any
@@ -634,14 +698,16 @@ impl Engine {
                 }
             }
             if !speech_detected {
-                self.pending_events.push(EngineEvent::AsrResult {
-                    id: Some(id.to_string()),
-                    text: String::new(),
-                    seconds: 0.0,
-                    partial: false,
-                });
-                self.segment_streams.remove(id);
-                return Ok(());
+                // Transcribe anyway; as for a stream, the recognizer's words decide
+                // (`StreamFinish::resolve`), and a failure gives an empty result.
+                self.finishing.insert(
+                    id.to_string(),
+                    StreamFinish {
+                        speech: Some(false),
+                        path: Some(path.to_path_buf()),
+                        ..StreamFinish::default()
+                    },
+                );
             }
         }
         if let Some(stream_id) = id.filter(|id| self.segment_streams.contains_key(*id)) {
@@ -670,8 +736,15 @@ impl Engine {
     /// the bar has named it (and the gate found speech), else when it does.
     fn fall_back_from_stream(&mut self, id: &str) -> Option<String> {
         let finish = self.finishing.get_mut(id)?;
-        if finish.answered {
-            self.finishing.remove(id); // no speech: the empty result went out already
+        if finish.speech == Some(false) {
+            // no speech by the gate and no recognizer words to overrule it
+            self.finishing.remove(id);
+            self.pending_events.push(EngineEvent::AsrResult {
+                id: Some(id.to_string()),
+                text: String::new(),
+                seconds: 0.0,
+                partial: false,
+            });
             return None;
         }
         match (finish.speech, finish.path.clone()) {
@@ -720,7 +793,12 @@ impl Engine {
         out
     }
 
-    pub fn stream_start(&mut self, id: Option<&str>) -> Result<()> {
+    /// `app`: the bar's `app` object for the dictation's target as known at key down.
+    pub fn stream_start(
+        &mut self,
+        id: Option<&str>,
+        app: Option<&serde_json::Value>,
+    ) -> Result<()> {
         if let (true, Some(stream_id)) = (self.stream_refine && self.llm_ready, id) {
             self.segment_streams.clear();
             self.segment_streams
@@ -729,11 +807,18 @@ impl Engine {
             // a dictation the bar finished but never sent a WAV for (empty capture)
             self.finishing.clear();
             self.stream_envelope = None;
+            self.stream_category = None;
+            self.stream_commit_category = None;
+            self.live_text_stream = self.styles.live_text().then(|| stream_id.to_string());
+            if let Some(app) = app {
+                self.stream_app(stream_id, app);
+            }
             if let Some(polisher) = self.polisher.as_mut() {
                 polisher.stream_reset()?;
             }
             return self.asr.stream_start_segments(id);
         }
+        self.live_text_stream = None;
         self.asr.stream_start(id)
     }
 
@@ -741,6 +826,24 @@ impl Engine {
     pub fn stream_screen_context(&mut self, id: &str, text: &str) {
         if self.segment_streams.contains_key(id) {
             self.stream_screen_text = Some((id.to_string(), text.to_string()));
+        }
+    }
+
+    /// The target app of the stream `id` once the bar resolved it (a browser tab's host
+    /// arrives after key down); later commits carry its category.
+    pub fn stream_app(&mut self, id: &str, app: &serde_json::Value) {
+        if self.segment_streams.contains_key(id) {
+            self.stream_category = app_context::AppContext::from_request(app)
+                .map(|app| (id.to_string(), app.category));
+        }
+    }
+
+    /// The `context` of a background commit for the stream `id`: the app category only,
+    /// the one key the refiner's prompt depends on.
+    fn stream_commit_context(&self, id: Option<&str>) -> Option<app_context::AppCategory> {
+        match (&self.stream_category, id) {
+            (Some((stream_id, category)), Some(id)) if stream_id == id => Some(*category),
+            _ => None,
         }
     }
 
@@ -761,23 +864,35 @@ impl Engine {
             (Some((screen_id, screen)), Some(id)) if screen_id == id => screen.clone(),
             _ => String::new(),
         };
-        if matches!(&self.stream_envelope, Some((t, s, _)) if *t == text && *s == screen) {
+        let category = self.stream_commit_context(id);
+        if matches!(&self.stream_envelope, Some((t, s, _)) if *t == text && *s == screen)
+            && category == self.stream_commit_category
+        {
             return None; // a round that heard nothing new: the sidecar has this one already
         }
         let input = self
             .dictionary
             .prepare_polish_input_with_context(&text, &screen);
+        let live = id.filter(|id| self.live_text_stream.as_deref() == Some(*id));
+        let context = app_context::with_writing_mode(
+            stream_commit_json(category, live.map(|id| (id, index))),
+            self.styles.writing_mode().as_deref(),
+        );
         let polisher = self.polisher.as_mut()?;
         let error = polisher
-            .stream_commit(&input)
+            .stream_commit(&input, context.as_ref())
             .err()
             .map(|error| format!("stream commit: {error:#}"));
         self.stream_envelope = Some((text, screen, input));
+        self.stream_commit_category = category;
         error
     }
 
     /// A reloaded dictionary; envelopes built from the old one are dropped.
     pub fn set_dictionary(&mut self, dictionary: data::DictionaryFile) {
+        if let Err(error) = self.asr.set_terms(&dictionary.asr_terms()) {
+            eprintln!("phonon engine: ASR dictionary terms not sent: {error:#}");
+        }
         self.dictionary = dictionary;
         self.stream_envelope = None;
     }
@@ -848,7 +963,10 @@ impl Engine {
             None => Vec::new(),
         };
         let textbox = textbox.and_then(app_context::TextboxContext::from_request);
-        let context = app_context::polish_context(app.as_ref(), &style, textbox.as_ref());
+        let context = app_context::with_writing_mode(
+            app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
+            self.styles.writing_mode().as_deref(),
+        );
         self.polish_requests.push(PolishRequest {
             id: id.map(str::to_string),
             source_text: text.to_string(),
@@ -956,6 +1074,48 @@ fn safe_polish_output(
     polished: &str,
 ) -> data::CorrectionResult {
     data::safe_polish_output(dictionary, source, polished)
+}
+
+/// The one path from a refiner output to the text the user sees: the final polish result
+/// and the live-text drafts both go through it, so the overlay shows what would be pasted.
+fn finish_correction(
+    dictionary: &data::DictionaryFile,
+    source: &str,
+    polished: &str,
+    style: &[String],
+) -> data::CorrectionResult {
+    let mut corrected = safe_polish_output(dictionary, source, polished);
+    corrected.text = app_context::apply_style(&corrected.text, style, dictionary);
+    corrected
+}
+
+/// The transcript so far a live-text draft refines, when the draft belongs to the open
+/// live-text stream and names a commit of it.
+fn draft_source(
+    live_stream: Option<&str>,
+    streams: &HashMap<String, Vec<String>>,
+    id: &str,
+    seq: Option<usize>,
+) -> Option<String> {
+    if live_stream != Some(id) {
+        return None;
+    }
+    streams.get(id)?.get(seq?).cloned()
+}
+
+/// The `context` of a background commit: the app category (the one key the refiner's
+/// prompt depends on) and, for a live-text stream, the tag its draft comes back under.
+fn stream_commit_json(
+    category: Option<app_context::AppCategory>,
+    live: Option<(&str, usize)>,
+) -> Option<serde_json::Value> {
+    let mut context = category.map(|category| json!({"app_category": category}));
+    if let Some((id, seq)) = live {
+        let context = context.get_or_insert_with(|| json!({}));
+        context["draft_id"] = json!(id);
+        context["draft_seq"] = json!(seq);
+    }
+    context
 }
 
 fn normalized_words(text: &str) -> Vec<String> {
@@ -1188,8 +1348,14 @@ pub fn run_engine_serve() -> Result<()> {
                     }
                     "stream_start" => {
                         let id = v.get("id").and_then(|x| x.as_str());
-                        if let Err(e) = eng.stream_start(id) {
+                        if let Err(e) = eng.stream_start(id, v.get("app")) {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
+                        }
+                    }
+                    "stream_app" => {
+                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                        if let Some(app) = v.get("app") {
+                            eng.stream_app(id, app);
                         }
                     }
                     "stream_chunk" => {
@@ -1351,12 +1517,34 @@ fn emit_engine_event(ev: &EngineEvent) {
             "tok_s": tok_s,
             "app_category": app_category,
         })),
+        EngineEvent::DraftResult { .. } => emit(&draft_json(ev).unwrap_or_default()),
         EngineEvent::Error { id, msg } => emit(&json!({
             "type": "error",
             "id": id,
             "msg": msg,
         })),
     }
+}
+
+/// `{"type":"result","kind":"draft",...}` for a live-text draft; None for any other event.
+fn draft_json(ev: &EngineEvent) -> Option<serde_json::Value> {
+    let EngineEvent::DraftResult {
+        id,
+        text,
+        source,
+        complete,
+    } = ev
+    else {
+        return None;
+    };
+    Some(json!({
+        "type": "result",
+        "kind": "draft",
+        "id": id,
+        "text": text,
+        "source": source,
+        "complete": complete,
+    }))
 }
 
 #[cfg(test)]
@@ -1366,7 +1554,84 @@ mod tests {
         llm_prime_passed, llm_smoke_passed, physical_memory_bytes, safe_polish_output,
         stream_refine_default, stream_refine_setting, StreamFinish,
     };
+    use super::{draft_json, draft_source, finish_correction, stream_commit_json, EngineEvent};
+    use crate::app_context::AppCategory;
     use crate::data::{DictionaryEntry, DictionaryFile};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn a_live_text_draft_maps_to_a_draft_result_event() {
+        let event = EngineEvent::DraftResult {
+            id: "p7".into(),
+            text: "Run vLLM.".into(),
+            source: "run v llm".into(),
+            complete: false,
+        };
+        assert_eq!(
+            draft_json(&event),
+            Some(json!({"type": "result", "kind": "draft", "id": "p7",
+                        "text": "Run vLLM.", "source": "run v llm", "complete": false}))
+        );
+        let error = EngineEvent::Error {
+            id: None,
+            msg: "x".into(),
+        };
+        assert_eq!(draft_json(&error), None);
+    }
+
+    #[test]
+    fn drafts_go_out_only_for_the_open_live_text_stream() {
+        let streams = HashMap::from([("p2".to_string(), vec!["a".into(), "a b".into()])]);
+        assert_eq!(
+            draft_source(Some("p2"), &streams, "p2", Some(1)),
+            Some("a b".into())
+        );
+        assert_eq!(draft_source(None, &streams, "p2", Some(1)), None); // setting off
+        assert_eq!(draft_source(Some("p2"), &streams, "p1", Some(1)), None); // old stream
+        assert_eq!(draft_source(Some("p3"), &streams, "p3", Some(0)), None); // finished
+        assert_eq!(draft_source(Some("p2"), &streams, "p2", Some(5)), None); // unknown commit
+        assert_eq!(draft_source(Some("p2"), &streams, "p2", None), None);
+    }
+
+    #[test]
+    fn a_commit_asks_for_its_draft_only_with_live_text() {
+        assert_eq!(stream_commit_json(None, None), None); // the default path is unchanged
+        assert_eq!(
+            stream_commit_json(Some(AppCategory::Chat), None),
+            Some(json!({"app_category": "chat"}))
+        );
+        assert_eq!(
+            stream_commit_json(Some(AppCategory::Chat), Some(("p2", 3))),
+            Some(json!({"app_category": "chat", "draft_id": "p2", "draft_seq": 3}))
+        );
+        assert_eq!(
+            stream_commit_json(None, Some(("p2", 0))),
+            Some(json!({"draft_id": "p2", "draft_seq": 0}))
+        );
+    }
+
+    #[test]
+    fn drafts_and_the_final_polish_share_one_correction_path() {
+        let dictionary = DictionaryFile {
+            entries: vec![DictionaryEntry {
+                phrase: "vee llm".into(),
+                replacement: Some("vLLM".into()),
+                spoken_forms: Vec::new(),
+                source: "test".into(),
+                starred: false,
+                usage_count: 0,
+            }],
+            ..DictionaryFile::default()
+        };
+        let style = vec!["lowercase_start".to_string()];
+        let corrected =
+            finish_correction(&dictionary, "run vee llm now", "Run vee llm now.", &style);
+        let mut expected = safe_polish_output(&dictionary, "run vee llm now", "Run vee llm now.");
+        expected.text = crate::app_context::apply_style(&expected.text, &style, &dictionary);
+        assert_eq!(corrected.text, expected.text);
+        assert!(corrected.text.contains("vLLM"));
+    }
 
     #[test]
     fn a_stream_finished_at_key_up_waits_for_both_its_text_and_the_gate() {
@@ -1386,14 +1651,23 @@ mod tests {
         assert_eq!(finish.resolve(), (None, false));
         finish.text = Some(("hi".into(), 0.04));
         assert_eq!(finish.resolve(), (Some(("hi".into(), 0.04)), true));
-        // no speech: an empty answer at once, and the hallucination that follows is dropped
+        // no speech by the gate: the recognizer's words decide, so a short hallucination
+        // of silence is dropped
         let mut finish = StreamFinish {
             speech: Some(false),
             ..StreamFinish::default()
         };
-        assert_eq!(finish.resolve(), (Some((String::new(), 0.0)), false));
+        assert_eq!(finish.resolve(), (None, false));
         finish.text = Some(("thank you".into(), 0.04));
-        assert_eq!(finish.resolve(), (None, true));
+        assert_eq!(finish.resolve(), (Some((String::new(), 0.0)), true));
+        // ... and quiet speech the gate missed still goes out (a clip of 2026-11-03)
+        let mut finish = StreamFinish {
+            speech: Some(false),
+            ..StreamFinish::default()
+        };
+        let quiet = "So basically plan, then execute, and use sub-agents where necessary.";
+        finish.text = Some((quiet.into(), 0.03));
+        assert_eq!(finish.resolve(), (Some((quiet.into(), 0.03)), true));
     }
 
     #[test]
