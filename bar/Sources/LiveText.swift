@@ -295,7 +295,11 @@ enum LiveTextPolicy {
         {
             last = String(last.dropLast())
         }
-        if !last.isEmpty { out[out.count - 1] = last }
+        if last.isEmpty {
+            out.removeLast()
+        } else {
+            out[out.count - 1] = last
+        }
         return out
     }
 
@@ -311,8 +315,12 @@ enum LiveTextPolicy {
     /// the end twice ("fused into one everything fused into one", owner trace 2026-11-04
     /// 4:16 pm). Falls back to the count when the stretch to compare is very long.
     static func tail(transcript: [String], source: [String]) -> [String] {
-        let t = transcript.map(normalized)
-        let s = source.map(normalized)
+        let token = { (word: String) -> String in
+            let norm = normalized(word)
+            return norm.isEmpty ? "\u{FFFC}" : norm
+        }
+        let t = transcript.map(token)
+        let s = source.map(token)
         var p = 0
         while p < min(s.count, t.count), s[p] == t[p] { p += 1 }
         if p == s.count { return Array(transcript[p...]) }
@@ -464,7 +472,12 @@ enum LiveTextPolicy {
     }
 
     static func steps(old: [String], new: [String]) -> [Step] {
-        let diff = WordDiff.compare(old.joined(separator: " "), new.joined(separator: " "))
+        let nonEmpty = { (token: String) -> String in
+            token.isEmpty || token.contains(where: \.isWhitespace) ? "\u{FFFC}" : token
+        }
+        let diff = WordDiff.compare(
+            old.map(nonEmpty).joined(separator: " "),
+            new.map(nonEmpty).joined(separator: " "))
         let oldChanged = diff.before.filter { !$0.text.allSatisfy(\.isWhitespace) }.map(\.changed)
         let newChanged = diff.after.filter { !$0.text.allSatisfy(\.isWhitespace) }.map(\.changed)
         var steps = [Step]()

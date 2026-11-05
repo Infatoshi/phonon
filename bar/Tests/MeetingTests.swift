@@ -378,6 +378,7 @@ final class MeetingRecordingFilesTests: XCTestCase {
             MeetingChunk(index: 0, file: "0000.wav", startSample: 0, sampleCount: 2_880_000),
             track: .system)
         index.end(reason: "call_ended")
+        index.end(reason: "later_duplicate_stop")
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         XCTAssertEqual(object["sample_rate"] as? Int, 48_000)

@@ -158,7 +158,7 @@ struct InsightsData: Equatable {
         }
         let before = normalize(heard)
         let after = normalize(wrote)
-        guard before != after, !before.isEmpty else { return 0 }
+        guard before != after, !before.isEmpty, !after.isEmpty else { return 0 }
         return WordDiff.compare(before, after).before.filter(\.changed).count
     }
 
@@ -610,20 +610,28 @@ struct YearCalendar: View {
     }
 
     /// The first week column of each month, labelled "Jan", "Feb"...
-    private var monthStarts: [(week: Double, label: String)] {
+    static func monthStarts(for cells: [InsightsData.YearCell], calendar: Calendar = .current)
+        -> [(week: Double, label: String)]
+    {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "MMM"
         var seen = Set<Int>()
         var starts: [(Double, String)] = []
         for cell in cells where cell.weekday == 0 {
-            let month = Calendar.current.component(.month, from: cell.date)
-            guard Calendar.current.component(.day, from: cell.date) <= 7, !seen.contains(month)
+            let year = calendar.component(.year, from: cell.date)
+            let month = calendar.component(.month, from: cell.date)
+            let yearMonth = year * 100 + month
+            guard calendar.component(.day, from: cell.date) <= 7, !seen.contains(yearMonth)
             else { continue }
-            seen.insert(month)
+            seen.insert(yearMonth)
             starts.append((Double(cell.week) + 0.5, formatter.string(from: cell.date)))
         }
         return starts
+    }
+
+    private var monthStarts: [(week: Double, label: String)] {
+        Self.monthStarts(for: cells)
     }
 }
 

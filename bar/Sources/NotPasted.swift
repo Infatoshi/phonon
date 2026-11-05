@@ -261,7 +261,7 @@ final class NotPastedController {
     let model = NotPastedModel()
     private var expiry: DispatchWorkItem?
     private var generation = 0
-    private var hovering = false
+    private(set) var hovering = false
 
     init() {
         model.onHover = { [weak self] inside in
@@ -280,6 +280,7 @@ final class NotPastedController {
     /// while the key is held).
     func show(_ notice: Notice, stays: Bool = false) {
         generation += 1
+        hovering = false
         current = notice
         model.notice = notice
         let panel = self.panel ?? makePanel()
@@ -296,6 +297,7 @@ final class NotPastedController {
     func dismiss() {
         expiry?.cancel()
         expiry = nil
+        hovering = false
         current = nil
         generation += 1
         let current = generation
