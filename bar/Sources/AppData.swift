@@ -741,26 +741,28 @@ final class NativeAppStore: ObservableObject {
         let phrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !phrase.isEmpty else { return }
         let cleanReplacement = replacement?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedReplacement = cleanReplacement?.isEmpty == false ? cleanReplacement : nil
         let cleanForms = Array(
             Set(spokenForms.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter {
                 !$0.isEmpty
             })
         ).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let candidate = NativeDictionaryEntry(
+            phrase: phrase,
+            replacement: normalizedReplacement,
+            spokenForms: cleanForms
+        )
         var entries = dictionaryEntries
         if let originalID, let index = entries.firstIndex(where: { $0.id == originalID }) {
             entries[index].phrase = phrase
-            entries[index].replacement = cleanReplacement?.isEmpty == false ? cleanReplacement : nil
+            entries[index].replacement = normalizedReplacement
             entries[index].spokenForms = cleanForms
-        } else if !entries.contains(where: {
-            $0.phrase.caseInsensitiveCompare(phrase) == .orderedSame
-                && ($0.replacement ?? "") == (cleanReplacement ?? "")
-        }) {
-            entries.append(
-                NativeDictionaryEntry(
-                    phrase: phrase,
-                    replacement: cleanReplacement?.isEmpty == false ? cleanReplacement : nil,
-                    spokenForms: cleanForms
-                ))
+            let updatedID = entries[index].id
+            entries = entries.enumerated().filter { offset, entry in
+                offset == index || entry.id != updatedID
+            }.map(\.element)
+        } else if !entries.contains(where: { $0.id == candidate.id }) {
+            entries.append(candidate)
         }
         saveDictionary(entries)
     }
@@ -1182,6 +1184,9 @@ final class NativeAppStore: ObservableObject {
             } ?? [:]
         for (key, value) in encoded as? [String: Any] ?? [:] {
             object[key] = value
+        }
+        if updated.streamRefine == nil {
+            object.removeValue(forKey: "stream_refine")
         }
         try fileManager.createDirectory(
             at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)

@@ -129,6 +129,11 @@ final class MainWindowDataTests: XCTestCase {
         object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         XCTAssertEqual(object["stream_refine"] as? Bool, false)
+        store.updateSettings { $0.streamRefine = nil }
+        object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertNil(object["stream_refine"], "resetting streamRefine to nil removes the key")
+        XCTAssertNil(NativeAppStore(supportDirectory: directory).settings.streamRefine)
         XCTAssertEqual(NativeAppStore(supportDirectory: directory).settings.writingStyle, .formal)
     }
 
@@ -186,6 +191,9 @@ final class MainWindowDataTests: XCTestCase {
                 wrote: "Okay, my technical like CUDA and Kublass and cuDNN terms. let's see"),
             2, "Kubloss changed, Uh dropped; CUDNN -> cuDNN is only case")
         XCTAssertEqual(InsightsData.fixedWords(heard: "", wrote: "Hi."), 0)
+        XCTAssertEqual(
+            InsightsData.fixedWords(heard: "unpolished raw transcript only", wrote: ""), 0,
+            "raw-only entries must not count all heard words as fixed")
     }
 
     func testInsightsComeFromTheCorpus() throws {
@@ -232,6 +240,10 @@ final class MainWindowDataTests: XCTestCase {
         XCTAssertEqual(InsightsData.level(0, max: 10), 0)
         XCTAssertEqual(InsightsData.level(1, max: 10), 1)
         XCTAssertEqual(InsightsData.level(10, max: 10), 4)
+        let starts = YearCalendar.monthStarts(for: data.year, calendar: calendar)
+        XCTAssertEqual(starts.first?.label, "Nov")
+        XCTAssertEqual(starts.last?.label, "Nov", "13th month label at right edge is kept")
+        XCTAssertEqual(starts.count, 13)
     }
 
     // MARK: Notes
@@ -281,5 +293,53 @@ final class MainWindowDataTests: XCTestCase {
         XCTAssertEqual(peaks.count, 10)
         XCTAssertEqual(peaks.max() ?? 0, 1, accuracy: 1e-6)
         XCTAssertGreaterThan(peaks[5], peaks[1], "the loud second mic chunk")
+
+        // A single-track recording is not shifted by its start offset when the other track is empty.
+        var micOnlyMeta = metadata
+        micOnlyMeta.id = "m2"
+        micOnlyMeta.systemChunks = []
+        micOnlyMeta.micStartOffsetSamples = Int64(rate * 3)
+        micOnlyMeta.systemStartOffsetSamples = nil
+        let micOnlyNote = MeetingNote(metadata: micOnlyMeta, directory: folder)
+        XCTAssertEqual(micOnlyNote.durationSeconds, 2.0, accuracy: 1e-9)
+        XCTAssertEqual(micOnlyNote.chunkFiles().first?.start ?? -1, 0, accuracy: 1e-9)
+    }
+
+    func testMeetingPlayerReplaysFromZeroAfterReachingEnd() async throws {
+        let folder = directory.appendingPathComponent("Meetings/play1", isDirectory: true)
+        let rate = 8_000
+        let micFolder = folder.appendingPathComponent("mic", isDirectory: true)
+        try FileManager.default.createDirectory(at: micFolder, withIntermediateDirectories: true)
+        var wav = ChunkedWavWriter.header(samples: rate, rate: rate)
+        wav.append(Data(count: rate * 2))
+        try wav.write(to: micFolder.appendingPathComponent("0000.wav"))
+
+        var metadata = MeetingMetadata(
+            id: "play1", startedAt: "2026-11-04T08:30:00Z", startedHostNs: 0)
+        metadata.sampleRate = rate
+        metadata.micChunks = [
+            MeetingChunk(index: 0, file: "0000.wav", startSample: 0, sampleCount: Int64(rate))
+        ]
+        let note = MeetingNote(metadata: metadata, directory: folder)
+        let player = MeetingPlayer()
+        await player.start(note)
+        XCTAssertTrue(player.playing)
+        // Pause and seek to the end as when playback finishes, then toggle to replay.
+        player.toggle(note)
+        XCTAssertFalse(player.playing)
+        player.seek(note, to: 1.0)
+        XCTAssertEqual(player.position, 1.0, accuracy: 1e-6)
+        player.toggle(note)
+        XCTAssertTrue(player.playing)
+        XCTAssertEqual(player.position, 0, accuracy: 1e-6)
+        player.stop()
+    }
+
+    func testNotPastedControllerResetsHoveringOnDismissAndShow() {
+        let controller = NotPastedController()
+        controller.model.onHover(true)
+        XCTAssertTrue(controller.hovering)
+        controller.dismiss()
+        XCTAssertFalse(controller.hovering)
     }
 }

@@ -118,6 +118,18 @@ final class AppDataTests: XCTestCase {
 
         store.removeDictionary(id: entry.id)
         XCTAssertTrue(store.dictionaryEntries.isEmpty)
+
+        // Editing an entry to match another entry's normalized (phrase, replacement) deduplicates.
+        store.upsertDictionary(
+            originalID: nil, phrase: "alpha", replacement: "Alpha", spokenForms: [])
+        store.upsertDictionary(
+            originalID: nil, phrase: "beta", replacement: "Beta", spokenForms: [])
+        XCTAssertEqual(store.dictionaryEntries.count, 2)
+        let betaID = try XCTUnwrap(store.dictionaryEntries.first { $0.phrase == "beta" }?.id)
+        store.upsertDictionary(
+            originalID: betaID, phrase: "ALPHA", replacement: "Alpha", spokenForms: ["al pha"])
+        XCTAssertEqual(store.dictionaryEntries.count, 1)
+        XCTAssertEqual(store.dictionaryEntries.first?.spokenForms, ["al pha"])
     }
 
     func testInjectedStoreMirrorsInsideItselfNeverIntoTheOwnersBackup() throws {

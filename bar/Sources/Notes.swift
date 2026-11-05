@@ -36,6 +36,9 @@ struct MeetingNote: Identifiable, Equatable {
     /// Where each track's sample 0 sits on the shared timeline, shifted so the
     /// earliest track starts at 0.
     private var offsets: (mic: Int64, system: Int64) {
+        guard !metadata.micChunks.isEmpty, !metadata.systemChunks.isEmpty else {
+            return (0, 0)
+        }
         let mic = metadata.micStartOffsetSamples ?? 0
         let system = metadata.systemStartOffsetSamples ?? 0
         let base = min(mic, system)
@@ -151,6 +154,8 @@ final class MeetingPlayer: ObservableObject {
     private var player: AVPlayer?
     private var observer: Any?
     private var duration: Double = 0
+    private var loadGeneration = 0
+    private var startTask: Task<Void, Never>?
 
     func load(_ note: MeetingNote) {
         guard note.id != noteID else { return }
@@ -170,11 +175,19 @@ final class MeetingPlayer: ObservableObject {
             return
         }
         if let player {
+            if position >= duration - 0.05 {
+                position = 0
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
             player.play()
             playing = true
             return
         }
-        Task { await start(note) }
+        guard startTask == nil else { return }
+        let generation = loadGeneration
+        startTask = Task { [weak self] in
+            await self?.start(note, generation: generation)
+        }
     }
 
     func seek(_ note: MeetingNote, to fraction: Double) {
@@ -186,35 +199,65 @@ final class MeetingPlayer: ObservableObject {
     }
 
     func stop() {
+        loadGeneration += 1
+        startTask?.cancel()
+        startTask = nil
         player?.pause()
         if let observer { player?.removeTimeObserver(observer) }
         observer = nil
+        player = nil
         playing = false
     }
 
-    private func start(_ note: MeetingNote) async {
+    func start(_ note: MeetingNote, generation: Int? = nil) async {
+        let token: Int
+        if let generation {
+            guard !Task.isCancelled, loadGeneration == generation, noteID == note.id else { return }
+            token = generation
+        } else {
+            guard !Task.isCancelled else { return }
+            load(note)
+            loadGeneration += 1
+            token = loadGeneration
+        }
+        defer {
+            if loadGeneration == token {
+                startTask = nil
+            }
+        }
         guard let item = await Self.composition(note) else {
-            failed = true
+            if loadGeneration == token, noteID == note.id {
+                failed = true
+            }
             return
         }
-        guard noteID == note.id else { return }
-        let player = AVPlayer(playerItem: AVPlayerItem(asset: item))
-        self.player = player
-        observer = player.addPeriodicTimeObserver(
+        guard !Task.isCancelled, loadGeneration == token, noteID == note.id else { return }
+        let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: item))
+        if position > 0 {
+            if position >= duration - 0.05 {
+                position = 0
+                await newPlayer.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+            } else {
+                await newPlayer.seek(to: CMTime(seconds: position, preferredTimescale: 600))
+            }
+            guard !Task.isCancelled, loadGeneration == token, noteID == note.id else { return }
+        }
+        if let observer { player?.removeTimeObserver(observer) }
+        observer = nil
+        player?.pause()
+        self.player = newPlayer
+        observer = newPlayer.addPeriodicTimeObserver(
             forInterval: CMTime(value: 1, timescale: 20), queue: .main
         ) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.loadGeneration == token else { return }
                 self.position = time.seconds
                 if self.position >= self.duration - 0.05 {
                     self.playing = false
                 }
             }
         }
-        if position > 0 {
-            await player.seek(to: CMTime(seconds: position, preferredTimescale: 600))
-        }
-        player.play()
+        newPlayer.play()
         playing = true
     }
 

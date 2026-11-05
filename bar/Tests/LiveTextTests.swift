@@ -353,7 +353,9 @@ final class LiveTextTests: XCTestCase {
         state.applyDraft("very cropped. Then upload.", coveredWords: 4, complete: true)
         XCTAssertEqual(state.correctedWords, ["very", "cropped.", "Then", "upload"])
         XCTAssertEqual(LiveTextPolicy.openWords("it is..."), ["it", "is"])
-        XCTAssertEqual(LiveTextPolicy.openWords("..."), ["..."])
+        XCTAssertEqual(LiveTextPolicy.openWords("it is ..."), ["it", "is"])
+        XCTAssertEqual(LiveTextPolicy.openWords("..."), [])
+        XCTAssertEqual(LiveTextPolicy.openWords("hello ?"), ["hello"])
         state.applyFinal("Very cropped. Then upload.")
         XCTAssertEqual(state.correctedWords.last, "upload.")
         XCTAssertEqual(LiveTextPolicy.openWords("the settings?"), ["the", "settings"])
@@ -433,6 +435,11 @@ final class LiveTextTests: XCTestCase {
         // a revised last word still counts as covered
         let revised = LiveTextPolicy.words("We can think of the most ambitious style, just like everything fused into once")
         XCTAssertEqual(LiveTextPolicy.tail(transcript: revised + ["more"], source: source), ["more"])
+        // standalone punctuation tokens that normalize to empty do not shift indices
+        let dashedSource = ["first", "—", "second", "third"]
+        let dashedPartial = ["um", "first", "—", "second", "third", "fourth"]
+        XCTAssertEqual(
+            LiveTextPolicy.tail(transcript: dashedPartial, source: dashedSource), ["fourth"])
     }
 
     func testAFarRewriteTheLastDraftDidNotHaveWaits() {

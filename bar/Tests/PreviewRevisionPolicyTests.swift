@@ -81,7 +81,7 @@ final class PreviewRevisionPolicyTests: XCTestCase {
 
     func testBarSettingsDecodeStreamingMode() throws {
         let settings = try JSONDecoder().decode(
-            BarSettings.self,
+            NativeSettings.self,
             from: Data(
                 #"{"streaming":true,"screen_context":false,"microphone_priority":["USB Microphone","MacBook"]}"#.utf8)
         )
@@ -89,6 +89,117 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         XCTAssertEqual(settings.streaming, true)
         XCTAssertEqual(settings.screenContext, false)
         XCTAssertEqual(settings.microphonePriority, ["USB Microphone", "MacBook"])
+    }
+
+    func testRightOptionFilterRejectsLeftOptionAndRequiresRightOption() {
+        let leftKey = Int(kVK_Option)
+        let rightKey = Int(kVK_RightOption)
+
+        // Left Option via keyCode (no device mask) or with left-alt device mask (0x20)
+        XCTAssertFalse(
+            ShortcutPolicy.rightOptionHoldState(
+                wasDown: false, keyCode: leftKey, flags: .maskAlternate))
+        XCTAssertFalse(
+            ShortcutPolicy.rightOptionHoldState(
+                wasDown: false, keyCode: leftKey,
+                flags: CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x20)))
+
+        // Right Option via keyCode or with right-alt device mask (0x40)
+        XCTAssertTrue(
+            ShortcutPolicy.rightOptionHoldState(
+                wasDown: false, keyCode: rightKey, flags: .maskAlternate))
+        XCTAssertTrue(
+            ShortcutPolicy.rightOptionHoldState(
+                wasDown: false, keyCode: rightKey,
+                flags: CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x40)))
+
+        // Adding another modifier (e.g. Command) cancels the hold
+        XCTAssertFalse(
+            ShortcutPolicy.rightOptionHoldState(
+                wasDown: true, keyCode: Int(kVK_Command),
+                flags: CGEventFlags(
+                    rawValue: CGEventFlags.maskAlternate.rawValue
+                        | CGEventFlags.maskCommand.rawValue | 0x40)))
+
+        // Releasing Right Option ends the hold
+        XCTAssertFalse(
+            ShortcutPolicy.rightOptionHoldState(
+                wasDown: true, keyCode: rightKey, flags: []))
+
+        // No-device-mask overlapping Left and Right Option presses/releases:
+        var rightDown = false
+        var hold = false
+        // 1. Hold Left Option, press Right Option, then release Right Option while Left Option stays held
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: leftKey, flags: .maskAlternate)
+        XCTAssertFalse(hold)
+        XCTAssertFalse(rightDown)
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: rightKey, flags: .maskAlternate)
+        XCTAssertTrue(hold)
+        XCTAssertTrue(rightDown)
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: rightKey, flags: .maskAlternate)
+        XCTAssertFalse(hold, "Releasing Right Option while Left Option is held ends the hold")
+        XCTAssertFalse(rightDown)
+
+        // 2. Hold Right Option, press Left Option (must not end hold), release Left Option, then cancel with Command
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: rightKey, flags: .maskAlternate)
+        XCTAssertTrue(hold)
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: leftKey, flags: .maskAlternate)
+        XCTAssertTrue(hold, "Pressing Left Option while Right Option is held keeps the hold active")
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: Int(kVK_Command),
+            flags: [.maskAlternate, .maskCommand])
+        XCTAssertFalse(hold, "Adding Command cancels the hold")
+        XCTAssertTrue(rightDown, "Physical Right Option is still held")
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: Int(kVK_Command),
+            flags: .maskAlternate)
+        XCTAssertFalse(hold, "Releasing Command does not restart the canceled hold")
+        hold = ShortcutPolicy.rightOptionHoldState(
+            wasDown: hold, rightKeyDown: &rightDown, keyCode: rightKey, flags: .maskAlternate)
+        XCTAssertFalse(hold, "Releasing Right Option while Left Option is held does not start a hold")
+        XCTAssertFalse(rightDown)
+    }
+
+    func testFnFilterIgnoresArrowAndNavigationKeys() {
+        let fnKey = Int(kVK_Function)
+        let leftArrow = Int(kVK_LeftArrow)
+        let homeKey = Int(kVK_Home)
+
+        // Arrow keys set .maskSecondaryFn and .maskNumericPad; navigation keys set .maskSecondaryFn
+        XCTAssertFalse(
+            ShortcutPolicy.fnHoldState(
+                wasDown: false, keyCode: leftArrow,
+                flags: [.maskSecondaryFn, .maskNumericPad]))
+        XCTAssertFalse(
+            ShortcutPolicy.fnHoldState(
+                wasDown: false, keyCode: homeKey,
+                flags: .maskSecondaryFn))
+
+        // Real Globe/fn press starts and stays held across non-modifier navigation events
+        XCTAssertTrue(
+            ShortcutPolicy.fnHoldState(
+                wasDown: false, keyCode: fnKey, flags: .maskSecondaryFn))
+        XCTAssertTrue(
+            ShortcutPolicy.fnHoldState(
+                wasDown: true, keyCode: leftArrow,
+                flags: [.maskSecondaryFn, .maskNumericPad]))
+        XCTAssertTrue(
+            ShortcutPolicy.fnHoldState(
+                wasDown: true, keyCode: homeKey, flags: .maskSecondaryFn))
+
+        // Another modifier or releasing fn ends the hold
+        XCTAssertFalse(
+            ShortcutPolicy.fnHoldState(
+                wasDown: true, keyCode: Int(kVK_Shift),
+                flags: [.maskSecondaryFn, .maskShift]))
+        XCTAssertFalse(
+            ShortcutPolicy.fnHoldState(
+                wasDown: true, keyCode: fnKey, flags: []))
     }
 
     func testMicrophonePriorityAvoidsDefaultBluetoothInput() throws {

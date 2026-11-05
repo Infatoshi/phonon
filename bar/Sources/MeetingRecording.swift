@@ -456,11 +456,13 @@ final class MeetingIndex {
     }
 
     func end(reason: String, at date: Date = Date()) {
-        lock.withLock {
+        let ended = lock.withLock { () -> Bool in
+            guard metadata.endReason == nil else { return false }
             metadata.endedAt = ISO8601DateFormatter().string(from: date)
             metadata.endReason = reason
+            return true
         }
-        try? save()
+        if ended { try? save() }
     }
 
     /// The call window's title and conference URL, read after recording
@@ -670,7 +672,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
             try? mic.finish()
             try? system.finish()
         }
-        if index.metadata.endReason == nil { index.end(reason: reason) }
+        index.end(reason: reason)
     }
 
     private func startMicrophone() throws {

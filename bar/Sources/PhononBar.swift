@@ -277,6 +277,9 @@ enum PreviewRevisionPolicy {
 }
 
 enum ShortcutPolicy {
+    static let rightOptionDeviceMask: UInt64 = 0x40
+    static let anyOptionDeviceMask: UInt64 = 0x60
+
     /// A mode names exactly the event sources it accepts. A hold key and the
     /// Control-Space toggle are independent, so a mode may enable either or both.
     static func sources(for mode: String) -> Set<String> {
@@ -291,6 +294,59 @@ enum ShortcutPolicy {
 
     static func allows(mode: String, source: String) -> Bool {
         sources(for: mode).contains(source)
+    }
+
+    /// Updated `optionDown` state for `"right-option"` after a `.flagsChanged` event.
+    /// Left Option (`kVK_Option == 58`) must never trigger Right Option (`kVK_RightOption == 61`
+    /// or `NX_DEVICERALTKEYMASK == 0x40`). `rightKeyDown` tracks physical Right Option state across
+    /// overlapping Left/Right Option presses and modifier cancellations.
+    static func rightOptionHoldState(
+        wasDown: Bool, rightKeyDown: inout Bool, keyCode: Int, flags: CGEventFlags
+    ) -> Bool {
+        let hasOtherModifier =
+            flags.contains(.maskCommand)
+            || flags.contains(.maskControl)
+            || flags.contains(.maskShift)
+        guard flags.contains(.maskAlternate) else {
+            rightKeyDown = false
+            return false
+        }
+        let hasDeviceMask = (flags.rawValue & anyOptionDeviceMask) != 0
+        let previouslyDown = rightKeyDown
+        if hasDeviceMask {
+            rightKeyDown = (flags.rawValue & rightOptionDeviceMask) != 0
+        } else if keyCode == kVK_RightOption {
+            rightKeyDown.toggle()
+        }
+        guard rightKeyDown, !hasOtherModifier else { return false }
+        return wasDown || !previouslyDown
+    }
+
+    static func rightOptionHoldState(wasDown: Bool, keyCode: Int, flags: CGEventFlags) -> Bool {
+        var rightKeyDown = wasDown
+        return rightOptionHoldState(
+            wasDown: wasDown, rightKeyDown: &rightKeyDown, keyCode: keyCode, flags: flags)
+    }
+
+    /// Updated `fnDown` state for `"fn"` after a `.flagsChanged` event.
+    /// Arrow and navigation keys carry `.maskSecondaryFn` (and `.maskNumericPad` on arrows)
+    /// with keycodes other than `kVK_Function == 63`, so they must not start or stop `fnDown`.
+    static func fnHoldState(wasDown: Bool, keyCode: Int, flags: CGEventFlags) -> Bool {
+        let hasOtherModifier =
+            flags.contains(.maskAlternate)
+            || flags.contains(.maskCommand)
+            || flags.contains(.maskControl)
+            || flags.contains(.maskShift)
+        let onlyFn =
+            flags.contains(.maskSecondaryFn)
+            && !flags.contains(.maskNumericPad)
+            && !hasOtherModifier
+        if wasDown {
+            if !flags.contains(.maskSecondaryFn) || hasOtherModifier { return false }
+            if keyCode == kVK_Function { return onlyFn }
+            return true
+        }
+        return keyCode == kVK_Function && onlyFn
     }
 }
 
@@ -362,59 +418,6 @@ struct HoldKeyTapLatch {
 }
 
 // MARK: - Transient screen context
-
-struct BarSettings: Decodable {
-    let streaming: Bool?
-    let screenContext: Bool?
-    let microphonePriority: [String]?
-
-    enum CodingKeys: String, CodingKey {
-        case streaming
-        case screenContext = "screen_context"
-        case microphonePriority = "microphone_priority"
-    }
-
-    private static func load() -> Self? {
-        guard
-            let base = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first,
-            let data = try? Data(
-                contentsOf: base.appendingPathComponent("Phonon/settings.json")),
-            let settings = try? JSONDecoder().decode(Self.self, from: data)
-        else { return nil }
-        return settings
-    }
-
-    static func streamingEnabled() -> Bool {
-        load()?.streaming ?? true
-    }
-
-    static func screenContextEnabled() -> Bool {
-        load()?.screenContext ?? true
-    }
-
-    static func microphonePriorities() -> [String] {
-        load()?.microphonePriority ?? []
-    }
-
-    static func setStreamingEnabled(_ enabled: Bool) {
-        guard
-            let base = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first
-        else { return }
-        let url = base.appendingPathComponent("Phonon/settings.json")
-        guard
-            let data = try? Data(contentsOf: url),
-            var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return }
-        object["streaming"] = enabled
-        guard let updated = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted])
-        else { return }
-        try? updated.write(to: url, options: .atomic)
-    }
-}
 
 struct AudioInputDevice: Equatable {
     let id: AudioDeviceID
@@ -1264,7 +1267,9 @@ final class MicRecorder {
                     domain: "PhononBar", code: 5,
                     userInfo: [NSLocalizedDescriptionKey: "Could not install the microphone tap"])
         }
+        lock.lock()
         hwSampleRate = format.sampleRate
+        lock.unlock()
         tapFormat = format
     }
 
@@ -1354,8 +1359,11 @@ final class MicRecorder {
                 userInfo: [NSLocalizedDescriptionKey: "Microphone permission denied"])
         }
 
-        let device = CoreAudioInputDevices.resolve(
-            priorities: BarSettings.microphonePriorities())
+        let priorities =
+            (try? Data(contentsOf: PhononDataPaths.settings())).flatMap {
+                try? JSONDecoder().decode(NativeSettings.self, from: $0)
+            }?.microphonePriority ?? []
+        let device = CoreAudioInputDevices.resolve(priorities: priorities)
         if let configured = configuredDeviceID, let live = liveDeviceID(), live != configured {
             NSLog("phonon mic: input unit drifted off the selected device, reselecting")
             forgetDevice()
@@ -1982,6 +1990,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var rawText = ""
     private var isRecording = false
     private var optionDown = false
+    private var rightOptionKeyDown = false
     private var fnDown = false
     private var fnTapLatch = HoldKeyTapLatch()
     private var optionTapLatch = HoldKeyTapLatch()
@@ -3441,21 +3450,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         if type == .flagsChanged {
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
             let flags = event.flags
-            let anyAlt =
-                flags.contains(.maskAlternate)
-                && !flags.contains(.maskCommand)
-                && !flags.contains(.maskControl)
-                && !flags.contains(.maskShift)
-            // The Globe/fn key reports through this same tap as its own flag.
-            // Require it to be the only modifier, so fn-qualified keys such as
-            // the arrow cluster can never open a recording.
-            let onlyFn =
-                flags.contains(.maskSecondaryFn)
-                && !flags.contains(.maskAlternate)
-                && !flags.contains(.maskCommand)
-                && !flags.contains(.maskControl)
-                && !flags.contains(.maskShift)
             let eventNs = event.timestamp
             let callbackNs = DispatchTime.now().uptimeNanoseconds
             Task { @MainActor in
@@ -3465,12 +3461,15 @@ final class AppController: NSObject, NSApplicationDelegate {
                     if self.optionTapLatch.latched && !self.isRecording {
                         self.optionTapLatch.reset()
                     }
-                    if anyAlt && !self.optionDown {
+                    let rightAlt = ShortcutPolicy.rightOptionHoldState(
+                        wasDown: self.optionDown, rightKeyDown: &self.rightOptionKeyDown,
+                        keyCode: keyCode, flags: flags)
+                    if rightAlt && !self.optionDown {
                         self.optionDown = true
                         self.applyHoldKey(
                             self.optionTapLatch.keyDown(at: eventNs),
                             source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
-                    } else if !anyAlt && self.optionDown {
+                    } else if !rightAlt && self.optionDown {
                         self.optionDown = false
                         self.applyHoldKey(
                             self.optionTapLatch.keyUp(at: eventNs),
@@ -3478,6 +3477,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     }
                 } else {
                     self.optionDown = false
+                    self.rightOptionKeyDown = false
                     self.optionTapLatch.reset()
                 }
                 if self.shortcutAllows(source: "fn") {
@@ -3486,6 +3486,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                     if self.fnTapLatch.latched && !self.isRecording {
                         self.fnTapLatch.reset()
                     }
+                    let onlyFn = ShortcutPolicy.fnHoldState(
+                        wasDown: self.fnDown, keyCode: keyCode, flags: flags)
                     if onlyFn && !self.fnDown {
                         self.fnDown = true
                         self.applyHoldKey(
