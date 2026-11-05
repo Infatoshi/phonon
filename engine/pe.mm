@@ -1389,7 +1389,6 @@ struct Engine {
         std::vector<int> ids;
         const int n = (int) s_toks.size(), k = (int) toks.size();
         *cancelled = false;
-        s_cancel = false;
         // 1 row: decode; 2-8: the 8-row verify shape; 9-16 (a user turn + its draft): the 16-row shape
         static const int mk_max = getenv("PE_SESSION_MK_MAX") ? atoi(getenv("PE_SESSION_MK_MAX")) : MAX_NB;
         const int nb = k == 1 ? 1 : k <= 8 ? 8 : 16;
@@ -2314,8 +2313,12 @@ int main(int argc, char ** argv) {
             std::thread reader([&] {
                 std::string l;
                 while (std::getline(std::cin, l)) {
-                    if (read_str(l, "\"op\"") == "cancel") E.s_cancel = true;
-                    { std::lock_guard<std::mutex> g(mu); q.push_back(l); }
+                    const bool is_cancel = read_str(l, "\"op\"") == "cancel";
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        if (is_cancel) E.s_cancel = true;
+                        q.push_back(l);
+                    }
                     cv.notify_one();
                 }
                 { std::lock_guard<std::mutex> g(mu); eof = true; }
@@ -2331,6 +2334,11 @@ int main(int argc, char ** argv) {
                     if (q.empty()) break;
                     line = q.front();
                     q.pop_front();
+                    bool has_queued_cancel = false;
+                    for (const std::string & ql : q) {
+                        if (read_str(ql, "\"op\"") == "cancel") { has_queued_cancel = true; break; }
+                    }
+                    E.s_cancel = has_queued_cancel;
                 }
                 if (line.empty()) continue;
                 const std::string op = read_str(line, "\"op\"");

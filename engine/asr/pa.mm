@@ -438,7 +438,7 @@ int main(int argc, char ** argv) {
             }
         }
         auto sub_len = [](uint32_t t) { return (t + 2 - 3) / 2 + 1; };
-        while (sub_len(sub_len(sub_len(cap_mel))) > 2048) cap_mel = 8 * 2048;  // pa.metal attn: threadgroup float sc[2048]
+        if (serve && sub_len(sub_len(sub_len(cap_mel))) > 2048) cap_mel = 8 * 2048;  // pa.metal attn: threadgroup float sc[2048]
         // valid lengths of the window, and the (optional, argv[5]) padded bucket of T frames: mel padded with zeros to
         // 8 T frames, every cross-frame op bounded by the valid length
         const int barg = !serve && argc > 5 ? atoi(argv[5]) : 0;  // > 0: bucket of barg frames; < 0: Tv rounded up to a multiple of -barg
@@ -447,7 +447,7 @@ int main(int argc, char ** argv) {
             Tm = tm; V1 = sub_len(Tm); V2 = sub_len(V1); Tv = sub_len(V2);
             if (Tv > 2048) { fprintf(stderr, "valid frames %u > 2048\n", Tv); return false; }
             Tb = barg > 0 ? (uint32_t) barg : barg < 0 ? (Tv + (uint32_t) -barg - 1) / (uint32_t) -barg * (uint32_t) -barg : Tv;
-            if (Tb < Tv) { fprintf(stderr, "bucket %u < valid frames %u\n", Tb, Tv); return false; }
+            if (Tb < Tv || Tb > 2048) { fprintf(stderr, "bucket %u invalid for valid frames %u (max 2048)\n", Tb, Tv); return false; }
             Tmb = barg ? 8 * Tb : Tm;
             T1 = sub_len(Tmb); T2 = sub_len(T1); T3 = sub_len(T2); T = T3;
             maxout = 10 * Tv + 16;
@@ -899,10 +899,10 @@ int main(int argc, char ** argv) {
                 const float ms[3] = { (float) g1, (float) g2, (float) wall };
                 fwrite(ms, 4, 3, stdout);
                 // dictionary boosting: uint32 spans n, n x {start token, end token, canonical term, boosted}, flips, rollbacks
-                const uint32_t nsp = cnt != ~0u ? U[aSpans] : 0;
+                const uint32_t nsp = cnt != ~0u ? std::min(U[aSpans], TD.maxspans) : 0;
                 fwrite(&nsp, 4, 1, stdout);
                 fwrite(U + aSpans + 1, 4, (size_t) 4 * nsp, stdout);
-                const uint32_t fr[2] = { cnt != ~0u ? U[aSpans + 1 + 4 * cmaxout] : 0, cnt != ~0u ? U[aSpans + 2 + 4 * cmaxout] : 0 };
+                const uint32_t fr[2] = { cnt != ~0u ? U[aSpans + 1 + 4 * TD.maxspans] : 0, cnt != ~0u ? U[aSpans + 2 + 4 * TD.maxspans] : 0 };
                 fwrite(fr, 4, 2, stdout);
                 fflush(stdout);
             }
@@ -947,11 +947,11 @@ int main(int argc, char ** argv) {
             fprintf(f, "], \"steps\": [");
             for (uint32_t i = 0; i < std::min(U[aOut], maxout); ++i) fprintf(f, "%s%u", i ? ", " : "", U[aOut + 3 + 4 * i]);
             fprintf(f, "], \"spans\": [");
-            for (uint32_t i = 0; i < U[aSpans]; ++i) {
+            for (uint32_t i = 0; i < std::min(U[aSpans], TD.maxspans); ++i) {
                 const uint32_t * s = U + aSpans + 1 + 4 * i;
                 fprintf(f, "%s[%u, %u, %u, %u]", i ? ", " : "", s[0], s[1], s[2], s[3]);
             }
-            fprintf(f, "], \"flips\": %u, \"rollbacks\": %u}\n", U[aSpans + 1 + 4 * cmaxout], U[aSpans + 2 + 4 * cmaxout]);
+            fprintf(f, "], \"flips\": %u, \"rollbacks\": %u}\n", U[aSpans + 1 + 4 * TD.maxspans], U[aSpans + 2 + 4 * TD.maxspans]);
             fclose(f);
         }
         if (gpu_mel && getenv("PA_DUMP_MEL")) save_npy(getenv("PA_DUMP_MEL"), A + aMel, Tm, F0);  // debug: the GPU log-mel
