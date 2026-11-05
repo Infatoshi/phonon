@@ -521,6 +521,14 @@ def _run_polish_server_main(
         text_out = mlx_chunks(prompt, max_tokens) if mlx_chunks else "mlx one shot"
         yield types.SimpleNamespace(text=text_out, generation_tokens=3)
 
+    stub_hub = types.ModuleType("huggingface_hub")
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.__path__ = []
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.array = lambda x, **kw: x
+    fake_mx.eval = lambda *a, **kw: None
+    fake_mlx.core = fake_mx
+
     fake_mlx_lm = types.ModuleType("mlx_lm")
     fake_mlx_lm.load = lambda d: (fake_model, fake_tok)
     fake_mlx_gen = types.ModuleType("mlx_lm.generate")
@@ -532,6 +540,9 @@ def _run_polish_server_main(
     fake_mlx_utils = types.ModuleType("mlx_lm.utils")
     fake_mlx_utils.load_tokenizer = lambda d: fake_tok
 
+    monkeypatch.setitem(sys.modules, "huggingface_hub", stub_hub)
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
     monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx_lm)
     monkeypatch.setitem(sys.modules, "mlx_lm.generate", fake_mlx_gen)
     monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", fake_mlx_cache)

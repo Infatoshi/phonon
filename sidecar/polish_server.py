@@ -1284,16 +1284,14 @@ def main() -> None:
         }
 
     def run(text: str, streamed: bool = True, mode: tuple = (None, "")) -> dict:
-        if (
-            streamed
-            and stream is not None
-            and (
+        if streamed and stream is not None:
+            stream.p.mode_line = mode[1]
+            if (
                 stream.commits
                 or len(stream.p.words(text)) > stream.FREEZE_WORDS
                 or not stream.p.fits(text)
-            )
-        ):
-            return run_streamed(text, mode)
+            ):
+                return run_streamed(text, mode)
         if engine is not None:
             return run_engine(text, mode)
         prompt = build_prompt(text, mode[1])

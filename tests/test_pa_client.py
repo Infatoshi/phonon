@@ -237,6 +237,14 @@ def test_transcribe_samples_guards_out_of_bounds_spans(monkeypatch, fake_pa, tmp
     fake_pk = types.ModuleType("parakeet_mlx.parakeet")
     fake_pk.DecodingConfig = lambda: types.SimpleNamespace(sentence=None)
 
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.__path__ = []
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.float32 = "float32"
+    fake_mx.array = lambda x, dtype=None: x
+    fake_mlx.core = fake_mx
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
     monkeypatch.setitem(sys.modules, "parakeet_mlx", fake_pkg)
     monkeypatch.setitem(sys.modules, "parakeet_mlx.alignment", fake_align)
     monkeypatch.setitem(sys.modules, "parakeet_mlx.audio", fake_audio)

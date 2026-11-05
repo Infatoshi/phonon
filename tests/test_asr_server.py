@@ -65,6 +65,16 @@ def test_warmup_stream_uses_transcribe_samples_for_metal_and_stream_finish_ignor
 
     fake_model = FakeMetalModel()
     monkeypatch.setattr(asr_server, "metal_asr_config", lambda: None)
+    monkeypatch.setattr(asr_server, "stream_refine_enabled", lambda: False)
+
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.__path__ = []
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.set_cache_limit = lambda limit: None
+    fake_mx.eval = lambda params: None
+    fake_mlx.core = fake_mx
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
 
     fake_parakeet_mlx = types.ModuleType("parakeet_mlx")
     fake_parakeet_mlx.from_pretrained = lambda source: fake_model
