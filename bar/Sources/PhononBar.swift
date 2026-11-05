@@ -885,11 +885,14 @@ final class PillPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
     }
 
+    /// The screen under the pointer, its bottom raised above the Dock. The Dock's window
+    /// level is above `.floating`, so a panel placed in the Dock's strip draws behind it.
     static func screenFrame() -> NSRect {
         let screen =
             NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
             ?? NSScreen.main
-        return screen?.frame ?? .zero
+        guard let screen else { return .zero }
+        return PanelGeometry.clearOfDock(frame: screen.frame, visibleFrame: screen.visibleFrame)
     }
 
     static func frame(size: NSSize) -> NSRect {
@@ -938,6 +941,16 @@ final class CueSounds {
 
 enum PanelGeometry {
     static let bottomInset: CGFloat = 14
+
+    /// `frame` with its bottom edge moved up to `visibleFrame`'s, so a bottom Dock is
+    /// left clear. The sides stay the full screen's: a side Dock does not reach the
+    /// bottom center, and the panels stay centered on the screen. With the Dock hidden
+    /// the two bottoms (nearly) match and nothing moves.
+    static func clearOfDock(frame: NSRect, visibleFrame: NSRect) -> NSRect {
+        let bottom = min(max(visibleFrame.minY, frame.minY), frame.maxY)
+        return NSRect(
+            x: frame.minX, y: bottom, width: frame.width, height: frame.maxY - bottom)
+    }
 
     static func restingFrame(screen: NSRect, size: NSSize) -> NSRect {
         return NSRect(
@@ -1942,6 +1955,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let recorder = MicRecorder()
     private var statusItem: NSStatusItem?
     private var streamingMenuItem: NSMenuItem?
+    private var showInDockMenuItem: NSMenuItem?
     private var microphoneMenuItem: NSMenuItem?
     private var pass = 0
     private var activeId: String?
@@ -2006,7 +2020,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var updateMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        applyDockVisibility()
         setupMainMenu()
         appStore.onDictionaryChanged = { [weak self] in
             self?.engine.send(["cmd": "reload_dictionary"])
@@ -2263,6 +2277,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         previewItem.state = state.streamingPreviewEnabled ? .on : .off
         menu.addItem(previewItem)
         streamingMenuItem = previewItem
+        let dockItem = NSMenuItem(
+            title: "Show in Dock", action: #selector(toggleShowInDock), keyEquivalent: "")
+        dockItem.state = appStore.settings.showInDock ? .on : .off
+        menu.addItem(dockItem)
+        showInDockMenuItem = dockItem
         menu.addItem(
             NSMenuItem(
                 title: "Model Status…", action: #selector(showModelStatus), keyEquivalent: ""))
@@ -2326,6 +2345,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else if !isRecording {
             recorder.releaseHardware()
         }
+        applyDockVisibility()
         competitors.settingsChanged()
         if !appStore.settings.meetingCapture { meetings.stop(reason: "turned_off") }
         meetings.refresh()
@@ -2714,6 +2734,30 @@ final class AppController: NSObject, NSApplicationDelegate {
     @objc func toggleRecord() {
         let now = DispatchTime.now().uptimeNanoseconds
         toggleRecordFromKeyboard(source: "menu", eventNs: now, callbackNs: now)
+    }
+
+    @objc private func toggleShowInDock() {
+        appStore.updateSettings { $0.showInDock.toggle() }
+        applyDockVisibility()
+    }
+
+    /// A regular app (Dock icon, app menu) or an accessory one (menu bar item only),
+    /// per Settings > System > Show in Dock.
+    private func applyDockVisibility() {
+        let show = appStore.settings.showInDock
+        showInDockMenuItem?.state = show ? .on : .off
+        let policy: NSApplication.ActivationPolicy = show ? .regular : .accessory
+        guard NSApp.activationPolicy() != policy else { return }
+        let windowWasVisible = mainWindow?.isVisible == true
+        NSApp.setActivationPolicy(policy)
+        // Becoming an accessory app deactivates it, which drops the open window
+        // behind the frontmost app. Keep it in front when the switch came from it.
+        if windowWasVisible {
+            DispatchQueue.main.async { [weak self] in
+                NSApp.activate(ignoringOtherApps: true)
+                self?.mainWindow?.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     @objc private func toggleStreamingPreview() {

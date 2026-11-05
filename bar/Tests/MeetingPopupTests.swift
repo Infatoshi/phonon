@@ -271,3 +271,21 @@ final class MeetingPopupTests: XCTestCase {
         try write(desk(pill: pill, popup: model, at: 0), name: "saved_to_notes", size: CGSize(width: 360, height: 140))
     }
 }
+
+final class PanelGeometryDockTests: XCTestCase {
+    func testBottomDockRaisesTheScreenBottom() {
+        let frame = NSRect(x: 0, y: 0, width: 1512, height: 982)
+        let visible = NSRect(x: 0, y: 72, width: 1512, height: 877)  // Dock 72 pt, menu bar 33 pt
+        let clear = PanelGeometry.clearOfDock(frame: frame, visibleFrame: visible)
+        XCTAssertEqual(clear, NSRect(x: 0, y: 72, width: 1512, height: 910))
+        let capsule = PanelGeometry.restingFrame(screen: clear, size: PillPanelLayout.capsule)
+        XCTAssertEqual(capsule.minY, 72 + PanelGeometry.bottomInset)
+        XCTAssertEqual(capsule.midX, frame.midX)
+    }
+
+    func testSideOrHiddenDockLeavesTheFrameAlone() {
+        let frame = NSRect(x: -1920, y: 0, width: 1920, height: 1080)
+        let leftDock = NSRect(x: -1850, y: 0, width: 1850, height: 1055)
+        XCTAssertEqual(PanelGeometry.clearOfDock(frame: frame, visibleFrame: leftDock), frame)
+    }
+}

@@ -59,6 +59,8 @@ struct NativeSettings: Codable, Equatable {
     /// What the clipboard holds after a paste: the dictation (default, so ⌘V pastes it
     /// again) or what was copied before. Asked at first run with the privacy choices.
     var clipboardAfterPaste: ClipboardAfterPaste
+    /// Show the Dock icon. Off keeps Phonon in the menu bar only (an accessory app).
+    var showInDock: Bool
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -85,6 +87,7 @@ struct NativeSettings: Codable, Equatable {
         case writingStyle = "writing_style"
         case streamRefine = "stream_refine"
         case clipboardAfterPaste = "clipboard_after_paste"
+        case showInDock = "show_in_dock"
     }
 
     init(
@@ -111,7 +114,8 @@ struct NativeSettings: Codable, Equatable {
         liveTextStyle: LiveTextStyle = .fade,
         writingStyle: WritingStyle = .app,
         streamRefine: Bool? = nil,
-        clipboardAfterPaste: ClipboardAfterPaste = .dictation
+        clipboardAfterPaste: ClipboardAfterPaste = .dictation,
+        showInDock: Bool = true
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -137,6 +141,7 @@ struct NativeSettings: Codable, Equatable {
         self.writingStyle = writingStyle
         self.streamRefine = streamRefine
         self.clipboardAfterPaste = clipboardAfterPaste
+        self.showInDock = showInDock
     }
 
     init(from decoder: Decoder) throws {
@@ -192,6 +197,7 @@ struct NativeSettings: Codable, Equatable {
         clipboardAfterPaste =
             (try? values.decodeIfPresent(String.self, forKey: .clipboardAfterPaste))
             .flatMap { $0 }.flatMap(ClipboardAfterPaste.init(rawValue:)) ?? .dictation
+        showInDock = try values.decodeIfPresent(Bool.self, forKey: .showInDock) ?? true
     }
 }
 

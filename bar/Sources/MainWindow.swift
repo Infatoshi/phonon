@@ -1075,6 +1075,11 @@ struct SettingsView: View {
 
                 SettingsGroup("System") {
                     SettingRow(
+                        "Show in Dock",
+                        help: "Off keeps Phonon in the menu bar only. Open it again from the "
+                            + "ϕ menu."
+                    ) { toggle(\.showInDock) }
+                    SettingRow(
                         "Check for updates",
                         help: "Once a day, ask GitHub whether a newer Phonon is out. The request "
                             + "carries nothing about you or your dictation."
