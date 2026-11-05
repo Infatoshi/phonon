@@ -26,7 +26,7 @@ def bpe_encoder(vocabulary):
     prefix, spaces as ▁, then the adjacent merge whose piece has the lowest id first (leftmost on ties); characters
     outside the vocabulary are <unk>."""
     rank = {p: i for i, p in enumerate(vocabulary)}
-    unk = rank.get("<unk>", 0)
+    unk = rank.get("<unk>", -1)
 
     def encode(text):
         sym = list("▁" + unicodedata.normalize("NFKC", text).replace(" ", "▁"))
@@ -85,9 +85,6 @@ def flat_trie(vocabulary, terms):
             (len(edges), len(ch), int(terminal[i]), canon[i] if canon[i] >= 0 else NONE)
         )
         edges += [(t, c, int(bnode[c])) for t, c in ch]
-    root = np.full(1025, NONE, dtype=np.uint32)
-    for t, c in children[0].items():
-        root[t] = c | (0x80000000 if bnode[c] else 0)
     word_start = np.array(
         [p.startswith("▁") for p in vocabulary] + [False] * 8, dtype=np.uint32
     )
@@ -103,6 +100,9 @@ def flat_trie(vocabulary, terms):
         raise ValueError(
             f"vocabulary of {len(vocabulary)} pieces; the decode expects 1024"
         )
+    root = np.full(1025, NONE, dtype=np.uint32)
+    for t, c in children[0].items():
+        root[t] = c | (0x80000000 if bnode[c] else 0)
     head = np.zeros(16, dtype=np.uint32)
     head[0], head[1] = len(children), len(edges)
     head[2:5] = np.array([S_START, S_CONT, BUDGET], dtype=np.float32).view(np.uint32)

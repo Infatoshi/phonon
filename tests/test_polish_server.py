@@ -253,6 +253,13 @@ def test_a_said_dictionary_term_survives_a_swap_for_another_term():
     assert (
         restore_terms("hi sam the mtp", "Hi Sam,\nthe MTK", vocab) == "Hi Sam,\nthe MTP"
     )
+    # earlier (higher-confidence) dictionary terms win when two terms normalize to the same key
+    assert (
+        restore_terms("run vllm", "run VLM", ["vLLM", "VLLM"]) == "run vLLM"
+    )
+    assert (
+        restore_terms("run vllm", "run VLM", ["VLLM", "vLLM"]) == "run VLLM"
+    )
 
 
 def test_a_long_dictations_parts_share_the_envelope():
@@ -442,3 +449,312 @@ def test_snapshot_completeness(tmp_path):
     assert not has_mlx_weights(str(tmp_path))
     (tmp_path / "model-00001.safetensors").write_text("")
     assert has_mlx_weights(str(tmp_path))
+
+
+def _run_polish_server_main(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    *,
+    use_engine=False,
+    events=(),
+    engine_handler=None,
+    mlx_chunks=None,
+    stream_engine_cls=None,
+):
+    import types
+    from sidecar import polish_server
+
+    (tmp_path / REFINER_MARKER_FILE).write_text(json.dumps({"name": "test-refiner"}))
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_text("")
+    if use_engine:
+        (tmp_path / REFINER_ENGINE_FILE).write_text(
+            json.dumps({"binary": "pe", "target": "t.gguf"})
+        )
+        (tmp_path / "pe").write_text("")
+        (tmp_path / "t.gguf").write_text("")
+
+    monkeypatch.setenv("PHONON_STREAM_REFINE", "1")
+    monkeypatch.setattr(polish_server, "isolate_protocol", lambda: None)
+    monkeypatch.setattr(
+        polish_server, "PROTOCOL_IN", types.SimpleNamespace(fileno=lambda: 0)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "polish_server.py",
+            "--model",
+            str(tmp_path),
+            "--revision",
+            "local",
+            "--no-prefix-cache",
+        ],
+    )
+
+    class FakeTokenizer:
+        bos_token = "<bos>"
+        eos_token_id = 99
+        eos_token_ids = {99}
+        chat_template = "fake"
+
+        def __init__(self):
+            self.detokenizer = types.SimpleNamespace(reset=lambda: None)
+
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+            sys_msg = messages[0]["content"]
+            usr_msg = messages[1]["content"]
+            return f"<bos><sys>{sys_msg}</sys><usr>{usr_msg}</usr><mdl>"
+
+        def encode(self, text, add_special_tokens=True):
+            # Simple deterministic word/piece encoding
+            return [abs(hash(w)) % 80 + 10 for w in text.split()]
+
+        def decode(self, ids):
+            return " ".join(f"tok{i}" for i in ids)
+
+    fake_tok = FakeTokenizer()
+    fake_model = lambda x, cache=None: None  # noqa: E731
+
+    def fake_stream_generate(model, tokenizer, prompt, max_tokens=100, **kw):
+        text_out = mlx_chunks(prompt, max_tokens) if mlx_chunks else "mlx one shot"
+        yield types.SimpleNamespace(text=text_out, generation_tokens=3)
+
+    fake_mlx_lm = types.ModuleType("mlx_lm")
+    fake_mlx_lm.load = lambda d: (fake_model, fake_tok)
+    fake_mlx_gen = types.ModuleType("mlx_lm.generate")
+    fake_mlx_gen.stream_generate = fake_stream_generate
+    fake_mlx_cache = types.ModuleType("mlx_lm.models.cache")
+    fake_mlx_cache.make_prompt_cache = lambda m: []
+    fake_mlx_sample = types.ModuleType("mlx_lm.sample_utils")
+    fake_mlx_sample.make_sampler = lambda temp=0.0: None
+    fake_mlx_utils = types.ModuleType("mlx_lm.utils")
+    fake_mlx_utils.load_tokenizer = lambda d: fake_tok
+
+    monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.generate", fake_mlx_gen)
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", fake_mlx_cache)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", fake_mlx_sample)
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", fake_mlx_utils)
+    monkeypatch.setattr(polish_server, "register_vendored_models", lambda: None)
+
+    if use_engine:
+        class FakeRefinerEngine:
+            init_seconds = 0.01
+
+            def __init__(self, *a, **kw):
+                self.calls = []
+
+            def set_prefix(self, p):
+                return 4
+
+            def generate(self, prompt, max_tokens):
+                if ENGINE_PROBE_TEXT in prompt:
+                    return {
+                        "ok": True,
+                        "text": "Hello, Fluid Voice startup prime.",
+                        "tokens": 5,
+                        "prompt_tokens": 10,
+                    }
+                if engine_handler:
+                    return engine_handler("generate", prompt, max_tokens)
+                return {
+                    "ok": True,
+                    "text": "native one shot",
+                    "tokens": 3,
+                    "prompt_tokens": 10,
+                }
+
+            def call(self, req):
+                if engine_handler:
+                    return engine_handler("call", req, None)
+                return {"ok": False, "error": "unhandled"}
+
+            def close(self):
+                pass
+
+        from sidecar.polish_server import ENGINE_PROBE_TEXT
+        monkeypatch.setattr(polish_server, "RefinerEngine", FakeRefinerEngine)
+
+    if stream_engine_cls is not None:
+        import sidecar.stream_refiner as sr
+        monkeypatch.setattr(sr, "Engine", stream_engine_cls)
+
+    event_list = list(events)
+
+    class FakeLineReader:
+        def __init__(self, _fd):
+            self.eof = False
+
+        def poll(self, timeout):
+            if event_list:
+                batch = event_list.pop(0)
+                return batch if isinstance(batch, list) else [batch]
+            self.eof = True
+            return []
+
+    import sidecar.linereader as lr
+    monkeypatch.setattr(lr, "LineReader", FakeLineReader)
+
+    polish_server.main()
+    return [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+
+
+def test_prewarm_resets_stale_stream_state_and_clears_pending_commit(
+    monkeypatch, tmp_path, capsys
+):
+    sid = {"n": 0, "toks": []}
+
+    def engine_handler(kind, arg1, arg2):
+        if kind == "call":
+            op = arg1.get("op")
+            if op == "open":
+                sid["n"] += 1
+                sid["toks"] = list(arg1["prefix"])
+                return {"ok": True, "session": sid["n"], "n": len(sid["toks"]), "ms": 0.1}
+            if op == "rollback":
+                del sid["toks"][arg1["n"] :]
+                return {"ok": True, "n": arg1["n"]}
+            if op == "forward":
+                t, j = arg1["tokens"], arg1["logits_from"]
+                sid["toks"] += t
+                return {
+                    "ok": True,
+                    "ids": [99 for _ in range(j, len(t))],
+                    "n": len(sid["toks"]),
+                    "path": "mk",
+                    "ms": 0.1,
+                }
+        return {
+            "ok": True,
+            "text": "one shot result",
+            "tokens": 3,
+            "prompt_tokens": 10,
+        }
+
+    # 1. stream_commit sets stream.commits = 1 and stream.draft
+    # 2. Next batch has a stream_commit followed immediately by prewarm -> pending_commit is cleared by prewarm,
+    #    and prewarm calls run_engine which calls stream_reset(lost=True), resetting stream.commits to 0.
+    # 3. A subsequent run() sees stream.commits == 0 and runs one-shot instead of using stale stream state.
+    events = [
+        [{"command": "stream_commit", "inputText": "first dictation words"}],
+        [
+            {"command": "stream_commit", "inputText": "superseded commit"},
+            {"command": "prewarm"},
+        ],
+        [{"command": "run", "inputText": "second dictation words"}],
+        [{"command": "shutdown"}],
+    ]
+    replies = _run_polish_server_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        use_engine=True,
+        events=events,
+        engine_handler=engine_handler,
+    )
+    commits = [r["stream"] for r in replies if "stream" in r]
+    # Only the first stream_commit ran; the second was cleared when prewarm arrived
+    assert len(commits) == 1
+    assert commits[0]["commits"] == 1
+    run_replies = [r for r in replies if "outputText" in r]
+    assert len(run_replies) == 1
+    # Because prewarm called stream_reset(lost=True), the subsequent run used one-shot native engine
+    assert run_replies[0]["diagnostics"]["engine"] == "native"
+    assert run_replies[0]["outputText"] == "one shot result"
+
+
+def test_newer_stream_commit_aborts_in_flight_commit_and_preserves_tail_prefix(
+    monkeypatch, tmp_path, capsys
+):
+    from sidecar.stream_decode import RollbackDecoder
+
+    rollbacks = []
+
+    class FakeMlxStreamEngine(RollbackDecoder):
+        def __init__(self, model, tokenizer):
+            super().__init__({99})
+
+        def _truncate(self, n_keep):
+            rollbacks.append(n_keep)
+
+        def _pass(self, toks, row0, tie_from, tie_margin):
+            return [99 for _ in range(row0, len(toks))], None
+
+    # 1. Start first commit; during its should_abort poll, a second stream_commit arrives -> aborts first!
+    # 2. The main loop then polls with timeout=0.0 ([]) and runs the second commit; during its should_abort
+    #    poll ([]), nothing arrives -> completes!
+    events = [
+        [{"command": "stream_commit", "inputText": "first part of speech"}],
+        [{"command": "stream_commit", "inputText": "first part of speech extended"}],
+        [],
+        [],
+        [{"command": "shutdown"}],
+    ]
+    replies = _run_polish_server_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        use_engine=False,
+        events=events,
+        stream_engine_cls=FakeMlxStreamEngine,
+    )
+    commits = [r["stream"] for r in replies if "stream" in r]
+    assert len(commits) == 2
+    assert commits[0]["aborted"] is True
+    assert commits[1]["aborted"] is False
+
+
+def test_mlx_run_streamed_engine_error_falls_back_to_mlx_one_shot_and_preserves_frozen_head(
+    monkeypatch, tmp_path, capsys
+):
+    from sidecar.stream_decode import EngineError, RollbackDecoder
+
+    class FailingTailMlxEngine(RollbackDecoder):
+        def __init__(self, model, tokenizer):
+            super().__init__({99})
+            self.spec_calls = 0
+
+        def _truncate(self, n_keep):
+            pass
+
+        def _pass(self, toks, row0, tie_from, tie_margin):
+            return [99 for _ in range(row0, len(toks))], None
+
+        def speculative(self, prompt, max_tokens, proposer, **kw):
+            self.spec_calls += 1
+            if self.spec_calls == 1:
+                # Freezing the first head (130 words) succeeds -> return 130 tokens so guard_output passes
+                return [100 + i for i in range(130)], {"passes": [5], "accepted": 130}
+            # Tail fails with EngineError on MLX backend (where engine is None)
+            raise EngineError("context cap reached on MLX")
+
+    # 210 words (> FREEZE_WORDS = 200) with sentence boundaries, and commits == 0!
+    # Also tests that `run` enters `run_streamed` when len(words) > FREEZE_WORDS even with stream.commits == 0.
+    long_words = ["word."] * 150 + ["tailword"] * 60
+    long_text = " ".join(long_words)
+    events = [
+        [{"command": "run", "inputText": long_text}],
+        [{"command": "shutdown"}],
+    ]
+    replies = _run_polish_server_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        use_engine=False,
+        events=events,
+        mlx_chunks=lambda prompt, max_tokens: " ".join(["tailout"] * 80),
+        stream_engine_cls=FailingTailMlxEngine,
+    )
+    run_replies = [r for r in replies if "outputText" in r]
+    assert len(run_replies) == 1
+    assert run_replies[0]["diagnostics"]["guardFired"] is False
+    out = run_replies[0]["outputText"]
+    # Frozen head ("tok100 tok101 ...") is preserved and combined with the one-shot MLX fallback for the tail
+    assert out.startswith("tok100 tok101 ")
+    assert "tailout" in out

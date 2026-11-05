@@ -362,7 +362,10 @@ class MetalParakeet:
             keep = sorted(
                 (a, b, ci)
                 for a, b, ci, boosted in self.last_spans
-                if ci != 0xFFFFFFFF and b > a and (self.rewrite == "all" or boosted)
+                if ci != 0xFFFFFFFF
+                and 0 <= a < b <= len(hyp)
+                and ci < len(self.terms)
+                and (self.rewrite == "all" or boosted)
             )
             out, prev = [], 0
             for a, b, ci in keep:

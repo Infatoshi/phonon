@@ -234,7 +234,11 @@ def restore_terms(spoken: str, output: str, vocab: list[str]) -> str:
     MLP in the dictionary; owner dictation 2026-11-04 3:25 pm, a long one). Only a
     one-for-one swap whose new word reads as a term (two capitals, a digit or a hyphen) and
     was not said; everything else in the output is left as it is."""
-    terms = {_norm(t): t.strip() for t in vocab if t.strip() and " " not in t.strip()}
+    terms = {
+        _norm(t): t.strip()
+        for t in reversed(vocab)
+        if t.strip() and " " not in t.strip()
+    }
     if not terms:
         return output
     said = [_norm(w) for w in spoken.split()]
@@ -1031,7 +1035,7 @@ def main() -> None:
         reply = engine.generate(prompt, max_tokens)
         latency_ms = (time.perf_counter() - started_at) * 1000
         if stream is not None:
-            stream.e.invalidate()  # a one-shot request ends the engine's session
+            stream_reset(lost=True)  # a one-shot request ends the engine's session
         if not reply.get("ok"):
             raise RuntimeError(f"refiner engine: {reply}")
         output, guard_fired = guard_output(
@@ -1179,7 +1183,9 @@ def main() -> None:
         except Aborted:
             aborted = True
             # Keep only the part of the state that matches this commit's prompt prefix.
-            stream.e.rollback(stream.e.common_prefix(stream.p.open_prompt_tokens(text)))
+            stream.e.rollback(
+                stream.e.common_prefix(stream.p.open_prompt_tokens(stream._tail(text)))
+            )
         reply = {
             "commits": stream.commits,
             "aborted": aborted,
@@ -1189,13 +1195,19 @@ def main() -> None:
         }
         # Live text: an aborted pass left the previous draft, which the engine already has.
         if not aborted:
+            draft_spoken_words = stream.head + stream.p.words(stream.draft_text or text)
+            draft_spoken = (
+                " ".join(draft_spoken_words)
+                if stream.draft_text is not None
+                else transcript_payload(text)
+            )
             reply.update(
                 draft_fields(
                     wanted,
                     stream.draft,
                     output_budget(stream.draft_text or text),
                     tokenizer.decode,
-                    transcript_payload(text),
+                    draft_spoken,
                     head=stream.head_out,
                     vocab=refiner_vocabulary(text),
                 )
@@ -1214,8 +1226,24 @@ def main() -> None:
         except EngineError as error:
             # e.g. the session's context cap: the one-shot request continues past it
             print(f"stream: {error}; one-shot refine", file=sys.stderr)
+            head_out = list(stream.head_out)
+            tail_text = stream._tail(text) if head_out else text
             stream_reset(lost=True)
-            return run_engine(text, mode)
+            res = run(tail_text, streamed=False, mode=mode)
+            if head_out and res.get("ok"):
+                head_str = decode_pieces(tokenizer.decode, head_out)
+                combined = " ".join(
+                    t for t in (head_str, res["outputText"]) if t
+                )
+                output, guard_fired = guard_output(transcript_payload(text), combined)
+                output = restore_terms(
+                    transcript_payload(text), output, refiner_vocabulary(text)
+                )
+                res["outputText"] = output
+                res["diagnostics"]["inputCharacterCount"] = len(text)
+                res["diagnostics"]["outputCharacterCount"] = len(output)
+                res["diagnostics"]["guardFired"] = guard_fired
+            return res
         latency_ms = (time.perf_counter() - started_at) * 1000
         prompt_tokens = len(stream.p.prompt_tokens(text))
         pieces = stream.pieces(ids)
@@ -1256,7 +1284,15 @@ def main() -> None:
         }
 
     def run(text: str, streamed: bool = True, mode: tuple = (None, "")) -> dict:
-        if streamed and stream is not None and stream.commits:
+        if (
+            streamed
+            and stream is not None
+            and (
+                stream.commits
+                or len(stream.p.words(text)) > stream.FREEZE_WORDS
+                or not stream.p.fits(text)
+            )
+        ):
             return run_streamed(text, mode)
         if engine is not None:
             return run_engine(text, mode)
@@ -1419,6 +1455,7 @@ def main() -> None:
                 if isinstance(message, dict) and message.get("command") in (
                     "run",
                     "stream_reset",
+                    "prewarm",
                 ):
                     pending_commit = None
                 queue.append(message)
@@ -1441,7 +1478,7 @@ def main() -> None:
 
         def should_abort() -> bool:
             take(reader.poll(0.0))
-            return bool(queue)
+            return bool(queue) or pending_commit is not None
 
         context = request.get("context")
         mode = writing_mode(mode_lines, mode_table, context)

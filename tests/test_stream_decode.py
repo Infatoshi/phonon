@@ -321,3 +321,36 @@ def test_a_long_dictation_freezes_its_head_and_never_hits_the_context_cap(backen
     s.commit(" ".join(spoken[:10]))
     tail, _ = s.final(" ".join(spoken[:12]))
     assert s.pieces(tail) == [reference([int(w.rstrip(".")) for w in spoken[:12]])]
+
+
+def test_split_makes_progress_when_fewer_than_keep_words_overflow_context():
+    # KEEP_WORDS is 80, but context cap is 30 tokens (~10 words): _split must still split
+    pe = FakePe()
+    pe.CTX = 30
+    e = Local()
+    s = StreamSession(e, LongPrompter(pe.CTX))
+    assert s.KEEP_WORDS == 80
+    spoken = [str(20 + i) for i in range(20)]
+    text_str = " ".join(spoken)
+    assert not s.p.fits(text_str)
+    k = s._split(text_str)
+    assert 0 < k < len(spoken)
+    assert s.p.fits(s.p.with_words(text_str, spoken[:k]))
+    tail, _ = s.final(text_str)
+    assert len(s.head_out) >= 1
+    assert sum(s.pieces(tail), []) == reference([int(w) for w in spoken])
+
+
+def test_commit_always_redrafts_when_draft_is_none_even_with_redraft_every():
+    e = Local()
+    s = StreamSession(e, Prompter(), redraft_every=2)
+    # 1st commit: commits == 1, 1 % 2 != 0, but draft is None -> must still redraft
+    s.commit(text(WORDS[:3]))
+    assert s.draft is not None
+    assert s.draft_text == text(WORDS[:3])
+    # 2nd commit: commits == 2, 2 % 2 == 0 -> redrafts
+    s.commit(text(WORDS[:5]))
+    assert s.draft_text == text(WORDS[:5])
+    # 3rd commit: commits == 3, 3 % 2 != 0, draft is not None -> skips redrafting
+    s.commit(text(WORDS[:7]))
+    assert s.draft_text == text(WORDS[:5])

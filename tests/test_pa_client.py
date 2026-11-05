@@ -205,3 +205,54 @@ def test_set_terms_on_a_dead_helper_does_nothing(fake_pa, tmp_path):
     assert m.dead
     assert "Metal ASR is off" in m.set_terms(["vLLM"])
     assert m.terms is None
+
+
+def test_transcribe_samples_guards_out_of_bounds_spans(monkeypatch, fake_pa, tmp_path):
+    path = tmp_path / "pa"
+    model = toy_model()
+    model.durations = [1, 2]
+    model.time_ratio = 0.08
+    model.preprocessor_config = object()
+    m = MetalParakeet(model, weights=str(tmp_path / "ok"), pa=str(path))
+    m.terms = ["vLLM"]
+
+    class FakeAlignedToken:
+        def __init__(self, id, start, duration, confidence, text):
+            self.id = id
+            self.start = start
+            self.duration = duration
+            self.confidence = confidence
+            self.text = text
+
+    fake_pkg = types.ModuleType("parakeet_mlx")
+    fake_pkg.tokenizer = types.SimpleNamespace(decode=lambda ids, vocab: "".join(vocab[i] for i in ids))
+    fake_align = types.ModuleType("parakeet_mlx.alignment")
+    fake_align.AlignedToken = FakeAlignedToken
+    fake_align.tokens_to_sentences = lambda hyp, cfg: hyp
+    fake_align.sentences_to_result = lambda sents: types.SimpleNamespace(
+        text="".join(h.text for h in sents)
+    )
+    fake_audio = types.ModuleType("parakeet_mlx.audio")
+    fake_audio.get_logmel = lambda x, cfg: x
+    fake_pk = types.ModuleType("parakeet_mlx.parakeet")
+    fake_pk.DecodingConfig = lambda: types.SimpleNamespace(sentence=None)
+
+    monkeypatch.setitem(sys.modules, "parakeet_mlx", fake_pkg)
+    monkeypatch.setitem(sys.modules, "parakeet_mlx.alignment", fake_align)
+    monkeypatch.setitem(sys.modules, "parakeet_mlx.audio", fake_audio)
+    monkeypatch.setitem(sys.modules, "parakeet_mlx.parakeet", fake_pk)
+
+    def fake_metal_rows(samples, frames, mel_rows=None):
+        # 2 hypothesis tokens, but spans include out-of-bounds indices
+        m.last_spans = [
+            (0, 1, 0, 1),      # valid
+            (0, 5, 0, 1),      # b > len(hyp)
+            (3, 4, 0, 1),      # a >= len(hyp)
+            (0, 1, 99, 1),     # ci >= len(terms)
+        ]
+        return [(2, 0, 0, 0.9), (3, 0, 1, 0.8)]
+
+    monkeypatch.setattr(m, "metal_rows", fake_metal_rows)
+    res = m.transcribe_samples(SAMPLES)
+    assert "vLLM" in res.text
+    m.close()
