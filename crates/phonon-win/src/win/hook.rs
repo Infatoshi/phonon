@@ -15,6 +15,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use phonon_hotkey::{Action, HoldKeyTapLatch};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
     WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -100,11 +101,14 @@ pub fn uninstall() {
 
 /// Forget a latch, after something other than the key stopped the recording.
 pub fn reset_latch() {
-    HELD.store(false, std::sync::atomic::Ordering::SeqCst);
     if let Some(state) = STATE.get() {
         if let Ok(mut state) = state.lock() {
+            let down = (unsafe { GetAsyncKeyState(state.watched as i32) } as u16 & 0x8000) != 0;
+            HELD.store(down, std::sync::atomic::Ordering::SeqCst);
             state.latch.reset();
         }
+    } else {
+        HELD.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

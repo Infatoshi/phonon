@@ -1805,8 +1805,10 @@ mod tests {
             for i in 0..8 {
                 let path = path.clone();
                 scope.spawn(move || {
-                    let mut settings = SettingsFile::default();
-                    settings.schema_version = 2 + i;
+                    let settings = SettingsFile {
+                        schema_version: 2 + i,
+                        ..SettingsFile::default()
+                    };
                     write_json_atomic(&path, &settings).unwrap();
                 });
             }

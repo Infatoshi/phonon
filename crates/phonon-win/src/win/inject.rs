@@ -10,12 +10,12 @@
 use std::ffi::c_void;
 
 use anyhow::{bail, Context, Result};
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{GlobalFree, HANDLE};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{
-    GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL,

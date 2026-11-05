@@ -662,6 +662,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn child_guard_kills_and_reaps_on_drop() {
         let child = Command::new("sleep").arg("60").spawn().unwrap();
         let pid = child.id();
