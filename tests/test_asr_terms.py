@@ -62,6 +62,19 @@ def test_terms_that_only_encode_with_unk_give_no_trie():
 def test_vocabulary_size_is_checked():
     with pytest.raises(ValueError):
         asr_terms.flat_trie(toy_vocabulary()[:1000], ["ab"])
+    # Oversized vocabulary raises ValueError before indexing root[1025]
+    big_vocab = ["<unk>", "▁", "h", "i"] + [f"w{i}" for i in range(1030)] + ["▁hi"]
+    with pytest.raises(ValueError):
+        asr_terms.flat_trie(big_vocab, ["hi"])
+
+
+def test_bpe_encoder_without_unk_keeps_token_zero():
+    vocab = ["▁ab", "▁", "▁a", "a", "b"] + [f"<pad{i}>" for i in range(1019)]
+    encode, unk = asr_terms.bpe_encoder(vocab)
+    assert unk == -1
+    assert encode("ab") == [0]
+    flat = asr_terms.flat_trie(vocab, ["ab"])
+    assert flat is not None and layout(flat)[2]
 
 
 @pytest.mark.skipif(

@@ -457,7 +457,7 @@ class StreamSession:
         for k in reversed(ends or [last]):
             if k > 0 and self.p.fits(self.p.with_words(text, words[:k])):
                 return k
-        k = last
+        k = last if last > 0 else (len(words) // 2 if not self.p.fits(text) else 0)
         while k > 0 and not self.p.fits(self.p.with_words(text, words[:k])):
             k //= 2
         return max(k, 0)
@@ -517,7 +517,9 @@ class StreamSession:
         self.commits += 1
         text = self._fit(text, should_abort)
         op = self.p.open_prompt_tokens(text)
-        if self.redraft_every and self.commits % self.redraft_every == 0:
+        if self.redraft_every and (
+            self.draft is None or self.commits % self.redraft_every == 0
+        ):
             fp = self.p.prompt_tokens(text)
             if self.draft is not None and fp == self.draft_prompt:
                 return {"passes": [], "unchanged": True}  # the draft already answers it

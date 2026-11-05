@@ -430,7 +430,10 @@ def main() -> None:
                 if path and Path(path).is_file():
                     # the recorder sends audio in 0.4 s chunks, so the last part of the
                     # recording is only in the wav
-                    full = read_wav(path, model.preprocessor_config.sample_rate)
+                    try:
+                        full = read_wav(path, model.preprocessor_config.sample_rate)
+                    except (wave.Error, EOFError, OSError, ValueError):
+                        full = None
                     if full is not None and len(full) > segments.n:
                         tail = full[segments.n :]
                 text = segments.finish(tail)
@@ -524,12 +527,18 @@ def main() -> None:
                     audio = decode_pcm16(
                         base64.b64encode(wav.readframes(wav.getnframes())).decode()
                     )
-                with model.transcribe_stream(context_size=(128, 64)) as demo_stream:
-                    for offset in range(0, len(audio), 6_400):
-                        demo_stream.add_audio(
-                            mx.array(audio[offset : offset + 6_400], dtype=mx.bfloat16)
-                        )
-                    text = (getattr(demo_stream.result, "text", "") or "").strip()
+                if hasattr(model, "transcribe_samples"):
+                    result = model.transcribe_samples(audio)
+                    text = (getattr(result, "text", "") or "").strip()
+                else:
+                    with model.transcribe_stream(context_size=(128, 64)) as demo_stream:
+                        for offset in range(0, len(audio), 6_400):
+                            demo_stream.add_audio(
+                                mx.array(
+                                    audio[offset : offset + 6_400], dtype=mx.bfloat16
+                                )
+                            )
+                        text = (getattr(demo_stream.result, "text", "") or "").strip()
                 emit(
                     {
                         "type": "result",
