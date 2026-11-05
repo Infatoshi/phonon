@@ -1025,6 +1025,12 @@ struct SettingsView: View {
                         .fixedSize()
                     }
                     SettingRow(
+                        "Show the bar between dictations",
+                        help: "Keep the small bar at the bottom of the screen when you are not "
+                            + "dictating. Off shows it only while you dictate, or while meeting "
+                            + "notes record."
+                    ) { toggle(\.showIdleCapsule) }
+                    SettingRow(
                         "Show live text while dictating",
                         help: "While you hold the key, show the text so far above the bar, with "
                             + "a dot that lights up as you speak. Later words can rewrite earlier "
@@ -1060,6 +1066,11 @@ struct SettingsView: View {
                 }
 
                 SettingsGroup("System") {
+                    SettingRow(
+                        "Show in Dock",
+                        help: "Off keeps Phonon in the menu bar only. Open it again from the "
+                            + "ϕ menu."
+                    ) { toggle(\.showInDock) }
                     SettingRow(
                         "Check for updates",
                         help: "Once a day, ask GitHub whether a newer Phonon is out. The request "

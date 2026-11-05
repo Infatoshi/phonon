@@ -309,4 +309,25 @@ final class AppDataTests: XCTestCase {
             NativeSettings.self, from: Data(#"{"clipboard_after_paste":"both"}"#.utf8))
         XCTAssertEqual(unknown.clipboardAfterPaste, .dictation)
     }
+
+    func testShowInDockDefaultsOnAndRoundTrips() throws {
+        let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
+        XCTAssertTrue(empty.showInDock)
+        var settings = NativeSettings()
+        settings.showInDock = false
+        let encoded = try JSONEncoder().encode(settings)
+        XCTAssertTrue(String(decoding: encoded, as: UTF8.self).contains("\"show_in_dock\":false"))
+        XCTAssertFalse(try JSONDecoder().decode(NativeSettings.self, from: encoded).showInDock)
+    }
+
+    func testShowIdleCapsuleDefaultsOnAndRoundTrips() throws {
+        let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
+        XCTAssertTrue(empty.showIdleCapsule)
+        var settings = NativeSettings()
+        settings.showIdleCapsule = false
+        let encoded = try JSONEncoder().encode(settings)
+        XCTAssertTrue(
+            String(decoding: encoded, as: UTF8.self).contains("\"show_idle_capsule\":false"))
+        XCTAssertFalse(try JSONDecoder().decode(NativeSettings.self, from: encoded).showIdleCapsule)
+    }
 }
