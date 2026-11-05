@@ -1242,7 +1242,9 @@ def main() -> None:
                 res["outputText"] = output
                 res["diagnostics"]["inputCharacterCount"] = len(text)
                 res["diagnostics"]["outputCharacterCount"] = len(output)
-                res["diagnostics"]["guardFired"] = guard_fired
+                res["diagnostics"]["guardFired"] = bool(
+                    res["diagnostics"].get("guardFired") or guard_fired
+                )
             return res
         latency_ms = (time.perf_counter() - started_at) * 1000
         prompt_tokens = len(stream.p.prompt_tokens(text))
