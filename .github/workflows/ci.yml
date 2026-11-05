@@ -16,6 +16,10 @@ jobs:
           components: clippy,rustfmt
       - uses: taiki-e/install-action@nextest
       - uses: astral-sh/setup-uv@v6
+      - name: Python runtime locks match their requirements
+        run: |
+          uv lock --check --project runtime/asr
+          uv lock --check --project runtime/polish
       - run: cargo fmt --all -- --check
       - run: cargo nextest run --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings

@@ -10,8 +10,13 @@ use std::path::{Path, PathBuf};
 /// after the upload and before tagging.
 pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
 pub const POLISH_MODEL_REVISION: &str = "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e";
-/// Pinned runtime, for the same reason.
+/// Pinned runtime, for the same reason. It must match
+/// `runtime/polish/pyproject.toml`; the lock beside that file pins everything
+/// this package pulls in.
 pub const POLISH_RUNTIME_REQUIREMENT: &str = "mlx-lm==0.31.3";
+/// The correction sidecar's locked environment, `runtime/polish` (see
+/// `phonon_asr::locked_run`).
+pub const POLISH_RUNTIME: &str = "polish";
 
 /// The native refiner engine bundled with the app: `pe` next to the running
 /// executable (`Contents/Helpers`) and its Metal shader sources in
