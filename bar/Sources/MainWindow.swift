@@ -1025,6 +1025,12 @@ struct SettingsView: View {
                         .fixedSize()
                     }
                     SettingRow(
+                        "Show the bar between dictations",
+                        help: "Keep the small bar at the bottom of the screen when you are not "
+                            + "dictating. Off shows it only while you dictate, or while meeting "
+                            + "notes record."
+                    ) { toggle(\.showIdleCapsule) }
+                    SettingRow(
                         "Show live text while dictating",
                         help: "While you hold the key, show the corrected text so far above the "
                             + "bar. Later words can rewrite earlier ones; what is typed at the end "

@@ -289,3 +289,26 @@ final class PanelGeometryDockTests: XCTestCase {
         XCTAssertEqual(PanelGeometry.clearOfDock(frame: frame, visibleFrame: leftDock), frame)
     }
 }
+
+@MainActor
+final class IdleCapsuleVisibilityTests: XCTestCase {
+    func testIdleCapsuleFollowsTheSetting() {
+        let state = PillState()
+        state.mode = .idle
+        XCTAssertTrue(state.capsuleVisible)
+        state.showWhenIdle = false
+        XCTAssertFalse(state.capsuleVisible)
+        state.mode = .listening
+        XCTAssertTrue(state.capsuleVisible)
+        state.mode = .working
+        XCTAssertTrue(state.capsuleVisible)
+    }
+
+    func testRecordingMeetingKeepsTheIdleCapsule() {
+        let state = PillState()
+        state.showWhenIdle = false
+        state.mode = .idle
+        state.meetingRecording = true
+        XCTAssertTrue(state.capsuleVisible)
+    }
+}

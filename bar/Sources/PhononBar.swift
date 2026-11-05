@@ -73,6 +73,18 @@ final class PillState: ObservableObject {
     @Published var meetingRecording = false
     /// The pointer is over the recording capsule: the stop button replaces the light.
     @Published var stopButtonShown = false
+    /// Settings `show_idle_capsule`: off hides the capsule between dictations.
+    @Published var showWhenIdle = true
+
+    /// Whether the capsule is drawn. Idle shows it only when the setting allows, or
+    /// while a meeting records (its red light and stop button live in the capsule).
+    var capsuleVisible: Bool {
+        switch mode {
+        case .hidden: return false
+        case .idle: return showWhenIdle || meetingRecording
+        case .listening, .working: return true
+        }
+    }
 
     func apply(_ flow: MeetingFlow) {
         if meetingRecording != flow.isRecording { meetingRecording = flow.isRecording }
@@ -780,7 +792,8 @@ struct PillView: View {
                     }
                 }
                 .frame(width: 80, height: 16, alignment: .bottom)
-                .opacity(state.mode == .hidden ? 0 : 1)
+                .opacity(state.capsuleVisible ? 1 : 0)
+                .animation(.easeOut(duration: 0.18), value: state.capsuleVisible)
                 .animation(
                     .spring(response: 0.22, dampingFraction: 0.86),
                     value: size
@@ -2032,6 +2045,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             self?.refreshPermissionDependentServices()
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
+        state.showWhenIdle = appStore.settings.showIdleCapsule
         offerBackupRestoreIfNeeded()
         setupPanel()
         setupModelStartupWindow()
@@ -2338,6 +2352,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             stopDictation(source: "settings")
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
+        state.showWhenIdle = appStore.settings.showIdleCapsule
         streamingMenuItem?.state = state.streamingPreviewEnabled ? .on : .off
         if appStore.settings.instantMic {
             recorder.refreshPreferredDevice()

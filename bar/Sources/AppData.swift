@@ -61,6 +61,9 @@ struct NativeSettings: Codable, Equatable {
     var clipboardAfterPaste: ClipboardAfterPaste
     /// Show the Dock icon. Off keeps Phonon in the menu bar only (an accessory app).
     var showInDock: Bool
+    /// Keep the small capsule on screen between dictations. Off shows it only while
+    /// dictating (and while a meeting records, so the red light stays visible).
+    var showIdleCapsule: Bool
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -88,6 +91,7 @@ struct NativeSettings: Codable, Equatable {
         case streamRefine = "stream_refine"
         case clipboardAfterPaste = "clipboard_after_paste"
         case showInDock = "show_in_dock"
+        case showIdleCapsule = "show_idle_capsule"
     }
 
     init(
@@ -115,7 +119,8 @@ struct NativeSettings: Codable, Equatable {
         writingStyle: WritingStyle = .app,
         streamRefine: Bool? = nil,
         clipboardAfterPaste: ClipboardAfterPaste = .dictation,
-        showInDock: Bool = true
+        showInDock: Bool = true,
+        showIdleCapsule: Bool = true
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -142,6 +147,7 @@ struct NativeSettings: Codable, Equatable {
         self.streamRefine = streamRefine
         self.clipboardAfterPaste = clipboardAfterPaste
         self.showInDock = showInDock
+        self.showIdleCapsule = showIdleCapsule
     }
 
     init(from decoder: Decoder) throws {
@@ -198,6 +204,8 @@ struct NativeSettings: Codable, Equatable {
             (try? values.decodeIfPresent(String.self, forKey: .clipboardAfterPaste))
             .flatMap { $0 }.flatMap(ClipboardAfterPaste.init(rawValue:)) ?? .dictation
         showInDock = try values.decodeIfPresent(Bool.self, forKey: .showInDock) ?? true
+        showIdleCapsule =
+            try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
     }
 }
 
