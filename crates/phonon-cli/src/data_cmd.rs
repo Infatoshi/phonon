@@ -521,7 +521,7 @@ pub fn polish_eval(root: &Path, args: PolishEvalArgs) -> Result<()> {
 
 pub fn show_paths() -> Result<()> {
     std::fs::create_dir_all(corpus_dir()?)?;
-    SettingsFile::load_or_create()?;
+    SettingsFile::load()?;
     println!("data:       {}", app_support_dir()?.display());
     println!("settings:   {}", settings_path()?.display());
     println!("dictionary: {}", dictionary_path()?.display());

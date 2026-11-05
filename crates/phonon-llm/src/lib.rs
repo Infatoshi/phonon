@@ -722,6 +722,7 @@ impl PolishSidecar {
 impl Drop for PolishSidecar {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

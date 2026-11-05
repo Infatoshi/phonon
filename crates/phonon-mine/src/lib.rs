@@ -189,12 +189,9 @@ pub fn phonon_support_dir(home: &std::path::Path) -> std::path::PathBuf {
         .join("Phonon")
 }
 
-/// Python `str(path).startswith(str(prefix))` (string prefix, not path components).
+/// Whether `path` starts with `prefix` by path components.
 pub fn path_str_prefix(path: &std::path::Path, prefix: &std::path::Path) -> bool {
-    match (path.to_str(), prefix.to_str()) {
-        (Some(p), Some(pre)) => p.starts_with(pre),
-        _ => path.starts_with(prefix),
-    }
+    path.starts_with(prefix)
 }
 
 pub fn repo_docs_excluded(name: &str) -> bool {
@@ -282,5 +279,19 @@ mod tests {
         assert!(is_tree_skip("target"));
         assert!(is_tree_skip("build"));
         assert!(!is_tree_skip("src"));
+    }
+
+    #[test]
+    fn path_str_prefix_uses_path_components() {
+        use std::path::Path;
+        let prefix = Path::new("/Users/alice/Library/Application Support/Phonon");
+        assert!(path_str_prefix(
+            Path::new("/Users/alice/Library/Application Support/Phonon/sub"),
+            prefix
+        ));
+        assert!(!path_str_prefix(
+            Path::new("/Users/alice/Library/Application Support/PhononExtra"),
+            prefix
+        ));
     }
 }

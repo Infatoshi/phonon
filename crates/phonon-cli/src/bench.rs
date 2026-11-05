@@ -342,31 +342,54 @@ struct AsrBench {
     transcript: Option<String>,
 }
 
+struct ChildGuard(Option<std::process::Child>);
+
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn as_mut(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().expect("child still owned by guard")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
     let script = root.join("sidecar/asr_server.py");
     if !script.is_file() {
         bail!("missing {}", script.display());
     }
     let uv = crate::resolve_runtime_tool("uv").context("uv not found")?;
-    let mut child = Command::new(uv)
-        .args([
-            "run",
-            "--python",
-            phonon_asr::PYTHON_REQUIREMENT,
-            "--with",
-            phonon_asr::ASR_RUNTIME_REQUIREMENT,
-            "python",
-            script.to_str().unwrap(),
-        ])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("spawn ASR")?;
+    let mut child = ChildGuard::new(
+        Command::new(uv)
+            .args([
+                "run",
+                "--python",
+                phonon_asr::PYTHON_REQUIREMENT,
+                "--with",
+                phonon_asr::ASR_RUNTIME_REQUIREMENT,
+                "python",
+                script.to_str().unwrap(),
+            ])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("spawn ASR")?,
+    );
 
-    let mut stdout = BufReader::new(child.stdout.take().context("stdout")?);
-    let mut stdin = child.stdin.take().context("stdin")?;
+    let mut stdout = BufReader::new(child.as_mut().stdout.take().context("stdout")?);
+    let mut stdin = child.as_mut().stdin.take().context("stdin")?;
     let t0 = Instant::now();
     let mut model = String::from("parakeet");
     let mut load_ms = 0.0;
@@ -460,8 +483,8 @@ fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
     }
 
     let _ = writeln!(stdin, "{}", json!({"cmd": "shutdown"}));
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(stdin);
+    drop(child);
 
     Ok(AsrBench {
         load_ms,

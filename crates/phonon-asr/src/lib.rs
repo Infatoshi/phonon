@@ -367,6 +367,7 @@ pub fn apply_offline_policy(command: &mut Command, uv: &Path, requirement: &str)
 impl Drop for AsrSidecar {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

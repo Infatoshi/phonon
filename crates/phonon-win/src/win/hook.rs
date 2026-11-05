@@ -100,6 +100,7 @@ pub fn uninstall() {
 
 /// Forget a latch, after something other than the key stopped the recording.
 pub fn reset_latch() {
+    HELD.store(false, std::sync::atomic::Ordering::SeqCst);
     if let Some(state) = STATE.get() {
         if let Ok(mut state) = state.lock() {
             state.latch.reset();
