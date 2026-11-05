@@ -223,6 +223,7 @@ kernel void df_qk(constant DfOp & O [[buffer(0)]], device const uchar * W [[buff
                   constant float & eps [[buffer(6)]],
                   uint2 tg [[threadgroup_position_in_grid]], ushort lane [[thread_index_in_simdgroup]]) {
     const uint b = tg.x, hh = tg.y, p = O.pos0 + b;
+    if (p >= ctx) return;
     const ulong row = ((ulong) O.layer * ctx + p) * NKVH;
     if (hh >= NQH + NKVH) {  // v
         const uint g = hh - NQH - NKVH;
