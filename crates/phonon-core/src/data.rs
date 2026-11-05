@@ -611,19 +611,25 @@ impl SettingsFile {
     }
 
     pub fn load_or_create() -> Result<Self> {
-        let path = settings_path()?;
+        Self::load_or_create_from(&settings_path()?)
+    }
+
+    pub fn load_or_create_from(path: &Path) -> Result<Self> {
         if path.is_file() {
-            let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
             let mut settings: Self = serde_json::from_slice(&bytes)
                 .with_context(|| format!("parse {}", path.display()))?;
             // The native app writes schema 2, where an absent privacy key
             // means "off"; stamping 1 over it would turn absent keys back on.
-            settings.schema_version = settings.schema_version.max(DATA_SCHEMA_VERSION);
-            write_json_atomic(&path, &settings)?;
+            // Only rewrite if the on-disk schema version is older than DATA_SCHEMA_VERSION.
+            if settings.schema_version < DATA_SCHEMA_VERSION {
+                settings.schema_version = DATA_SCHEMA_VERSION;
+                write_json_atomic(path, &settings)?;
+            }
             return Ok(settings);
         }
         let settings = Self::default();
-        write_json_atomic(&path, &settings)?;
+        write_json_atomic(path, &settings)?;
         Ok(settings)
     }
 }
@@ -1188,16 +1194,23 @@ fn replace_ascii_phrase(text: &str, from: &str, to: &str) -> (String, u64) {
     while let Some(relative) = lower_text[cursor..].find(&lower_needle) {
         let start = cursor + relative;
         let end = start + lower_needle.len();
-        let left_boundary = start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric();
-        let right_boundary = end == text.len() || !text.as_bytes()[end].is_ascii_alphanumeric();
+        let left_boundary = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric());
+        let right_boundary = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric());
         if left_boundary && right_boundary {
             output.push_str(&text[cursor..start]);
             output.push_str(to);
             cursor = end;
             count += 1;
         } else {
-            output.push_str(&text[cursor..end]);
-            cursor = end;
+            let next = start + text[start..].chars().next().map_or(1, char::len_utf8);
+            output.push_str(&text[cursor..next]);
+            cursor = next;
         }
     }
     output.push_str(&text[cursor..]);
@@ -1205,30 +1218,91 @@ fn replace_ascii_phrase(text: &str, from: &str, to: &str) -> (String, u64) {
 }
 
 fn wav_duration_ms(path: &Path) -> Result<u64> {
-    let bytes = fs::read(path).with_context(|| format!("read wav {}", path.display()))?;
-    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(path).with_context(|| format!("open wav {}", path.display()))?;
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err()
+        || &header[0..4] != b"RIFF"
+        || &header[8..12] != b"WAVE"
+    {
         bail!("unsupported WAV header");
     }
-    let channels = u16::from_le_bytes([bytes[22], bytes[23]]) as u64;
-    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]) as u64;
-    let bits = u16::from_le_bytes([bytes[34], bytes[35]]) as u64;
-    let data_bytes = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as u64;
-    let bytes_per_second = sample_rate * channels * bits / 8;
-    if bytes_per_second == 0 {
-        bail!("invalid WAV rate");
+
+    let mut bytes_per_second: Option<u64> = None;
+    let mut data_bytes: Option<u64> = None;
+
+    loop {
+        let mut chunk_header = [0u8; 8];
+        if file.read_exact(&mut chunk_header).is_err() {
+            break;
+        }
+        let chunk_id = &chunk_header[0..4];
+        let chunk_len = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]) as u64;
+        let chunk_start = file.stream_position()?;
+
+        if chunk_id == b"fmt " {
+            if chunk_len < 16 {
+                bail!("unsupported WAV header");
+            }
+            let mut fmt_buf = [0u8; 16];
+            if file.read_exact(&mut fmt_buf).is_err() {
+                bail!("unsupported WAV header");
+            }
+            let channels = u16::from_le_bytes([fmt_buf[2], fmt_buf[3]]) as u64;
+            let sample_rate =
+                u32::from_le_bytes([fmt_buf[4], fmt_buf[5], fmt_buf[6], fmt_buf[7]]) as u64;
+            let bits = u16::from_le_bytes([fmt_buf[14], fmt_buf[15]]) as u64;
+            let rate = sample_rate * channels * bits / 8;
+            if rate == 0 {
+                bail!("invalid WAV rate");
+            }
+            bytes_per_second = Some(rate);
+        } else if chunk_id == b"data" {
+            data_bytes = Some(chunk_len);
+        }
+
+        if bytes_per_second.is_some() && data_bytes.is_some() {
+            break;
+        }
+
+        let padded_len = chunk_len.saturating_add(chunk_len & 1);
+        let next_pos = chunk_start.saturating_add(padded_len);
+        if file.seek(SeekFrom::Start(next_pos)).is_err() {
+            break;
+        }
     }
+
+    let (Some(bytes_per_second), Some(data_bytes)) = (bytes_per_second, data_bytes) else {
+        bail!("unsupported WAV header");
+    };
     Ok(data_bytes * 1_000 / bytes_per_second)
 }
+
+static ATOMIC_WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("path has no parent: {}", path.display()))?;
     fs::create_dir_all(parent)?;
-    let temporary = path.with_extension("json.tmp");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+    let nonce = ATOMIC_WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temporary = parent.join(format!("{file_name}.tmp.{}.{nonce}", std::process::id()));
     let bytes = serde_json::to_vec_pretty(value)?;
     fs::write(&temporary, bytes).with_context(|| format!("write {}", temporary.display()))?;
-    fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))?;
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("replace {}", path.display()));
+    }
     Ok(())
 }
 
@@ -1267,8 +1341,8 @@ mod local_refiner_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_transcript_payload, safe_polish_output, DictionaryEntry, DictionaryFile,
-        SettingsFile,
+        extract_transcript_payload, replace_ascii_phrase, safe_polish_output, wav_duration_ms,
+        write_json_atomic, DictionaryEntry, DictionaryFile, SettingsFile,
     };
 
     fn entry(phrase: &str, replacement: Option<&str>) -> DictionaryEntry {
@@ -1652,5 +1726,102 @@ mod tests {
         assert!(input.contains(
             "<transcript>\nDo you know the difference between cuBLAS and cuDNN?\n</transcript>"
         ));
+    }
+
+    #[test]
+    fn exact_replacements_respect_unicode_word_boundaries_and_overlaps() {
+        let (out, count) = replace_ascii_phrase("café and caf and écaf", "caf", "coffee");
+        assert_eq!(out, "café and coffee and écaf");
+        assert_eq!(count, 1);
+
+        let (out, count) = replace_ascii_phrase("xab ab a", "ab a", "X");
+        assert_eq!(out, "xab X");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn wav_duration_parses_riff_chunks_with_non_standard_offsets() {
+        let dir = std::env::temp_dir().join(format!("phonon-wav-duration-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chunked.wav");
+
+        // 16 kHz, mono, 16-bit PCM = 32,000 bytes/sec.
+        // Include an 18-byte fmt chunk and an odd-length JUNK chunk (with 1-byte pad)
+        // before the data chunk so data is not at offset 40.
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&100u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        // fmt chunk (18 bytes)
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&18u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // 1 channel
+        wav.extend_from_slice(&16_000u32.to_le_bytes()); // 16 kHz
+        wav.extend_from_slice(&32_000u32.to_le_bytes()); // byte rate
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // 16 bits
+        wav.extend_from_slice(&0u16.to_le_bytes()); // cbSize = 0
+                                                    // JUNK chunk (5 bytes + 1 pad byte)
+        wav.extend_from_slice(b"JUNK");
+        wav.extend_from_slice(&5u32.to_le_bytes());
+        wav.extend_from_slice(&[0u8; 6]);
+        // data chunk reporting 48,000 bytes = 1,500 ms
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&48_000u32.to_le_bytes());
+
+        std::fs::write(&path, &wav).unwrap();
+        assert_eq!(wav_duration_ms(&path).unwrap(), 1_500);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_or_create_does_not_rewrite_up_to_date_settings() {
+        let dir = std::env::temp_dir().join(format!(
+            "phonon-settings-load-or-create-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        let raw_v2 = r#"{"schema_version":2,"streaming":false}"#;
+        std::fs::write(&path, raw_v2).unwrap();
+        let loaded = SettingsFile::load_or_create_from(&path).unwrap();
+        assert_eq!(loaded.schema_version, 2);
+        assert!(!loaded.streaming);
+        // Exact bytes on disk must be untouched when schema_version >= DATA_SCHEMA_VERSION.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw_v2);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_json_atomic_supports_concurrent_writers() {
+        let dir = std::env::temp_dir().join(format!("phonon-atomic-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let path = path.clone();
+                scope.spawn(move || {
+                    let settings = SettingsFile {
+                        schema_version: 2 + i,
+                        ..SettingsFile::default()
+                    };
+                    write_json_atomic(&path, &settings).unwrap();
+                });
+            }
+        });
+
+        let parsed = SettingsFile::load_from(&path).unwrap();
+        assert!(parsed.schema_version >= 2);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover tmp files: {leftovers:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

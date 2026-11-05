@@ -407,8 +407,9 @@ impl Engine {
                                 msg: error,
                             });
                         }
+                    } else {
+                        out.push(EngineEvent::Error { id, msg });
                     }
-                    out.push(EngineEvent::Error { id: None, msg });
                 }
             }
         }
@@ -518,16 +519,14 @@ impl Engine {
                                 });
                             }
                         } else {
-                            let mut corrected = finish_correction(
+                            let app_category = request.app.as_ref().map(|app| app.category);
+                            let corrected = finish_correction_for_category(
                                 &self.dictionary,
                                 &request.source_text,
                                 &text,
                                 &request.style,
+                                app_category,
                             );
-                            let app_category = request.app.as_ref().map(|app| app.category);
-                            if app_category == Some(app_context::AppCategory::Email) {
-                                corrected.text = app_context::email_layout(&corrected.text);
-                            }
                             if let Some(recording_id) = id
                                 .as_ref()
                                 .and_then(|request_id| self.recording_ids.get(request_id))
@@ -577,13 +576,21 @@ impl Engine {
                         ) else {
                             continue;
                         };
-                        let style = match &self.stream_category {
-                            Some((stream_id, category)) if *stream_id == id => {
-                                self.styles.styles_for(*category)
-                            }
-                            _ => Vec::new(),
+                        let category = match &self.stream_category {
+                            Some((stream_id, category)) if *stream_id == id => Some(*category),
+                            _ => None,
                         };
-                        let corrected = finish_correction(&self.dictionary, &source, &text, &style);
+                        let style = match category {
+                            Some(category) => self.styles.styles_for(category),
+                            None => Vec::new(),
+                        };
+                        let corrected = finish_correction_for_category(
+                            &self.dictionary,
+                            &source,
+                            &text,
+                            &style,
+                            category,
+                        );
                         out.push(EngineEvent::DraftResult {
                             id,
                             text: corrected.text,
@@ -1089,6 +1096,20 @@ fn finish_correction(
     corrected
 }
 
+fn finish_correction_for_category(
+    dictionary: &data::DictionaryFile,
+    source: &str,
+    polished: &str,
+    style: &[String],
+    category: Option<app_context::AppCategory>,
+) -> data::CorrectionResult {
+    let mut corrected = finish_correction(dictionary, source, polished, style);
+    if category == Some(app_context::AppCategory::Email) {
+        corrected.text = app_context::email_layout(&corrected.text);
+    }
+    corrected
+}
+
 /// The transcript so far a live-text draft refines, when the draft belongs to the open
 /// live-text stream and names a commit of it.
 fn draft_source(
@@ -1554,7 +1575,10 @@ mod tests {
         llm_prime_passed, llm_smoke_passed, physical_memory_bytes, safe_polish_output,
         stream_refine_default, stream_refine_setting, StreamFinish,
     };
-    use super::{draft_json, draft_source, finish_correction, stream_commit_json, EngineEvent};
+    use super::{
+        draft_json, draft_source, finish_correction, finish_correction_for_category,
+        stream_commit_json, EngineEvent,
+    };
     use crate::app_context::AppCategory;
     use crate::data::{DictionaryEntry, DictionaryFile};
     use serde_json::json;
@@ -1773,5 +1797,24 @@ mod tests {
             "Please benchmark Blackwell with the longer prompt."
         );
         assert_eq!(output.applied.len(), 1);
+    }
+
+    #[test]
+    fn email_draft_and_result_apply_email_layout() {
+        let dictionary = DictionaryFile::default();
+        let source = "hi sarah thanks for the update best alex";
+        let polished = "Hi Sarah, Thanks for the update. Best, Alex";
+        let corrected = finish_correction_for_category(
+            &dictionary,
+            source,
+            polished,
+            &[],
+            Some(AppCategory::Email),
+        );
+        assert_eq!(
+            corrected.text,
+            crate::app_context::email_layout("Hi Sarah, Thanks for the update. Best, Alex")
+        );
+        assert!(corrected.text.contains('\n'));
     }
 }

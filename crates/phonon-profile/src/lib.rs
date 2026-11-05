@@ -113,6 +113,31 @@ pub fn profile_kernels(root: &Path, config: &KernelProfileConfig) -> Result<Kern
     result
 }
 
+struct ChildGuard(Option<std::process::Child>);
+
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn as_mut(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().expect("child still owned by guard")
+    }
+
+    fn wait(mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.take().expect("child still owned by guard").wait()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 fn profile_kernels_in_temp(
     root: &Path,
     config: &KernelProfileConfig,
@@ -183,10 +208,22 @@ fn profile_kernels_in_temp(
         command.arg("--system-prompt-file").arg(prompt);
     }
 
-    let mut child = command.spawn().context("spawn instrumented MLX helper")?;
-    let mut stdin = child.stdin.take().context("instrumented helper stdin")?;
-    let stdout = child.stdout.take().context("instrumented helper stdout")?;
-    let stderr = child.stderr.take().context("instrumented helper stderr")?;
+    let mut child = ChildGuard::new(command.spawn().context("spawn instrumented MLX helper")?);
+    let mut stdin = child
+        .as_mut()
+        .stdin
+        .take()
+        .context("instrumented helper stdin")?;
+    let stdout = child
+        .as_mut()
+        .stdout
+        .take()
+        .context("instrumented helper stdout")?;
+    let stderr = child
+        .as_mut()
+        .stderr
+        .take()
+        .context("instrumented helper stderr")?;
     let stderr_reader = std::thread::spawn(move || {
         let mut output = String::new();
         for line in BufReader::new(stderr).lines().map_while(|line| line.ok()) {
@@ -583,8 +620,9 @@ fn number(stage: Option<&Value>, key: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_kernel_profile, profile_e2e, profile_input};
+    use super::{parse_kernel_profile, profile_e2e, profile_input, ChildGuard};
     use std::fs;
+    use std::process::Command;
 
     #[test]
     fn generated_inputs_have_requested_word_count() {
@@ -621,5 +659,22 @@ mod tests {
         assert_eq!(report.kernels[0].kernel, "steel_gemm");
         assert_eq!(report.kernels[0].invocations, 2);
         assert_eq!(report.kernels[0].cpu_encode_ms, 0.011);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn child_guard_kills_and_reaps_on_drop() {
+        let child = Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = child.id();
+        drop(ChildGuard::new(child));
+        // After ChildGuard drops, kill -0 must fail because the process was killed and reaped.
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(!alive, "child process {pid} was not killed/reaped on drop");
     }
 }

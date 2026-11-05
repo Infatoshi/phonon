@@ -111,7 +111,7 @@ pub fn run_doctor() -> Result<()> {
         &format!("JSON dictionary ({dictionary_count} entries)"),
         dictionary.is_ok(),
     );
-    check("JSON settings", SettingsFile::load_or_create().is_ok());
+    check("JSON settings", SettingsFile::load().is_ok());
     let recordings = list_recordings();
     let corpus_count = recordings.as_ref().map(|value| value.len()).unwrap_or(0);
     check(

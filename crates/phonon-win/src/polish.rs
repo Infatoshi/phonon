@@ -8,8 +8,6 @@
 //! Correction is mandatory. A recogniser result that never reaches this stage is
 //! a failure, not a degraded mode.
 
-#[cfg(not(target_os = "linux"))]
-use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -187,6 +185,13 @@ impl Corrector {
                 .unwrap_or(2),
         );
 
+        // A pipe that nobody drains fills during model loading or later requests.
+        // Keep diagnostics on disk so startup and later requests cannot block.
+        let logs = crate::paths::data_root().join("logs");
+        std::fs::create_dir_all(&logs)?;
+        let log_path = logs.join(format!("llama-server-{port}.log"));
+        let log = std::fs::File::create(&log_path).context("create the correction server log")?;
+
         let mut command = Command::new(&server);
         command
             .arg("-m")
@@ -201,8 +206,8 @@ impl Corrector {
             .arg(threads.to_string())
             .arg("--jinja")
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(Stdio::null())
+            .stderr(log);
         if let Some(dir) = server.parent() {
             command.current_dir(dir);
         }
@@ -214,21 +219,13 @@ impl Corrector {
             command.creation_flags(crate::asr::CREATE_NO_WINDOW);
         }
         #[cfg(target_os = "linux")]
-        let log_path = {
+        {
             crate::linux::runtime_libraries(
                 &mut command,
                 &fetch::component_dir(&manifest::LLAMA_RUNTIME),
             )?;
-            // A pipe that nobody drains fills during model loading on Linux.
-            // Keep diagnostics on disk so startup and later requests cannot block.
-            let logs = crate::paths::data_root().join("logs");
-            std::fs::create_dir_all(&logs)?;
-            let path = logs.join(format!("llama-server-{port}.log"));
-            let log = std::fs::File::create(&path).context("create the correction server log")?;
-            command.stdout(Stdio::null()).stderr(log);
             command.arg("-ngl").arg("0");
-            path
-        };
+        }
         let mut child = command
             .spawn()
             .with_context(|| format!("start {}", server.display()))?;
@@ -237,14 +234,7 @@ impl Corrector {
         let started = Instant::now();
         loop {
             if let Some(status) = child.try_wait()? {
-                #[cfg(target_os = "linux")]
                 let stderr = std::fs::read_to_string(&log_path).unwrap_or_default();
-                #[cfg(not(target_os = "linux"))]
-                let mut stderr = String::new();
-                #[cfg(not(target_os = "linux"))]
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
                 bail!(
                     "llama-server exited with {status} before it was ready: {}",
                     stderr
@@ -265,6 +255,7 @@ impl Corrector {
             }
             if started.elapsed() > READY_TIMEOUT {
                 let _ = child.kill();
+                let _ = child.wait();
                 bail!("llama-server did not become ready within {READY_TIMEOUT:?}");
             }
             std::thread::sleep(Duration::from_millis(500));

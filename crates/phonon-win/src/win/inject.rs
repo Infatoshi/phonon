@@ -10,11 +10,13 @@
 use std::ffi::c_void;
 
 use anyhow::{bail, Context, Result};
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{GlobalFree, HANDLE};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows_sys::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL,
     VK_V,
@@ -67,7 +69,7 @@ fn type_text(units: &[u16]) -> Result<()> {
             std::mem::size_of::<INPUT>() as i32,
         )
     };
-    if sent as usize != events.len() {
+    if sent != events.len() as u32 {
         bail!("SendInput accepted {sent} of {} events", events.len());
     }
     Ok(())
@@ -142,12 +144,14 @@ fn set_clipboard_text(text: &str) -> Result<()> {
             } else {
                 let pointer = GlobalLock(handle);
                 if pointer.is_null() {
+                    let _ = GlobalFree(handle);
                     Err(anyhow::anyhow!("GlobalLock failed"))
                 } else {
                     std::ptr::copy_nonoverlapping(units.as_ptr() as *const c_void, pointer, bytes);
                     let _ = GlobalUnlock(handle);
                     // The clipboard owns the block once SetClipboardData succeeds.
                     if SetClipboardData(CF_UNICODETEXT, handle).is_null() {
+                        let _ = GlobalFree(handle);
                         Err(anyhow::anyhow!("SetClipboardData failed"))
                     } else {
                         Ok(())
