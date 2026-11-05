@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-const command = "brew install --cask infatoshi/phonon/phonon";
+const command = "brew install --cask infatoshi/tap/phonon";
 
 export default function InstallCommand({ release = false }: { release?: boolean }) {
   const [copied, setCopied] = useState(false);

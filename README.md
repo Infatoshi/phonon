@@ -10,7 +10,7 @@ macOS is the shipped platform. Windows is in beta.
 Apple silicon, macOS 14 or later.
 
 ```bash
-brew install --cask infatoshi/phonon/phonon
+brew install --cask infatoshi/tap/phonon
 phonon
 ```
 
@@ -22,7 +22,22 @@ refiner 1.7B for correction, both pinned to exact revisions. That is about
 once-a-day check of GitHub for a newer release, which carries nothing about you and can be turned off
 in Settings. Tagged releases
 also include the DMG for direct installation. To build from source instead, use
-`brew install --formula infatoshi/phonon/phonon`.
+`brew install --formula infatoshi/tap/phonon`.
+
+## The recipe
+
+- **Hear:** Parakeet TDT 0.6B v2 transcribes on your Mac, on Phonon's own Metal kernels.
+- **Rewrite:** the Phonon refiner 1.7B, fine-tuned from LiquidAI's LFM3-1.7B, turns the transcript into
+  what you meant to type: misheard terms fixed, filler and false starts gone, only the final version kept
+  when you correct yourself.
+- **Data:** 76,960 transcripts of public audio and synthetic dictations, each rewritten by DeepSeek
+  following a written spec, in four writing modes (casual, formal, prompt, minimal). No personal dictation
+  went into it. The pipeline is in `ml/`.
+- **Mode:** picked from the app you dictate into: casual in Discord, formal in Slack and email, prompt in
+  AI assistants and terminals, minimal everywhere else.
+- **Speed:** both models work while you talk, so at key-up only the last seconds are left. The refiner runs
+  on a native Metal engine (a decode megakernel with a speculative drafter). Key-up to pasted text is about
+  65 ms on an M4 Max.
 
 ## Windows beta
 
