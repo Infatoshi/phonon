@@ -464,6 +464,7 @@ struct Target {
     // logits(nb) + b * n_vocab. Spins on the command buffer status instead of blocking (lower wake-up latency).
     bool step(const int * tokens, int nb, int n_valid, int pos, bool with_head = true, bool retry = true,
               const std::function<void(id<MTLCommandBuffer>)> & then = nullptr) {
+        if (n_valid <= 0 || nb <= 0 || n_valid > nb) return false;
         Variant & v = variant(nb);
         // the verify variants may have their own grids (register cap); NB = 16 keeps its own copy so a barrier
         // timeout there (fewer co-resident threadgroups) halves only its grid
@@ -1005,7 +1006,12 @@ struct NativeDrafter {
 
     // CPU dequantize of a Q8_0 row of RANK values
     void q8_row(uint64_t w, int row, float * out) const {
-        const uint8_t * p = (const uint8_t *) g.map + w + (size_t) row * (RANK / 32) * 34;
+        const size_t stride = (size_t) (RANK / 32) * 34;
+        if (row < 0 || row >= T->n_vocab || w + (size_t) (row + 1) * stride > g.file_size) {
+            memset(out, 0, RANK * sizeof(float));
+            return;
+        }
+        const uint8_t * p = (const uint8_t *) g.map + w + (size_t) row * stride;
         for (int b = 0; b < RANK / 32; ++b) {
             __fp16 d;
             memcpy(&d, p + b * 34, 2);
@@ -1386,11 +1392,11 @@ struct Engine {
         // 1 row: decode; 2-8: the 8-row verify shape; 9-16 (a user turn + its draft): the 16-row shape
         static const int mk_max = getenv("PE_SESSION_MK_MAX") ? atoi(getenv("PE_SESSION_MK_MAX")) : MAX_NB;
         const int nb = k == 1 ? 1 : k <= 8 ? 8 : 16;
-        if ((k == 1 || (k <= mk_max && n + nb <= CTX)) && !getenv("PE_SESSION_LLAMA")) {
+        if ((k == 1 || (k <= mk_max && n + nb <= CTX)) && !getenv("PE_SESSION_LLAMA") && T.step(toks.data(), nb, k, n)) {
             *path = "mk";
-            T.step(toks.data(), nb, k, n);
             for (int b = from; b < k; ++b) ids.push_back(T.pick(nb, b));
             s_toks.insert(s_toks.end(), toks.begin(), toks.end());
+            s_cancel = false;
             return ids;
         }
         *path = "llama";
@@ -1450,6 +1456,7 @@ struct Engine {
         }
         s_lv = base + done;
         if (s_lv > n) s_toks.insert(s_toks.end(), toks.begin(), toks.begin() + (s_lv - n));
+        s_cancel = false;
         return ids;
     }
 
@@ -1547,7 +1554,7 @@ struct Engine {
         while (!llama_vocab_is_eog(vocab, last) && (int) out.size() < max_new && pos + 9 <= CTX) {
             if (!D && !ND) {
                 const double t0 = now();
-                T.step(&last, 1, 1, pos);
+                if (!T.step(&last, 1, 1, pos)) { pos = CTX; break; }
                 last = T.pick(1, 0);
                 t_decode += now() - t0;
                 out.push_back(last);
@@ -1563,11 +1570,13 @@ struct Engine {
             rows[0] = last;
             for (int i = 0; i < (int) draft.size(); ++i) rows[1 + i] = draft[i];
             const int nb = k == 1 && !ND ? 1 : 8;
+            bool step_ok = false;
             if (ND && !getenv("PE_SEPARATE_INJECT")) {  // verify + the drafter's injection of its rows: one command buffer
-                T.step(rows.data(), nb, k, pos, true, true, [&](id<MTLCommandBuffer> cb) { ND->encode_inject_target(cb, pos); });
+                step_ok = T.step(rows.data(), nb, k, pos, true, true, [&](id<MTLCommandBuffer> cb) { ND->encode_inject_target(cb, pos); });
             } else {
-                T.step(rows.data(), nb, k, pos);
+                step_ok = T.step(rows.data(), nb, k, pos);
             }
+            if (!step_ok) { pos = CTX; break; }
             int na = 0, next = 0;
             for (;;) {  // accept while the target's argmax matches the draft
                 next = T.pick(nb, na);
@@ -1633,7 +1642,11 @@ static std::string json_str(const std::string & s) {
 static std::string read_str(const std::string & line, const char * key) {
     size_t i = line.find(key);
     if (i == std::string::npos) return "";
-    i = line.find('"', line.find(':', i) + 1) + 1;
+    size_t colon = line.find(':', i);
+    if (colon == std::string::npos) return "";
+    size_t q = line.find('"', colon + 1);
+    if (q == std::string::npos) return "";
+    i = q + 1;
     std::string s;
     auto put = [&](uint32_t cp) {
         if (cp < 0x80) s += (char) cp;
@@ -1644,6 +1657,7 @@ static std::string read_str(const std::string & line, const char * key) {
     while (i < line.size() && line[i] != '"') {
         char c = line[i++];
         if (c != '\\') { s += c; continue; }
+        if (i >= line.size()) break;
         c = line[i++];
         switch (c) {
             case 'n': s += '\n'; break;
@@ -1652,9 +1666,10 @@ static std::string read_str(const std::string & line, const char * key) {
             case 'b': s += '\b'; break;
             case 'f': s += '\f'; break;
             case 'u': {
+                if (i + 4 > line.size()) break;
                 uint32_t cp = (uint32_t) strtoul(line.substr(i, 4).c_str(), nullptr, 16);
                 i += 4;
-                if (cp >= 0xD800 && cp < 0xDC00 && line[i] == '\\' && line[i + 1] == 'u') {
+                if (cp >= 0xD800 && cp < 0xDC00 && i + 2 <= line.size() && line[i] == '\\' && line[i + 1] == 'u' && i + 6 <= line.size()) {
                     const uint32_t lo = (uint32_t) strtoul(line.substr(i + 2, 4).c_str(), nullptr, 16);
                     i += 6;
                     cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
@@ -1674,7 +1689,9 @@ static std::string read_prompt(const std::string & line) { return read_str(line,
 static long read_int(const std::string & line, const char * key, long def) {
     const size_t i = line.find(key);
     if (i == std::string::npos) return def;
-    return strtol(line.c_str() + line.find(':', i) + 1, nullptr, 10);
+    const size_t colon = line.find(':', i);
+    if (colon == std::string::npos) return def;
+    return strtol(line.c_str() + colon + 1, nullptr, 10);
 }
 static std::vector<int> read_ints(const std::string & line, const char * key) {
     std::vector<int> v;
@@ -2296,8 +2313,12 @@ int main(int argc, char ** argv) {
             std::thread reader([&] {
                 std::string l;
                 while (std::getline(std::cin, l)) {
-                    if (l.find("\"cancel\"") != std::string::npos) E.s_cancel = true;
-                    { std::lock_guard<std::mutex> g(mu); q.push_back(l); }
+                    const bool is_cancel = read_str(l, "\"op\"") == "cancel";
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        if (is_cancel) E.s_cancel = true;
+                        q.push_back(l);
+                    }
                     cv.notify_one();
                 }
                 { std::lock_guard<std::mutex> g(mu); eof = true; }
@@ -2313,6 +2334,11 @@ int main(int argc, char ** argv) {
                     if (q.empty()) break;
                     line = q.front();
                     q.pop_front();
+                    bool has_queued_cancel = false;
+                    for (const std::string & ql : q) {
+                        if (read_str(ql, "\"op\"") == "cancel") { has_queued_cancel = true; break; }
+                    }
+                    E.s_cancel = has_queued_cancel;
                 }
                 if (line.empty()) continue;
                 const std::string op = read_str(line, "\"op\"");
