@@ -1,4 +1,4 @@
-// pa: Parakeet TDT 0.6B v2 encoder on Metal (pa.metal): mel [Tm][128] -> encoder output [T][1024], one command buffer.
+// pa: Parakeet TDT 0.6B v2/v3 encoder on Metal (pa.metal): mel [Tm][128] -> encoder output [T][1024], one command buffer.
 //   pa WEIGHTS.bin MEL.npy OUT.npy [reps]      (WEIGHTS.idx next to WEIGHTS.bin: name offset dims, from ref.py export)
 // env: PA_DIR (where pa.metal is; default the binary's directory)
 #import <Foundation/Foundation.h>
@@ -105,7 +105,7 @@ static float bf16_round(float x) {  // round to nearest even bf16 (the MLX model
 // linear_q, linear_k, linear_v back to back, as the fused q / k / v projection reads them). F32 (rounded to bf16
 // first, the app's MLX dtype), BF16 and F16 sources.
 static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<MTLBuffer> & wbuf, std::map<std::string, uint32_t> & woff,
-                             size_t & wsize) {
+                             size_t & wsize, uint32_t & ntok) {
     const int fd = open(path, O_RDONLY);
     if (fd < 0) { fprintf(stderr, "cannot open %s\n", path); return false; }
     const size_t fsize = (size_t) lseek(fd, 0, SEEK_END);
@@ -119,6 +119,7 @@ static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<M
     const uint8_t * data = map + 8 + hlen;
     struct T { std::string name; int type; size_t a, b; };  // type 0 F32, 1 BF16, 2 F16
     std::vector<T> ts;
+    std::vector<double> joint_weight_shape, joint_bias_shape;
     // the header is {"name": {"dtype": "...", "shape": [...], "data_offsets": [a, b]}, ..., "__metadata__": {...}}
     size_t p = h.find('{') + 1;
     while (true) {
@@ -135,12 +136,29 @@ static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<M
         const size_t of = body.find("\"data_offsets\""), lb = body.find('[', of);
         T t;
         t.name = name;
+        if (name == "joint.joint_net.2.weight") joint_weight_shape = json_nums(body, "shape");
+        if (name == "joint.joint_net.2.bias") joint_bias_shape = json_nums(body, "shape");
+        if (name == "decoder.prediction.embed.weight") {
+            const auto shape = json_nums(body, "shape");
+            if (shape.size() != 2 || shape[1] != 640 || (shape[0] != 1025 && shape[0] != 8193)) {
+                fprintf(stderr, "unsupported Parakeet vocabulary shape\n");
+                munmap((void *) map, fsize);
+                return false;
+            }
+            ntok = (uint32_t) shape[0];
+        }
         t.type = dtype == "F32" ? 0 : dtype == "BF16" ? 1 : dtype == "F16" ? 2 : -1;
         if (t.type < 0) { fprintf(stderr, "%s: tensor %s has dtype %s\n", path, name.c_str(), dtype.c_str()); return false; }
         const size_t lbh = ob + lb;  // the '[' of data_offsets, in the whole header
         t.a = strtoull(h.c_str() + lbh + 1, nullptr, 10);
         t.b = strtoull(h.c_str() + h.find(',', lbh) + 1, nullptr, 10);
         ts.push_back(t);
+    }
+    if (!ntok || joint_weight_shape != std::vector<double>{double(ntok + 5), 640} ||
+        joint_bias_shape != std::vector<double>{double(ntok + 5)}) {
+        fprintf(stderr, "%s: incompatible Parakeet decoder dimensions\n", path);
+        munmap((void *) map, fsize);
+        return false;
     }
     std::sort(ts.begin(), ts.end(), [](const T & x, const T & y) { return x.name < y.name; });
     std::map<std::string, size_t> at;
@@ -266,11 +284,12 @@ int main(int argc, char ** argv) {
         id<MTLBuffer> wbuf = nil;
         void * wptr = nullptr;
         size_t wsize = 0;
+        uint32_t ntok = 0;
         const size_t page = getpagesize();
         const std::string wpath = argv[1];
         if (wpath.size() > 12 && wpath.substr(wpath.size() - 12) == ".safetensors") {
             const double tl = now();
-            if (!load_safetensors(wpath.c_str(), dev, wbuf, woff, wsize)) return 1;
+            if (!load_safetensors(wpath.c_str(), dev, wbuf, woff, wsize, ntok)) return 1;
             wptr = wbuf.contents;
             if (getenv("PA_VERBOSE")) fprintf(stderr, "pa: %zu tensors from %s, %.0f MB fp16 in %.2f s\n", woff.size(), wpath.c_str(), wsize / 1e6, now() - tl);
         } else {
@@ -283,6 +302,11 @@ int main(int argc, char ** argv) {
                 size_t off;
                 ss >> name >> off;
                 woff[name] = (uint32_t) (off / 2);
+                if (name == "decoder.prediction.embed.weight") {
+                    uint32_t rows = 0, cols = 0;
+                    ss >> rows >> cols;
+                    if ((rows == 1025 || rows == 8193) && cols == 640) ntok = rows;
+                }
             }
             const int fd = open(argv[1], O_RDONLY);
             if (fd < 0) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
@@ -291,6 +315,11 @@ int main(int argc, char ** argv) {
             wptr = mmap(nullptr, wmap, PROT_READ, MAP_SHARED, fd, 0);
             wbuf = [dev newBufferWithBytesNoCopy:wptr length:wmap options:MTLResourceStorageModeShared deallocator:nil];
         }
+        if (ntok != 1025 && ntok != 8193) {
+            fprintf(stderr, "missing or unsupported Parakeet vocabulary dimensions\n");
+            return 1;
+        }
+        const uint32_t nout = ntok + 5, trie_padding = ntok + 7;
         auto W = [&](const std::string & n) -> uint32_t {
             auto it = woff.find(n);
             if (it == woff.end()) { fprintf(stderr, "missing weight %s\n", n.c_str()); exit(1); }
@@ -469,13 +498,13 @@ int main(int argc, char ** argv) {
         const uint32_t HDd = 640;
         const uint32_t aE = take((size_t) pad32(cT) * HDd), nS = 64 + 12 * HDd + TDT_KF * TDT_NSL * TDT_PSTRIDE, aS = take(nS),
                        aOut = take(1 + 4 * cmaxout),
-                       aDbg = take(4 * 512), aDbgL = take(1030 + 2 * 640);
+                       aDbg = take(4 * 512), aDbgL = take(nout + 2 * 640);
         // GPU log-mel: samples, power spectrum [frames][257], log mel [frames][128], filterbank [128][257], cos / sin / window
         const uint32_t aWav = take((size_t) cap_mel * 160 + 1024), aPow = take((size_t) cap_mel * 257), aLmel = take((size_t) cap_mel * F0),
                        aFb = take(128 * 257), aTw = take(2 * 512 + 400);
         // layer-0 input projection table b0 + Wx0 embed[t] (PA_XTAB=0: off): embed copied in as half rows, float table out
         const bool use_xtab = !getenv("PA_XTAB") || atoi(getenv("PA_XTAB"));
-        const uint32_t aEmb = take((size_t) pad32(1025) * HDd / 2), aXtab = take((size_t) 1025 * 4 * HDd);
+        const uint32_t aEmb = take((size_t) pad32(ntok) * HDd / 2), aXtab = take((size_t) ntok * 4 * HDd);
         // dictionary boosting (PA_TRIE=file from bias/make_trie.py: the flat trie the tdt kernel walks, uint32 words);
         // committed spans out: count, {start token, end token, canonical term, boosted} x maxspans, flips, rollbacks
         std::vector<uint32_t> trie;
@@ -538,7 +567,9 @@ int main(int argc, char ** argv) {
         const std::string unroll = getenv("PA_UNROLL") && *getenv("PA_UNROLL") ? std::string("#define LIN4_UNROLL _Pragma(\"clang loop unroll_count(") + getenv("PA_UNROLL") + ")\")\n" : "";
         src = [[NSString stringWithFormat:@"#define TN2 %d\n#define DEC_BF16 %d\n#define TDT_LNU %u\n#define TDT_KF %u\n%s", tn2, bf16_run, TDT_LNU, TDT_KF,
                                           unroll.c_str()] stringByAppendingString:src];
-        id<MTLLibrary> lib = [dev newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
+        MTLCompileOptions * compile_options = [MTLCompileOptions new];
+        compile_options.preprocessorMacros = @{ @"TDT_NTOK": @(ntok) };
+        id<MTLLibrary> lib = [dev newLibraryWithSource:src options:compile_options error:&err];
         if (!lib) { fprintf(stderr, "%s\n", err.localizedDescription.UTF8String); return 1; }
         auto pso = [&](const char * n) {
             id<MTLComputePipelineState> p = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:[NSString stringWithUTF8String:n]] error:&err];
@@ -732,12 +763,12 @@ int main(int argc, char ** argv) {
                 [e setComputePipelineState:pL4[0][1][rt - 1][tni(tn2)]];
                 [e dispatchThreadgroups:MTLSizeMake(D / (8 * tn2), (PT + 31) / 32, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             }
-            if (use_xtab) {  // b0 + Wx0 embed[t], t < 1025: rows 1025, n 2560, k 640, half in, float out
-                memcpy((uint16_t *) A + 2 * aEmb, (const uint16_t *) wptr + W("decoder.prediction.embed.weight"), (size_t) 1025 * HDd * 2);
-                Lin Lx = { 2 * aEmb, aXtab, 0, W(dp + "0.Wx"), W(dp + "0.bias"), 1025, 4 * HDd, HDd, 0, 1.f, 0 };
+            if (use_xtab) {  // b0 + Wx0 embed[t], t < ntok: ntok rows, n 2560, k 640, half in, float out
+                memcpy((uint16_t *) A + 2 * aEmb, (const uint16_t *) wptr + W("decoder.prediction.embed.weight"), (size_t) ntok * HDd * 2);
+                Lin Lx = { 2 * aEmb, aXtab, 0, W(dp + "0.Wx"), W(dp + "0.bias"), ntok, 4 * HDd, HDd, 0, 1.f, 0 };
                 [e setBytes:&Lx length:sizeof Lx atIndex:0];
                 [e setComputePipelineState:pL4[1][0][3][tni(tn2)]];
-                [e dispatchThreadgroups:MTLSizeMake(4 * HDd / (8 * tn2), (1025 + 31) / 32, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                [e dispatchThreadgroups:MTLSizeMake(4 * HDd / (8 * tn2), (ntok + 31) / 32, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             }
             [e endEncoding];
             [cb commit];
@@ -865,7 +896,7 @@ int main(int argc, char ** argv) {
                     std::vector<uint32_t> t(m);
                     if (m && fread(t.data(), 4, m, stdin) != m) break;
                     uint32_t st = m > trie_cap ? 1 : 0;
-                    if (!st && m && (m < 16 || (uint64_t) t[0] * 4 + (uint64_t) t[1] * 3 + 16 + 1025 + 2 * 1032 != m)) st = 2;
+                    if (!st && m && (m < 16 || (uint64_t) t[0] * 4 + (uint64_t) t[1] * 3 + 16 + ntok + 2 * trie_padding != m)) st = 2;
                     if (!st) {
                         if (m) memcpy((uint32_t *) A + aTrie, t.data(), (size_t) m * 4);
                         TD.trie = m ? aTrie : ~0u;
@@ -920,12 +951,12 @@ int main(int argc, char ** argv) {
         if (getenv("PA_DUMP_E")) save_npy(getenv("PA_DUMP_E"), A + aE, Tv, HDd);  // debug: the joint's encoder projection
         if (dbg_step != ~0u) {  // debug: the joint at the first iteration on that step
             const float * lgd = A + aDbgL;
-            std::vector<int> ix(1025);
-            for (int i = 0; i < 1025; ++i) ix[i] = i;
+            std::vector<int> ix(ntok);
+            for (int i = 0; i < (int) ntok; ++i) ix[i] = i;
             std::partial_sort(ix.begin(), ix.begin() + 3, ix.end(), [&](int a, int b) { return lgd[a] > lgd[b]; });
             printf("  joint at step %u: top (%d %.3f) (%d %.3f) (%d %.3f), blank %.3f, dur %.2f %.2f %.2f %.2f %.2f\n", dbg_step, ix[0], lgd[ix[0]],
-                   ix[1], lgd[ix[1]], ix[2], lgd[ix[2]], lgd[1024], lgd[1025], lgd[1026], lgd[1027], lgd[1028], lgd[1029]);
-            save_npy("out/dbg_joint.npy", lgd, 1, 1030 + 2 * 640);
+                   ix[1], lgd[ix[1]], ix[2], lgd[ix[2]], lgd[ntok - 1], lgd[ntok], lgd[ntok + 1], lgd[ntok + 2], lgd[ntok + 3], lgd[ntok + 4]);
+            save_npy("out/dbg_joint.npy", lgd, 1, nout + 2 * 640);
         }
         if (dec_on) {  // tokens next to OUT: OUT minus .npy + .tok.json
             std::string tp = argv[3];

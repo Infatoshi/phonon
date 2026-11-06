@@ -1,4 +1,4 @@
-// Parakeet TDT 0.6B v2 encoder (FastConformer, 24 blocks, d 1024, 8 heads, rel-pos attention, conv kernel 9) on
+// Parakeet TDT 0.6B v2/v3 encoder (FastConformer, 24 blocks, d 1024, 8 heads, rel-pos attention, conv kernel 9) on
 // Metal: fp16 weights (the bf16 values the MLX app runs with), float32 activations, one command buffer per window.
 // Rows past the valid frame count T are computed but never read across rows: every cross-row op (depthwise conv,
 // attention, the subsampling convolutions) bounds-checks T, so a padded bucket gives the exact-length result.
@@ -528,7 +528,7 @@ kernel void subflat(constant Sub & P [[buffer(0)]], device float * A [[buffer(2)
 // TDT greedy decode (fast_tdt semantics) as ordinary dispatches in one serial compute encoder: no threadgroup ever
 // waits on another, so it runs on any Apple GPU under any load (the dispatch boundary is the only synchronization).
 // Prediction net: 2-layer LSTM(640) on the last emitted token (zero input and state before the first), run only when
-// a token is emitted; joint: z = relu(E[step] + pred(h)), logits = J z (1024 tokens + blank, 5 durations).
+// a token is emitted; joint: z = relu(E[step] + pred(h)), logits = J z (vocabulary tokens + blank, 5 durations).
 // One decode slot is five indirect dispatches whose sizes the previous slot's tdt_decide wrote:
 //   tdt_l0, tdt_l1, tdt_pred (HD / LNU threadgroups each, or none when no token was emitted): layer 0, layer 1 and
 //     the pred projection g; each threadgroup owns LNU hidden units (their 4 gate rows and cell state);
@@ -543,8 +543,11 @@ kernel void subflat(constant Sub & P [[buffer(0)]], device float * A [[buffer(2)
 // durations, frames, confidences and spans are identical.
 // The MLX app runs in bf16: h, c, the pred / enc projections, z and the logits are rounded to bf16 where MLX rounds.
 #define HD 640
-#define NOUT 1030
-#define NTOK 1025
+#ifndef TDT_NTOK
+#define TDT_NTOK 1025
+#endif
+#define NTOK TDT_NTOK
+#define NOUT (NTOK + 5)
 #define NSL 20                        // joint row slices per frame (fixed: the order of the softmax partial sums)
 #define RPT ((NOUT + NSL - 1) / NSL)
 #define PSTRIDE 12  // uints per slice partial: max, argmax, Z, Sx, duration max / argmax, runner-up, best child
@@ -561,8 +564,8 @@ struct Tdt {
     uint emb, wx0, wh0, b0, wx1, wh1, b1; // half offsets of the weights
     uint pw, pb, jw, jb, max_symbols;
     uint dbg;                             // ~0 or a float offset for per-iteration debug records
-    uint dbg_step, dbgl;                  // debug: at the first iteration on step dbg_step, logits [1030], z [640], g [640]
-    uint xtab;                            // ~0 or the float offset of b0 + Wx0 embed[t], [1025][2560]
+    uint dbg_step, dbgl;                  // debug: at the first iteration on step dbg_step, logits [NOUT], z [640], g [640]
+    uint xtab;                            // ~0 or the float offset of b0 + Wx0 embed[t], [NTOK][2560]
     uint trie, spans, maxspans;           // dictionary boosting: ~0 or the trie table (uint offset), committed spans out
 };
 
@@ -588,8 +591,8 @@ struct TdtCtl {
 // Dictionary boosting (asr_bias_v0 tdt_decode.py, config cb446: --variants case --s-start 4 --s-cont 4 --budget 6).
 // Flat trie, uint words at P.trie: header [0] nodes, [1] edges, [2] s_start, [3] s_cont, [4] budget (float bits),
 // [5] blank_start; node n at 16 + 4 n: {edge offset, edge count, terminal, canonical term}; edge e at E0 + 3 e:
-// {token, child node, boostable} (a node's edges sorted by token); root[1025] at R0: the child of a first piece,
-// | 1 << 31 when boostable, ~0 when none; word_start[1032] at R0 + 1025, boundary[1032] after it.
+// {token, child node, boostable} (a node's edges sorted by token); root[NTOK] at R0: the child of a first piece,
+// | 1 << 31 when boostable, ~0 when none; word_start[NTOK + 7] at R0 + NTOK, boundary[NTOK + 7] after it.
 struct TrieV { device const uint * nd, * ed, * root, * ws, * bd; float s_start, s_cont; long budget_fx; bool blank_start; };
 #define FX_ONE 1099511627776.0f  // 2^40: deficits summed exactly as fixed point (Python sums them in float64)
 inline TrieV trie_view(device const uint * t) {
@@ -598,8 +601,8 @@ inline TrieV trie_view(device const uint * t) {
     v.nd = t + 16;
     v.ed = v.nd + 4 * nodes;
     v.root = v.ed + 3 * edges;
-    v.ws = v.root + 1025;
-    v.bd = v.ws + 1032;
+    v.ws = v.root + NTOK;
+    v.bd = v.ws + NTOK + 7;
     v.s_start = as_type<float>(t[2]);
     v.s_cont = as_type<float>(t[3]);
     v.budget_fx = (long) (as_type<float>(t[4]) * FX_ONE);
@@ -608,7 +611,7 @@ inline TrieV trie_view(device const uint * t) {
 }
 inline uint trie_child(TrieV v, uint node, uint k) {  // child node of `node` on token k, ~0 when none
     if (node == 0) {
-        const uint c = k < 1025 ? v.root[k] : ~0u;
+        const uint c = k < NTOK ? v.root[k] : ~0u;
         return c == ~0u ? ~0u : (c & 0x7fffffffu);
     }
     const uint off = v.nd[4 * node], cnt = v.nd[4 * node + 1];
@@ -672,7 +675,7 @@ kernel void tdt_l0(TDT_ARGS, uint tg [[threadgroup_position_in_grid]]) {
     const uint p = C.run & 1, q = p ^ 1;
     const bool first = C.run == 0;
     const int tok = (int) C.tok;
-    // P.xtab: b0 + Wx0 embed[t] for every token, precomputed (float [1025][2560]): one row read replaces the 3.3 MB
+    // P.xtab: b0 + Wx0 embed[t] for every token, precomputed (float [NTOK][2560]): one row read replaces the 3.3 MB
     // input-projection matvec per emitted token
     const bool tab = P.xtab != ~0u && tok >= 0;
     for (uint k = tid; k < HD; k += 256) {
