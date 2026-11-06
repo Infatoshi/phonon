@@ -48,10 +48,13 @@ PHONON_INSTALL_APPROVED=yes scripts/install-on-iphone.sh <device-id>   # only wh
 ```
 
 `export-ipa.sh` builds the native dependencies into `Vendor/` (llama.cpp and FluidAudio, a few
-minutes the first time), signs a development build with automatic signing through the team's
-App Store Connect API key and prints the .ipa's sha256. It touches no device.
+minutes the first time), signs a development build with automatic signing through the developer
+account in Xcode > Settings > Accounts, and prints the .ipa's sha256. It touches no device. The
+profile covers the iPhones registered with the team.
 `install-on-iphone.sh` only installs an existing .ipa, and refuses to run without
-`PHONON_INSTALL_APPROVED=yes`.
+`PHONON_INSTALL_APPROVED=yes`. Without the script: Xcode > Window > Devices and Simulators,
+select the phone, drag the .ipa onto Installed Apps (or Apple Configurator, drag it onto the
+phone). iOS does not install an .ipa opened from Files or AirDrop.
 
 Then on the phone:
 
