@@ -25,6 +25,8 @@ struct NativeSettings: Codable, Equatable {
     /// Bundle IDs of competing dictation apps the owner answered "Don't ask
     /// again" for. See `CompetingApps.swift`.
     var competitorQuitMuted: [String]
+    /// Put `profile/user.md` and `profile/vocab.md` in the correction prompt.
+    var profilePrefix: Bool
     /// Watch the field after insertion and offer what the user corrected.
     var editLearning: Bool
     /// Approved style preferences by app category, e.g. `["chat":
@@ -77,6 +79,7 @@ struct NativeSettings: Codable, Equatable {
         case privacyChoiceMade = "privacy_choice_made"
         case historyRetentionDays = "history_retention_days"
         case competitorQuitMuted = "competitor_quit_muted"
+        case profilePrefix = "profile_prefix"
         case editLearning = "edit_learning"
         case stylePreferences = "style_preferences"
         case screenContextDenylist = "screen_context_denylist"
@@ -106,6 +109,7 @@ struct NativeSettings: Codable, Equatable {
         privacyChoiceMade: Bool = false,
         historyRetentionDays: Int = NativeSettings.keepRecordingsForever,
         competitorQuitMuted: [String] = [],
+        profilePrefix: Bool = false,
         editLearning: Bool = true,
         stylePreferences: [String: [String]] = [:],
         screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
@@ -133,6 +137,7 @@ struct NativeSettings: Codable, Equatable {
         self.privacyChoiceMade = privacyChoiceMade
         self.historyRetentionDays = historyRetentionDays
         self.competitorQuitMuted = competitorQuitMuted
+        self.profilePrefix = profilePrefix
         self.editLearning = editLearning
         self.stylePreferences = stylePreferences
         self.screenContextDenylist = screenContextDenylist
@@ -176,6 +181,7 @@ struct NativeSettings: Codable, Equatable {
             ?? NativeSettings.keepRecordingsForever
         competitorQuitMuted =
             try values.decodeIfPresent([String].self, forKey: .competitorQuitMuted) ?? []
+        profilePrefix = try values.decodeIfPresent(Bool.self, forKey: .profilePrefix) ?? false
         editLearning = try values.decodeIfPresent(Bool.self, forKey: .editLearning) ?? true
         stylePreferences =
             try values.decodeIfPresent([String: [String]].self, forKey: .stylePreferences) ?? [:]
@@ -275,6 +281,37 @@ struct NativeDictionaryEntry: Codable, Identifiable, Equatable {
         case usageCount = "usage_count"
     }
 
+    static func normalizeReplacement(_ replacement: String?, phrase: String) -> String? {
+        guard let trimmed = replacement?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !trimmed.isEmpty,
+            trimmed != phrase
+        else { return nil }
+        return trimmed
+    }
+
+    static func normalizeSpokenForms(_ forms: [String]) -> [String] {
+        var byKey: [String: String] = [:]
+        for form in forms {
+            let trimmed = form.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.lowercased()
+            if byKey[key] == nil {
+                byKey[key] = trimmed
+            }
+        }
+        return byKey.values.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    static func sortComparator(_ lhs: NativeDictionaryEntry, _ rhs: NativeDictionaryEntry) -> Bool {
+        let order = lhs.phrase.localizedCaseInsensitiveCompare(rhs.phrase)
+        if order != .orderedSame {
+            return order == .orderedAscending
+        }
+        return (lhs.replacement ?? "") < (rhs.replacement ?? "")
+    }
+
     init(
         phrase: String,
         replacement: String? = nil,
@@ -284,8 +321,8 @@ struct NativeDictionaryEntry: Codable, Identifiable, Equatable {
         usageCount: UInt64 = 0
     ) {
         self.phrase = phrase
-        self.replacement = replacement
-        self.spokenForms = spokenForms
+        self.replacement = Self.normalizeReplacement(replacement, phrase: phrase)
+        self.spokenForms = Self.normalizeSpokenForms(spokenForms)
         self.source = source
         self.starred = starred
         self.usageCount = usageCount
@@ -293,9 +330,13 @@ struct NativeDictionaryEntry: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        phrase = try values.decode(String.self, forKey: .phrase)
-        replacement = try values.decodeIfPresent(String.self, forKey: .replacement)
-        spokenForms = try values.decodeIfPresent([String].self, forKey: .spokenForms) ?? []
+        let decodedPhrase = try values.decode(String.self, forKey: .phrase)
+        phrase = decodedPhrase
+        replacement = Self.normalizeReplacement(
+            try values.decodeIfPresent(String.self, forKey: .replacement),
+            phrase: decodedPhrase)
+        spokenForms = Self.normalizeSpokenForms(
+            try values.decodeIfPresent([String].self, forKey: .spokenForms) ?? [])
         source = try values.decodeIfPresent(String.self, forKey: .source) ?? ""
         starred = try values.decodeIfPresent(Bool.self, forKey: .starred) ?? false
         usageCount = try values.decodeIfPresent(UInt64.self, forKey: .usageCount) ?? 0
@@ -339,21 +380,58 @@ struct NativeLlmMetadata: Codable, Equatable {
 }
 
 struct NativeAppliedCorrection: Codable, Equatable {
+    var from: String
+    var to: String
     var count: UInt64
 
     enum CodingKeys: String, CodingKey {
-        case count
+        case from, to, count
+    }
+
+    init(from: String = "", to: String = "", count: UInt64 = 1) {
+        self.from = from
+        self.to = to
+        self.count = count
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        from = try values.decodeIfPresent(String.self, forKey: .from) ?? ""
+        to = try values.decodeIfPresent(String.self, forKey: .to) ?? ""
         count = try values.decodeIfPresent(UInt64.self, forKey: .count) ?? 1
     }
 }
 
+struct NativeTextboxContext: Codable, Equatable {
+    var beforeText: String
+    var selectedText: String
+    var afterText: String
+
+    enum CodingKeys: String, CodingKey {
+        case beforeText = "before_text"
+        case selectedText = "selected_text"
+        case afterText = "after_text"
+    }
+
+    init(beforeText: String = "", selectedText: String = "", afterText: String = "") {
+        self.beforeText = beforeText
+        self.selectedText = selectedText
+        self.afterText = afterText
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        beforeText = try values.decodeIfPresent(String.self, forKey: .beforeText) ?? ""
+        selectedText = try values.decodeIfPresent(String.self, forKey: .selectedText) ?? ""
+        afterText = try values.decodeIfPresent(String.self, forKey: .afterText) ?? ""
+    }
+}
+
 struct NativeRecordingMetadata: Codable, Equatable {
+    var schemaVersion: Int
     var id: String
     var createdAtUnixMs: UInt64
+    var recordedAt: String?
     var source: String
     var audioFile: String
     var microphone: String?
@@ -370,11 +448,16 @@ struct NativeRecordingMetadata: Codable, Equatable {
     var userEdit: NativeUserEdit?
     /// The app it was pasted into (kept only with local history on).
     var appContext: NativeAppContext?
+    /// The text around the cursor at key-down (kept only with local history on).
+    var textboxContext: NativeTextboxContext?
 
     enum CodingKeys: String, CodingKey {
         case id, source, microphone, llm
+        case schemaVersion = "schema_version"
+        case recordedAt = "recorded_at"
         case userEdit = "user_edit"
         case appContext = "app_context"
+        case textboxContext = "textbox_context"
         case createdAtUnixMs = "created_at_unix_ms"
         case audioFile = "audio_file"
         case audioDurationMs = "audio_duration_ms"
@@ -388,8 +471,10 @@ struct NativeRecordingMetadata: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         id = try values.decode(String.self, forKey: .id)
         createdAtUnixMs = try values.decode(UInt64.self, forKey: .createdAtUnixMs)
+        recordedAt = try values.decodeIfPresent(String.self, forKey: .recordedAt)
         source = try values.decodeIfPresent(String.self, forKey: .source) ?? ""
         audioFile = try values.decodeIfPresent(String.self, forKey: .audioFile) ?? "audio.wav"
         microphone = try values.decodeIfPresent(String.self, forKey: .microphone)
@@ -407,6 +492,8 @@ struct NativeRecordingMetadata: Codable, Equatable {
         // A malformed record must not hide the dictation from History.
         userEdit = try? values.decodeIfPresent(NativeUserEdit.self, forKey: .userEdit)
         appContext = try? values.decodeIfPresent(NativeAppContext.self, forKey: .appContext)
+        textboxContext = try? values.decodeIfPresent(
+            NativeTextboxContext.self, forKey: .textboxContext)
     }
 }
 
@@ -1050,9 +1137,7 @@ final class NativeAppStore: ObservableObject {
             dictionaryEntries = []
             return
         }
-        dictionaryEntries = decoded.entries.sorted {
-            $0.phrase.localizedCaseInsensitiveCompare($1.phrase) == .orderedAscending
-        }
+        dictionaryEntries = decoded.entries.sorted(by: NativeDictionaryEntry.sortComparator)
     }
 
     private func captureMirror() {
@@ -1107,9 +1192,13 @@ final class NativeAppStore: ObservableObject {
     }
 
     private func saveDictionary(_ entries: [NativeDictionaryEntry]) {
-        let sorted = entries.sorted {
-            $0.phrase.localizedCaseInsensitiveCompare($1.phrase) == .orderedAscending
-        }
+        let sorted = entries.map { entry in
+            var normalized = entry
+            normalized.replacement = NativeDictionaryEntry.normalizeReplacement(
+                entry.replacement, phrase: entry.phrase)
+            normalized.spokenForms = NativeDictionaryEntry.normalizeSpokenForms(entry.spokenForms)
+            return normalized
+        }.sorted(by: NativeDictionaryEntry.sortComparator)
         let file = NativeDictionaryFile(
             schemaVersion: 1,
             updatedAtUnixMs: UInt64(Date().timeIntervalSince1970 * 1_000),

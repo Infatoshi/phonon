@@ -8,6 +8,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATA_SCHEMA_VERSION: u32 = 1;
+/// Schema 2 made screen OCR and recording retention opt-in (`local_history`,
+/// `screen_context`, `privacy_choice_made` default to `false` on fresh installs,
+/// while Schema 1 files migrate with `true`).
+pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+/// Apps and sites whose screen, text fields, and edits Phonon never reads by default.
+pub const DEFAULT_SCREEN_CONTEXT_DENYLIST: &[&str] = &[
+    "org.whispersystems.signal-desktop",
+    "com.hnc.Discord",
+    "discord.com",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DictionaryEntry {
@@ -481,76 +491,199 @@ pub struct UsageStats {
     pub dictionary_fixes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SettingsFile {
     pub schema_version: u32,
-    #[serde(default = "default_true")]
     pub streaming: bool,
-    #[serde(default = "default_true")]
     pub local_history: bool,
-    #[serde(default = "default_true")]
     pub screen_context: bool,
-    #[serde(default = "default_microphone_priority")]
     pub microphone_priority: Vec<String>,
-    #[serde(default = "default_true")]
     pub instant_mic: bool,
-    #[serde(default = "default_shortcut_mode")]
+    pub sound_feedback: bool,
     pub shortcut_mode: String,
+    pub privacy_choice_made: bool,
+    pub history_retention_days: i64,
     /// Bundle IDs of competing dictation apps the owner told the native app not
     /// to ask about again. Owned by the Swift bar; kept here so a rewrite of
     /// the file by the CLI does not drop it.
-    #[serde(default)]
     pub competitor_quit_muted: Vec<String>,
     /// Put `profile/user.md` and `profile/vocab.md` in the correction prompt.
-    #[serde(default = "default_profile_prefix")]
     pub profile_prefix: bool,
     /// Watch the field after insertion and propose terms the user corrected.
-    #[serde(default = "default_true")]
     pub edit_learning: bool,
+    /// Style preferences the user approved, by app category
+    /// (`{"chat": ["lowercase_start"]}`).
+    pub style_preferences: BTreeMap<String, Vec<String>>,
+    /// Apps (bundle ids) and sites (hosts) whose screen, text fields and
+    /// edits Phonon never reads. Signal and Discord by default.
+    pub screen_context_denylist: Vec<String>,
+    /// Send the text around the cursor to the local correction model.
+    pub textbox_context: bool,
+    /// Notice calls and offer to record meeting notes (mic + call audio).
+    pub meeting_capture: bool,
+    /// Start recording a detected call without asking.
+    pub meeting_auto_start: bool,
+    /// Ask GitHub once a day whether a newer release is out (SPEC "Update check").
+    pub check_for_updates: bool,
+    /// The last version whose update alert was shown.
+    pub update_announced: String,
+    /// Live text: show the corrected text so far above the bar while the key is held
+    /// (each background refine replaces it). On by default since 1.0; needs streaming refine.
+    /// The engine reads it at every `stream_start`, so a change applies to the next dictation.
+    pub live_text: bool,
+    /// How live text streams in: "fade" (new words fade in, the uncorrected tail is
+    /// dimmed) or "blur" (the tail is blurred and sharpens once corrected). Display only:
+    /// the bar reads it; the engine keeps it on a rewrite.
+    pub live_text_style: String,
+    /// Settings > Advanced > Writing style: follow the app ("app", default) or one mode
+    /// everywhere ("minimal", "casual", "formal").
+    pub writing_style: String,
     /// Refine while the speaker talks (SPEC "Streaming refine"). Absent: on for
     /// Macs with 16 GB of memory or more, off below (it keeps the GPU busy about
     /// 28% of dictation time on an M4 Max and is unmeasured on 8 GB machines).
     /// `PHONON_STREAM_REFINE=0` or `=1` overrides both for one engine run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_refine: Option<bool>,
-    /// Live text: show the corrected text so far above the bar while the key is held
-    /// (each background refine replaces it). On by default since 1.0; needs streaming refine.
-    /// The engine reads it at every `stream_start`, so a change applies to the next dictation.
-    #[serde(default = "default_live_text")]
-    pub live_text: bool,
-    /// How live text streams in: "fade" (new words fade in, the uncorrected tail is
-    /// dimmed) or "blur" (the tail is blurred and sharpens once corrected). Display only:
-    /// the bar reads it; the engine keeps it on a rewrite.
-    #[serde(default = "default_live_text_style")]
-    pub live_text_style: String,
-    /// Style preferences the user approved, by app category
-    /// (`{"chat": ["lowercase_start"]}`).
-    #[serde(default)]
-    pub style_preferences: BTreeMap<String, Vec<String>>,
-    /// Keys the native app owns that this side does not model. `phonon doctor`
-    /// rewrites the file through this struct; before this field it dropped
-    /// them (the sound cue, the first-run privacy answer, the retention days).
+    /// What the clipboard holds after a paste: "dictation" (default) or "restore".
+    pub clipboard_after_paste: String,
+    /// Show the Dock icon. Off keeps Phonon in the menu bar only.
+    pub show_in_dock: bool,
+    /// Keep the small capsule on screen between dictations.
+    pub show_idle_capsule: bool,
+    /// Forward-compatible unknown keys preserved across rewrites.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct RawSettingsFile {
+    schema_version: Option<u32>,
+    streaming: Option<bool>,
+    local_history: Option<bool>,
+    screen_context: Option<bool>,
+    microphone_priority: Option<Vec<String>>,
+    instant_mic: Option<bool>,
+    sound_feedback: Option<bool>,
+    shortcut_mode: Option<String>,
+    privacy_choice_made: Option<bool>,
+    history_retention_days: Option<i64>,
+    competitor_quit_muted: Option<Vec<String>>,
+    profile_prefix: Option<bool>,
+    edit_learning: Option<bool>,
+    style_preferences: Option<BTreeMap<String, Vec<String>>>,
+    screen_context_denylist: Option<Vec<String>>,
+    textbox_context: Option<bool>,
+    meeting_capture: Option<bool>,
+    meeting_auto_start: Option<bool>,
+    check_for_updates: Option<bool>,
+    update_announced: Option<String>,
+    live_text: Option<bool>,
+    #[serde(default)]
+    live_text_style: Option<serde_json::Value>,
+    #[serde(default)]
+    writing_style: Option<serde_json::Value>,
+    #[serde(default)]
+    stream_refine: Option<serde_json::Value>,
+    #[serde(default)]
+    clipboard_after_paste: Option<serde_json::Value>,
+    show_in_dock: Option<bool>,
+    show_idle_capsule: Option<bool>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for SettingsFile {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawSettingsFile::deserialize(deserializer)?;
+        let stored_schema = raw.schema_version.unwrap_or(1);
+        // Before schema 2, local_history and screen_context defaulted to on, and
+        // existing installs had already made their privacy choice in Settings.
+        let legacy_default = stored_schema < 2;
+        Ok(Self {
+            schema_version: stored_schema,
+            streaming: raw.streaming.unwrap_or(true),
+            local_history: raw.local_history.unwrap_or(legacy_default),
+            screen_context: raw.screen_context.unwrap_or(legacy_default),
+            microphone_priority: raw
+                .microphone_priority
+                .unwrap_or_else(default_microphone_priority),
+            instant_mic: raw.instant_mic.unwrap_or(true),
+            sound_feedback: raw.sound_feedback.unwrap_or(false),
+            shortcut_mode: raw.shortcut_mode.unwrap_or_else(default_shortcut_mode),
+            privacy_choice_made: raw.privacy_choice_made.unwrap_or(legacy_default),
+            history_retention_days: raw.history_retention_days.unwrap_or(0),
+            competitor_quit_muted: raw.competitor_quit_muted.unwrap_or_default(),
+            profile_prefix: raw.profile_prefix.unwrap_or_else(default_profile_prefix),
+            edit_learning: raw.edit_learning.unwrap_or(true),
+            style_preferences: raw.style_preferences.unwrap_or_default(),
+            screen_context_denylist: raw
+                .screen_context_denylist
+                .unwrap_or_else(default_screen_context_denylist),
+            textbox_context: raw.textbox_context.unwrap_or(false),
+            meeting_capture: raw.meeting_capture.unwrap_or(false),
+            meeting_auto_start: raw.meeting_auto_start.unwrap_or(false),
+            check_for_updates: raw.check_for_updates.unwrap_or(true),
+            update_announced: raw.update_announced.unwrap_or_default(),
+            live_text: raw.live_text.unwrap_or_else(default_live_text),
+            live_text_style: normalize_live_text_style(
+                raw.live_text_style
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str),
+            ),
+            writing_style: normalize_writing_style(
+                raw.writing_style
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str),
+            ),
+            stream_refine: raw
+                .stream_refine
+                .as_ref()
+                .and_then(serde_json::Value::as_bool),
+            clipboard_after_paste: normalize_clipboard_after_paste(
+                raw.clipboard_after_paste
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str),
+            ),
+            show_in_dock: raw.show_in_dock.unwrap_or(true),
+            show_idle_capsule: raw.show_idle_capsule.unwrap_or(true),
+            extra: raw.extra,
+        })
+    }
 }
 
 impl Default for SettingsFile {
     fn default() -> Self {
         Self {
-            schema_version: DATA_SCHEMA_VERSION,
+            schema_version: SETTINGS_SCHEMA_VERSION,
             streaming: true,
-            local_history: true,
-            screen_context: true,
+            local_history: false,
+            screen_context: false,
             microphone_priority: default_microphone_priority(),
             instant_mic: true,
+            sound_feedback: false,
             shortcut_mode: default_shortcut_mode(),
+            privacy_choice_made: false,
+            history_retention_days: 0,
             competitor_quit_muted: Vec::new(),
             profile_prefix: default_profile_prefix(),
             edit_learning: true,
-            stream_refine: None,
+            style_preferences: BTreeMap::new(),
+            screen_context_denylist: default_screen_context_denylist(),
+            textbox_context: false,
+            meeting_capture: false,
+            meeting_auto_start: false,
+            check_for_updates: true,
+            update_announced: String::new(),
             live_text: default_live_text(),
             live_text_style: default_live_text_style(),
-            style_preferences: BTreeMap::new(),
+            writing_style: default_writing_style(),
+            stream_refine: None,
+            clipboard_after_paste: default_clipboard_after_paste(),
+            show_in_dock: true,
+            show_idle_capsule: true,
             extra: BTreeMap::new(),
         }
     }
@@ -567,16 +700,19 @@ fn default_profile_prefix() -> bool {
     DEFAULT_PROFILE_PREFIX
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_microphone_priority() -> Vec<String> {
     Vec::new()
 }
 
 fn default_shortcut_mode() -> String {
     "fn".into()
+}
+
+fn default_screen_context_denylist() -> Vec<String> {
+    DEFAULT_SCREEN_CONTEXT_DENYLIST
+        .iter()
+        .map(|entry| (*entry).to_string())
+        .collect()
 }
 
 /// Off: the owner found the text a lot to look at mid-dictation (2026-11-05); the capsule's
@@ -587,6 +723,35 @@ fn default_live_text() -> bool {
 
 fn default_live_text_style() -> String {
     "fade".into()
+}
+
+fn normalize_live_text_style(value: Option<&str>) -> String {
+    match value {
+        Some("blur") => "blur".into(),
+        _ => default_live_text_style(),
+    }
+}
+
+fn default_writing_style() -> String {
+    "app".into()
+}
+
+fn normalize_writing_style(value: Option<&str>) -> String {
+    match value {
+        Some(mode @ ("minimal" | "casual" | "formal")) => mode.into(),
+        _ => default_writing_style(),
+    }
+}
+
+fn default_clipboard_after_paste() -> String {
+    "dictation".into()
+}
+
+fn normalize_clipboard_after_paste(value: Option<&str>) -> String {
+    match value {
+        Some("restore") => "restore".into(),
+        _ => default_clipboard_after_paste(),
+    }
 }
 
 impl SettingsFile {
@@ -618,13 +783,97 @@ impl SettingsFile {
                 .with_context(|| format!("parse {}", path.display()))?;
             // The native app writes schema 2, where an absent privacy key
             // means "off"; stamping 1 over it would turn absent keys back on.
-            settings.schema_version = settings.schema_version.max(DATA_SCHEMA_VERSION);
+            settings.schema_version = settings.schema_version.max(SETTINGS_SCHEMA_VERSION);
             write_json_atomic(&path, &settings)?;
             return Ok(settings);
         }
         let settings = Self::default();
         write_json_atomic(&path, &settings)?;
         Ok(settings)
+    }
+}
+
+/// One macro: say the trigger as a whole dictation and Phonon types the
+/// expansion instead (`macros.json` in the app support directory).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PhononMacro {
+    pub trigger: String,
+    pub expansion: String,
+}
+
+impl PhononMacro {
+    pub fn normalized_id(&self) -> String {
+        MacroFile::normalize_trigger(&self.trigger)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MacroFile {
+    #[serde(default = "default_macro_schema_version")]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub macros: Vec<PhononMacro>,
+}
+
+fn default_macro_schema_version() -> u32 {
+    DATA_SCHEMA_VERSION
+}
+
+impl Default for MacroFile {
+    fn default() -> Self {
+        Self {
+            schema_version: DATA_SCHEMA_VERSION,
+            macros: Vec::new(),
+        }
+    }
+}
+
+impl MacroFile {
+    pub fn load() -> Result<Self> {
+        Self::load_from(&macros_path()?)
+    }
+
+    pub fn load_from(path: &Path) -> Result<Self> {
+        if !path.is_file() {
+            return Ok(Self::default());
+        }
+        let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<()> {
+        let normalized = Self {
+            schema_version: self.schema_version.max(DATA_SCHEMA_VERSION),
+            macros: self.macros.clone(),
+        };
+        write_json_atomic(path, &normalized)
+    }
+
+    /// A trigger and a dictation match when they agree ignoring case, runs of
+    /// whitespace, and punctuation/symbols at either end ("My email." -> "my email").
+    pub fn normalize_trigger(text: &str) -> String {
+        let collapsed = text
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        collapsed
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_string()
+    }
+
+    /// Expand `text` if the whole dictation matches a macro's trigger; otherwise
+    /// return `text` unchanged.
+    pub fn expand<'a>(&'a self, text: &'a str) -> &'a str {
+        let key = Self::normalize_trigger(text);
+        if key.is_empty() {
+            return text;
+        }
+        self.macros
+            .iter()
+            .find(|m| Self::normalize_trigger(&m.trigger) == key && !m.expansion.is_empty())
+            .map(|m| m.expansion.as_str())
+            .unwrap_or(text)
     }
 }
 
@@ -642,6 +891,10 @@ pub fn dictionary_path() -> Result<PathBuf> {
 
 pub fn settings_path() -> Result<PathBuf> {
     Ok(app_support_dir()?.join("settings.json"))
+}
+
+pub fn macros_path() -> Result<PathBuf> {
+    Ok(app_support_dir()?.join("macros.json"))
 }
 
 pub fn corpus_dir() -> Result<PathBuf> {
@@ -788,15 +1041,36 @@ pub fn load_recording_by_id(id: &str) -> Result<RecordingMetadata> {
     load_recording(&path)
 }
 
+impl RecordingMetadata {
+    /// The best available transcript for display and word-count statistics,
+    /// matching `NativeHistoryItem.displayText` in the macOS app.
+    pub fn display_transcript(&self) -> &str {
+        if let Some(intended) = self.intended_transcript.as_deref() {
+            if !intended.is_empty() {
+                return intended;
+            }
+        }
+        if !self.final_transcript.is_empty() {
+            return &self.final_transcript;
+        }
+        &self.raw_transcript
+    }
+}
+
 pub fn usage_stats() -> Result<UsageStats> {
+    Ok(usage_stats_from_recordings(list_recordings()?))
+}
+
+pub fn usage_stats_from_recordings(
+    recordings: impl IntoIterator<Item = RecordingMetadata>,
+) -> UsageStats {
     let mut stats = UsageStats::default();
-    for recording in list_recordings()? {
+    for recording in recordings {
+        if recording.speech_detected == Some(false) {
+            continue;
+        }
         stats.recordings += 1;
-        let text = if recording.final_transcript.is_empty() {
-            &recording.raw_transcript
-        } else {
-            &recording.final_transcript
-        };
+        let text = recording.display_transcript();
         stats.words += text.split_whitespace().count() as u64;
         stats.speaking_ms += recording.audio_duration_ms.unwrap_or(0);
         stats.dictionary_fixes += recording
@@ -805,7 +1079,7 @@ pub fn usage_stats() -> Result<UsageStats> {
             .map(|correction| correction.count)
             .sum::<u64>();
     }
-    Ok(stats)
+    stats
 }
 
 pub fn set_intended_transcript(id: &str, intended: &str) -> Result<RecordingMetadata> {
@@ -1237,6 +1511,116 @@ fn now_unix_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod schema_parity_tests {
+    use super::{
+        usage_stats_from_recordings, AppliedCorrection, MacroFile, PhononMacro, RecordingMetadata,
+        SettingsFile, DEFAULT_SCREEN_CONTEXT_DENYLIST, SETTINGS_SCHEMA_VERSION,
+    };
+
+    #[test]
+    fn settings_schema_v1_migrates_privacy_defaults_while_v2_defaults_opt_in() {
+        let fresh = SettingsFile::default();
+        assert_eq!(fresh.schema_version, SETTINGS_SCHEMA_VERSION);
+        assert!(!fresh.local_history);
+        assert!(!fresh.screen_context);
+        assert!(!fresh.privacy_choice_made);
+        assert_eq!(
+            fresh.screen_context_denylist,
+            DEFAULT_SCREEN_CONTEXT_DENYLIST
+        );
+
+        let v1_absent: SettingsFile = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
+        assert!(v1_absent.local_history);
+        assert!(v1_absent.screen_context);
+        assert!(v1_absent.privacy_choice_made);
+
+        let v2_absent: SettingsFile = serde_json::from_str(r#"{"schema_version":2}"#).unwrap();
+        assert!(!v2_absent.local_history);
+        assert!(!v2_absent.screen_context);
+        assert!(!v2_absent.privacy_choice_made);
+    }
+
+    #[test]
+    fn settings_normalizes_enum_fields_and_models_all_shared_keys() {
+        let settings: SettingsFile = serde_json::from_str(
+            r#"{
+                "schema_version": 2,
+                "live_text_style": "unknown_style",
+                "writing_style": "invalid_mode",
+                "clipboard_after_paste": "both",
+                "sound_feedback": true,
+                "textbox_context": true,
+                "meeting_capture": true,
+                "meeting_auto_start": false,
+                "check_for_updates": false,
+                "update_announced": "1.2.3",
+                "show_in_dock": false,
+                "show_idle_capsule": false,
+                "screen_context_denylist": []
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.live_text_style, "fade");
+        assert_eq!(settings.writing_style, "app");
+        assert_eq!(settings.clipboard_after_paste, "dictation");
+        assert!(settings.sound_feedback);
+        assert!(settings.textbox_context);
+        assert!(settings.meeting_capture);
+        assert!(!settings.meeting_auto_start);
+        assert!(!settings.check_for_updates);
+        assert_eq!(settings.update_announced, "1.2.3");
+        assert!(!settings.show_in_dock);
+        assert!(!settings.show_idle_capsule);
+        assert!(settings.screen_context_denylist.is_empty());
+        assert!(
+            settings.extra.is_empty(),
+            "all shared keys should be modeled as typed fields: {:?}",
+            settings.extra
+        );
+    }
+
+    #[test]
+    fn usage_stats_skip_no_speech_and_prefer_intended_transcript() {
+        let mut silent = RecordingMetadata::new("silent".into(), "bar", "audio.wav".into());
+        silent.speech_detected = Some(false);
+        silent.raw_transcript = "ignored words".into();
+        silent.audio_duration_ms = Some(5_000);
+
+        let mut edited = RecordingMetadata::new("edited".into(), "bar", "audio.wav".into());
+        edited.speech_detected = Some(true);
+        edited.raw_transcript = "one two".into();
+        edited.final_transcript = "one two three".into();
+        edited.intended_transcript = Some("one two three four five".into());
+        edited.audio_duration_ms = Some(2_000);
+        edited.dictionary_corrections = vec![AppliedCorrection {
+            from: "one".into(),
+            to: "One".into(),
+            count: 2,
+        }];
+
+        let stats = usage_stats_from_recordings(vec![silent, edited]);
+        assert_eq!(stats.recordings, 1);
+        assert_eq!(stats.words, 5);
+        assert_eq!(stats.speaking_ms, 2_000);
+        assert_eq!(stats.dictionary_fixes, 2);
+    }
+
+    #[test]
+    fn macro_file_normalizes_triggers_and_expands_matching_dictations() {
+        let macros = MacroFile {
+            schema_version: 1,
+            macros: vec![PhononMacro {
+                trigger: "My email".into(),
+                expansion: "user@example.com".into(),
+            }],
+        };
+        assert_eq!(MacroFile::normalize_trigger("  My   email! "), "my email");
+        assert_eq!(macros.expand("  my email. "), "user@example.com");
+        assert_eq!(macros.expand("send to my email"), "send to my email");
+    }
 }
 
 #[cfg(test)]

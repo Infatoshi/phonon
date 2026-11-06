@@ -550,11 +550,7 @@ pub fn list_corpus(search: Option<&str>, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&recordings)?);
     } else {
         for recording in recordings {
-            let transcript = if recording.final_transcript.is_empty() {
-                &recording.raw_transcript
-            } else {
-                &recording.final_transcript
-            };
+            let transcript = recording.display_transcript();
             println!(
                 "{}  {}  {}",
                 recording.id,

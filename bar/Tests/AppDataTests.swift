@@ -330,4 +330,58 @@ final class AppDataTests: XCTestCase {
             String(decoding: encoded, as: UTF8.self).contains("\"show_idle_capsule\":false"))
         XCTAssertFalse(try JSONDecoder().decode(NativeSettings.self, from: encoded).showIdleCapsule)
     }
+
+    func testProfilePrefixDefaultsOffAndRoundTrips() throws {
+        let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
+        XCTAssertFalse(empty.profilePrefix)
+        var settings = NativeSettings()
+        settings.profilePrefix = true
+        let encoded = try JSONEncoder().encode(settings)
+        XCTAssertTrue(
+            String(decoding: encoded, as: UTF8.self).contains("\"profile_prefix\":true"))
+        XCTAssertTrue(try JSONDecoder().decode(NativeSettings.self, from: encoded).profilePrefix)
+    }
+
+    func testDictionaryNormalizesSelfReplacementAndCaseInsensitiveSpokenForms() throws {
+        let entry = NativeDictionaryEntry(
+            phrase: "CUDA",
+            replacement: "  CUDA  ",
+            spokenForms: ["coo dah", "COO DAH", "cuda"]
+        )
+        XCTAssertNil(entry.replacement)
+        XCTAssertEqual(entry.spokenForms.count, 2)
+
+        let first = NativeDictionaryEntry(phrase: "alpha", replacement: "Alpha")
+        let second = NativeDictionaryEntry(phrase: "alpha", replacement: "Beta")
+        let sorted = [second, first].sorted(by: NativeDictionaryEntry.sortComparator)
+        XCTAssertEqual(sorted.map { $0.replacement ?? "" }, ["Alpha", "Beta"])
+    }
+
+    func testRecordingMetadataPreservesCorrectionPairsAndTextboxContext() throws {
+        let json = """
+            {
+              "schema_version": 1,
+              "id": "rec-1",
+              "created_at_unix_ms": 1234,
+              "recorded_at": "2026-11-06T00:00:00Z",
+              "source": "bar",
+              "audio_file": "audio.wav",
+              "raw_transcript": "coo blast",
+              "final_transcript": "cuBLAS",
+              "dictionary_corrections": [{"from": "coo blast", "to": "cuBLAS", "count": 2}],
+              "screen_context_terms": ["cuBLAS"],
+              "textbox_context": {"before_text": "use ", "selected_text": "", "after_text": " here"}
+            }
+            """
+        let decoded = try JSONDecoder().decode(
+            NativeRecordingMetadata.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.schemaVersion, 1)
+        XCTAssertEqual(decoded.recordedAt, "2026-11-06T00:00:00Z")
+        XCTAssertEqual(
+            decoded.dictionaryCorrections,
+            [NativeAppliedCorrection(from: "coo blast", to: "cuBLAS", count: 2)])
+        XCTAssertEqual(
+            decoded.textboxContext,
+            NativeTextboxContext(beforeText: "use ", selectedText: "", afterText: " here"))
+    }
 }
