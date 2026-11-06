@@ -19,6 +19,17 @@ struct MacroFile: Codable, Equatable {
         case schemaVersion = "schema_version"
         case macros
     }
+
+    init(schemaVersion: Int = 1, macros: [PhononMacro] = []) {
+        self.schemaVersion = schemaVersion
+        self.macros = macros
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        macros = try values.decodeIfPresent([PhononMacro].self, forKey: .macros) ?? []
+    }
 }
 
 enum MacroBook {

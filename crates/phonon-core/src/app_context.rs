@@ -530,12 +530,9 @@ impl StylePreferenceCache {
                 self.loads += 1;
                 self.styles = settings.style_preferences;
                 self.live_text = settings.live_text;
-                self.writing_mode = settings
-                    .extra
-                    .get("writing_style")
-                    .and_then(Value::as_str)
-                    .filter(|mode| WRITING_STYLES.contains(mode))
-                    .map(str::to_string);
+                self.writing_mode = WRITING_STYLES
+                    .contains(&settings.writing_style.as_str())
+                    .then_some(settings.writing_style);
                 self.content = Some(hash);
                 self.failed = None;
             }
