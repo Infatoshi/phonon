@@ -6,8 +6,9 @@ import PhononCore
 /// the word-count guard of `sidecar/polish_server.py`.
 ///
 /// It runs on the CPU. Keyboard dictation always finishes while Phonon is in the background
-/// (the user is back in Messages), and iOS refuses GPU work from background apps; ggml-metal
-/// aborts the process when a command buffer fails, so a GPU model would crash mid-dictation.
+/// (the user is back in Messages), and iOS refuses GPU work from background apps: Metal
+/// command buffers fail, ggml-metal flags the error and llama_decode fails, so a GPU model
+/// would fail every keyboard dictation.
 final class LlamaRefiner: @unchecked Sendable {
     struct Stats: Codable, Sendable {
         var promptTokens = 0
@@ -28,13 +29,14 @@ final class LlamaRefiner: @unchecked Sendable {
     }
 
     enum Failure: LocalizedError {
-        case load(String), tokenize, decode(Int32), contextFull
+        case load(String), tokenize, decode(Int32), contextFull, unsupportedChip
         var errorDescription: String? {
             switch self {
             case .load(let path): return "Could not load the cleanup model at \(path)."
             case .tokenize: return "Could not tokenize the transcript."
             case .decode(let code): return "The cleanup model stopped (code \(code))."
             case .contextFull: return "The dictation is longer than the cleanup model's window."
+            case .unsupportedChip: return "Cleanup needs an A15 chip or newer (iPhone 13 or later). Dictation inserts the raw transcript on this phone."
             }
         }
     }
@@ -55,7 +57,24 @@ final class LlamaRefiner: @unchecked Sendable {
         llama_log_set({ _, _, _ in }, nil)
     }()
 
+    /// The engine is compiled for A15 and newer (dot product, fp16, int8 matmul); an older
+    /// chip would fault on the first matrix multiply, so refuse cleanly instead.
+    static var chipSupported: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return sysctlInt("hw.optional.arm.FEAT_I8MM") == 1
+        #endif
+    }
+
+    static func sysctlInt(_ name: String) -> Int {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname(name, &value, &size, nil, 0) == 0 ? Int(value) : 0
+    }
+
     init(modelURL: URL) throws {
+        guard Self.chipSupported else { throw Failure.unsupportedChip }
         _ = Self.backendOnce
         let started = Date()
         var mparams = llama_model_default_params()
@@ -64,14 +83,16 @@ final class LlamaRefiner: @unchecked Sendable {
         guard let model = llama_model_load_from_file(modelURL.path, mparams) else {
             throw Failure.load(modelURL.lastPathComponent)
         }
-        let cores = Int32(ProcessInfo.processInfo.activeProcessorCount)
-        threads = max(2, min(4, cores))
+        // Performance cores only: efficiency cores straggle and stall every token (FACT on an
+        // M-series CPU, llama-bench: decode 129 tok/s on 8 P-cores, 42 tok/s on all 12).
+        let pcores = Int32(Self.sysctlInt("hw.perflevel0.physicalcpu"))
+        threads = pcores > 0 ? pcores : 2
         var cparams = llama_context_default_params()
         cparams.n_ctx = 4096
         cparams.n_batch = 512
         cparams.n_ubatch = 512
         cparams.n_threads = threads
-        cparams.n_threads_batch = max(threads, cores)
+        cparams.n_threads_batch = threads
         cparams.no_perf = true
         guard let ctx = llama_init_from_model(model, cparams) else {
             llama_model_free(model)
@@ -131,7 +152,20 @@ final class LlamaRefiner: @unchecked Sendable {
         }
     }
 
-    /// Refines one transcript. `isCancelled` is polled between tokens.
+    /// All llama.cpp work runs here. ggml's worker threads inherit the QoS of the thread that
+    /// starts them, and a low QoS confines them to the efficiency cores.
+    private static let queue = DispatchQueue(label: "phonon.refiner", qos: .userInteractive)
+
+    func refineAsync(transcript: String, mode: WritingMode?, vocabulary: [String],
+                     isCancelled: @escaping @Sendable () -> Bool = { false }) async throws -> Output {
+        try await withCheckedThrowingContinuation { cont in
+            Self.queue.async {
+                cont.resume(with: Result { try self.refine(transcript: transcript, mode: mode, vocabulary: vocabulary, isCancelled: isCancelled) })
+            }
+        }
+    }
+
+    /// Refines one transcript on the calling thread. `isCancelled` is polled between tokens.
     func refine(transcript: String, mode: WritingMode?, vocabulary: [String],
                 isCancelled: () -> Bool = { false }) throws -> Output {
         lock.lock()

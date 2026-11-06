@@ -40,6 +40,14 @@ struct HomeView: View {
             .sheet(isPresented: $showSettings) {
                 NavigationStack { SettingsView() }.environmentObject(engine)
             }
+            .onAppear {
+                // `-PhononScreen settings|diagnostics|listening` opens that screen.
+                switch UserDefaults.standard.string(forKey: "PhononScreen") {
+                case "settings", "diagnostics": showSettings = true
+                case "listening": engine.openedFromKeyboard = true
+                default: break
+                }
+            }
         }
     }
 }
@@ -53,6 +61,9 @@ struct ModelStatusRow: View {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Models ready")
+                    if let why = engine.refinerError {
+                        Text("Cleanup off: \(why)").font(.footnote).foregroundStyle(.secondary)
+                    }
                     if let cold = engine.coldStart, cold.asrSeconds + cold.refinerSeconds > 0 {
                         Text("Loaded in \(cold.asrSeconds + cold.refinerSeconds, specifier: "%.1f") s")
                             .font(.footnote).foregroundStyle(.secondary)

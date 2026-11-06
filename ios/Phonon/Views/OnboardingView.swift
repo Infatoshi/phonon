@@ -4,9 +4,11 @@ import SwiftUI
 struct OnboardingView: View {
     @EnvironmentObject var engine: DictationEngine
     let done: () -> Void
-    @State private var step = 0
+    /// `-PhononOnboardingStep N` opens a given step (screenshots and checks).
+    @State private var step = min(4, max(0, UserDefaults.standard.integer(forKey: "PhononOnboardingStep")))
     @State private var micAllowed = false
     @State private var tryText = ""
+    @FocusState private var tryFocused: Bool
 
     private let steps = ["Phonon", "Microphone", "Models", "Keyboard", "Try it"]
 
@@ -70,6 +72,8 @@ struct OnboardingView: View {
                 .lineLimit(3...8)
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color(.secondarySystemBackground)))
+                .focused($tryFocused)
+                .onAppear { tryFocused = UserDefaults.standard.bool(forKey: "PhononFocusTryField") }
         }
     }
 

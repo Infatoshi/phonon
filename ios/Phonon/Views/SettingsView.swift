@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDelete = false
     @State private var newTerm = ""
+    @State private var showDiagnostics = UserDefaults.standard.string(forKey: "PhononScreen") == "diagnostics"
 
     var body: some View {
         Form {
@@ -69,6 +70,7 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $showDiagnostics) { DiagnosticsView() }
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         .confirmationDialog("Delete both models? Dictation stops working until you download them again.",
                             isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -99,7 +101,9 @@ struct DiagnosticsView: View {
                 Text("Runs the bundled speech samples through both models on this phone and saves a report to Files > On My iPhone > Phonon.")
             }
             Section("This device") {
-                LabeledContent("Memory available now", value: ByteCountFormatter.string(fromByteCount: Int64(os_proc_available_memory()), countStyle: .memory))
+                LabeledContent("Memory available now", value: os_proc_available_memory() > 0
+                    ? ByteCountFormatter.string(fromByteCount: Int64(os_proc_available_memory()), countStyle: .memory)
+                    : "Not reported here")
                 LabeledContent("Refiner threads", value: "\(engine.refinerThreads)")
                 LabeledContent("Background GPU for long tasks", value: backgroundGPU)
                 if let cold = engine.coldStart {
@@ -122,6 +126,10 @@ struct DiagnosticsView: View {
             }
         }
         .navigationTitle("Diagnostics")
+        .task(id: engine.modelPhase == .ready) {
+            // `-PhononSelfTest YES` runs the self-test once the models are loaded.
+            if UserDefaults.standard.bool(forKey: "PhononSelfTest"), engine.modelPhase == .ready, rows.isEmpty, !running { run() }
+        }
     }
 
     private var backgroundGPU: String {

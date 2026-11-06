@@ -42,7 +42,7 @@ final class FixturePipelineTests: XCTestCase {
             try await asr.resetDecoderState(for: .system)
             let asrSeconds = Date().timeIntervalSince(t0)
             let t1 = Date()
-            let out = try refiner.refine(transcript: raw, mode: .casual, vocabulary: ["CUDA", "vLLM", "H100"])
+            let out = try await refiner.refineAsync(transcript: raw, mode: .casual, vocabulary: ["CUDA", "vLLM", "H100"])
             let want = expected[name]!
             rows.append(Row(name: name, expected: want, raw: raw, refined: out.text, guardFired: out.guardFired,
                             rawWER: wer(raw, want), refinedWER: wer(out.text, want),

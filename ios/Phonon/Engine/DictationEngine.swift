@@ -26,6 +26,8 @@ final class DictationEngine: ObservableObject {
     @Published private(set) var notice: String?
     @Published private(set) var downloadProgress: ModelDownloader.Progress?
     @Published private(set) var coldStart: ColdStart?
+    /// Why the cleanup model is not running, when it is not.
+    @Published private(set) var refinerError: String?
     @Published var settings: SharedSettings {
         didSet { store.writeSettings(settings); scheduleWarmExpiry() }
     }
@@ -153,8 +155,14 @@ final class DictationEngine: ObservableObject {
             if refiner == nil {
                 modelPhase = .loading("Loading cleanup model")
                 let url = ModelManifest.refinerURL(root: modelsRoot)
-                refiner = try await Task.detached(priority: .userInitiated) { try LlamaRefiner(modelURL: url) }.value
-                cold.refinerSeconds = refiner?.loadSeconds ?? 0
+                do {
+                    refiner = try await Task.detached(priority: .userInitiated) { try LlamaRefiner(modelURL: url) }.value
+                    cold.refinerSeconds = refiner?.loadSeconds ?? 0
+                    refinerError = nil
+                } catch {
+                    // Speech recognition still works; say plainly that cleanup does not.
+                    refinerError = error.localizedDescription
+                }
             }
             coldStart = cold
             modelPhase = .ready
@@ -311,11 +319,9 @@ final class DictationEngine: ObservableObject {
                     publish()
                     let vocabulary = settings.vocabulary
                     let started = Date()
-                    let output = try await Task.detached(priority: .userInitiated) { [weak self] in
-                        try refiner.refine(transcript: raw, mode: mode, vocabulary: vocabulary) {
-                            self?.cancelFlag ?? false
-                        }
-                    }.value
+                    let output = try await refiner.refineAsync(transcript: raw, mode: mode, vocabulary: vocabulary) { [weak self] in
+                        self?.cancelFlag ?? false
+                    }
                     dictation.refineSeconds = Date().timeIntervalSince(started)
                     dictation.text = output.text
                     dictation.refined = true
@@ -486,7 +492,7 @@ final class DictationEngine: ObservableObject {
             try? await asr.resetDecoderState(for: .system)
             let asrSeconds = Date().timeIntervalSince(started)
             let refStart = Date()
-            let out = try? await Task.detached { try refiner.refine(transcript: raw, mode: .casual, vocabulary: []) }.value
+            let out = try? await refiner.refineAsync(transcript: raw, mode: .casual, vocabulary: [])
             rows.append(SelfTestRow(name: name, expected: expected[name] ?? "", raw: raw, refined: out?.text ?? "",
                                     audioSeconds: Double(samples.count) / 16_000, asrSeconds: asrSeconds,
                                     refineSeconds: Date().timeIntervalSince(refStart),
