@@ -46,6 +46,47 @@ public enum RefinerPrompt {
         return Array(vocab.prefix(min(80, max(30, 3 * words))))
     }
 
+    /// The terms this transcript could plausibly contain. The Mac app's dictionary engine sends
+    /// the refiner only terms relevant to the transcript; sending the whole list biases it
+    /// toward terms that were never said ("the cash is stale" became "the CUDA is stale").
+    /// A term stays when a transcript word, or 2 to 4 consecutive words joined ("V L L M"),
+    /// is within an edit distance of max(1, length / 4) of it, ignoring case and punctuation.
+    public static func relevantVocabulary(_ terms: [String], transcript: String) -> [String] {
+        let words = transcript.split(whereSeparator: { $0.isWhitespace }).map { norm(String($0)) }.filter { !$0.isEmpty }
+        var spans = Set<String>()
+        for i in words.indices {
+            var joined = ""
+            for j in i..<min(words.count, i + 4) {
+                joined += words[j]
+                spans.insert(joined)
+            }
+        }
+        return terms.filter { term in
+            let t = norm(term)
+            guard !t.isEmpty else { return false }
+            let limit = max(1, t.count / 4)
+            return spans.contains { abs($0.count - t.count) <= limit && editDistance($0, t, limit: limit) <= limit }
+        }
+    }
+
+    static func editDistance(_ a: String, _ b: String, limit: Int) -> Int {
+        let x = Array(a), y = Array(b)
+        var row = Array(0...y.count)
+        for i in 1...max(1, x.count) where !x.isEmpty {
+            var prev = row[0]
+            row[0] = i
+            var best = row[0]
+            for j in stride(from: 1, through: y.count, by: 1) {
+                let cur = row[j]
+                row[j] = min(row[j] + 1, row[j - 1] + 1, prev + (x[i - 1] == y[j - 1] ? 0 : 1))
+                prev = cur
+                best = min(best, row[j])
+            }
+            if best > limit { return best }
+        }
+        return x.isEmpty ? y.count : row[y.count]
+    }
+
     public static func tokenBudget(inputTokens: Int) -> Int {
         max(8, min(outputTokenCeiling, Int(guardTokMult * Double(inputTokens)) + guardTokAdd))
     }

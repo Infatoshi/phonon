@@ -171,7 +171,7 @@ final class LlamaRefiner: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         var stats = Stats()
-        let terms = RefinerPrompt.capVocabulary(vocabulary, transcript: transcript)
+        let terms = RefinerPrompt.capVocabulary(RefinerPrompt.relevantVocabulary(vocabulary, transcript: transcript), transcript: transcript)
         let system = RefinerPrompt.system(vocabulary: terms, modeLine: mode?.line ?? "")
         let prompt = RefinerPrompt.render(system: system, user: transcript)
         let tokens = tokenize(prompt, parseSpecial: true)

@@ -59,6 +59,15 @@ final class RefinerPromptTests: XCTestCase {
         XCTAssertEqual(rendered, "<|startoftext|><|im_start|>system\nSYS LINE 1\nSYS LINE 2<|im_end|>\n<|im_start|>user\nhello world<|im_end|>\n<|im_start|>assistant\n<think></think>")
     }
 
+    /// Regression: the whole vocabulary made the refiner write "CUDA" for "cash" (fixture 03).
+    func testOnlyTermsNearTheTranscriptReachTheRefiner() {
+        let vocab = ["CUDA", "vLLM", "H100"]
+        XCTAssertEqual(RefinerPrompt.relevantVocabulary(vocab, transcript: "Um, so I think, uh, the build is broken because the cash is stale"), [])
+        XCTAssertEqual(RefinerPrompt.relevantVocabulary(vocab, transcript: "Can you run the CUDA kernel benchmark with VLLM on the H100 tonight"), vocab)
+        XCTAssertEqual(RefinerPrompt.relevantVocabulary(vocab, transcript: "run it on v l l m please"), ["vLLM"])
+        XCTAssertEqual(RefinerPrompt.relevantVocabulary(["Kubernetes"], transcript: "deploy to kubernetis"), ["Kubernetes"])
+    }
+
     func testVocabularyCap() {
         let terms = (0..<200).map { "T\($0)" } + ["T1", " ", "T2"]
         XCTAssertEqual(RefinerPrompt.capVocabulary(terms, transcript: "one two").count, 30)
