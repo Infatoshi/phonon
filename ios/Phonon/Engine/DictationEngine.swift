@@ -146,7 +146,8 @@ final class DictationEngine: ObservableObject {
             if asr == nil {
                 modelPhase = .loading("Loading speech recognition")
                 let started = Date()
-                let models = try await AsrModels.load(from: ModelManifest.asrDirectory(root: modelsRoot), version: .v2)
+                let dir = ModelManifest.asrDirectory(root: modelsRoot)
+                let models = try await Task.detached(priority: .userInitiated) { try LocalAsrModels.load(from: dir) }.value
                 let manager = AsrManager(config: .default)
                 try await manager.initialize(models: models)
                 asr = manager

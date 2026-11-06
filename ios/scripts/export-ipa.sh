@@ -16,6 +16,7 @@ if [ -n "${ASC_KEY_PATH:-}" ]; then
 fi
 cd "$here"
 "$here/scripts/vendor.sh"
+"$here/scripts/check-offline-asr.sh"
 command -v xcodegen >/dev/null || { echo "Install xcodegen: brew install xcodegen"; exit 1; }
 xcodegen generate --quiet
 mkdir -p "$out"

@@ -4,15 +4,17 @@
 #    The device slice targets A15 and newer (-mcpu=apple-a15: dot product, fp16, int8 matmul).
 #    clang's iOS default is the generic ARMv8.0 baseline, which leaves the refiner on the
 #    slowest kernels; the app checks the chip at runtime before loading the refiner.
-#  - FluidAudio v0.9.1, built in Swift 5 language mode: its Swift 6 mode does not compile
+#  - FluidAudio v0.9.1 (commit 915a392), built in Swift 5 language mode: its Swift 6 mode does not compile
 #    with Xcode 26.6 (data-race errors in StreamingAsrManager, which Phonon does not use).
+# Both are pinned by full commit SHA and checked on every run. Neither has remote Swift package
+# dependencies (FluidAudio's Package.swift lists none), so these two SHAs are the whole lock.
 # Needs Xcode and cmake (brew install cmake). Takes a few minutes the first time.
 set -eu
 here="$(cd "$(dirname "$0")/.." && pwd)"
 vendor="$here/Vendor"
 mkdir -p "$vendor"
 LLAMA_COMMIT=39febd2adb947b70da35e95f9351b3bf58ad170a
-FLUID_TAG=v0.9.1
+FLUID_COMMIT=915a392a3b214205fcf4860cc3608bde35891d03 # v0.9.1
 if [ ! -f "$vendor/llama.xcframework/.phonon-a15" ]; then
   rm -rf "$vendor/llama.xcframework"
   src="$vendor/src/llama.cpp"
@@ -43,7 +45,17 @@ PY
   touch "$vendor/llama.xcframework/.phonon-a15"
 fi
 if [ ! -d "$vendor/FluidAudio" ]; then
-  git clone -q --depth 1 --branch "$FLUID_TAG" https://github.com/FluidInference/FluidAudio "$vendor/FluidAudio"
+  git init -q "$vendor/FluidAudio"
+  git -C "$vendor/FluidAudio" remote add origin https://github.com/FluidInference/FluidAudio
+  git -C "$vendor/FluidAudio" fetch -q --depth 1 origin "$FLUID_COMMIT"
+  git -C "$vendor/FluidAudio" checkout -q FETCH_HEAD
   printf '\npackage.swiftLanguageModes = [.v5]\n' >> "$vendor/FluidAudio/Package.swift"
 fi
+pinned() { # dir, sha: the checkout must be exactly the pinned commit
+  [ ! -d "$1" ] && return 0
+  at="$(git -C "$1" rev-parse HEAD)"
+  [ "$at" = "$2" ] || { echo "$1 is at $at, pinned $2. Delete it and rerun."; exit 1; }
+}
+pinned "$vendor/FluidAudio" "$FLUID_COMMIT"
+pinned "$vendor/src/llama.cpp" "$LLAMA_COMMIT"
 echo "Vendor ready: $(ls "$vendor")"

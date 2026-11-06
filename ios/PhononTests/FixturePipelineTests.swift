@@ -28,7 +28,7 @@ final class FixturePipelineTests: XCTestCase {
         let fixtures = Bundle(for: DictationEngine.self).url(forResource: "Fixtures", withExtension: nil)!
         let expected = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixtures.appendingPathComponent("expected.json")))
 
-        let asrModels = try await AsrModels.load(from: ModelManifest.asrDirectory(root: models), version: .v2)
+        let asrModels = try LocalAsrModels.load(from: ModelManifest.asrDirectory(root: models))
         let asr = AsrManager(config: .default)
         try await asr.initialize(models: asrModels)
         let refiner = try LlamaRefiner(modelURL: ModelManifest.refinerURL(root: models))
