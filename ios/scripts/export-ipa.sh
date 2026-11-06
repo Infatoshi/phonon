@@ -15,14 +15,14 @@ if [ -n "${ASC_KEY_PATH:-}" ]; then
   auth="$auth -authenticationKeyPath $ASC_KEY_PATH -authenticationKeyID $ASC_KEY_ID -authenticationKeyIssuerID $ASC_ISSUER_ID"
 fi
 cd "$here"
-# The .ipa is tied to one commit: a clean tree, and the commit in Info.plist (PhononCommit,
-# shown in Settings > Diagnostics > Build).
-if [ -n "$(git status --porcelain -- .)" ]; then echo "Commit or stash the changes in ios/ first."; exit 1; fi
+command -v xcodegen >/dev/null || { echo "Install xcodegen: brew install xcodegen"; exit 1; }
+xcodegen generate --quiet
+# The .ipa is tied to one commit: a clean tree after generating (so generated plists match the
+# commit too), and the commit in Info.plist (PhononCommit, Settings > Diagnostics > Build).
+if [ -n "$(git status --porcelain -- .)" ]; then echo "Commit or stash the changes in ios/ first:"; git status --short -- .; exit 1; fi
 commit="$(git rev-parse HEAD)"
 "$here/scripts/vendor.sh"
 "$here/scripts/check-offline-asr.sh"
-command -v xcodegen >/dev/null || { echo "Install xcodegen: brew install xcodegen"; exit 1; }
-xcodegen generate --quiet
 mkdir -p "$out"
 log="$out/export.log"
 # shellcheck disable=SC2086

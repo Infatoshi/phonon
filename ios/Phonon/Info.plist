@@ -37,6 +37,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Phonon listens only while you dictate. Speech is turned into text on this iPhone and never leaves it.</string>
+	<key>PhononCommit</key>
+	<string>$(PHONON_COMMIT)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
