@@ -13,6 +13,13 @@ The signed DMG bundles the arm64 `uv` executable so a clean Mac can create the
 local Python environment used by the sidecars. Model weights and Python
 packages are still downloaded into the user's normal caches on first launch.
 
+## Parakeet TDT 0.6B v3 (optional, macOS)
+
+- Source: <https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3>
+- Upstream: <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>
+- License: CC-BY-4.0
+- Revision: `ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`
+
 ## Parakeet TDT 0.6B v2
 
 - Source: <https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2>

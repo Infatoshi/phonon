@@ -79,3 +79,27 @@ def test_matches_the_reference_builder_on_the_real_vocabulary():
     flat = asr_terms.flat_trie(v, terms)
     assert len(flat) == 4103 and layout(flat)[2]
     assert hashlib.md5(flat.tobytes()).hexdigest() == "379ed5a8d3163d1f50db7199bf77ce76"
+
+
+def test_multilingual_trie_layout():
+    v = toy_vocabulary() + [f"<extra{i}>" for i in range(8192 - 1024)]
+    flat = asr_terms.flat_trie(v, ["ab", "Cd"])
+    nodes, edges = int(flat[0]), int(flat[1])
+    assert len(flat) == 16 + 4 * nodes + 3 * edges + 8193 + 2 * 8200
+    root = flat[16 + 4 * nodes + 3 * edges:][:8193]
+    assert root[v.index("▁ab")] & 0x80000000
+
+
+def test_v3_vocabulary_matches_sentencepiece_examples():
+    snapshot = os.path.expanduser(
+        "~/.cache/huggingface/hub/models--mlx-community--parakeet-tdt-0.6b-v3/"
+        "snapshots/ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15/config.json"
+    )
+    if not os.path.isfile(snapshot):
+        pytest.skip("Parakeet v3 snapshot not downloaded")
+    with open(snapshot, encoding="utf-8") as f:
+        vocabulary = json.load(f)["joint"]["vocabulary"]
+    encode, _ = asr_terms.bpe_encoder(vocabulary)
+    assert encode("проект") == [607, 7889, 3987]
+    assert encode("Москва") == [3796, 3698, 392]
+    assert encode("Slack") == [343, 403, 725]

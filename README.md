@@ -24,6 +24,21 @@ in Settings. Tagged releases
 also include the DMG for direct installation. To build from source instead, use
 `brew install --formula infatoshi/tap/phonon`.
 
+### Experimental multilingual speech recognition (macOS)
+
+Parakeet v3 supports Russian and 24 other languages, including English. To try it,
+quit Phonon and launch it from a terminal with:
+
+```bash
+PHONON_ASR_MODEL=v3 phonon
+```
+
+The first launch downloads approximately 2.5 GB of model weights. The setting
+applies to that launch; omit it to use the English v2 model. Both models run
+locally. The correction model was trained primarily on English: check its
+output in other languages. Multilingual accuracy and latency need further
+measurement, including mixed-language and long dictations.
+
 ## The recipe
 
 - **Hear:** Parakeet TDT 0.6B v2 transcribes on your Mac, on Phonon's own Metal kernels.

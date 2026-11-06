@@ -7,8 +7,8 @@ no tokenizer package; it matches sentencepiece token for token on every dictiona
 
 Flat layout (uint32 words): header [nodes, edges, s_start, s_cont, budget (float bits), blank_start, 0 x 10]; nodes
 {edge offset, edge count, terminal, canonical index (~0: none)}; edges {token, child, boostable} sorted by token
-within a node; root[1025] (child of the root on that first piece | 1 << 31 if boostable, ~0: none); word_start[1032];
-boundary[1032].
+within a node; root[vocab + 1] (child of the root on that first piece | 1 << 31 if boostable, ~0: none); word_start[vocab + 8];
+boundary[vocab + 8].
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def flat_trie(vocabulary, terms):
             (len(edges), len(ch), int(terminal[i]), canon[i] if canon[i] >= 0 else NONE)
         )
         edges += [(t, c, int(bnode[c])) for t, c in ch]
-    root = np.full(1025, NONE, dtype=np.uint32)
+    root = np.full(len(vocabulary) + 1, NONE, dtype=np.uint32)
     for t, c in children[0].items():
         root[t] = c | (0x80000000 if bnode[c] else 0)
     word_start = np.array(
@@ -93,15 +93,15 @@ def flat_trie(vocabulary, terms):
     )
     boundary = np.array(
         [
-            p.startswith("▁") or not any(c.isalnum() for c in p) or p.startswith("'")
+            p.startswith(("▁", "'")) or not any(c.isalnum() for c in p)
             for p in vocabulary
         ]
         + [True] * 8,
         dtype=np.uint32,
     )
-    if len(word_start) != 1032:
+    if len(vocabulary) not in (1024, 8192):
         raise ValueError(
-            f"vocabulary of {len(vocabulary)} pieces; the decode expects 1024"
+            f"vocabulary of {len(vocabulary)} pieces; the decode expects 1024 or 8192"
         )
     head = np.zeros(16, dtype=np.uint32)
     head[0], head[1] = len(children), len(edges)

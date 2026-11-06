@@ -35,7 +35,17 @@ impl Waker {
 /// change what shipped users run.
 pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
+pub const ASR_V3_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+pub const ASR_V3_MODEL_REVISION: &str = "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15";
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
+
+/// Opt in to multilingual recognition while keeping the existing English default.
+fn asr_model(selection: Option<&str>) -> (&'static str, &'static str) {
+    match selection {
+        Some("v3") => (ASR_V3_MODEL_ID, ASR_V3_MODEL_REVISION),
+        _ => (ASR_MODEL_ID, ASR_MODEL_REVISION),
+    }
+}
 
 /// Pinned interpreter for both sidecars. Without this, uv falls back to whatever
 /// `python3` it finds, which on a Mac with no developer tooling is the system
@@ -164,6 +174,8 @@ impl AsrSidecar {
         }
         let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
         let started = Instant::now();
+        let selection = std::env::var("PHONON_ASR_MODEL").ok();
+        let (model, revision) = asr_model(selection.as_deref());
         let mut command = Command::new(&uv);
         command
             .args([
@@ -175,7 +187,7 @@ impl AsrSidecar {
                 "python",
             ])
             .arg(&script)
-            .args(["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION])
+            .args(["--model", model, "--revision", revision])
             .env(
                 "PHONON_STREAM_REFINE",
                 if stream_refine { "1" } else { "0" },
@@ -372,8 +384,15 @@ impl Drop for AsrSidecar {
 
 #[cfg(test)]
 mod tests {
-    use super::Waker;
+    use super::{asr_model, Waker, ASR_MODEL_ID, ASR_V3_MODEL_ID};
     use std::sync::mpsc;
+
+    #[test]
+    fn model_selection_preserves_v2_default_and_opts_into_v3() {
+        assert_eq!(asr_model(None).0, ASR_MODEL_ID);
+        assert_eq!(asr_model(Some("v3")).0, ASR_V3_MODEL_ID);
+        assert_eq!(asr_model(Some("unknown")).0, ASR_MODEL_ID);
+    }
 
     #[test]
     fn waker_nudges_with_an_empty_line_once_set() {

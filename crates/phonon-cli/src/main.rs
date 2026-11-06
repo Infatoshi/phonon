@@ -549,7 +549,11 @@ fn run_bar(rebuild: bool) -> Result<()> {
         if rebuild {
             bail!("the installed app cannot rebuild itself; reinstall Phonon instead");
         }
-        let status = Command::new("open")
+        let mut open = Command::new("open");
+        if std::env::var("PHONON_ASR_MODEL").as_deref() == Ok("v3") {
+            open.args(["--env", "PHONON_ASR_MODEL=v3"]);
+        }
+        let status = open
             .arg(&app)
             .status()
             .with_context(|| format!("open {}", app.display()))?;

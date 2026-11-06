@@ -1165,9 +1165,9 @@ fn asr_smoke_passed(text: &str) -> bool {
         && words
             .iter()
             .any(|word| word == "voice" || word == "fluidvoice" || word == "boys")
-        && words
-            .iter()
-            .any(|word| word == "fluid" || word == "flamid" || word == "fluidvoice")
+        && words.iter().any(|word| {
+            word == "fluid" || word == "flamid" || word == "float" || word == "fluidvoice"
+        })
 }
 
 /// The two terms the dictionary demo needs, independent of what the user has
@@ -1696,6 +1696,7 @@ mod tests {
     fn startup_smoke_validation_rejects_empty_or_collapsed_results() {
         assert!(asr_smoke_passed("Hello, Fluid Voice."));
         assert!(asr_smoke_passed("Hello Flamid Voice."));
+        assert!(asr_smoke_passed("Hello float voice."));
         assert!(!asr_smoke_passed("Hello."));
         assert!(llm_audio_smoke_passed(
             "Hello Flamid Voice.",
