@@ -101,6 +101,7 @@ struct DiagnosticsView: View {
                 Text("Runs the bundled speech samples through both models on this phone and saves a report to Files > On My iPhone > Phonon.")
             }
             Section("This device") {
+                LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "PhononCommit") as? String ?? "unknown")
                 LabeledContent("Memory available now", value: os_proc_available_memory() > 0
                     ? ByteCountFormatter.string(fromByteCount: Int64(os_proc_available_memory()), countStyle: .memory)
                     : "Not reported here")

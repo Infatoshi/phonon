@@ -149,7 +149,9 @@ final class KeyboardModel: ObservableObject {
         if state.ackSeq >= seq { waiting = false }
         status = statusText(state)
 
-        if let latest = state.latest, let since = awaitingSince, latest.createdAt >= since,
+        // A recovered dictation (finished after a kill) is never typed into the field the
+        // person is in now; it waits under Insert last.
+        if let latest = state.latest, !latest.recovered, let since = awaitingSince, latest.createdAt >= since,
            store.settings.autoInsert, !store.keyboardState.inserted.contains(latest.id) {
             controller?.insert(latest.text)
             var k = store.keyboardState
@@ -174,7 +176,7 @@ final class KeyboardModel: ObservableObject {
     }
 
     func micTapped() {
-        guard fullAccess, let store else {
+        guard fullAccess, store != nil else {
             controller?.openApp(URL(string: "phonon://setup")!)
             return
         }
@@ -182,7 +184,13 @@ final class KeyboardModel: ObservableObject {
             send(.stop)
             return
         }
-        guard phase != .transcribing, phase != .refining else { return }
+        // Also while the state says Phonon is busy: a busy Phonon queues the start, and a
+        // closed one that left a busy state behind does not answer, so the tap opens it.
+        startDictation()
+    }
+
+    private func startDictation() {
+        guard let store else { return }
         awaitingSince = Date()
         send(.start)
         // If the app does not acknowledge quickly it is not running with an open mic:

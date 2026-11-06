@@ -27,6 +27,21 @@ final class Recorder: @unchecked Sendable {
     private var captured: [Float] = []
     private(set) var isRunning = false
     private var observers: [NSObjectProtocol] = []
+#if DEBUG
+    /// UI tests only: `-PhononFixtureAudio <name>`, or a file Documents/phonon-fixture-audio
+    /// holding the name (read by a launch the keyboard starts), plays Fixtures/<name>.wav as
+    /// the microphone, in real time, then silence. The session plays silence instead of
+    /// recording, which keeps the app running in the background as the open microphone does.
+    static let fixtureSamples: [Float]? = {
+        let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("phonon-fixture-audio")
+        let named = (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let name = UserDefaults.standard.string(forKey: "PhononFixtureAudio") ?? named,
+              let url = Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "Fixtures") else { return nil }
+        return try? AudioFile16k.read(url)
+    }()
+    private var fixtureFeed: DispatchSourceTimer?
+#endif
 
     init() {
         let nc = NotificationCenter.default
@@ -59,6 +74,17 @@ final class Recorder: @unchecked Sendable {
     /// Opens the session and starts the engine without keeping audio.
     func start() throws {
         if isRunning { return }
+#if DEBUG
+        if Self.fixtureSamples != nil {
+            try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+            _ = engine.mainMixerNode
+            engine.prepare()
+            try engine.start()
+            isRunning = true
+            return
+        }
+#endif
         try Self.configureSession()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -76,7 +102,12 @@ final class Recorder: @unchecked Sendable {
     }
 
     func stop() {
+#if DEBUG
+        queue.sync { fixtureFeed?.cancel(); fixtureFeed = nil }
+        if Self.fixtureSamples == nil { engine.inputNode.removeTap(onBus: 0) }
+#else
         engine.inputNode.removeTap(onBus: 0)
+#endif
         engine.stop()
         isRunning = false
         queue.sync { capturing = false }
@@ -89,11 +120,40 @@ final class Recorder: @unchecked Sendable {
             captured.reserveCapacity(16_000 * 60)
             capturing = true
         }
+#if DEBUG
+        if let fixture = Self.fixtureSamples { feed(fixture) }
+#endif
     }
+
+#if DEBUG
+    /// 100 ms of the fixture every 100 ms, then silence, as the microphone would deliver it.
+    private func feed(_ fixture: [Float]) {
+        queue.sync {
+            fixtureFeed?.cancel()
+            var offset = 0
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now(), repeating: .milliseconds(100))
+            timer.setEventHandler { [weak self] in
+                let chunk = 1_600
+                let end = min(fixture.count, offset + chunk)
+                var samples = offset < end ? Array(fixture[offset..<end]) : []
+                samples += [Float](repeating: 0, count: chunk - samples.count)
+                offset += chunk
+                self?.deliver(samples)
+            }
+            fixtureFeed = timer
+            timer.resume()
+        }
+    }
+#endif
 
     /// Ends the capture and returns everything recorded since `beginCapture`.
     func endCapture() -> [Float] {
         queue.sync {
+#if DEBUG
+            fixtureFeed?.cancel()
+            fixtureFeed = nil
+#endif
             capturing = false
             let out = captured
             captured = []
@@ -121,15 +181,18 @@ final class Recorder: @unchecked Sendable {
         }
         guard error == nil, let data = out.floatChannelData else { return }
         let samples = Array(UnsafeBufferPointer(start: data[0], count: Int(out.frameLength)))
-        queue.async { [weak self] in
-            guard let self, self.capturing else { return }
-            self.captured.append(contentsOf: samples)
-            self.onSamples?(samples)
-            var sum: Float = 0
-            for s in samples { sum += s * s }
-            let rms = samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot()
-            self.onLevel?(min(1, rms * 12))
-        }
+        queue.async { [weak self] in self?.deliver(samples) }
+    }
+
+    /// On `queue`: keep the samples if a capture is running and report them and the level.
+    private func deliver(_ samples: [Float]) {
+        guard capturing else { return }
+        captured.append(contentsOf: samples)
+        onSamples?(samples)
+        var sum: Float = 0
+        for s in samples { sum += s * s }
+        let rms = samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot()
+        onLevel?(min(1, rms * 12))
     }
 
     private func handleInterruption(_ note: Notification) {

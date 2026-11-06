@@ -15,6 +15,10 @@ if [ -n "${ASC_KEY_PATH:-}" ]; then
   auth="$auth -authenticationKeyPath $ASC_KEY_PATH -authenticationKeyID $ASC_KEY_ID -authenticationKeyIssuerID $ASC_ISSUER_ID"
 fi
 cd "$here"
+# The .ipa is tied to one commit: a clean tree, and the commit in Info.plist (PhononCommit,
+# shown in Settings > Diagnostics > Build).
+if [ -n "$(git status --porcelain -- .)" ]; then echo "Commit or stash the changes in ios/ first."; exit 1; fi
+commit="$(git rev-parse HEAD)"
 "$here/scripts/vendor.sh"
 "$here/scripts/check-offline-asr.sh"
 command -v xcodegen >/dev/null || { echo "Install xcodegen: brew install xcodegen"; exit 1; }
@@ -23,7 +27,7 @@ mkdir -p "$out"
 log="$out/export.log"
 # shellcheck disable=SC2086
 if ! xcodebuild -project Phonon.xcodeproj -scheme Phonon -configuration Release \
-  -destination "generic/platform=iOS" -archivePath "$out/Phonon.xcarchive" $auth archive > "$log" 2>&1; then
+  -destination "generic/platform=iOS" -archivePath "$out/Phonon.xcarchive" PHONON_COMMIT="$commit" $auth archive > "$log" 2>&1; then
   echo "Archive failed. Signing and provisioning errors:"; grep -E 'error:' "$log" | sort -u; exit 1
 fi
 cat > "$out/export.plist" <<PLIST
@@ -42,6 +46,9 @@ if ! xcodebuild -exportArchive -archivePath "$out/Phonon.xcarchive" -exportPath 
   echo "Export failed:"; grep -E 'error:' "$log" | sort -u; exit 1
 fi
 cp "$out/export/Phonon.ipa" "$out/Phonon.ipa"
+stamped="$(/usr/libexec/PlistBuddy -c 'Print :PhononCommit' "$out/Phonon.xcarchive/Products/Applications/Phonon.app/Info.plist")"
+[ "$stamped" = "$commit" ] || { echo "Info.plist says $stamped, HEAD is $commit"; exit 1; }
+echo "Commit: $commit"
 shasum -a 256 "$out/Phonon.ipa"
 echo "Devices in the profile:"
 security cms -D -i "$out/Phonon.xcarchive/Products/Applications/Phonon.app/embedded.mobileprovision" 2>/dev/null \

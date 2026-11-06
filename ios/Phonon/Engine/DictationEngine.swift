@@ -197,7 +197,12 @@ final class DictationEngine: ObservableObject {
 
     func startSession() async -> Bool {
         if recorder.isRunning { return true }
-        guard await requestMicrophone() else {
+#if DEBUG
+        let allowed = Recorder.fixtureSamples != nil ? true : await requestMicrophone()
+#else
+        let allowed = await requestMicrophone()
+#endif
+        guard allowed else {
             notice = "Microphone access is off. Turn it on in Settings > Phonon."
             phase = .failed
             publish()
@@ -243,10 +248,24 @@ final class DictationEngine: ObservableObject {
     private var starting = false
 
     func startRecording(mode: WritingMode? = nil) async {
-        guard !starting, phase != .recording, phase != .transcribing, phase != .refining else { return }
+        if phase == .transcribing || phase == .refining {
+            // Still processing (this dictation or one a kill left behind): start right after.
+            log.info("start queued behind \(String(describing: self.phase), privacy: .public)")
+            pendingStart = mode ?? settings.writingMode ?? .casual
+            publish()
+            return
+        }
+        guard !starting, phase != .recording, phase != .transcribing, phase != .refining else {
+            log.info("start ignored in phase \(String(describing: self.phase), privacy: .public)")
+            return
+        }
         starting = true
         defer { starting = false }
-        guard await startSession() else { return }
+        guard await startSession() else {
+            log.error("start failed: \(self.notice ?? "no session", privacy: .public)")
+            return
+        }
+        log.info("recording")
         let id = UUID().uuidString
         currentID = id
         currentMode = mode ?? settings.writingMode ?? .casual
@@ -269,6 +288,7 @@ final class DictationEngine: ObservableObject {
     }
 
     func cancelRecording() {
+        pendingStart = nil
         guard let id = currentID else { return }
         if phase == .recording {
             _ = recorder.endCapture()
@@ -356,6 +376,11 @@ final class DictationEngine: ObservableObject {
         phase = recorder.isRunning ? .ready : .off
         scheduleWarmExpiry()
         publish()
+        if !recovering, let mode = pendingStart {
+            pendingStart = nil
+            Task { await startRecording(mode: mode) }
+        }
+        if recoveryWaiting { Task { await recoverUnfinished() } }
     }
 
     private func deliver(_ d: Dictation) {
@@ -366,8 +391,32 @@ final class DictationEngine: ObservableObject {
     }
 
     /// Finishes dictations a crash or a kill interrupted, from the raw transcript or the audio.
+    /// Set when recovery had to wait for a dictation in progress; run when that one is done.
+    private var recoveryWaiting = false
+    private var recovering = false
+    /// A keyboard start that arrived while a dictation was processing; it runs right after.
+    private var pendingStart: WritingMode?
+
+    /// Finishes dictations a kill or crash left behind. Never while a dictation is recording or
+    /// being processed: a cold launch from the keyboard records first, recovers after.
     private func recoverUnfinished() async {
+        guard phase != .recording, phase != .transcribing, phase != .refining, !starting else {
+            recoveryWaiting = true
+            return
+        }
+        recoveryWaiting = false
+        recovering = true
+        defer { recovering = false }
         for entry in journal.unfinished() where entry.id != currentID {
+            if phase == .recording || starting { recoveryWaiting = true; return }
+            if let mode = pendingStart {
+                pendingStart = nil
+                recoveryWaiting = true
+                recovering = false
+                await startRecording(mode: mode)
+                return
+            }
+            log.info("recovering \(entry.id, privacy: .public)")
             let samples = RecordingJournal.readSamples(journal.audioURL(entry.id))
             if entry.raw == nil && samples.count < 8_000 {
                 journal.finish(entry.id, stage: .discarded)
@@ -375,6 +424,11 @@ final class DictationEngine: ObservableObject {
             }
             process(id: entry.id, samples: samples, mode: entry.mode, recovered: true, raw: entry.raw)
             await processing?.value
+        }
+        recovering = false
+        if let mode = pendingStart {
+            pendingStart = nil
+            await startRecording(mode: mode)
         }
     }
 
@@ -388,6 +442,7 @@ final class DictationEngine: ObservableObject {
     func handleKeyboardCommand() {
         guard let command = store.command else { return }
         guard command.seq > max(ackSeq, store.appState.ackSeq) else { return }
+        log.info("keyboard command \(command.seq) \(String(describing: command.kind), privacy: .public)")
         // A command older than a minute is a stale tap from a previous run; acknowledge only.
         let fresh = Date().timeIntervalSince(command.sentAt) < 60
         ackSeq = command.seq

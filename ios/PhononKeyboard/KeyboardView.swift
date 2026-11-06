@@ -59,7 +59,8 @@ struct KeyboardView: View {
                         }
                     }
                     .buttonStyle(PressScale())
-                    .disabled(busy)
+                    // Never disabled: a busy state can be left behind by a closed Phonon, and the
+                    // tap is what finds that out (KeyboardModel.startIfAppGone).
                     .accessibilityLabel(recording ? "Stop dictation" : "Start dictation")
                     Color.clear.frame(width: 48, height: 48)
                 }

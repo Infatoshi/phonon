@@ -13,6 +13,7 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
+    PHONON_COMMIT: dev
 packages:
   FluidAudio:
     path: Vendor/FluidAudio
@@ -46,6 +47,7 @@ targets:
         CFBundleDisplayName: Phonon
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        PhononCommit: $(PHONON_COMMIT)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         NSMicrophoneUsageDescription: Phonon listens only while you dictate. Speech is turned into text on this iPhone and never leaves it.
@@ -98,7 +100,25 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.abhaymettu.phonon.tests
         GENERATE_INFOPLIST_FILE: YES
+  PhononUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [PhononUITests]
+    dependencies:
+      - target: Phonon
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.abhaymettu.phonon.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Phonon
 schemes:
+  PhononKeyboardFlow:
+    build:
+      targets:
+        Phonon: all
+        PhononUITests: [test]
+    test:
+      targets: [PhononUITests]
   Phonon:
     build:
       targets:
