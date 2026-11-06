@@ -6,7 +6,6 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    DEVELOPMENT_TEAM: YOUR_TEAM_ID
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
@@ -129,5 +128,5 @@ schemes:
     test:
       targets: [PhononTests]
       environmentVariables:
-        PHONON_MODELS_DIR: $(SRCROOT)/../../work/models
-        PHONON_CHECKS_DIR: $(SRCROOT)/../../checks
+        PHONON_MODELS_DIR: $(SRCROOT)/build/models
+        PHONON_CHECKS_DIR: $(SRCROOT)/build/checks

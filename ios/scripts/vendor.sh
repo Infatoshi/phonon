@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fetches and builds the two native dependencies into ios/Vendor (not committed):
+# Fetches and builds the two native dependencies into Vendor/ (not committed):
 #  - llama.cpp at the Mac app's pinned commit, built as llama.xcframework (iOS + simulator).
 #    The device slice targets A15 and newer (-mcpu=apple-a15: dot product, fp16, int8 matmul).
 #    clang's iOS default is the generic ARMv8.0 baseline, which leaves the refiner on the

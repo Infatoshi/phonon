@@ -11,7 +11,7 @@ udid="$1"; fixture="${5:-01-plain}"
 mkdir -p "$3" "$(dirname "$4")"
 models="$(cd "$2" && pwd)"; out="$(cd "$3" && pwd)"; clip="$(cd "$(dirname "$4")" && pwd)/$(basename "$4")"
 here="$(cd "$(dirname "$0")/.." && pwd)"
-dd="$here/../../work/dd-ui"
+dd="$here/build/dd-ui"
 cd "$here"
 xcodegen generate --quiet
 xcrun simctl boot "$udid" 2>/dev/null || true

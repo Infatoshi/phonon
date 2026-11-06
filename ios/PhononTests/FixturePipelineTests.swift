@@ -53,6 +53,7 @@ final class FixturePipelineTests: XCTestCase {
             XCTAssertFalse(out.text.isEmpty, "\(name): refiner returned nothing")
         }
         if let dir = env["PHONON_CHECKS_DIR"] {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             let enc = JSONEncoder()
             enc.outputFormatting = [.prettyPrinted, .sortedKeys]
             try enc.encode(rows).write(to: URL(fileURLWithPath: dir).appendingPathComponent("fixture-pipeline.json"))

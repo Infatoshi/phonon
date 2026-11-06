@@ -1,13 +1,14 @@
 #!/bin/sh
-# Archives Phonon, signs it for development with team YOUR_TEAM_ID and exports build/Phonon.ipa,
+# Archives Phonon, signs it for development with the team in PHONON_TEAM and exports build/Phonon.ipa,
 # then prints its sha256. Touches no device. Xcode's automatic signing creates the App IDs, App
 # Group and profiles through the developer account signed in under Xcode > Settings > Accounts.
 # The profile covers the devices already registered with the team.
-#   scripts/export-ipa.sh
+#   PHONON_TEAM=<your team id> scripts/export-ipa.sh
 # ASC_KEY_PATH, ASC_KEY_ID and ASC_ISSUER_ID sign through an App Store Connect API key instead;
 # on 2026-11-06 that route created the certificate but Xcode's App ID step answered
 # "Authentication failed", so the signed-in account is the default.
 set -eu
+[ -n "${PHONON_TEAM:-}" ] || { echo "Set PHONON_TEAM to your Apple Developer team id (Xcode > Settings > Accounts)."; exit 1; }
 here="$(cd "$(dirname "$0")/.." && pwd)"
 out="${PHONON_OUT:-$here/build}"
 auth="-allowProvisioningUpdates"
@@ -19,7 +20,7 @@ command -v xcodegen >/dev/null || { echo "Install xcodegen: brew install xcodege
 xcodegen generate --quiet
 # The .ipa is tied to one commit: a clean tree after generating (so generated plists match the
 # commit too), and the commit in Info.plist (PhononCommit, Settings > Diagnostics > Build).
-if [ -n "$(git status --porcelain -- .)" ]; then echo "Commit or stash the changes in ios/ first:"; git status --short -- .; exit 1; fi
+if [ -n "$(git status --porcelain -- .)" ]; then echo "Commit or stash the changes first:"; git status --short -- .; exit 1; fi
 commit="$(git rev-parse HEAD)"
 "$here/scripts/vendor.sh"
 "$here/scripts/check-offline-asr.sh"
@@ -27,7 +28,7 @@ mkdir -p "$out"
 log="$out/export.log"
 # shellcheck disable=SC2086
 if ! xcodebuild -project Phonon.xcodeproj -scheme Phonon -configuration Release \
-  -destination "generic/platform=iOS" -archivePath "$out/Phonon.xcarchive" PHONON_COMMIT="$commit" $auth archive > "$log" 2>&1; then
+  -destination "generic/platform=iOS" -archivePath "$out/Phonon.xcarchive" PHONON_COMMIT="$commit" DEVELOPMENT_TEAM="$PHONON_TEAM" $auth archive > "$log" 2>&1; then
   echo "Archive failed. Signing and provisioning errors:"; grep -E 'error:' "$log" | sort -u; exit 1
 fi
 cat > "$out/export.plist" <<PLIST
@@ -35,7 +36,7 @@ cat > "$out/export.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>method</key><string>debugging</string>
-<key>teamID</key><string>YOUR_TEAM_ID</string>
+<key>teamID</key><string>$PHONON_TEAM</string>
 <key>signingStyle</key><string>automatic</string>
 </dict></plist>
 PLIST

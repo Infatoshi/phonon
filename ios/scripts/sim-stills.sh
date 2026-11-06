@@ -2,11 +2,12 @@
 # Native stills from a headless simulator at actual pixels, light and dark.
 #   scripts/sim-stills.sh <sim-udid> <models-dir> <out-dir>
 # The models are cloned (APFS, no copy) into the app's container exactly where a download
-# would put them, so "Models ready" is the real load path, not a mock.
+# would put them, so "Models ready" is the real load path, not a mock. Build first:
+#   xcodebuild -project Phonon.xcodeproj -scheme Phonon -destination "id=<sim-udid>" -derivedDataPath build/dd build
 set -eu
 udid="$1"; models="$2"; out="$3"
 here="$(cd "$(dirname "$0")/.." && pwd)"
-app="$(find "$here/../../work/dd/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name Phonon.app | head -1)"
+app="$(find "$here/build/dd/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name Phonon.app | head -1)"
 mkdir -p "$out"
 xcrun simctl boot "$udid" 2>/dev/null || true
 xcrun simctl bootstatus "$udid" -b >/dev/null

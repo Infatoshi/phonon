@@ -43,14 +43,15 @@ unlocked, with Developer Mode on (Settings > Privacy & Security > Developer Mode
 
 ```sh
 cd ios
-scripts/export-ipa.sh                                   # archive, sign, build/Phonon.ipa, sha256
+PHONON_TEAM=<team id> scripts/export-ipa.sh             # archive, sign, build/Phonon.ipa, sha256
 PHONON_INSTALL_APPROVED=yes scripts/install-on-iphone.sh <device-id>   # only when you want it on a phone
 ```
 
 `export-ipa.sh` builds the native dependencies into `Vendor/` (llama.cpp and FluidAudio, a few
 minutes the first time), signs a development build with automatic signing through the developer
 account in Xcode > Settings > Accounts, and prints the .ipa's sha256. It touches no device. The
-profile covers the iPhones registered with the team.
+profile covers the iPhones registered with the team. Building for your own team means changing the
+bundle id prefix and App Group from `com.abhaymettu` first; [AGENTS.md](AGENTS.md) has the one-liner.
 `install-on-iphone.sh` only installs an existing .ipa, and refuses to run without
 `PHONON_INSTALL_APPROVED=yes`. Without the script: Xcode > Window > Devices and Simulators,
 select the phone, drag the .ipa onto Installed Apps (or Apple Configurator, drag it onto the
@@ -88,8 +89,9 @@ xcodebuild -project Phonon.xcodeproj -scheme Phonon \
 ```
 
 The fixture test reads the models from `PHONON_MODELS_DIR` (set in the scheme to
-`../../work/models`; point it at any folder made with
-`hf download <repo> --revision <sha> --local-dir`).
+`build/models`; put the two folders there with
+`hf download <repo> --revision <sha> --local-dir`). [AGENTS.md](AGENTS.md) lists every test
+and the simulator's Core ML cache trap.
 
 | Path | What it is |
 | --- | --- |
