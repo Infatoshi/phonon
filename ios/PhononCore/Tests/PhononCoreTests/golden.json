@@ -1,0 +1,162 @@
+{
+ "systemPrompt": "Rewrite the raw dictation transcript into the exact text the speaker intended. Fix recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop content.",
+ "systems": [
+  {
+   "vocab": [],
+   "mode": "",
+   "out": "Rewrite the raw dictation transcript into the exact text the speaker intended. Fix recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop content."
+  },
+  {
+   "vocab": [
+    "CUDA",
+    "vLLM"
+   ],
+   "mode": "",
+   "out": "Rewrite the raw dictation transcript into the exact text the speaker intended. Fix recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop content.\nVocabulary the speaker may use: CUDA, vLLM"
+  },
+  {
+   "vocab": [],
+   "mode": "Writing mode: casual (a chat message).",
+   "out": "Rewrite the raw dictation transcript into the exact text the speaker intended. Fix recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop content.\nWriting mode: casual (a chat message)."
+  },
+  {
+   "vocab": [
+    "MTP"
+   ],
+   "mode": "Writing mode: formal (an email or document).",
+   "out": "Rewrite the raw dictation transcript into the exact text the speaker intended. Fix recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop content.\nWriting mode: formal (an email or document).\nVocabulary the speaker may use: MTP"
+  }
+ ],
+ "budgets": [
+  {
+   "tokens": 0,
+   "out": 32
+  },
+  {
+   "tokens": 1,
+   "out": 33
+  },
+  {
+   "tokens": 10,
+   "out": 47
+  },
+  {
+   "tokens": 100,
+   "out": 182
+  },
+  {
+   "tokens": 1500,
+   "out": 2048
+  },
+  {
+   "tokens": 5000,
+   "out": 2048
+  }
+ ],
+ "guards": [
+  {
+   "spoken": "one two three four five six seven eight nine ten",
+   "output": "one",
+   "out": [
+    "one two three four five six seven eight nine ten",
+    true
+   ]
+  },
+  {
+   "spoken": "short one",
+   "output": "a b c d e f g h i j k l m n",
+   "out": [
+    "short one",
+    true
+   ]
+  },
+  {
+   "spoken": "one two three four five six seven eight nine ten",
+   "output": "one two three four five six seven eight nine ten eleven",
+   "out": [
+    "one two three four five six seven eight nine ten eleven",
+    false
+   ]
+  },
+  {
+   "spoken": "",
+   "output": "anything",
+   "out": [
+    "anything",
+    false
+   ]
+  },
+  {
+   "spoken": "a b c d e f g h",
+   "output": "a",
+   "out": [
+    "a",
+    false
+   ]
+  }
+ ],
+ "cleans": [
+  {
+   "in": "<think></think>Hello there.",
+   "out": "Hello there."
+  },
+  {
+   "in": "  <|turn|>Text<channel|> ",
+   "out": "Text"
+  },
+  {
+   "in": "Plain",
+   "out": "Plain"
+  }
+ ],
+ "restores": [
+  {
+   "spoken": "we use native mtp for the decode",
+   "output": "We use native MTK for the decode.",
+   "vocab": [
+    "MTP",
+    "MLP"
+   ],
+   "out": "We use native MTP for the decode."
+  },
+  {
+   "spoken": "the mlp layer is slow",
+   "output": "The MMLU-Pro layer is slow.",
+   "vocab": [
+    "MLP"
+   ],
+   "out": "The MLP layer is slow."
+  },
+  {
+   "spoken": "ship it to the gpu tonight",
+   "output": "Ship it to the GPU tonight.",
+   "vocab": [
+    "GPU"
+   ],
+   "out": "Ship it to the GPU tonight."
+  },
+  {
+   "spoken": "run vllm on the box",
+   "output": "Run VLLM-2 on the box.",
+   "vocab": [
+    "vLLM"
+   ],
+   "out": "Run vLLM on the box."
+  },
+  {
+   "spoken": "hello there friend",
+   "output": "Hello there, friend.",
+   "vocab": [],
+   "out": "Hello there, friend."
+  },
+  {
+   "spoken": "check the cuda kernel and the mtp head",
+   "output": "Check the CUDA kernel and the MTX-9 head.",
+   "vocab": [
+    "CUDA",
+    "MTP"
+   ],
+   "out": "Check the CUDA kernel and the MTP head."
+  }
+ ]
+}

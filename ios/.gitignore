@@ -1,0 +1,6 @@
+Vendor/
+*.xcodeproj/
+build/
+DerivedData/
+PhononCore/.build/
+.swiftpm/

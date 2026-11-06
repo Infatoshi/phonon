@@ -1,0 +1,6 @@
+{
+ "01-plain": "Hey, are we still on for dinner tomorrow at seven?",
+ "02-restart": "Let's ship it on Monday instead.",
+ "03-filler": "So I think the build is broken because the cache is stale.",
+ "04-technical": "Can you run the CUDA kernel benchmark with vLLM on the H100 tonight?"
+}
