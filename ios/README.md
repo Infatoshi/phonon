@@ -43,12 +43,15 @@ unlocked, with Developer Mode on (Settings > Privacy & Security > Developer Mode
 
 ```sh
 cd ios
-scripts/install-on-iphone.sh
+scripts/export-ipa.sh                                   # archive, sign, build/Phonon.ipa, sha256
+PHONON_INSTALL_APPROVED=yes scripts/install-on-iphone.sh <device-id>   # only when you want it on a phone
 ```
 
-It builds the native dependencies into `Vendor/` (llama.cpp and FluidAudio, a few minutes the
-first time), signs a development build with automatic signing through the team's App Store
-Connect API key, writes `build/Phonon.ipa`, prints its sha256 and installs it.
+`export-ipa.sh` builds the native dependencies into `Vendor/` (llama.cpp and FluidAudio, a few
+minutes the first time), signs a development build with automatic signing through the team's
+App Store Connect API key and prints the .ipa's sha256. It touches no device.
+`install-on-iphone.sh` only installs an existing .ipa, and refuses to run without
+`PHONON_INSTALL_APPROVED=yes`.
 
 Then on the phone:
 
