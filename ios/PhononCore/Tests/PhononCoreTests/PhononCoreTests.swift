@@ -90,7 +90,10 @@ final class StubProtocol: URLProtocol {
             Self.failAfter = nil
             payload = payload.prefix(fail)
             client?.urlProtocol(self, didLoad: payload)
-            client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            // Fail a moment later, as a dropped connection does, so the bytes land first.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+                self.client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+            }
             return
         }
         client?.urlProtocol(self, didLoad: payload)
@@ -184,7 +187,8 @@ final class SharedStoreTests: XCTestCase {
         var s = AppState()
         s.phase = .recording
         s.ackSeq = 7
-        s.latest = Dictation(id: "d1", raw: "hello world", text: "Hello world.", refined: true)
+        // Dates travel as whole milliseconds.
+        s.latest = Dictation(id: "d1", createdAt: Date(timeIntervalSince1970: 1_762_430_000), raw: "hello world", text: "Hello world.", refined: true)
         store.writeAppState(s)
         XCTAssertEqual(store.appState, s)
 
