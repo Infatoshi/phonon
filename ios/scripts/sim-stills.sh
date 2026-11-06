@@ -41,4 +41,5 @@ shot home 25 -onboarded YES
 shot settings 20 -onboarded YES -PhononScreen settings
 shot listening 20 -onboarded YES -PhononScreen listening
 shot diagnostics-selftest 140 -onboarded YES -PhononScreen diagnostics -PhononSelfTest YES
+"$here/scripts/sim-prune-cache.sh" "$udid"
 ls "$out"

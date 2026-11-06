@@ -12,5 +12,8 @@ ipa="${2:-$here/build/Phonon.ipa}"
 [ -f "$ipa" ] || { echo "No $ipa. Run scripts/export-ipa.sh first."; exit 1; }
 [ -n "$device" ] || { echo "Name the device: xcrun devicectl list devices"; exit 1; }
 shasum -a 256 "$ipa"
-xcrun devicectl device install app --device "$device" "$ipa"
+# devicectl installs "an app bundle (with a .app extension)" (its --help), not an .ipa.
+tmp="$(mktemp -d)"
+ditto -x -k "$ipa" "$tmp"
+xcrun devicectl device install app --device "$device" "$tmp/Payload/Phonon.app"
 echo "Installed. Open Phonon on the phone to download the models (1.45 GB, Wi-Fi)."

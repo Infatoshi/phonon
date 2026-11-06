@@ -63,5 +63,6 @@ TEST_RUNNER_PHONON_SHOTS_DIR="$out" TEST_RUNNER_PHONON_FIXTURE="$fixture" \
 rm -f "$data/Documents/phonon-fixture-audio"
 kill -INT "$rec"
 wait "$rec" 2>/dev/null || true
+"$here/scripts/sim-prune-cache.sh" "$udid"
 grep -E "Test Case .*(passed|failed)|error:" "$out/keyboard-flow-test.log" | head -20
 exit $status

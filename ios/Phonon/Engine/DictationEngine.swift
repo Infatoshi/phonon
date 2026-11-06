@@ -65,6 +65,8 @@ final class DictationEngine: ObservableObject {
         history = store.history
         latest = history.first
 
+        ModelCache.resetIfNewInstall()
+        DispatchQueue.global(qos: .utility).async { ModelCache.pruneAbandoned() }
         recorder.onSamples = { [journal] samples in journal.append(samples) }
         recorder.onLevel = { [weak self] value in
             Task { @MainActor in self?.updateLevel(value) }

@@ -102,6 +102,7 @@ struct DiagnosticsView: View {
             }
             Section("This device") {
                 LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "PhononCommit") as? String ?? "unknown")
+                LabeledContent("Compiled model cache", value: ByteCountFormatter.string(fromByteCount: ModelCache.bytesOnDisk(), countStyle: .file))
                 LabeledContent("Memory available now", value: os_proc_available_memory() > 0
                     ? ByteCountFormatter.string(fromByteCount: Int64(os_proc_available_memory()), countStyle: .memory)
                     : "Not reported here")

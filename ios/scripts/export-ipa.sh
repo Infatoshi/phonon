@@ -49,7 +49,9 @@ cp "$out/export/Phonon.ipa" "$out/Phonon.ipa"
 stamped="$(/usr/libexec/PlistBuddy -c 'Print :PhononCommit' "$out/Phonon.xcarchive/Products/Applications/Phonon.app/Info.plist")"
 [ "$stamped" = "$commit" ] || { echo "Info.plist says $stamped, HEAD is $commit"; exit 1; }
 echo "Commit: $commit"
-shasum -a 256 "$out/Phonon.ipa"
+# The signed .app alone, for `xcrun devicectl device install app` (it takes a .app, not an .ipa).
+(cd "$out/export" && rm -rf app && mkdir app && ditto -x -k Phonon.ipa app && ditto -c -k --keepParent app/Payload/Phonon.app "$out/Phonon-app.zip")
+shasum -a 256 "$out/Phonon.ipa" "$out/Phonon-app.zip"
 echo "Devices in the profile:"
 security cms -D -i "$out/Phonon.xcarchive/Products/Applications/Phonon.app/embedded.mobileprovision" 2>/dev/null \
   | plutil -extract ProvisionedDevices json -o - - 2>/dev/null || echo "(none listed)"
