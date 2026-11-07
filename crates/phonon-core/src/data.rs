@@ -492,7 +492,7 @@ pub struct SettingsFile {
     pub screen_context: bool,
     #[serde(default = "default_microphone_priority")]
     pub microphone_priority: Vec<String>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub instant_mic: bool,
     #[serde(default = "default_shortcut_mode")]
     pub shortcut_mode: String,
@@ -542,7 +542,7 @@ impl Default for SettingsFile {
             local_history: true,
             screen_context: true,
             microphone_priority: default_microphone_priority(),
-            instant_mic: true,
+            instant_mic: false,
             shortcut_mode: default_shortcut_mode(),
             competitor_quit_muted: Vec::new(),
             profile_prefix: default_profile_prefix(),
@@ -1443,7 +1443,7 @@ mod tests {
             r#"{"schema_version":1,"streaming":true,"local_history":true,"screen_context":true,"microphone_priority":["USB Microphone"]}"#,
         )
         .unwrap();
-        assert!(settings.instant_mic);
+        assert!(!settings.instant_mic);
         assert_eq!(settings.shortcut_mode, "fn");
         assert_eq!(settings.profile_prefix, super::DEFAULT_PROFILE_PREFIX);
         assert!(settings.competitor_quit_muted.is_empty());

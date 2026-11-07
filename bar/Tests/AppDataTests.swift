@@ -22,17 +22,17 @@ final class AppDataTests: XCTestCase {
         ).write(to: directory.appendingPathComponent("settings.json"))
 
         let store = NativeAppStore(supportDirectory: directory)
-        XCTAssertTrue(store.settings.instantMic)
+        XCTAssertFalse(store.settings.instantMic)
         XCTAssertEqual(store.settings.shortcutMode, "fn")
 
         store.updateSettings {
-            $0.instantMic = false
+            $0.instantMic = true
             $0.shortcutMode = "right_option"
         }
         let saved = try JSONDecoder().decode(
             NativeSettings.self,
             from: Data(contentsOf: directory.appendingPathComponent("settings.json")))
-        XCTAssertFalse(saved.instantMic)
+        XCTAssertTrue(saved.instantMic)
         XCTAssertEqual(saved.shortcutMode, "right_option")
         XCTAssertFalse(saved.screenContext)
     }

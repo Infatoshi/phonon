@@ -1217,8 +1217,9 @@ struct SettingsView: View {
             }
             SettingRow(
                 "Instant microphone",
-                help: "Keep the microphone ready so recording starts the moment you press the "
-                    + "shortcut."
+                help: "Keep the microphone open between dictations so recording starts the "
+                    + "moment you press the shortcut. Off by default: the microphone is "
+                    + "released as soon as each dictation ends."
             ) { toggle(\.instantMic) }
             SettingRow(
                 "Recording cues", help: "Play a short sweep when a recording opens and closes."
