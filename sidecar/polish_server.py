@@ -812,6 +812,13 @@ def main() -> None:
         emit({"ok": False, "error": f"correction runtime import failed: {error}"})
         return
 
+    # MLX caches freed GPU buffers but only reuses one for a request of nearly the
+    # same size. Dictations vary in length, so the cache rarely gets reused, and by
+    # default it is effectively unbounded: this process grew past 15 GB. The limit caps
+    # only idle buffers, not memory a request needs. 1 GB was as fast as no limit and
+    # kept the process near 2.5 GB; smaller limits trended slower on long dictations.
+    mx.set_cache_limit(1 << 30)
+
     print(f"model: {args.model}@{args.revision[:7]}", file=sys.stderr)
     try:
         # A local directory (developer model comparisons, the user's own
