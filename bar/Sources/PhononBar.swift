@@ -1973,6 +1973,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var mainWindow: NSWindow?
     private let engine = EngineClient()
     private let recorder = MicRecorder()
+    private let speakers = SpeakerMute()
     private var statusItem: NSStatusItem?
     private var streamingMenuItem: NSMenuItem?
     private var showInDockMenuItem: NSMenuItem?
@@ -2053,6 +2054,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
         state.showWhenIdle = appStore.settings.showIdleCapsule
+        speakers.recoverAfterInterruption()
         offerBackupRestoreIfNeeded()
         setupPanel()
         setupModelStartupWindow()
@@ -2859,6 +2861,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             keyDownHandledNs: DispatchTime.now().uptimeNanoseconds
         )
         isRecording = true
+        if appStore.settings.muteSpeakersWhileDictating { speakers.mute() }
         // Off the key-down path: a competitor that appeared since launch is
         // noted now and asked about after this dictation ends.
         DispatchQueue.main.async { [weak self] in self?.competitors.noteDictationStart() }
@@ -2941,6 +2944,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             e2eTrace?.recordingStartedNs = DispatchTime.now().uptimeNanoseconds
         } catch {
             isRecording = false
+            speakers.restore()
             hidePill()
             NSLog("mic: \(error.localizedDescription)")
         }
@@ -2955,6 +2959,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         e2eTrace?.keyUpHandledNs = DispatchTime.now().uptimeNanoseconds
         isRecording = false
         processing = true
+        speakers.restore()
         micSilenceCheck?.cancel()
         if case .micSilent = notPasted.current { notPasted.dismiss() }
         heldSeconds = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
@@ -3616,6 +3621,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.stopNow(reason: "app_quit")
         engine.shutdown()
         recorder.stop(writeFile: false)
+        speakers.restore()
         removeEventTap()
     }
 
