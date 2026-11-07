@@ -294,6 +294,31 @@ enum ShortcutPolicy {
     }
 }
 
+/// Tells the right Option key from the left one. The generic Option flag is set
+/// while either is held, so the device-dependent bits (IOKit `NX_DEVICERALTKEYMASK`
+/// and `NX_DEVICELALTKEYMASK`) say which one it is.
+enum RightOptionKey {
+    static let alternate: UInt64 = 0x80000
+    static let deviceLeft: UInt64 = 0x20
+    static let deviceRight: UInt64 = 0x40
+    static let otherModifiers: UInt64 = 0x20000 | 0x40000 | 0x100000  // shift, control, command
+    static let rightKeyCode = 61
+    static let leftKeyCode = 58
+
+    static func isDown(keyCode: Int, rawFlags: UInt64, wasDown: Bool) -> Bool {
+        guard rawFlags & alternate != 0, rawFlags & otherModifiers == 0 else { return false }
+        if rawFlags & (deviceLeft | deviceRight) != 0 {
+            return rawFlags & deviceRight != 0
+        }
+        // No device bits (a synthetic or remapped keyboard): the key code decides.
+        switch keyCode {
+        case rightKeyCode: return true
+        case leftKeyCode: return false
+        default: return wasDown
+        }
+    }
+}
+
 /// Tap and double-tap logic for a hold-to-talk key, fed raw key-down and
 /// key-up events with monotonic nanosecond timestamps.
 ///
@@ -3442,11 +3467,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         if type == .flagsChanged {
             let flags = event.flags
-            let anyAlt =
-                flags.contains(.maskAlternate)
-                && !flags.contains(.maskCommand)
-                && !flags.contains(.maskControl)
-                && !flags.contains(.maskShift)
+            let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            let rawFlags = flags.rawValue
             // The Globe/fn key reports through this same tap as its own flag.
             // Require it to be the only modifier, so fn-qualified keys such as
             // the arrow cluster can never open a recording.
@@ -3465,12 +3487,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                     if self.optionTapLatch.latched && !self.isRecording {
                         self.optionTapLatch.reset()
                     }
-                    if anyAlt && !self.optionDown {
+                    let rightOption = RightOptionKey.isDown(
+                        keyCode: keyCode, rawFlags: rawFlags, wasDown: self.optionDown)
+                    if rightOption && !self.optionDown {
                         self.optionDown = true
                         self.applyHoldKey(
                             self.optionTapLatch.keyDown(at: eventNs),
                             source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
-                    } else if !anyAlt && self.optionDown {
+                    } else if !rightOption && self.optionDown {
                         self.optionDown = false
                         self.applyHoldKey(
                             self.optionTapLatch.keyUp(at: eventNs),
