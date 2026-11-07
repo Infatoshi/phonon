@@ -1224,6 +1224,11 @@ struct SettingsView: View {
                 "Recording cues", help: "Play a short sweep when a recording opens and closes."
             ) { toggle(\.soundFeedback) }
             SettingRow(
+                "Mute speakers while dictating",
+                help: "Silence the Mac's speakers while you dictate and bring them back when "
+                    + "you finish."
+            ) { toggle(\.muteSpeakersWhileDictating) }
+            SettingRow(
                 "Launch at login", help: "Start Phonon in the menu bar when you log in."
             ) {
                 Toggle("Launch at login", isOn: Binding(

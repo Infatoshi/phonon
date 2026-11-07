@@ -216,6 +216,11 @@ Recording cues are off by default. Turning them on plays a short rising sweep
 when a recording opens and a falling one when it closes. Both are synthesized by
 `scripts/make-cue-sounds.py`; no audio is sampled or downloaded.
 
+Speakers are muted while you dictate and restored when you stop (Settings ›
+Mute speakers while dictating, on by default). Only what Phonon changed is put
+back: speakers you had already muted stay muted. A mute that a crash left behind
+is undone at the next launch.
+
 Phonon needs Microphone, Accessibility and Input Monitoring access, plus Screen
 Recording if screen context is on.
 

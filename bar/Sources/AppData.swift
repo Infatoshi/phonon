@@ -64,6 +64,8 @@ struct NativeSettings: Codable, Equatable {
     /// Keep the small capsule on screen between dictations. Off shows it only while
     /// dictating (and while a meeting records, so the red light stays visible).
     var showIdleCapsule: Bool
+    /// Silence the speakers while dictating and bring them back after.
+    var muteSpeakersWhileDictating: Bool
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -92,6 +94,7 @@ struct NativeSettings: Codable, Equatable {
         case clipboardAfterPaste = "clipboard_after_paste"
         case showInDock = "show_in_dock"
         case showIdleCapsule = "show_idle_capsule"
+        case muteSpeakersWhileDictating = "mute_speakers_while_dictating"
     }
 
     init(
@@ -120,7 +123,8 @@ struct NativeSettings: Codable, Equatable {
         streamRefine: Bool? = nil,
         clipboardAfterPaste: ClipboardAfterPaste = .dictation,
         showInDock: Bool = true,
-        showIdleCapsule: Bool = true
+        showIdleCapsule: Bool = true,
+        muteSpeakersWhileDictating: Bool = true
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -148,6 +152,7 @@ struct NativeSettings: Codable, Equatable {
         self.clipboardAfterPaste = clipboardAfterPaste
         self.showInDock = showInDock
         self.showIdleCapsule = showIdleCapsule
+        self.muteSpeakersWhileDictating = muteSpeakersWhileDictating
     }
 
     init(from decoder: Decoder) throws {
@@ -206,6 +211,8 @@ struct NativeSettings: Codable, Equatable {
         showInDock = try values.decodeIfPresent(Bool.self, forKey: .showInDock) ?? true
         showIdleCapsule =
             try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
+        muteSpeakersWhileDictating =
+            try values.decodeIfPresent(Bool.self, forKey: .muteSpeakersWhileDictating) ?? true
     }
 }
 
