@@ -251,8 +251,12 @@ fn samples_have_speech(samples: &[i16], sample_rate: u32) -> bool {
     const FRAME_RATE_HZ: usize = 50;
     const MIN_CONSECUTIVE_VOICED_FRAMES: usize = 4;
     const NOISE_MULTIPLIER: f64 = 3.0;
-    const ABSOLUTE_RMS_FLOOR: f64 = 180.0;
-    const MAX_VOICED_ZERO_CROSSING_RATE: f64 = 0.20;
+    // 90 (about -51 dBFS) and 0.35 let whispered speech through: at -48 dBFS the old 180 / 0.20 called 43-45% of
+    // whispered clips silence. On 468 real rejected recordings the new values flip 6 (a missed "Testing, testing,
+    // can you hear me?", "Status.", three backchannels the old gate already accepts at other times, one empty);
+    // synthetic pink noise, hum and clicks stay at 0% (robust_v0, 2026-11-05).
+    const ABSOLUTE_RMS_FLOOR: f64 = 90.0;
+    const MAX_VOICED_ZERO_CROSSING_RATE: f64 = 0.35;
 
     let frame_samples = (sample_rate as usize / FRAME_RATE_HZ).max(1);
     if samples.len() < frame_samples * MIN_CONSECUTIVE_VOICED_FRAMES {
@@ -357,6 +361,17 @@ mod tests {
         let mut samples = vec![40; sample_rate];
         for (index, sample) in samples[4_000..7_200].iter_mut().enumerate() {
             *sample = if index % 32 < 16 { 2_000 } else { -2_000 };
+        }
+        assert!(samples_have_speech(&samples, sample_rate as u32));
+    }
+
+    #[test]
+    fn speech_gate_accepts_a_quiet_whisper() {
+        // RMS 150 (under the old 180 floor), zero-crossing rate 0.25 (over the old 0.20 limit)
+        let sample_rate = 16_000;
+        let mut samples = vec![0; sample_rate];
+        for (index, sample) in samples[4_000..7_200].iter_mut().enumerate() {
+            *sample = if index % 8 < 4 { 150 } else { -150 };
         }
         assert!(samples_have_speech(&samples, sample_rate as u32));
     }
