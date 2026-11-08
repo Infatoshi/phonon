@@ -454,3 +454,25 @@ def test_mlx_cache_is_capped_before_the_model_loads():
     source = inspect.getsource(polish_server.main)
     cap = source.index("mx.set_cache_limit(POLISH_MLX_CACHE_LIMIT)")
     assert cap < source.index("resolve_model_dir(")
+
+
+def test_stopped_at_cap_tells_a_cut_from_an_end_token():
+    from sidecar.polish_server import ENGINE_CONTEXT_TOKENS, stopped_at_cap
+
+    assert not stopped_at_cap(112, 160)  # ended on its own (the end token is dropped)
+    assert stopped_at_cap(160, 160)  # used the whole output budget
+    # the native engine's context: prompt plus output reached 2 * CTX (seen live: 2317 + 1779)
+    assert stopped_at_cap(1779, 2048, 2317, ENGINE_CONTEXT_TOKENS)
+    assert not stopped_at_cap(1779, 2048, 2316, ENGINE_CONTEXT_TOKENS)
+    assert not stopped_at_cap(1779, 2048, 2317)  # MLX: no fixed context
+
+
+def test_split_point_prefers_the_sentence_end_nearest_the_middle():
+    from sidecar.polish_server import split_point
+
+    words = ["one", "two.", "three", "four", "five", "six.", "seven", "eight", "nine", "ten"]
+    assert split_point(words) == 6  # after "six." (the middle is 5; "two." is at 2)
+    assert split_point(["a", "b", "c", "d", "e", "f"]) == 3  # no sentence end: the middle
+    assert (
+        split_point(["a", "b", "c", "d."]) == 2
+    )  # the final word's period is not a split

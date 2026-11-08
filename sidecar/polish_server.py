@@ -51,6 +51,11 @@ OUTPUT_TOKEN_FLOOR = 48
 # would pass it is refined in parts (StreamSession freezes the older sentences), on either
 # backend, so the text does not depend on which one serves it.
 STREAM_CONTEXT_TOKENS = 2048
+# The native engine's hard stop: its llama.cpp path serves requests past CTX up to 2 * CTX (pe.mm).
+ENGINE_CONTEXT_TOKENS = 2 * STREAM_CONTEXT_TOKENS
+# A one-shot request that stops at a cap is refined again in halves down to this many words,
+# below which the part's spoken text is used instead.
+SPLIT_MIN_WORDS = 16
 TRANSCRIPT_PATTERN = re.compile(r"<transcript>(.*?)</transcript>", re.DOTALL)
 LEAKED_MARKER_PATTERN = re.compile(r"<\|?/?(?:channel|turn|think)\|?>?")
 
@@ -361,6 +366,25 @@ def refiner_token_budget(input_tokens: int) -> int:
     return max(
         8, min(OUTPUT_TOKEN_CEILING, int(GUARD_TOK_MULT * input_tokens) + GUARD_TOK_ADD)
     )
+
+
+def stopped_at_cap(
+    generated: int, max_tokens: int, prompt_tokens: int = 0, context: int | None = None
+) -> bool:
+    """Generation ended at the output budget or the context instead of an end token. The
+    engines drop the end token, so an answer that ended on one is shorter than either limit.
+    A capped answer lost its tail, and the 0.4x length guard misses most such cuts (a 1,829
+    word transcript came back as 1,451 words on 2026-11-08)."""
+    if generated >= max_tokens:
+        return True
+    return context is not None and prompt_tokens + generated >= context
+
+
+def split_point(words: list[str]) -> int:
+    """Where to halve a part: the sentence end nearest the middle, else the middle."""
+    mid = len(words) // 2
+    ends = [i + 1 for i in range(len(words) - 1) if words[i][-1:] in ".?!"]
+    return min(ends, key=lambda e: abs(e - mid)) if ends else mid
 
 
 def guard_output(spoken: str, output: str) -> tuple[str, bool]:
@@ -1050,10 +1074,14 @@ def main() -> None:
             transcript_payload(text), output, refiner_vocabulary(text)
         )
         generated = int(reply["tokens"])
+        capped = stopped_at_cap(
+            generated, max_tokens, int(reply["prompt_tokens"]), ENGINE_CONTEXT_TOKENS
+        )
         return {
             "ok": True,
             "outputText": output,
             "diagnostics": {
+                "stoppedAtCap": capped,
                 "latencyMilliseconds": latency_ms,
                 # the engine returns the whole output at once
                 "timeToFirstTokenMilliseconds": latency_ms,
@@ -1221,10 +1249,18 @@ def main() -> None:
         try:
             ids, info = stream.final(text)
         except EngineError as error:
-            # e.g. the session's context cap: the one-shot request continues past it
+            # e.g. the session's context cap: the one-shot path (split to fit) answers instead
             print(f"stream: {error}; one-shot refine", file=sys.stderr)
             stream_reset(lost=True)
-            return run_engine(text, mode)
+            return run(text, streamed=False, mode=mode)
+        if info.get("capped"):
+            print(
+                f"refine: a streamed part stopped at its token budget "
+                f"({len(transcript_payload(text).split())} words); one-shot refine in parts",
+                file=sys.stderr,
+            )
+            stream_reset(lost=True)
+            return run(text, streamed=False, mode=mode)
         latency_ms = (time.perf_counter() - started_at) * 1000
         prompt_tokens = len(stream.p.prompt_tokens(text))
         pieces = stream.pieces(ids)
@@ -1267,6 +1303,117 @@ def main() -> None:
     def run(text: str, streamed: bool = True, mode: tuple = (None, "")) -> dict:
         if streamed and stream is not None and stream.commits:
             return run_streamed(text, mode)
+        if refiner:
+            return run_parts(text, mode)
+        return run_one(text, mode)
+
+    # Long one-shot requests (no streamed commits: under 16 GB streaming is off by default, or a
+    # streamed release fell back). An answer that stops at a cap loses its tail, so a request
+    # whose prompt plus output budget would not fit the engine's fast context is refined in
+    # groups of whole sentences that do, and any part that still stops at a cap is refined
+    # again in halves, or left as spoken below SPLIT_MIN_WORDS. Parts are joined in order.
+    def fits_one_request(text: str, mode_line: str) -> bool:
+        prompt = encode_prompt(build_prompt(text, mode_line))
+        return len(prompt) + output_budget(text) <= STREAM_CONTEXT_TOKENS
+
+    def sentence_groups(text: str, mode_line: str) -> list[list[str]]:
+        words = transcript_payload(text).split()
+        if fits_one_request(text, mode_line):
+            return [words]
+        groups: list[list[str]] = []
+        start = 0
+        while start < len(words):
+            ends = [i + 1 for i in range(start, len(words)) if words[i][-1:] in ".?!"]
+            if not ends or ends[-1] != len(words):
+                ends.append(len(words))
+            end = 0
+            for e in ends:  # the most whole sentences that still fit
+                if not fits_one_request(
+                    with_transcript(text, words[start:e]), mode_line
+                ):
+                    break
+                end = e
+            if end == 0:  # one sentence too long for a request: cut it by words
+                end = ends[0]
+                while end - start > 1 and not fits_one_request(
+                    with_transcript(text, words[start:end]), mode_line
+                ):
+                    end = start + (end - start) // 2
+            groups.append(words[start:end])
+            start = end
+        return groups
+
+    def refine_part(text: str, mode: tuple, depth: int = 0) -> list[dict]:
+        reply = run_one(text, mode)
+        d = reply["diagnostics"]
+        if not d.get("stoppedAtCap"):
+            return [reply]
+        words = transcript_payload(text).split()
+        cap = f"{d['generatedTokenCount']} of {d['maxOutputTokenBudget']} tokens, prompt {d['promptTokenCount']}"
+        if len(words) < 2 * SPLIT_MIN_WORDS or depth >= 6:
+            print(
+                f"refine: stopped at the token cap ({cap}, {len(words)} words); "
+                "keeping this part as spoken",
+                file=sys.stderr,
+            )
+            reply["outputText"] = transcript_payload(text)
+            d["guardFired"] = True
+            return [reply]
+        print(
+            f"refine: stopped at the token cap ({cap}, {len(words)} words); "
+            "refining it again in halves",
+            file=sys.stderr,
+        )
+        k = split_point(words)
+        return refine_part(
+            with_transcript(text, words[:k]), mode, depth + 1
+        ) + refine_part(with_transcript(text, words[k:]), mode, depth + 1)
+
+    def run_parts(text: str, mode: tuple) -> dict:
+        groups = sentence_groups(text, mode[1])
+        if len(groups) > 1:
+            print(
+                f"refine: {sum(map(len, groups))} words do not fit one request; "
+                f"refining {len(groups)} sentence groups",
+                file=sys.stderr,
+            )
+        replies = [
+            r
+            for g in groups
+            for r in refine_part(
+                text if len(groups) == 1 else with_transcript(text, g), mode
+            )
+        ]
+        if len(replies) == 1:
+            return replies[0]
+        ds = [r["diagnostics"] for r in replies]
+        output = " ".join(o for o in (r["outputText"].strip() for r in replies) if o)
+        latency_ms = sum(d["latencyMilliseconds"] for d in ds)
+        generated = sum(d["generatedTokenCount"] for d in ds)
+        return {
+            "ok": True,
+            "outputText": output,
+            "diagnostics": {
+                **ds[0],
+                "latencyMilliseconds": latency_ms,
+                # the parts run one after another and the answer is sent once, whole
+                "timeToFirstTokenMilliseconds": latency_ms,
+                "tokensPerSecond": (
+                    generated / (latency_ms / 1000) if latency_ms > 0 else 0.0
+                ),
+                "generatedTokenCount": generated,
+                "inputCharacterCount": len(text),
+                "outputCharacterCount": len(output),
+                "maxOutputTokenBudget": sum(d["maxOutputTokenBudget"] for d in ds),
+                "promptTokenCount": sum(d["promptTokenCount"] for d in ds),
+                "cachedPromptTokenCount": sum(d["cachedPromptTokenCount"] for d in ds),
+                "guardFired": any(d["guardFired"] for d in ds),
+                "stoppedAtCap": any(d.get("stoppedAtCap") for d in ds),
+                "oneShotParts": len(replies),
+            },
+        }
+
+    def run_one(text: str, mode: tuple = (None, "")) -> dict:
         if engine is not None:
             return run_engine(text, mode)
         prompt = build_prompt(text, mode[1])
@@ -1311,6 +1458,8 @@ def main() -> None:
             "ok": True,
             "outputText": output,
             "diagnostics": {
+                # MLX has no fixed context; the output budget is its only cap
+                "stoppedAtCap": stopped_at_cap(generated, max_tokens),
                 "latencyMilliseconds": latency_ms,
                 "timeToFirstTokenMilliseconds": ttft_ms or 0.0,
                 "tokensPerSecond": (

@@ -322,3 +322,46 @@ def test_a_long_dictation_freezes_its_head_and_never_hits_the_context_cap(backen
     s.commit(" ".join(spoken[:10]))
     tail, _ = s.final(" ".join(spoken[:12]))
     assert s.pieces(tail) == [reference([int(w.rstrip(".")) for w in spoken[:12]])]
+
+
+class TightPrompter(LongPrompter):
+    """Output budgets one token short of the fake model's answer (its words plus nothing)."""
+
+    def budget(self, text):
+        return len(self.ids(text)) - 1
+
+
+@pytest.mark.parametrize("backend", ["local", "pe"])
+def test_final_reports_a_part_that_stopped_at_its_budget(backend):
+    pe = FakePe()
+    pe.CTX = 60
+    e = Local() if backend == "local" else PeEngine(pe, PREFIX, {EOS})
+    # a budget that fits the answer: not capped (the end token is not kept)
+    s = StreamSession(e, LongPrompter(pe.CTX))
+    s.commit(text(WORDS[:6]))
+    _, info = s.final(text(WORDS))
+    assert info["capped"] is False
+    # one token short: capped, on a fresh request and on a reused draft
+    s = StreamSession(e, TightPrompter(pe.CTX))
+    _, info = s.final(text(WORDS))
+    assert info["capped"] is True
+    s.reset()
+    s.commit(text(WORDS))
+    _, info = s.final(text(WORDS))
+    assert info.get("reused_draft") and info["capped"] is True
+
+
+def test_a_frozen_head_that_stopped_at_its_budget_marks_the_answer_capped():
+    pe = FakePe()
+    pe.CTX = 60
+    e = Local()
+    s = StreamSession(e, TightPrompter(pe.CTX))
+    s.KEEP_WORDS = 5
+    spoken = [str(20 + (i * 7) % 75) + ("." if i % 6 == 5 else "") for i in range(60)]
+    for n in range(4, len(spoken) + 1, 4):
+        s.commit(" ".join(spoken[:n]))
+    assert s.head_out and s.head_capped
+    _, info = s.final(" ".join(spoken))
+    assert info["capped"] is True
+    s.reset()
+    assert not s.head_capped

@@ -411,6 +411,8 @@ class StreamSession:
         self.waste = {"rolled_back": 0, "draft_revised": 0, "forwarded": 0}
         self.head: list[str] = []  # transcript words frozen so far
         self.head_out: list[list[int]] = []  # their outputs, one per freeze
+        # a frozen output stopped at its budget, not at an end token
+        self.head_capped = False
 
     def reset(self, prompter=None) -> None:
         if prompter is not None:
@@ -422,6 +424,7 @@ class StreamSession:
         self.waste = {"rolled_back": 0, "draft_revised": 0, "forwarded": 0}
         self.head = []
         self.head_out = []
+        self.head_capped = False
 
     def pieces(self, tail: list[int] | None) -> list[list[int]]:
         """The answer in parts: each frozen head's output, then the tail's."""
@@ -443,7 +446,7 @@ class StreamSession:
         words = self.p.words(text)
         n = len(self.head)
         if [self._norm(w) for w in words[:n]] != [self._norm(w) for w in self.head]:
-            self.head, self.head_out = [], []
+            self.head, self.head_out, self.head_capped = [], [], False
             self.draft = self.draft_prompt = self.draft_text = None
             return text
         return self.p.with_words(text, words[n:])
@@ -473,10 +476,11 @@ class StreamSession:
                 break
             words = self.p.words(tail)
             head = self.p.with_words(tail, words[:k])
+            budget = self.p.budget(head)
             # the previous draft drafts it: that draft opens with the head's answer
             out, info = self.e.speculative(
                 self.p.prompt_tokens(head),
-                self.p.budget(head),
+                budget,
                 self._proposer(head, self.draft, background=True),
                 block=512,
                 fuse=bool(self.draft),
@@ -485,6 +489,7 @@ class StreamSession:
             self.waste["forwarded"] += sum(info.get("passes", []))
             self.head += words[:k]
             self.head_out.append(out)
+            self.head_capped = self.head_capped or len(out) >= budget
             self.draft = self.draft_prompt = self.draft_text = None  # it answered more
             tail = self.p.with_words(tail, words[k:])
         return tail
@@ -549,19 +554,23 @@ class StreamSession:
         return {"passes": []}
 
     def final(self, text: str) -> tuple[list[int], dict]:
-        """The tail's output; the whole answer is pieces(out)."""
+        """The tail's output; the whole answer is pieces(out). info["capped"]: some part
+        stopped at its output budget instead of an end token (end tokens are not kept, so a
+        part that ended on one is shorter than its budget)."""
         text = self._fit(text)
         fp = self.p.prompt_tokens(text)
+        budget = self.p.budget(text)
         if self.draft is not None and fp == self.draft_prompt:
             # the last background job refined exactly this prompt (the speaker stopped before
             # the last round): its output is the answer, no forward pass needed
             info = {"passes": [], "reused_draft": True}
             info["waste"] = dict(self.waste, final_tokens=len(self.draft))
+            info["capped"] = self.head_capped or len(self.draft) >= budget
             return list(self.draft), info
         self.waste["rolled_back"] += self._rolled_back(fp)
         out, info = self.e.speculative(
             fp,
-            self.p.budget(text),
+            budget,
             self._proposer(text, self.draft),
             block=512,
             fuse=bool(self.draft),
@@ -569,4 +578,5 @@ class StreamSession:
         if self.draft:
             self.waste["draft_revised"] += _revised(self.draft, out)
         info["waste"] = dict(self.waste, final_tokens=len(out))
+        info["capped"] = self.head_capped or len(out) >= budget
         return out, info
