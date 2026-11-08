@@ -21,7 +21,7 @@ mod paths;
 use anyhow::{bail, Context, Result};
 pub use paths::{
     bundled_engine, fluid1_available, fluid1_paths, fluid_drafter_dir, fluid_helper,
-    fluid_model_dir, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
+    fluid_model_dir, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION, POLISH_RUNTIME,
     POLISH_RUNTIME_REQUIREMENT,
 };
 use paths::{polish_prompt, polish_script};
@@ -496,16 +496,9 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     let (default_model, default_revision) = config.model_and_revision();
     let model = std::env::var("PHONON_POLISH_MODEL").unwrap_or(default_model);
     let revision = std::env::var("PHONON_POLISH_REVISION").unwrap_or(default_revision);
-    let mut command = Command::new(&uv);
+    let mut command = phonon_asr::locked_run(&uv, root, POLISH_RUNTIME)?;
     command
-        .args([
-            "run",
-            "--python",
-            phonon_asr::PYTHON_REQUIREMENT,
-            "--with",
-            POLISH_RUNTIME_REQUIREMENT,
-            "python",
-        ])
+        .arg("python")
         .arg(&script)
         .args(["--model", &model, "--revision", &revision])
         .arg("--system-prompt-file")
@@ -541,7 +534,7 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     if std::env::var("PHONON_POLISH_TRANSCRIPT_ONLY").as_deref() == Ok("1") {
         command.arg("--transcript-only");
     }
-    phonon_asr::apply_offline_policy(&mut command, &uv, POLISH_RUNTIME_REQUIREMENT);
+    phonon_asr::apply_offline_policy(&mut command, &uv, root, POLISH_RUNTIME);
     Ok(Some(command))
 }
 
@@ -830,5 +823,22 @@ mod model_precedence_tests {
                 POLISH_MODEL_REVISION.to_string()
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_lock_tests {
+    use super::{POLISH_RUNTIME, POLISH_RUNTIME_REQUIREMENT};
+
+    #[test]
+    fn the_correction_runtime_is_locked_to_the_pinned_requirement() {
+        let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let project = phonon_asr::runtime_project(&checkout, POLISH_RUNTIME);
+        let pyproject = std::fs::read_to_string(project.join("pyproject.toml")).unwrap();
+        assert!(pyproject.contains(&format!("\"{POLISH_RUNTIME_REQUIREMENT}\"")));
+        let lock = std::fs::read_to_string(project.join("uv.lock")).unwrap();
+        let (name, version) = POLISH_RUNTIME_REQUIREMENT.split_once("==").unwrap();
+        assert!(lock.contains(&format!("name = \"{name}\"\nversion = \"{version}\"")));
+        assert!(lock.contains("hash = \"sha256:"));
     }
 }

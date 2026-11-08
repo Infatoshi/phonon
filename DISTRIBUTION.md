@@ -9,7 +9,8 @@ releases provide a Developer ID-signed and notarized DMG.
 ## Runtime layout
 
 - The app bundle contains the native Swift UI, Rust engine, signed arm64 `uv`
-  runtime, both sidecars, the native refiner engine (`Contents/Helpers/pe`,
+  runtime, both sidecars and their locked Python environments
+  (`Contents/Resources/runtime/{asr,polish}`), the native refiner engine (`Contents/Helpers/pe`,
   with its Metal shader sources in `Contents/Resources/engine`), the prompt,
   the English word list, the startup audio fixture, and third-party notices.
 - ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v2` model, pinned by
@@ -23,6 +24,16 @@ releases provide a Developer ID-signed and notarized DMG.
   2.4 GB: the engine's GGUF target and DFlash2 drafter (`phonon_engine.json`),
   and the same refiner as MLX weights. First launch therefore downloads roughly
   4.9 GB in total, plus `uv`'s Python packages.
+- Those Python packages come from `runtime/asr/uv.lock` and
+  `runtime/polish/uv.lock`, which pin every package, transitive dependencies
+  included, to an exact version and SHA-256. The sidecars start with
+  `uv run --frozen`, so uv installs only what the lock names and rejects any
+  file whose hash does not match. The environments live in
+  `~/Library/Application Support/Phonon/runtime/`, outside the signed bundle.
+  To change a version, edit the requirement in the runtime's
+  `pyproject.toml` (and its constant in `phonon-asr` or `phonon-llm`), run
+  `uv lock --project runtime/<name>`, and commit both files; CI fails when a
+  lock is out of date.
 - The sidecar runs the refiner on the bundled engine. When the engine cannot
   start on a Mac, or its first request does not return real text, the sidecar
   loads the MLX weights from the same download instead (`mlx-lm==0.31.3`);

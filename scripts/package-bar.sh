@@ -21,7 +21,8 @@ trap 'rm -rf "$staging_dir"' EXIT
 staged_app="$staging_dir/Phonon.app"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Helpers" \
 	"$staged_app/Contents/Resources/sidecar" "$staged_app/Contents/Resources/assets" \
-	"$staged_app/Contents/Resources/prompts" "$staged_app/Contents/Resources/licenses/uv"
+	"$staged_app/Contents/Resources/prompts" "$staged_app/Contents/Resources/licenses/uv" \
+	"$staged_app/Contents/Resources/runtime"
 cp "$bar_dir/Resources/Info.plist" "$staged_app/Contents/Info.plist"
 cp "$bin_dir/PhononBar" "$staged_app/Contents/MacOS/PhononBar"
 cp "$project_dir/target/release/phonon" "$staged_app/Contents/Helpers/phonon"
@@ -44,6 +45,14 @@ cp "$project_dir/assets/record_start.wav" "$staged_app/Contents/Resources/assets
 cp "$project_dir/assets/record_stop.wav" "$staged_app/Contents/Resources/assets/record_stop.wav"
 cp "$project_dir/assets/english_words.txt" "$staged_app/Contents/Resources/assets/english_words.txt"
 cp "$project_dir/prompts/polish_v2.txt" "$staged_app/Contents/Resources/prompts/polish_v2.txt"
+# Each sidecar's locked Python environment: uv installs exactly what uv.lock
+# pins, checking every file against its recorded SHA-256. Shipping the locks
+# in the bundle puts them under the app's signature.
+for runtime in asr polish; do
+	mkdir -p "$staged_app/Contents/Resources/runtime/$runtime"
+	cp "$project_dir/runtime/$runtime/pyproject.toml" "$project_dir/runtime/$runtime/uv.lock" \
+		"$staged_app/Contents/Resources/runtime/$runtime/"
+done
 cp "$project_dir/third_party/uv/LICENSE-APACHE" "$project_dir/third_party/uv/LICENSE-MIT" \
 	"$staged_app/Contents/Resources/licenses/uv/"
 

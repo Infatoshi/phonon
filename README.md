@@ -282,6 +282,7 @@ crates/phonon-win/     Windows tray app, keyboard hook, WASAPI capture, insertio
 crates/phonon-mine/    source-identifier extraction for vocabulary mining
 bar/                   SwiftPM macOS app: Home, History, Dictionary, Settings, capsule
 sidecar/               speech recognition and correction servers (Python, run by uv)
+runtime/               the sidecars' locked Python environments (pyproject.toml + uv.lock)
 prompts/               correction prompt
 assets/                startup clip, English word list, recording cues
 ml/                    refiner training and evaluation pipeline (runs on a GPU box)

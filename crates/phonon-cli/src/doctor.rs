@@ -5,7 +5,7 @@ use phonon_core::data::{list_recordings, polish_config, DictionaryFile, Settings
 use phonon_core::project_root;
 use phonon_llm::{
     bundled_engine, fluid1_available, polish_available, POLISH_MODEL_ID, POLISH_MODEL_REVISION,
-    POLISH_RUNTIME_REQUIREMENT,
+    POLISH_RUNTIME, POLISH_RUNTIME_REQUIREMENT,
 };
 
 pub fn run_doctor() -> Result<()> {
@@ -50,16 +50,27 @@ pub fn run_doctor() -> Result<()> {
         );
     }
     check("uv", crate::resolve_runtime_tool("uv").is_some());
+    // Each sidecar installs only what its uv.lock pins, hash-checked.
+    for (label, runtime) in [
+        ("ASR runtime lock", phonon_asr::ASR_RUNTIME),
+        ("correction runtime lock", POLISH_RUNTIME),
+    ] {
+        let project = phonon_asr::runtime_project(&root, runtime);
+        check(
+            label,
+            project.join("pyproject.toml").is_file() && project.join("uv.lock").is_file(),
+        );
+    }
     // Both sidecars start from uv's cache alone once these pass, so a Mac with
     // no network still dictates. A fresh install fails them until first launch.
     if let Some(uv) = crate::resolve_runtime_tool("uv") {
         optional(
             "ASR runtime cached for offline start",
-            phonon_asr::uv_offline_ready(&uv, phonon_asr::ASR_RUNTIME_REQUIREMENT),
+            phonon_asr::uv_offline_ready(&uv, &root, phonon_asr::ASR_RUNTIME),
         );
         optional(
             "correction runtime cached for offline start",
-            phonon_asr::uv_offline_ready(&uv, POLISH_RUNTIME_REQUIREMENT),
+            phonon_asr::uv_offline_ready(&uv, &root, POLISH_RUNTIME),
         );
     }
     // The native app records through CoreAudio. SoX only backs `phonon` runs
