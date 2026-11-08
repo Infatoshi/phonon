@@ -135,6 +135,7 @@ struct PhononMainView: View {
     let onShowModelStatus: () -> Void
     @State private var page: NativeAppPage = .home
     @State private var showPrivacyChoice = false
+    @State private var importRequest: DictationImportRequest?
     private let initialState: InitialState
 
     /// Where the pages start: everything closed, unless a render asks.
@@ -167,11 +168,15 @@ struct PhononMainView: View {
                     Rectangle().fill(EmberTheme.panelBorder).frame(width: 1)
                 }
 
-            ZStack {
-                detailView
-                    .id(page)
-                    .transition(
-                        .opacity.combined(with: .offset(y: 3)).animation(Motion.page))
+            VStack(spacing: 0) {
+                PermissionBanner(store: store)
+                ZStack {
+                    detailView
+                        .id(page)
+                        .transition(
+                            .opacity.combined(with: .offset(y: 3)).animation(Motion.page))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(EmberTheme.window)
@@ -199,11 +204,16 @@ struct PhononMainView: View {
                 NSApp.terminate(nil)
             }
         }
-        .sheet(isPresented: $showPrivacyChoice) {
+        .sheet(isPresented: $showPrivacyChoice, onDismiss: offerImport) {
             PrivacyChoiceView(store: store) {
                 showPrivacyChoice = false
                 onSettingsChanged()
             }
+        }
+        .sheet(item: $importRequest) { request in
+            DictationImportView(
+                store: store, request: request, onSettingsChanged: onSettingsChanged
+            ) { importRequest = nil }
         }
         .onAppear {
             showPrivacyChoice = store.needsPrivacyChoice
@@ -211,6 +221,14 @@ struct PhononMainView: View {
             showRequestedPage()
         }
         .onChange(of: store.pageRequest) { _, _ in showRequestedPage() }
+    }
+
+    /// First run, right after the privacy choices: offer to import from the
+    /// dictation apps found on this Mac. Nothing is read until the user asks.
+    private func offerImport() {
+        guard store.settings.privacyChoiceMade else { return }
+        let apps = store.detectDictationApps()
+        if !apps.isEmpty { importRequest = DictationImportRequest(apps: apps, firstRun: true) }
     }
 
     private func showRequestedPage() {
@@ -987,6 +1005,7 @@ struct SettingsView: View {
     let onShowModelStatus: () -> Void
     @State private var advancedOpen: Bool
     @State private var confirmClearHistory = false
+    @State private var importRequest: DictationImportRequest?
 
     init(
         store: NativeAppStore, onSettingsChanged: @escaping () -> Void,
@@ -1024,6 +1043,15 @@ struct SettingsView: View {
                         .pickerStyle(.menu)
                         .fixedSize()
                     }
+                    if ShortcutPolicy.usesHoldKey(mode: store.settings.shortcutMode) {
+                        SettingRow(
+                            "Tap to start and stop",
+                            help: "A quick tap of "
+                                + ShortcutPolicy.holdKeyName(mode: store.settings.shortcutMode)
+                                + " starts dictation and the next tap stops it and types. "
+                                + "Holding the key still works as push-to-talk."
+                        ) { toggle(\.tapToToggle) }
+                    }
                     SettingRow(
                         "Show the bar between dictations",
                         help: "Keep the small bar at the bottom of the screen when you are not "
@@ -1037,6 +1065,21 @@ struct SettingsView: View {
                             + "ones; at the end it shows what was typed. Needs Streaming. Applies "
                             + "from the next dictation."
                     ) { toggle(\.liveText) }
+                    SettingRow(
+                        "Other audio while dictating",
+                        help: "A video or song playing on this Mac fades while you hold the "
+                            + "key, so it stays out of the microphone, and comes back when you "
+                            + "let go. Lower takes it to a quarter of its volume; Mute fades it "
+                            + "out. With headphones it does not reach the mic either way."
+                    ) {
+                        ChoiceChips(
+                            options: BackgroundAudio.allCases.map { ($0, $0.title) },
+                            selection: store.settings.backgroundAudio
+                        ) { value in
+                            store.updateSettings { $0.backgroundAudio = value }
+                            onSettingsChanged()
+                        }
+                    }
                     SettingRow(
                         "After a paste, the clipboard holds",
                         help: "Your dictation: press ⌘V to paste it again anywhere. What you "
@@ -1066,6 +1109,18 @@ struct SettingsView: View {
                 }
 
                 SettingsGroup("System") {
+                    SettingRow(
+                        "Import from other dictation apps",
+                        help: "Bring over the dictionary, snippets, past dictations, shortcut and "
+                            + "microphone from Wispr Flow, Aqua Voice, superwhisper, VoiceInk, "
+                            + "MacWhisper or FluidVoice on this Mac. Their files are only read, "
+                            + "and nothing leaves the Mac."
+                    ) {
+                        Button("Import…") {
+                            importRequest = DictationImportRequest(apps: [], firstRun: false)
+                        }
+                        .buttonStyle(PillButtonStyle())
+                    }
                     SettingRow(
                         "Show in Dock",
                         help: "Off keeps Phonon in the menu bar only. Open it again from the "
@@ -1124,6 +1179,11 @@ struct SettingsView: View {
         }
         .scrollIndicators(.never)
         .onAppear { store.refreshPermissions() }
+        .sheet(item: $importRequest) { request in
+            DictationImportView(
+                store: store, request: request, onSettingsChanged: onSettingsChanged
+            ) { importRequest = nil }
+        }
         .alert("Clear all history?", isPresented: $confirmClearHistory) {
             Button("Cancel", role: .cancel) {}
             Button("Move to Trash", role: .destructive) { store.clearAllHistory() }
@@ -1149,6 +1209,14 @@ struct SettingsView: View {
                     store.updateSettings { $0.writingStyle = value }
                     onSettingsChanged()
                 }
+            }
+            AdvancedBlock("Writing mode per app") {
+                AppWritingModesEditor(store: store, onChanged: onSettingsChanged)
+                    .help(
+                        "Pin one mode for an app, over the writing style above. Claude Code "
+                            + "and other terminal agents use their terminal app (Terminal, "
+                            + "Ghostty, iTerm). Prompt keeps a request as an instruction; "
+                            + "Minimal only cleans up. Applies from the next dictation.")
             }
             LearnedStylesList(store: store, onChanged: onSettingsChanged)
             SettingRow(
@@ -1250,6 +1318,9 @@ struct SettingsView: View {
                         .disabled(store.mirrorManifest == nil)
                 }
             }
+            AdvancedBlock("Your own model endpoint") {
+                OwnEndpointEditor(store: store, onChanged: onSettingsChanged)
+            }
             AdvancedBlock("Microphone priority") {
                 MicrophonePriorityCard(store: store, onSettingsChanged: onSettingsChanged)
             }
@@ -1269,15 +1340,15 @@ struct SettingsView: View {
 
     private var shortcutHelp: String {
         var lines: [String] = []
+        let latch =
+            store.settings.tapToToggle
+            ? "Tap once to keep recording, then tap again to stop."
+            : "Double-tap to keep recording, then tap once to stop."
         if ShortcutPolicy.allows(mode: store.settings.shortcutMode, source: "right-option") {
-            lines.append(
-                "Hold Option to talk; release to insert. Double-tap to keep recording, "
-                    + "then tap once to stop.")
+            lines.append("Hold Right Option to talk; release to insert. " + latch)
         }
         if store.settings.shortcutMode.hasPrefix("fn") {
-            lines.append(
-                "Hold Globe to talk; release to insert. Double-tap to keep recording, "
-                    + "then tap once to stop.")
+            lines.append("Hold Globe to talk; release to insert. " + latch)
             lines.append(
                 "macOS also acts on the Globe key. Set System Settings › Keyboard › "
                     + "\"Press 🌐 key to\" to \"Do Nothing\" so it only records.")
@@ -1543,6 +1614,301 @@ struct PrivateListEditor: View {
     }
 }
 
+/// Settings > Advanced > Writing mode per app: one refiner mode pinned for an app,
+/// over the app's category and the Writing style above (settings.json
+/// `writing_modes_by_app`). Claude Code in a terminal is the terminal app here.
+struct AppWritingModesEditor: View {
+    @ObservedObject var store: NativeAppStore
+    let onChanged: () -> Void
+
+    var body: some View {
+        let dictated = store.dictatedApps
+        let names = Dictionary(dictated.map { ($0.bundleID, $0.name) }, uniquingKeysWith: { a, _ in a })
+        let name = { (id: String) in names[id] ?? PrivateListEditor.displayName(id) }
+        let pinned = store.settings.writingModesByApp
+            .compactMap { id, raw in AppWritingMode(rawValue: raw).map { (bundleID: id, mode: $0) } }
+            .sorted { name($0.bundleID) < name($1.bundleID) }
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(pinned, id: \.bundleID) { entry in
+                HStack(spacing: 12) {
+                    Text(name(entry.bundleID))
+                        .frame(width: 150, alignment: .leading)
+                        .lineLimit(1)
+                        .help(entry.bundleID)
+                    ChoiceChips(
+                        options: AppWritingMode.allCases.map { ($0, $0.title) },
+                        selection: entry.mode
+                    ) { mode in
+                        store.setAppWritingMode(entry.bundleID, mode)
+                        onChanged()
+                    }
+                    Spacer()
+                    Button("Remove") {
+                        store.setAppWritingMode(entry.bundleID, nil)
+                        onChanged()
+                    }
+                    .buttonStyle(PillButtonStyle())
+                }
+            }
+            Menu("Add an app") {
+                let taken = Set(store.settings.writingModesByApp.keys)
+                let recent = dictated.filter { !taken.contains($0.bundleID) }.prefix(15)
+                if !recent.isEmpty {
+                    Section("Dictated into") {
+                        ForEach(Array(recent), id: \.bundleID) { app in
+                            Button(app.name) { add(app.bundleID) }
+                        }
+                    }
+                }
+                let recentIDs = Set(recent.map(\.bundleID))
+                let running = PrivateListEditor.runningApps()
+                    .filter { !taken.contains($0.bundleID) && !recentIDs.contains($0.bundleID) }
+                if !running.isEmpty {
+                    Section("Running") {
+                        ForEach(running, id: \.bundleID) { app in
+                            Button(app.name) { add(app.bundleID) }
+                        }
+                    }
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    /// A new app starts on Minimal, the mode with no register change.
+    private func add(_ bundleID: String) {
+        store.setAppWritingMode(bundleID, .minimal)
+        onChanged()
+    }
+}
+
+/// Settings > Advanced > Your own model endpoint (issue #24). Off by default; no
+/// endpoint is filled in for the user. The key goes to the Keychain only.
+struct OwnEndpointEditor: View {
+    @ObservedObject var store: NativeAppStore
+    let onChanged: () -> Void
+    @State private var baseURL = ""
+    @State private var model = ""
+    @State private var key = ""
+    @State private var keySaved = false
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Correct with your own model endpoint")
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { store.settings.byokEnabled },
+                    set: { on in
+                        store.updateSettings { $0.byokEnabled = on }
+                        onChanged()
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(EmberSwitchStyle())
+            }
+            Text(
+                "Any OpenAI-compatible endpoint. Each transcript, its writing mode and up to 80 "
+                    + "dictionary terms are sent to it, so only use one you trust. Speech "
+                    + "recognition stays on this Mac, and the local model still runs: its text "
+                    + "is used whenever the endpoint fails or takes longer than 6 seconds."
+            )
+            .font(.system(size: 12))
+            .foregroundStyle(EmberTheme.mute)
+            .fixedSize(horizontal: false, vertical: true)
+            if store.settings.byokEnabled {
+                TextField("Base URL, e.g. https://api.example.com/v1", text: $baseURL)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(saveEndpoint)
+                TextField("Model name", text: $model)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(saveEndpoint)
+                HStack {
+                    SecureField(keySaved ? "API key saved in the Keychain" : "API key", text: $key)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(saveEndpoint)
+                    Button("Save", action: saveEndpoint)
+                        .buttonStyle(PillButtonStyle(primary: true))
+                    if keySaved {
+                        Button("Forget key") {
+                            OwnEndpoint.saveKey("")
+                            keySaved = false
+                            onChanged()
+                        }
+                        .buttonStyle(PillButtonStyle())
+                    }
+                }
+                if !baseURL.isEmpty && !OwnEndpoint.validBaseURL(baseURL) {
+                    Text("The base URL must start with https:// or http://.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(EmberTheme.warm)
+                }
+            }
+        }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            baseURL = store.settings.byokBaseURL
+            model = store.settings.byokModel
+            keySaved = store.settings.byokEnabled && OwnEndpoint.readKey() != nil
+        }
+    }
+
+    private func saveEndpoint() {
+        store.updateSettings {
+            $0.byokBaseURL = baseURL.trimmingCharacters(in: .whitespaces)
+            $0.byokModel = model.trimmingCharacters(in: .whitespaces)
+        }
+        if !key.isEmpty {
+            keySaved = OwnEndpoint.saveKey(key) == errSecSuccess
+            key = ""
+        }
+        onChanged()
+    }
+}
+
+/// What stops dictation from working right now, most blocking first. Shown as a
+/// banner on every page of the main window and as a warning on the menu-bar item,
+/// so a missing permission cannot hide in Settings > Advanced (a launch user could
+/// not start dictation until they found Input Monitoring off).
+enum PermissionAttention: Equatable {
+    /// No event tap: the hold key never reaches Phonon.
+    case inputMonitoring(key: String)
+    case microphone
+    /// Dictation works but cannot paste; the text waits on the clipboard.
+    case accessibility
+    /// macOS acts on the Globe key too (emoji picker, input source, Apple dictation).
+    case globeKey(action: String)
+
+    static func items(
+        inputMonitoring: Bool, microphone: Bool, accessibility: Bool, shortcutMode: String,
+        globeUsageType: Int?
+    ) -> [PermissionAttention] {
+        var items: [PermissionAttention] = []
+        if !inputMonitoring && ShortcutPolicy.usesHoldKey(mode: shortcutMode) {
+            items.append(.inputMonitoring(key: ShortcutPolicy.holdKeyName(mode: shortcutMode)))
+        }
+        if !microphone { items.append(.microphone) }
+        if !accessibility { items.append(.accessibility) }
+        if ShortcutPolicy.allows(mode: shortcutMode, source: "fn"),
+            GlobeKeySetting.conflicts(usageType: globeUsageType)
+        {
+            items.append(.globeKey(action: GlobeKeySetting.action(usageType: globeUsageType)))
+        }
+        return items
+    }
+
+    /// Dictation cannot start at all (the menu-bar item shows a warning).
+    var blocksDictation: Bool {
+        switch self {
+        case .inputMonitoring, .microphone: return true
+        case .accessibility, .globeKey: return false
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .inputMonitoring(let key): return "Phonon can't see the \(key) key yet"
+        case .microphone: return "Phonon can't use the microphone"
+        case .accessibility: return "Phonon can't paste into other apps"
+        case .globeKey(let action): return "macOS also uses the Globe key: it \(action)"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .inputMonitoring:
+            return "Turn Phonon on in System Settings › Privacy & Security › Input Monitoring. "
+                + "Until then the key does nothing. If it still doesn't work, quit and reopen "
+                + "Phonon."
+        case .microphone:
+            return "Allow Phonon in System Settings › Privacy & Security › Microphone."
+        case .accessibility:
+            return "Turn Phonon on in System Settings › Privacy & Security › Accessibility. "
+                + "Until then each dictation waits on the clipboard for ⌘V."
+        case .globeKey:
+            return "Set System Settings › Keyboard › \"Press 🌐 key to\" to \"Do Nothing\", so "
+                + "pressing it only starts dictation."
+        }
+    }
+
+    var actionTitle: String {
+        switch self {
+        case .inputMonitoring: return "Open Input Monitoring"
+        case .microphone: return "Allow Microphone"
+        case .accessibility: return "Open Accessibility"
+        case .globeKey: return "Open Keyboard Settings"
+        }
+    }
+
+    static let keyboardPane = URL(
+        string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
+
+    /// Short line for the menu-bar menu.
+    var menuTitle: String {
+        switch self {
+        case .inputMonitoring(let key): return "⚠ Input Monitoring is off: \(key) can't start dictation…"
+        case .microphone: return "⚠ Microphone access is off…"
+        case .accessibility: return "⚠ Accessibility is off: Phonon can't paste…"
+        case .globeKey: return "⚠ macOS also uses the Globe key…"
+        }
+    }
+}
+
+/// The banner over every page while something in `PermissionAttention` is wrong.
+struct PermissionBanner: View {
+    @ObservedObject var store: NativeAppStore
+
+    var body: some View {
+        let items = store.permissionAttention
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    PermissionBannerRow(item: item) { store.performAttentionAction(item) }
+                }
+            }
+            .padding(.horizontal, 30)
+            .padding(.top, 18)
+        }
+    }
+}
+
+struct PermissionBannerRow: View {
+    let item: PermissionAttention
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: item.blocksDictation
+                ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(item.blocksDictation ? EmberTheme.ember2 : EmberTheme.warm)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.system(size: 14, weight: .semibold))
+                Text(item.detail)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(EmberTheme.soft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(item.actionTitle, action: action)
+                .buttonStyle(PillButtonStyle(primary: item.blocksDictation))
+        }
+        .padding(14)
+        .frame(maxWidth: 760, alignment: .leading)
+        .background(
+            item.blocksDictation ? Color(hex: 0x2A140A) : Color(hex: 0x1C150F),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    item.blocksDictation ? EmberTheme.ember.opacity(0.7) : Color(hex: 0x3B2516),
+                    lineWidth: 1))
+    }
+}
+
 struct PermissionSummary: View {
     @ObservedObject var store: NativeAppStore
 
@@ -1732,7 +2098,7 @@ struct MicrophonePriorityCard: View {
 
     /// Three is enough to cover a headset, a desk microphone and the built-in one,
     /// and a shorter list is easier to reason about than an open-ended one.
-    private static let maximumRanked = 3
+    private static let maximumRanked = NewMicrophonePolicy.maximumRanked
 
     private var ranked: [String] { store.settings.microphonePriority }
 

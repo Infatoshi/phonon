@@ -24,6 +24,8 @@ mod smoke;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod lx;
 
 #[cfg(windows)]
 mod win;
@@ -58,6 +60,8 @@ enum Command {
     Run,
     /// Download and verify the runtimes and models, then stop.
     Fetch,
+    /// Linux: check keyboard and paste access and print the one-time fix.
+    Setup,
     /// Print what first run downloads and where it goes.
     Info,
     /// Run one wave file through the real recogniser and the real correction
@@ -77,6 +81,7 @@ fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => run(),
         Command::Fetch => fetch_all(),
+        Command::Setup => setup(),
         Command::Info => {
             info();
             Ok(())
@@ -90,12 +95,25 @@ fn run() -> Result<()> {
     win::run()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn run() -> Result<()> {
-    bail!(
-        "run is not supported on this platform; the tray, hotkey, and text insertion require Windows. \
-         On Linux x86_64 use `phonon-win info`, `fetch`, or `selftest`. On macOS use `phonon`."
-    )
+    lx::run()
+}
+
+#[cfg(target_os = "linux")]
+fn setup() -> Result<()> {
+    lx::setup()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn setup() -> Result<()> {
+    println!("Nothing to set up on this platform.");
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn run() -> Result<()> {
+    bail!("run is not supported on this platform. On macOS use `phonon`.")
 }
 
 fn info() {
@@ -188,6 +206,22 @@ fn selftest(wav: Option<PathBuf>, any_audio: bool) -> Result<()> {
     println!("selftest: {}", wav.display());
 
     let engine = pipeline::Engine::start()?;
+    println!("  correction device: {:?}", engine.device());
+    // as at key-down: a saturated CPU (Windows) moves the correction to one thread
+    #[cfg(windows)]
+    {
+        crate::win::load::start();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let busy = crate::win::load::busy();
+        let started = std::time::Instant::now();
+        engine.prepare(busy);
+        println!(
+            "  cpu busy {:.0}%, one-thread corrector: {} (prepare {} ms)",
+            busy.unwrap_or(0.0) * 100.0,
+            engine.lean(),
+            started.elapsed().as_millis()
+        );
+    }
     let result = engine.run(&wav)?;
     println!("  raw:      {:?}", result.raw);
     println!("  polished: {:?}", result.polished);

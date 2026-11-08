@@ -46,13 +46,15 @@ impl Component {
 }
 
 pub const SHERPA_VERSION: &str = "1.13.6";
-pub const LLAMA_BUILD: &str = "b10726";
+/// Same llama.cpp as the iPhone and Android builds; b10726 did not know the refiner's `lfm3` architecture.
+pub const LLAMA_BUILD: &str = "b12132";
 pub const ASR_MODEL_ID: &str = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 pub const ASR_MODEL_REVISION: &str = "1ab9323565ddb038682214b292f588070a538ce2";
-pub const POLISH_MODEL_ID: &str = "google/gemma-4-E2B-it-qat-q4_0-gguf";
-pub const POLISH_MODEL_REVISION: &str = "675cff42a74c774d6cb76f76d8eacb49b48c9b93";
+/// Phonon's public refiner, the model every platform corrects with; repository and revision are the macOS
+/// constants, so the platforms cannot drift apart.
+pub use phonon_llm::{POLISH_MODEL_ID, POLISH_MODEL_REVISION};
 /// The GGUF file name inside the correction model directory.
-pub const POLISH_GGUF: &str = "gemma-4-E2B_q4_0-it.gguf";
+pub const POLISH_GGUF: &str = "phonon-refiner-1.7b-Q4_K_S-e4.gguf";
 
 /// sherpa-onnx command line tools and the ONNX Runtime they load.
 #[cfg(not(target_os = "linux"))]
@@ -74,14 +76,17 @@ pub const SHERPA_RUNTIME: Component = Component {
 /// llama.cpp CPU build. The x64 CPU zip carries every ggml CPU backend variant,
 /// so one artifact covers Sandy Bridge through Zen 4.
 #[cfg(not(target_os = "linux"))]
+// The Vulkan build: every CPU backend of the CPU build plus ggml-vulkan.dll, loaded
+// at run time. Without a Vulkan driver that DLL does not load and the server runs on
+// the CPU exactly as the CPU build did; with a discrete GPU, polish.rs offloads to it.
 pub const LLAMA_RUNTIME: Component = Component {
-    dir: "runtime/llama-b10726",
+    dir: "runtime/llama-b12132-vulkan",
     label: "correction runtime",
     assets: &[Asset {
-        name: "llama-win-cpu-x64.zip",
-        url: "https://github.com/ggml-org/llama.cpp/releases/download/b10726/llama-b10726-bin-win-cpu-x64.zip",
-        sha256: "92f527b1b1ccf30c7d87fddb583294ef995d1f249d183e79f6ef2c51b5d7c40d",
-        bytes: 18_367_585,
+        name: "llama-win-vulkan-x64.zip",
+        url: "https://github.com/ggml-org/llama.cpp/releases/download/b12132/llama-b12132-bin-win-vulkan-x64.zip",
+        sha256: "a2bbf7c46695bca2d3baa1919c64975061234dc9ea56a571f2f070704bbd5516",
+        bytes: 37_678_209,
     }],
     unpack: Unpack::Archive { strip_to: "" },
     sentinel: "llama-server.exe",
@@ -107,15 +112,15 @@ pub const SHERPA_RUNTIME: Component = Component {
 /// The pinned Ubuntu CPU release is a tar.gz, not a zip.
 #[cfg(target_os = "linux")]
 pub const LLAMA_RUNTIME: Component = Component {
-    dir: "runtime/llama-b10726-linux-x64",
+    dir: "runtime/llama-b12132-linux-x64",
     label: "correction runtime",
     assets: &[Asset {
         name: "llama-ubuntu-x64.tar.gz",
-        url: "https://github.com/ggml-org/llama.cpp/releases/download/b10726/llama-b10726-bin-ubuntu-x64.tar.gz",
-        sha256: "d3c4e406b2911c8c75d2d0858459645960f8f592c1ab372d565cf145b870c901",
-        bytes: 16_702_536,
+        url: "https://github.com/ggml-org/llama.cpp/releases/download/b12132/llama-b12132-bin-ubuntu-x64.tar.gz",
+        sha256: "8741ab42ede58f3bc3a20f523c50fff8cf6e750373021b0627603f378f2cd78e",
+        bytes: 23_083_703,
     }],
-    unpack: Unpack::Archive { strip_to: "llama-b10726" },
+    unpack: Unpack::Archive { strip_to: "llama-b12132" },
     sentinel: "llama-server",
 };
 
@@ -154,16 +159,16 @@ pub const ASR_MODEL: Component = Component {
     sentinel: "encoder.int8.onnx",
 };
 
-/// Gemma 4 E2B instruction tuned, Google's own quantisation-aware q4_0 GGUF.
-/// This is the same model family the macOS build corrects with.
+/// The Phonon refiner (fine-tuned LFM3-1.7B), Q4_K_S with 4-bit embeddings and head: the same file the iPhone
+/// and Android builds run.
 pub const POLISH_MODEL: Component = Component {
-    dir: "models/gemma-4-E2B-it-qat-q4_0",
+    dir: "models/phonon-refiner-1.7b-2b0ab74",
     label: "correction model",
     assets: &[Asset {
         name: POLISH_GGUF,
-        url: "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/675cff42a74c774d6cb76f76d8eacb49b48c9b93/gemma-4-E2B_q4_0-it.gguf",
-        sha256: "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
-        bytes: 3_349_516_256,
+        url: "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/2b0ab74bee7ab7cf364695bbe44f64ce4c47439e/phonon-refiner-1.7b-Q4_K_S-e4.gguf",
+        sha256: "059e6e503c6c2ec50cb61a39bd0d556fb6d946bb58e965fb9ddb8b0176dfc6cd",
+        bytes: 988_453_696,
     }],
     unpack: Unpack::None,
     sentinel: POLISH_GGUF,
@@ -172,6 +177,14 @@ pub const POLISH_MODEL: Component = Component {
 /// Everything first run must fetch, in the order it is fetched. Runtimes come
 /// first because they are small: a user with a slow link sees progress quickly.
 pub const ALL: &[Component] = &[SHERPA_RUNTIME, LLAMA_RUNTIME, ASR_MODEL, POLISH_MODEL];
+
+/// Data folders of earlier versions that `fetch::ensure_all` removes once the
+/// current components are in place: the CPU-only llama.cpp runtime (Windows,
+/// replaced by the Vulkan build, which carries the same CPU backends).
+#[cfg(windows)]
+pub const SUPERSEDED: &[&str] = &["runtime/llama-b12132"];
+#[cfg(not(windows))]
+pub const SUPERSEDED: &[&str] = &[];
 
 /// Total first-run download in bytes.
 pub fn total_bytes() -> u64 {
@@ -229,6 +242,18 @@ mod tests {
 
     /// Every URL must name the pinned revision or tag. An unpinned URL would let
     /// an upstream re-upload change what a user runs.
+    /// The refiner URL is a literal (const strings cannot be concatenated); it must name the shared constants.
+    #[test]
+    fn the_refiner_url_matches_the_shared_pin() {
+        let url = POLISH_MODEL.assets[0].url;
+        assert!(
+            url.contains(&format!(
+                "/{POLISH_MODEL_ID}/resolve/{POLISH_MODEL_REVISION}/{POLISH_GGUF}"
+            )),
+            "{url}"
+        );
+    }
+
     #[test]
     fn every_url_is_pinned() {
         for component in ALL {
@@ -259,10 +284,10 @@ mod tests {
 
     /// The README and the website quote this number. Keep it honest.
     #[test]
-    fn first_run_download_is_about_four_gigabytes() {
+    fn first_run_download_is_about_one_point_six_gigabytes() {
         let total = total_bytes();
         assert!(
-            (3_500_000_000..4_500_000_000).contains(&total),
+            (1_500_000_000..1_800_000_000).contains(&total),
             "first-run download is {}, update the documented figure",
             human_bytes(total)
         );

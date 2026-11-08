@@ -77,6 +77,42 @@ final class HoldKeyTapLatchTests: XCTestCase {
         XCTAssertTrue(latch.latched)
     }
 
+    func testTapToToggleLatchesOnOneTapAndTheNextTapStops() {
+        var latch = HoldKeyTapLatch()
+        latch.tapToggles = true
+        XCTAssertEqual(latch.keyDown(at: ms(0)), .start)
+        XCTAssertEqual(latch.keyUp(at: ms(120)), .none, "one tap keeps the recording going")
+        XCTAssertTrue(latch.latched)
+        XCTAssertFalse(latch.awaitingSecondTap)
+        XCTAssertEqual(latch.keyDown(at: ms(4_000)), .stop)
+        XCTAssertEqual(latch.keyUp(at: ms(4_100)), .none)
+        XCTAssertFalse(latch.latched)
+        // and again: the stop tap does not leave anything pending
+        XCTAssertEqual(latch.keyDown(at: ms(4_300)), .start)
+        XCTAssertEqual(latch.keyUp(at: ms(4_400)), .none)
+        XCTAssertTrue(latch.latched)
+    }
+
+    func testTapToToggleKeepsHoldAsPushToTalk() {
+        var latch = HoldKeyTapLatch()
+        latch.tapToggles = true
+        XCTAssertEqual(latch.keyDown(at: ms(0)), .start)
+        XCTAssertEqual(latch.keyUp(at: ms(251)), .stop)
+        XCTAssertFalse(latch.latched)
+        XCTAssertEqual(latch.keyDown(at: ms(1_000)), .start)
+        XCTAssertEqual(latch.keyUp(at: ms(3_000)), .stop)
+        XCTAssertFalse(latch.latched)
+    }
+
+    func testDefaultIsOffSoALoneTapStillStops() {
+        var latch = HoldKeyTapLatch()
+        XCTAssertFalse(latch.tapToggles)
+        XCTAssertEqual(latch.keyDown(at: ms(0)), .start)
+        XCTAssertEqual(latch.keyUp(at: ms(100)), .stop)
+        XCTAssertTrue(latch.awaitingSecondTap, "a lone tap may still become a double-tap")
+        XCTAssertFalse(latch.latched)
+    }
+
     func testResetClearsLatchAndPendingTap() {
         var latch = HoldKeyTapLatch()
         XCTAssertEqual(latch.keyDown(at: ms(0)), .start)

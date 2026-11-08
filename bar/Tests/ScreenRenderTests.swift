@@ -287,6 +287,42 @@ final class ScreenRenderTests: XCTestCase {
         try snapshot(view, size: CGSize(width: 790, height: 2200), name: "settings_full")
     }
 
+    /// Settings with tap-to-toggle on and two apps pinned to a writing mode.
+    func testSettingsWithPerAppModesRender() throws {
+        let store = store()
+        store.updateSettings { $0.tapToToggle = true }
+        store.setAppWritingMode("com.apple.Terminal", .minimal)
+        store.setAppWritingMode("com.tinyspeck.slackmacgap", .casual)
+        XCTAssertEqual(store.dictatedApps.first?.bundleID, "com.apple.Terminal")
+        let view = SettingsView(
+            store: store, onSettingsChanged: {}, onShowModelStatus: {}, advancedOpen: true
+        )
+        .frame(width: 790)
+        .background(EmberTheme.background)
+        .foregroundStyle(EmberTheme.text)
+        .tint(EmberTheme.accent)
+        try snapshot(view, size: CGSize(width: 790, height: 2600), name: "settings_per_app_modes")
+    }
+
+    /// Every banner the main window can show while a permission is missing.
+    func testPermissionBannerRowsRender() throws {
+        let items: [PermissionAttention] = [
+            .inputMonitoring(key: "Globe (fn)"), .microphone, .accessibility,
+            .globeKey(action: "shows Emoji & Symbols"),
+        ]
+        let view = VStack(spacing: 10) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                PermissionBannerRow(item: item) {}
+            }
+        }
+        .padding(30)
+        .frame(width: 790)
+        .background(EmberTheme.window)
+        .foregroundStyle(EmberTheme.ink)
+        .font(.system(size: 13.5))
+        try snapshot(view, size: CGSize(width: 790, height: 480), name: "permission_banners")
+    }
+
     func testFirstRunSheetsRender() throws {
         try snapshot(
             PrivacyChoiceView(store: store(), onDone: {}), size: CGSize(width: 540, height: 420),
@@ -404,6 +440,7 @@ final class ScreenRenderTests: XCTestCase {
             ("notice_accessibility", .needsAccessibility(text)),
             ("notice_not_heard", .notHeard(mic: "MacBook Pro Microphone")),
             ("notice_mic_silent", .micSilent(mic: "AirPods Pro")),
+            ("notice_tap_hint", .tapHint(key: "Globe (fn)")),
         ]
         for (name, notice) in notices {
             let model = NotPastedModel()

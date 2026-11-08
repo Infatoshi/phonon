@@ -1,0 +1,224 @@
+[
+ {
+  "id": "fmt_steps_120_raw",
+  "mode": "minimal",
+  "input": "Please follow these steps: 1. Check the data schema. 2. Write the training script. 3. Run hyperparameter search. 4. Report the best run.",
+  "expected": "Please follow these steps:\n1. Check the data schema.\n2. Write the training script.\n3. Run hyperparameter search.\n4. Report the best run."
+ },
+ {
+  "id": "fmt_steps_044_pk",
+  "mode": "minimal",
+  "input": "Please deploy the web app step by step: 1. Run the linter and tests. 2. Build the production bundle. 3. Set the environment variables and secrets. 4. Deploy the app to production. 5. Open the site and test the signup flow.",
+  "expected": "Please deploy the web app step by step:\n1. Run the linter and tests.\n2. Build the production bundle.\n3. Set the environment variables and secrets.\n4. Deploy the app to production.\n5. Open the site and test the signup flow."
+ },
+ {
+  "id": "fmt_steps_138_raw",
+  "mode": "minimal",
+  "input": "1. Write a script that lists all subscriptions tied to my old address. 2. Create a reminder to cancel each one. 3. Add a moving-day task list to the project. 4. Generate a printable labels sheet for boxes. 5. Make a simple test plan for the address-change workflow.",
+  "expected": "1. Write a script that lists all subscriptions tied to my old address.\n2. Create a reminder to cancel each one.\n3. Add a moving-day task list to the project.\n4. Generate a printable labels sheet for boxes.\n5. Make a simple test plan for the address-change workflow."
+ },
+ {
+  "id": "fmt_steps_186_raw",
+  "mode": "minimal",
+  "input": "Router setup notes: 1. Plug the router into power and connect it to the modem. 2. Find the admin address and default login on the label. 3. Sign in and change the admin password. 4. Set the Wi-Fi name and a strong WPA2 or WPA3 password. 5. Save the changes, reboot, and test the connection on two devices.",
+  "expected": "Router setup notes:\n1. Plug the router into power and connect it to the modem.\n2. Find the admin address and default login on the label.\n3. Sign in and change the admin password.\n4. Set the Wi-Fi name and a strong WPA2 or WPA3 password.\n5. Save the changes, reboot, and test the connection on two devices."
+ },
+ {
+  "id": "fmt_steps_010_raw",
+  "mode": "minimal",
+  "input": "Hey, here are the steps for the Python setup step one: install Python 3.12, step two: create a venv, step three: upgrade pip.",
+  "expected": "Hey, here are the steps for the Python setup step one: install Python 3.12, step two: create a venv, step three: upgrade pip."
+ },
+ {
+  "id": "fmt_steps_010_pk",
+  "mode": "minimal",
+  "input": "Hey, here are the steps for the Python setup. Step one, install Python 3.12. Step two, create a venv. Step three, upgrade pip.",
+  "expected": "Hey, here are the steps for the Python setup. Step one, install Python 3.12. Step two, create a venv. Step three, upgrade pip."
+ },
+ {
+  "id": "fmt_steps_122_raw",
+  "mode": "minimal",
+  "input": "For our model, step 1: set the random seed. Step 2: load the batches. Step 3: update the weights. Step 4: evaluate and save results.",
+  "expected": "For our model, step 1: set the random seed. Step 2: load the batches. Step 3: update the weights. Step 4: evaluate and save results."
+ },
+ {
+  "id": "fmt_steps_010_raw",
+  "mode": "casual",
+  "input": "hey here are the steps for the Python setup: step one, install Python 3.12, step two, create a venv, step three, upgrade pip",
+  "expected": "hey here are the steps for the Python setup: step one, install Python 3.12, step two, create a venv, step three, upgrade pip"
+ },
+ {
+  "id": "fmt_steps_010_pk",
+  "mode": "casual",
+  "input": "hey, here are the steps for the Python setup. step one, install Python 3.12. step two, create a venv. step three, upgrade pip",
+  "expected": "hey, here are the steps for the Python setup. step one, install Python 3.12. step two, create a venv. step three, upgrade pip"
+ },
+ {
+  "id": "fmt_steps_122_raw",
+  "mode": "casual",
+  "input": "for our model: step 1 set the random seed, step 2 load the batches, step 3 update the weights, step 4 evaluate and save results",
+  "expected": "for our model: step 1 set the random seed, step 2 load the batches, step 3 update the weights, step 4 evaluate and save results"
+ },
+ {
+  "id": "fmt_steps_044_raw",
+  "mode": "casual",
+  "input": "please deploy the web app step by step: 1. run the linter and tests 2. build the production bundle 3. set the environment variables and secrets 4. deploy the app to production 5. finally open the site and test the signup flow",
+  "expected": "please deploy the web app step by step: 1. run the linter and tests 2. build the production bundle 3. set the environment variables and secrets 4. deploy the app to production 5. finally open the site and test the signup flow"
+ },
+ {
+  "id": "fmt_steps_154_raw",
+  "mode": "formal",
+  "input": "1. Generate a mock offsite feedback form in the app. 2. Wire it to a local endpoint. 3. Add a test for the submit button.",
+  "expected": "1. Generate a mock offsite feedback form in the app.\n2. Wire it to a local endpoint.\n3. Add a test for the submit button."
+ },
+ {
+  "id": "fmt_steps_112_pk",
+  "mode": "formal",
+  "input": "For the model training: 1. Split the dataset. 2. Initialize the model. 3. Train for five epochs. 4. Save the best checkpoint.",
+  "expected": "For the model training:\n1. Split the dataset.\n2. Initialize the model.\n3. Train for five epochs.\n4. Save the best checkpoint."
+ },
+ {
+  "id": "fmt_steps_012_raw",
+  "mode": "formal",
+  "input": "Notes for the Python project setup: 1. Clone the repository. 2. Create a virtual environment. 3. Install the dev dependencies.",
+  "expected": "Notes for the Python project setup:\n1. Clone the repository.\n2. Create a virtual environment.\n3. Install the dev dependencies."
+ },
+ {
+  "id": "fmt_steps_120_raw",
+  "mode": "formal",
+  "input": "Please follow these steps: 1. Check the data schema. 2. Write the training script. 3. Run hyperparameter search. 4. Report the best run.",
+  "expected": "Please follow these steps:\n1. Check the data schema.\n2. Write the training script.\n3. Run hyperparameter search.\n4. Report the best run."
+ },
+ {
+  "id": "fmt_steps_102_raw",
+  "mode": "formal",
+  "input": "Hi Sam, For the pull request review, step one is to check the diff against the ticket. Step two is to run the test suite. Step three is to post your comments before lunch.",
+  "expected": "Hi Sam,\nFor the pull request review, step one is to check the diff against the ticket. Step two is to run the test suite. Step three is to post your comments before lunch."
+ },
+ {
+  "id": "fmt_steps_102_pk",
+  "mode": "formal",
+  "input": "Hey Sam, For the pull request review, step one is to check the diff against the ticket. Step two is to run the test suite. Step three is to post your comments before lunch.",
+  "expected": "Hey Sam,\nFor the pull request review, step one is to check the diff against the ticket. Step two is to run the test suite. Step three is to post your comments before lunch."
+ },
+ {
+  "id": "fmt_steps_010_raw",
+  "mode": "formal",
+  "input": "Here are the steps for the Python setup step one: install Python 3.12; step two: create a venv; step three: upgrade pip.",
+  "expected": "Here are the steps for the Python setup step one: install Python 3.12; step two: create a venv; step three: upgrade pip."
+ },
+ {
+  "id": "fmt_steps_010_pk",
+  "mode": "formal",
+  "input": "Here are the steps for the Python setup. Step one: install Python 3.12. Step two: create a venv. Step three: upgrade pip.",
+  "expected": "Here are the steps for the Python setup. Step one: install Python 3.12. Step two: create a venv. Step three: upgrade pip."
+ },
+ {
+  "id": "fmt_steps_122_pk",
+  "mode": "formal",
+  "input": "For our model: Step 1: set the random seed. Step 2: load the batches. Step 3: update the weights. Step 4: evaluate and save results.",
+  "expected": "For our model: Step 1: set the random seed. Step 2: load the batches. Step 3: update the weights. Step 4: evaluate and save results."
+ },
+ {
+  "id": "fmt_steps_010_pk",
+  "mode": "prompt",
+  "input": "Here are the steps for the Python setup: 1. Install Python 3.12. 2. Create a venv. 3. Upgrade pip.",
+  "expected": "Here are the steps for the Python setup:\n1. Install Python 3.12.\n2. Create a venv.\n3. Upgrade pip."
+ },
+ {
+  "id": "fmt_steps_014_pk",
+  "mode": "prompt",
+  "input": "For the Python project: 1. Make a `src` directory. 2. Add an `init` file. 3. Run the initial test suite.",
+  "expected": "For the Python project:\n1. Make a `src` directory.\n2. Add an `init` file.\n3. Run the initial test suite."
+ },
+ {
+  "id": "fmt_steps_120_raw",
+  "mode": "prompt",
+  "input": "1. Check the data schema. 2. Write the training script. 3. Run hyperparameter search. 4. Report the best run.",
+  "expected": "1. Check the data schema.\n2. Write the training script.\n3. Run hyperparameter search.\n4. Report the best run."
+ },
+ {
+  "id": "fmt_steps_014_raw",
+  "mode": "prompt",
+  "input": "For the Python project: 1. Make a `src` directory. 2. Add an `__init__.py` file. 3. Run the initial test suite.",
+  "expected": "For the Python project:\n1. Make a `src` directory.\n2. Add an `__init__.py` file.\n3. Run the initial test suite."
+ },
+ {
+  "id": "fmt_steps_114_pk",
+  "mode": "prompt",
+  "input": "1. Inspect the training script. 2. Add a validation loop. 3. Enable mixed precision. 4. Run a short smoke test.",
+  "expected": "1. Inspect the training script.\n2. Add a validation loop.\n3. Enable mixed precision.\n4. Run a short smoke test."
+ },
+ {
+  "id": "fmt_steps_122_pk",
+  "mode": "prompt",
+  "input": "For our model: 1. Set the random seed. 2. Load the batches. 3. Update the weights. 4. Evaluate and save results.",
+  "expected": "For our model:\n1. Set the random seed.\n2. Load the batches.\n3. Update the weights.\n4. Evaluate and save results."
+ },
+ {
+  "id": "fmt_steps_010_raw",
+  "mode": "prompt",
+  "input": "Here are the steps for the Python setup step one: install Python 3.12, step two: create a venv, step three: upgrade pip.",
+  "expected": "Here are the steps for the Python setup step one: install Python 3.12, step two: create a venv, step three: upgrade pip."
+ },
+ {
+  "id": "fmt_steps_050_pk",
+  "mode": "prompt",
+  "input": "Can you give me a recipe for garlic toast? Step 1: mix softened butter with minced garlic and parsley. Step 2: spread it on sliced bread. Step 3: bake at 400 degrees until golden.",
+  "expected": "Can you give me a recipe for garlic toast? Step 1: mix softened butter with minced garlic and parsley. Step 2: spread it on sliced bread. Step 3: bake at 400 degrees until golden."
+ },
+ {
+  "id": "fmt_steps_056_pk",
+  "mode": "prompt",
+  "input": "Hey Maya, here's how I make the cucumber salad. Step 1: slice cucumbers and red onion thin. Step 2: whisk yogurt, lemon juice, and dill. Step 3: toss everything together and chill for 10 minutes.",
+  "expected": "Hey Maya, here's how I make the cucumber salad. Step 1: slice cucumbers and red onion thin. Step 2: whisk yogurt, lemon juice, and dill. Step 3: toss everything together and chill for 10 minutes."
+ },
+ {
+  "id": "synthetic",
+  "mode": "prompt",
+  "input": "Do this: 1. open the file 2. fix the bug 3. run tests",
+  "expected": "Do this:\n1. open the file\n2. fix the bug\n3. run tests"
+ },
+ {
+  "id": "synthetic",
+  "mode": "prompt",
+  "input": "Steps 2. and 3. are optional",
+  "expected": "Steps 2. and 3. are optional"
+ },
+ {
+  "id": "synthetic",
+  "mode": "minimal",
+  "input": "Version 1. Then version 2.",
+  "expected": "Version 1. Then version 2."
+ },
+ {
+  "id": "synthetic",
+  "mode": "formal",
+  "input": "Hi Sam, the build is green. Best regards, Chris",
+  "expected": "Hi Sam,\nThe build is green.\nBest regards,\nChris"
+ },
+ {
+  "id": "synthetic",
+  "mode": "formal",
+  "input": "Hello team, quick update on the release. Thanks, Maya",
+  "expected": "Hello team,\nQuick update on the release.\nThanks,\nMaya"
+ },
+ {
+  "id": "synthetic",
+  "mode": "casual",
+  "input": "1. eggs 2. milk",
+  "expected": "1. eggs 2. milk"
+ },
+ {
+  "id": "synthetic",
+  "mode": "formal",
+  "input": "hi there, can you check it? thanks, Jo",
+  "expected": "hi there,\nCan you check it?\nthanks,\nJo"
+ },
+ {
+  "id": "synthetic",
+  "mode": "minimal",
+  "input": "We tried 1. a 3. b 2. c",
+  "expected": "We tried\n1. a 3. b\n2. c"
+ }
+]

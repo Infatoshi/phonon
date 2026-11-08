@@ -46,6 +46,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # The installer a stranger double-clicks: per-user install, Start menu and sign-in shortcuts, and the
+      # Visual C++ runtime when the machine lacks it. packaging/windows/phonon.nsi says what it does.
+      - name: build the installer
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile vc_redist.x64.exe
+          $version = (Select-String -Path Cargo.toml -Pattern '^version' | Select-Object -First 1).Line.Split('"')[1]
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" -V2 "-DVERSION=$version" `
+            "-DEXE=$PWD\target\release\phonon-win.exe" "-DVCREDIST=$PWD\vc_redist.x64.exe" `
+            "-DOUT=$PWD\target\release\Phonon-Setup-$version.exe" packaging\windows\phonon.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phonon-win-installer
+          path: target/release/Phonon-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 30
+
   e2e:
     name: end-to-end on real Windows
     needs: build
@@ -67,18 +87,18 @@ jobs:
           Write-Host "cache root: $env:PHONON_WIN_HOME"
 
       # The runtimes are small and change only when the pinned tags change.
-      # The weights are four gigabytes and are fetched fresh; caching them would
+      # The weights are 1.6 GB and are fetched fresh; caching them would
       # push the repository over its cache budget.
       - name: cache the runtimes
         uses: actions/cache@v4
         with:
           path: D:\phonon\runtime
-          key: phonon-win-runtime-sherpa1.13.6-llama-b10726
+          key: phonon-win-runtime-sherpa1.13.6-llama-b12132-vulkan
 
       - name: download and verify the runtimes and weights
         run: bin\phonon-win.exe fetch
 
-      # The gate. Real Parakeet, real Gemma, real audio, on real Windows.
+      # The gate. Real Parakeet, the real refiner, real audio, on real Windows.
       # It fails when the transcript is wrong, when correction collapses the
       # sentence, or when correction runs away.
       - name: end-to-end selftest on the startup fixture
@@ -119,10 +139,15 @@ jobs:
       - name: build the release executable
         run: nice -n 10 cargo build --release -p phonon-win --locked
 
+      - name: build the .deb
+        run: scripts/package-deb.sh target/release/phonon-win
+
       - uses: actions/upload-artifact@v4
         with:
           name: phonon-linux-x64
-          path: target/release/phonon-win
+          path: |
+            target/release/phonon-win
+            target/deb/*.deb
           if-no-files-found: error
           retention-days: 30
 
@@ -130,7 +155,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PHONON_WIN_HOME }}/runtime
-          key: phonon-linux-x64-runtime-sherpa1.13.6-llama-b10726
+          key: phonon-linux-x64-runtime-sherpa1.13.6-llama-b12132
 
       - name: download and verify the runtimes and weights
         run: nice -n 10 target/release/phonon-win fetch

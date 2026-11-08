@@ -10,7 +10,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use crate::asr::Recognizer;
-use crate::polish::Corrector;
+use crate::polish::{Corrector, Device};
 
 /// What one pass produced, and what each stage cost.
 #[derive(Debug, Clone)]
@@ -41,11 +41,67 @@ impl Engine {
     /// Locate the recogniser and start the correction server. Both must succeed;
     /// recognition without correction is not a supported mode.
     pub fn start() -> Result<Self> {
-        let recognizer = Recognizer::installed().context("speech recognition is not installed")?;
+        let mut recognizer =
+            Recognizer::installed().context("speech recognition is not installed")?;
+        recognizer.load_resident();
         let corrector = Corrector::start().context("correction model did not start")?;
         Ok(Self {
             recognizer,
             corrector,
+        })
+    }
+
+    /// Where the correction model runs.
+    pub fn device(&self) -> Device {
+        self.corrector.device()
+    }
+
+    /// Whether the next correction goes to the one-thread server (saturated CPU).
+    pub fn lean(&self) -> bool {
+        self.corrector.lean()
+    }
+
+    /// Call while idle with the machine's busy fraction (see `Corrector::warm`).
+    pub fn warm(&self, busy: Option<f64>) {
+        self.corrector.warm(busy);
+    }
+
+    /// Call at key-down with the machine's busy fraction (see `Corrector::prepare`).
+    pub fn prepare(&self, busy: Option<f64>) {
+        self.corrector.prepare(busy);
+    }
+
+    /// Move the correction model from the GPU to the CPU.
+    pub fn fall_back_to_cpu(&mut self) -> Result<()> {
+        self.corrector.fall_back_to_cpu()
+    }
+
+    /// Whether `run_samples` can skip the file (the speech model is resident).
+    pub fn resident(&self) -> bool {
+        self.recognizer.is_resident()
+    }
+
+    /// Run captured audio (mono, -1..1) through both stages without writing a file.
+    /// Requires a resident speech model (`resident`).
+    pub fn run_samples(&self, sample_rate: u32, samples: &[f32]) -> Result<PassResult> {
+        let started = Instant::now();
+        let transcript = self
+            .recognizer
+            .transcribe_samples(sample_rate, samples)
+            .ok_or_else(|| anyhow::anyhow!("the speech model is not resident"))?
+            .context("transcribe the recording")?;
+        let asr_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let polished = self
+            .corrector
+            .correct(&transcript.text)
+            .context("correct the transcript")?;
+        let polish_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(PassResult {
+            raw: transcript.text,
+            polished,
+            asr_ms,
+            polish_ms,
         })
     }
 

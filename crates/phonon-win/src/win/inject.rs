@@ -1,11 +1,11 @@
 //! Put finished text into whatever window has focus.
 //!
-//! Two paths, for the same reason macOS keeps two. `SendInput` with Unicode key
-//! events types the text directly and leaves the clipboard alone, which is what a
-//! user wants for a short phrase. It is slow and lossy for long text, and some
-//! windows drop synthetic key events, so anything long, and anything that fails,
-//! goes through the clipboard and Control-V instead. The previous clipboard text
-//! is put back afterwards.
+//! The clipboard and Control-V, as on macOS; the previous clipboard text is put
+//! back afterwards. Typing with `SendInput` Unicode key events is only the
+//! fallback for when the clipboard cannot be used: Windows 11's Notepad turns a
+//! burst of those events into "Can ??????" (everything after the first word
+//! became question marks, 2026-11-05 on 26100), while the same text pasted, or
+//! typed one character per call with a pause, arrives intact.
 
 use std::ffi::c_void;
 
@@ -20,9 +20,6 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_V,
 };
 
-/// Above this many UTF-16 units, typing the text one key event at a time is slow
-/// enough for the user to watch it happen. Paste instead.
-const TYPE_LIMIT: usize = 200;
 const CF_UNICODETEXT: u32 = 13;
 
 /// Insert `text` into the focused window. Returns the path that was used.
@@ -30,35 +27,40 @@ pub fn insert(text: &str) -> Result<&'static str> {
     if text.is_empty() {
         return Ok("skipped");
     }
-    let units: Vec<u16> = text.encode_utf16().collect();
-    if units.len() <= TYPE_LIMIT {
-        match type_text(&units) {
-            Ok(()) => return Ok("typed"),
-            Err(error) => {
-                eprintln!("phonon: typing failed, pasting instead: {error:#}");
-            }
+    match paste_text(text) {
+        Ok(()) => Ok("pasted"),
+        Err(error) => {
+            eprintln!("phonon: pasting failed, typing instead: {error:#}");
+            let units: Vec<u16> = text.encode_utf16().collect();
+            type_text(&units)?;
+            Ok("typed")
         }
     }
-    paste_text(text)?;
-    Ok("pasted")
 }
 
-/// Send every code unit as a Unicode key press and release.
+/// Send every code unit as a Unicode key press and release, one character per
+/// call with a short pause, which is what Windows 11 Notepad needs to keep them.
 fn type_text(units: &[u16]) -> Result<()> {
-    let mut events: Vec<INPUT> = Vec::with_capacity(units.len() * 2);
     for unit in units {
-        for up in [false, true] {
-            let mut input: INPUT = unsafe { std::mem::zeroed() };
-            input.r#type = INPUT_KEYBOARD;
-            input.Anonymous.ki = KEYBDINPUT {
-                wVk: 0,
-                wScan: *unit,
-                dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 },
-                time: 0,
-                dwExtraInfo: 0,
-            };
-            events.push(input);
-        }
+        type_unit(*unit)?;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    Ok(())
+}
+
+fn type_unit(unit: u16) -> Result<()> {
+    let mut events: Vec<INPUT> = Vec::with_capacity(2);
+    for up in [false, true] {
+        let mut input: INPUT = unsafe { std::mem::zeroed() };
+        input.r#type = INPUT_KEYBOARD;
+        input.Anonymous.ki = KEYBDINPUT {
+            wVk: 0,
+            wScan: unit,
+            dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 },
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        events.push(input);
     }
     let sent = unsafe {
         SendInput(

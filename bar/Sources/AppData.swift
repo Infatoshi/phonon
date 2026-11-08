@@ -3,6 +3,7 @@ import ApplicationServices
 import AVFoundation
 import Foundation
 import ScreenCaptureKit
+import Security
 import ServiceManagement
 
 struct NativeSettings: Codable, Equatable {
@@ -17,6 +18,10 @@ struct NativeSettings: Codable, Equatable {
     var localHistory: Bool
     var screenContext: Bool
     var microphonePriority: [String]
+    /// CoreAudio UIDs of every input Phonon has already seen, so the
+    /// new-microphone prompt asks once per device. nil (key absent: a fresh
+    /// install or an upgrade) is seeded with what is connected, without asking.
+    var microphonesSeen: [String]?
     var instantMic: Bool
     var soundFeedback: Bool
     var shortcutMode: String
@@ -64,6 +69,19 @@ struct NativeSettings: Codable, Equatable {
     /// Keep the small capsule on screen between dictations. Off shows it only while
     /// dictating (and while a meeting records, so the red light stays visible).
     var showIdleCapsule: Bool
+    /// Other audio while the key is held: left alone, lowered (default) or muted.
+    var backgroundAudio: BackgroundAudio
+    /// A short tap of the hold key (fn or Right Option) starts dictation and the
+    /// next tap stops it; a hold stays push-to-talk (issue #34). Off by default.
+    var tapToToggle: Bool
+    /// Per-app writing mode, bundle id -> refiner mode (`minimal`, `casual`,
+    /// `formal`, `prompt`). Wins over `writing_style` and the app's category.
+    var writingModesByApp: [String: String]
+    /// Your own OpenAI-compatible endpoint refines instead of the local refiner
+    /// (issue #24). Off by default; the key lives in the Keychain, never here.
+    var byokEnabled: Bool
+    var byokBaseURL: String
+    var byokModel: String
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -71,6 +89,7 @@ struct NativeSettings: Codable, Equatable {
         case localHistory = "local_history"
         case screenContext = "screen_context"
         case microphonePriority = "microphone_priority"
+        case microphonesSeen = "microphones_seen"
         case instantMic = "instant_mic"
         case soundFeedback = "sound_feedback"
         case shortcutMode = "shortcut_mode"
@@ -92,6 +111,12 @@ struct NativeSettings: Codable, Equatable {
         case clipboardAfterPaste = "clipboard_after_paste"
         case showInDock = "show_in_dock"
         case showIdleCapsule = "show_idle_capsule"
+        case backgroundAudio = "background_audio"
+        case tapToToggle = "tap_to_toggle"
+        case writingModesByApp = "writing_modes_by_app"
+        case byokEnabled = "byok_enabled"
+        case byokBaseURL = "byok_base_url"
+        case byokModel = "byok_model"
     }
 
     init(
@@ -100,6 +125,7 @@ struct NativeSettings: Codable, Equatable {
         localHistory: Bool = false,
         screenContext: Bool = false,
         microphonePriority: [String] = [],
+        microphonesSeen: [String]? = nil,
         instantMic: Bool = true,
         soundFeedback: Bool = false,
         shortcutMode: String = "fn",
@@ -120,13 +146,20 @@ struct NativeSettings: Codable, Equatable {
         streamRefine: Bool? = nil,
         clipboardAfterPaste: ClipboardAfterPaste = .dictation,
         showInDock: Bool = true,
-        showIdleCapsule: Bool = true
+        showIdleCapsule: Bool = true,
+        backgroundAudio: BackgroundAudio = .lower,
+        tapToToggle: Bool = false,
+        writingModesByApp: [String: String] = [:],
+        byokEnabled: Bool = false,
+        byokBaseURL: String = "",
+        byokModel: String = ""
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
         self.localHistory = localHistory
         self.screenContext = screenContext
         self.microphonePriority = microphonePriority
+        self.microphonesSeen = microphonesSeen
         self.instantMic = instantMic
         self.soundFeedback = soundFeedback
         self.shortcutMode = shortcutMode
@@ -148,6 +181,12 @@ struct NativeSettings: Codable, Equatable {
         self.clipboardAfterPaste = clipboardAfterPaste
         self.showInDock = showInDock
         self.showIdleCapsule = showIdleCapsule
+        self.backgroundAudio = backgroundAudio
+        self.tapToToggle = tapToToggle
+        self.writingModesByApp = writingModesByApp
+        self.byokEnabled = byokEnabled
+        self.byokBaseURL = byokBaseURL
+        self.byokModel = byokModel
     }
 
     init(from decoder: Decoder) throws {
@@ -163,6 +202,7 @@ struct NativeSettings: Codable, Equatable {
             try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? legacyDefault
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
             ?? []
+        microphonesSeen = try? values.decodeIfPresent([String].self, forKey: .microphonesSeen)
         instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? true
         // Silent unless asked for. Dictation is held down mid-sentence and a
         // cue on every press is intrusive, so nobody gets one by default.
@@ -206,6 +246,98 @@ struct NativeSettings: Codable, Equatable {
         showInDock = try values.decodeIfPresent(Bool.self, forKey: .showInDock) ?? true
         showIdleCapsule =
             try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
+        backgroundAudio =
+            (try? values.decodeIfPresent(String.self, forKey: .backgroundAudio))
+            .flatMap { $0 }.flatMap(BackgroundAudio.init(rawValue:)) ?? .lower
+        tapToToggle = (try? values.decodeIfPresent(Bool.self, forKey: .tapToToggle)) ?? false
+        // Unknown modes are dropped on read, so a hand edit cannot pin a mode the
+        // refiner does not have.
+        writingModesByApp =
+            ((try? values.decodeIfPresent([String: String].self, forKey: .writingModesByApp))
+            ?? nil ?? [:]).filter { AppWritingMode(rawValue: $0.value) != nil }
+        byokEnabled = (try? values.decodeIfPresent(Bool.self, forKey: .byokEnabled)) ?? false
+        byokBaseURL = ((try? values.decodeIfPresent(String.self, forKey: .byokBaseURL)) ?? nil) ?? ""
+        byokModel = ((try? values.decodeIfPresent(String.self, forKey: .byokModel)) ?? nil) ?? ""
+    }
+}
+
+/// Your own model endpoint (issue #24): what the engine is told, and the API key
+/// in the login Keychain (a generic password only Phonon reads without asking).
+enum OwnEndpoint {
+    static let keychainService = "com.infatoshi.phonon.byok"
+    static let keychainAccount = "api_key"
+
+    /// An http(s) URL with a host.
+    static func validBaseURL(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(),
+            scheme == "https" || scheme == "http", url.host?.isEmpty == false
+        else { return false }
+        return true
+    }
+
+    /// The engine's `byok` command: the endpoint when it is on and complete, else off.
+    static func engineCommand(settings: NativeSettings, apiKey: String?) -> [String: Any] {
+        let model = settings.byokModel.trimmingCharacters(in: .whitespaces)
+        guard settings.byokEnabled, validBaseURL(settings.byokBaseURL), !model.isEmpty else {
+            return ["cmd": "byok"]
+        }
+        return [
+            "cmd": "byok",
+            "base_url": settings.byokBaseURL.trimmingCharacters(in: .whitespaces),
+            "model": model,
+            "api_key": apiKey ?? "",
+        ]
+    }
+
+    static func readKey(service: String = keychainService) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+            let data = item as? Data
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Saves (or with an empty key deletes) the API key. Returns the Keychain status.
+    @discardableResult
+    static func saveKey(_ key: String, service: String = keychainService) -> OSStatus {
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: keychainAccount,
+        ]
+        SecItemDelete(match as CFDictionary)
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return errSecSuccess }
+        var add = match
+        add[kSecValueData as String] = Data(trimmed.utf8)
+        add[kSecAttrLabel as String] = "Phonon model endpoint API key"
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(add as CFDictionary, nil)
+    }
+}
+
+/// A per-app writing mode (settings.json `writing_modes_by_app`): the refiner's four
+/// modes (SPEC "Modes"). The refiner has no verbatim mode.
+enum AppWritingMode: String, CaseIterable, Identifiable {
+    case minimal, casual, formal, prompt
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .minimal: return "Minimal"
+        case .casual: return "Casual"
+        case .formal: return "Formal"
+        case .prompt: return "Prompt"
+        }
     }
 }
 
@@ -693,25 +825,127 @@ final class NativeAppStore: ObservableObject {
                 }
             }
         }
-        var entries = dictionaryEntries
-        var added = 0
-        for entry in incoming {
-            let phrase = entry.phrase.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !phrase.isEmpty,
-                !entries.contains(where: {
-                    $0.phrase.caseInsensitiveCompare(phrase) == .orderedSame
-                        && ($0.replacement ?? "") == (entry.replacement ?? "")
-                })
-            else { continue }
-            var copy = entry
-            copy.phrase = phrase
-            copy.usageCount = 0
-            copy.source = "import"
-            entries.append(copy)
-            added += 1
-        }
+        let (entries, added, _) = Self.merge(
+            incoming.map {
+                var copy = $0
+                copy.usageCount = 0
+                copy.source = "import"
+                return copy
+            }, into: dictionaryEntries, addSpokenForms: false)
         if added > 0 { saveDictionary(entries) }
         return added
+    }
+
+    /// Entries already present (same phrase ignoring case, same replacement)
+    /// are kept as they are; with `addSpokenForms` they gain the incoming
+    /// spoken forms they lack. Returns the list, how many were added, and
+    /// whether anything changed.
+    static func merge(
+        _ incoming: [NativeDictionaryEntry], into existing: [NativeDictionaryEntry],
+        addSpokenForms: Bool
+    ) -> ([NativeDictionaryEntry], Int, Bool) {
+        var entries = existing
+        var added = 0
+        var changed = false
+        for entry in incoming {
+            let phrase = entry.phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !phrase.isEmpty else { continue }
+            if let index = entries.firstIndex(where: {
+                $0.phrase.caseInsensitiveCompare(phrase) == .orderedSame
+                    && ($0.replacement ?? "") == (entry.replacement ?? "")
+            }) {
+                guard addSpokenForms else { continue }
+                let missing = entry.spokenForms.filter { form in
+                    !entries[index].spokenForms.contains {
+                        $0.caseInsensitiveCompare(form) == .orderedSame
+                    }
+                }
+                if !missing.isEmpty {
+                    entries[index].spokenForms = (entries[index].spokenForms + missing).sorted {
+                        $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                    }
+                    changed = true
+                }
+                continue
+            }
+            var copy = entry
+            copy.phrase = phrase
+            entries.append(copy)
+            added += 1
+            changed = true
+        }
+        return (entries, added, changed)
+    }
+
+    // MARK: Import from other dictation apps
+
+    /// Apply what `DictationImportScanner` found (SPEC "Import from other
+    /// dictation apps"): words and replacements into the dictionary, snippets
+    /// into macros, past dictations into `Imported/` and `profile/extract/`,
+    /// and the shortcut and microphone when Phonon has not been given its own.
+    /// Nothing is written to the other apps' files.
+    @discardableResult
+    func applyDictationImport(_ findings: [DictationAppFindings]) -> DictationImportSummary {
+        var summary = DictationImportSummary()
+        let (entries, added, changed) = Self.merge(
+            findings.flatMap(\.terms), into: dictionaryEntries, addSpokenForms: true)
+        if changed { saveDictionary(entries) }
+        summary.addedTerms = added
+
+        var list = macros
+        for macro in findings.flatMap(\.macros) where !list.contains(where: { $0.id == macro.id }) {
+            list.append(macro)
+            summary.addedMacros += 1
+        }
+        if summary.addedMacros > 0 { saveMacros(list) }
+
+        var failure: String?
+        for finding in findings where !finding.dictations.isEmpty {
+            do {
+                try DictationImportFiles.write(
+                    finding.dictations, app: finding.app, support: supportDirectory)
+                summary.savedDictations += finding.dictations.count
+            } catch {
+                failure = "Could not save \(finding.app.name) history: \(error.localizedDescription)"
+            }
+        }
+
+        // Phonon's own default is fn, so only a different key is a change. The
+        // first app in table order that names a key Phonon offers wins.
+        if let mode = findings.lazy.compactMap(\.shortcutMode).first,
+            mode != settings.shortcutMode
+        {
+            updateSettings { $0.shortcutMode = mode }
+            summary.shortcutMode = mode
+        }
+        // A ranking the user already made in Phonon is theirs; leave it. A
+        // Bluetooth headset is not ranked from another app's choice: opening
+        // its mic drops the headset to call audio (SPEC "Microphone").
+        let devices = CoreAudioInputDevices.all()
+        if settings.microphonePriority.isEmpty,
+            let microphone = findings.lazy.compactMap(\.microphone).first(where: { name in
+                devices.first { $0.name.localizedCaseInsensitiveContains(name) }?.isBluetooth
+                    != true
+            })
+        {
+            updateSettings { $0.microphonePriority = [microphone] }
+            summary.microphone = microphone
+        }
+        if let failure { lastError = failure }
+        return summary
+    }
+
+    /// Scan the given apps off the main thread with the user's private list.
+    func scanDictationApps(_ apps: [DictationApp]) async -> [DictationAppFindings] {
+        let env = DictationImportEnvironment.live(denylist: settings.screenContextDenylist)
+        return await Task.detached(priority: .userInitiated) {
+            DictationImportScanner.scan(apps, env: env)
+        }.value
+    }
+
+    func detectDictationApps() -> [DictationApp] {
+        DictationImportScanner.detect(
+            DictationImportEnvironment.live(denylist: settings.screenContextDenylist))
     }
 
     /// The microphone list is whatever CoreAudio reports right now, so a device
@@ -829,6 +1063,26 @@ final class NativeAppStore: ObservableObject {
             if !list.contains(preference) { list.append(preference) }
             $0.stylePreferences[category] = list
         }
+    }
+
+    /// Pin one writing mode for dictations into `bundleID`; nil goes back to the default.
+    func setAppWritingMode(_ bundleID: String, _ mode: AppWritingMode?) {
+        let id = bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        updateSettings { $0.writingModesByApp[id] = mode?.rawValue }
+    }
+
+    /// Apps dictated into, most used first (from local history), for the per-app
+    /// writing mode picker.
+    var dictatedApps: [(name: String, bundleID: String)] {
+        var counts: [String: (name: String, count: Int)] = [:]
+        for item in history {
+            guard let app = item.metadata.appContext, !app.bundleID.isEmpty else { continue }
+            let name = app.appName ?? counts[app.bundleID]?.name ?? app.bundleID
+            counts[app.bundleID] = (name, (counts[app.bundleID]?.count ?? 0) + 1)
+        }
+        return counts.sorted { $0.value.count > $1.value.count }
+            .map { (name: $0.value.name, bundleID: $0.key) }
     }
 
     /// Add an app (bundle id) or site (host or URL) to the private list.
@@ -1017,8 +1271,35 @@ final class NativeAppStore: ObservableObject {
 
     func refreshPermissions() {
         inputMonitoringAvailable = CGPreflightListenEventAccess()
+        globeUsageType = GlobeKeySetting.currentUsageType()
         onPermissionsRefresh?()
         objectWillChange.send()
+    }
+
+    /// System Settings › Keyboard › "Press 🌐 key to", read at each permission refresh.
+    var globeUsageType: Int? = GlobeKeySetting.currentUsageType()
+
+    /// What keeps dictation from working, for the banner and the menu-bar item.
+    var permissionAttention: [PermissionAttention] {
+        PermissionAttention.items(
+            inputMonitoring: inputMonitoringAvailable, microphone: microphonePermission,
+            accessibility: accessibilityPermission, shortcutMode: settings.shortcutMode,
+            globeUsageType: globeUsageType)
+    }
+
+    func performAttentionAction(_ item: PermissionAttention) {
+        switch item {
+        case .inputMonitoring: performInputMonitoringPermissionAction()
+        case .microphone: performMicrophonePermissionAction()
+        case .accessibility:
+            // The prompt adds Phonon to the list, so the user only flips the switch.
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            if !AXIsProcessTrustedWithOptions(options) {
+                NSWorkspace.shared.open(PrivacyPane.accessibility.settingsURL)
+            }
+            refreshPermissions()
+        case .globeKey: NSWorkspace.shared.open(PermissionAttention.keyboardPane)
+        }
     }
 
     private func loadSettings() {

@@ -132,6 +132,75 @@ final class MainWindowDataTests: XCTestCase {
         XCTAssertEqual(NativeAppStore(supportDirectory: directory).settings.writingStyle, .formal)
     }
 
+    func testTapToToggleAndPerAppModesRoundTripThroughSettingsJSON() throws {
+        let url = directory.appendingPathComponent("settings.json")
+        try Data(
+            #"{"schema_version":2,"writing_modes_by_app":{"com.mitchellh.ghostty":"prompt","com.hnc.Discord":"verbatim"},"profile_prefix":true}"#
+                .utf8
+        ).write(to: url)
+        let store = NativeAppStore(supportDirectory: directory)
+        XCTAssertFalse(store.settings.tapToToggle, "off by default")
+        XCTAssertEqual(
+            store.settings.writingModesByApp, ["com.mitchellh.ghostty": "prompt"],
+            "an unknown mode is dropped")
+        store.updateSettings { $0.tapToToggle = true }
+        store.setAppWritingMode("com.apple.Terminal", .minimal)
+        store.setAppWritingMode("com.mitchellh.ghostty", nil)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(object["tap_to_toggle"] as? Bool, true)
+        XCTAssertEqual(
+            object["writing_modes_by_app"] as? [String: String], ["com.apple.Terminal": "minimal"])
+        XCTAssertEqual(object["profile_prefix"] as? Bool, true, "engine keys survive")
+        let reread = NativeAppStore(supportDirectory: directory).settings
+        XCTAssertTrue(reread.tapToToggle)
+        XCTAssertEqual(reread.writingModesByApp, ["com.apple.Terminal": "minimal"])
+    }
+
+    /// Issue #24: off by default, no default endpoint, and the key never in settings.json.
+    func testOwnEndpointCommandAndSettings() throws {
+        var settings = NativeSettings()
+        XCTAssertFalse(settings.byokEnabled)
+        XCTAssertEqual(settings.byokBaseURL, "")
+        XCTAssertEqual(OwnEndpoint.engineCommand(settings: settings, apiKey: "k") as NSDictionary,
+                       ["cmd": "byok"] as NSDictionary, "off: the engine is told off")
+        settings.byokEnabled = true
+        settings.byokBaseURL = "ftp://x"
+        settings.byokModel = "m"
+        XCTAssertEqual(OwnEndpoint.engineCommand(settings: settings, apiKey: "k").count, 1, "bad URL is off")
+        settings.byokBaseURL = " https://api.example.com/v1 "
+        let on = OwnEndpoint.engineCommand(settings: settings, apiKey: "sk-1")
+        XCTAssertEqual(on["base_url"] as? String, "https://api.example.com/v1")
+        XCTAssertEqual(on["model"] as? String, "m")
+        XCTAssertEqual(on["api_key"] as? String, "sk-1")
+        XCTAssertTrue(OwnEndpoint.validBaseURL("http://localhost:8080/v1"))
+        XCTAssertFalse(OwnEndpoint.validBaseURL("api.example.com"))
+
+        let url = directory.appendingPathComponent("settings.json")
+        let store = NativeAppStore(supportDirectory: directory)
+        store.updateSettings {
+            $0.byokEnabled = true
+            $0.byokBaseURL = "https://api.example.com/v1"
+            $0.byokModel = "m"
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("\"byok_base_url\""))
+        XCTAssertFalse(text.contains("api_key"), "the key is never written to settings.json")
+        XCTAssertTrue(NativeAppStore(supportDirectory: directory).settings.byokEnabled)
+    }
+
+    func testOwnEndpointKeyRoundTripsThroughTheKeychain() throws {
+        let service = "com.infatoshi.phonon.byok.test-\(UUID().uuidString)"
+        defer { OwnEndpoint.saveKey("", service: service) }
+        let status = OwnEndpoint.saveKey(" sk-test-123 \n", service: service)
+        try XCTSkipIf(status != errSecSuccess, "no writable login keychain here (\(status))")
+        XCTAssertEqual(OwnEndpoint.readKey(service: service), "sk-test-123")
+        OwnEndpoint.saveKey("sk-test-456", service: service)
+        XCTAssertEqual(OwnEndpoint.readKey(service: service), "sk-test-456", "replaced, not duplicated")
+        OwnEndpoint.saveKey("", service: service)
+        XCTAssertNil(OwnEndpoint.readKey(service: service))
+    }
+
     func testExportCopiesTheUsersDataButNotModelWeights() throws {
         let support = directory.appendingPathComponent("support", isDirectory: true)
         for path in [

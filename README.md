@@ -1,7 +1,7 @@
 # Phonon
 
 Open-source voice typing. Fast. Local. Yours.
-macOS is the shipped platform. Windows is in beta.
+macOS is the shipped platform. Windows is in beta; Linux is a preview.
 
 [Website](https://phonon.sh) · [Releases](https://github.com/Infatoshi/phonon/releases)
 
@@ -45,17 +45,28 @@ Beta. Continuous integration builds it on Windows and runs one real dictation
 through it on every push, and the same flow has run end to end on a Windows
 Server 2022 machine: download, first-run setup, dictation into Notepad.
 
-Download `phonon-win.exe` from the
+Download `Phonon-Setup-<version>.exe` from the
 [latest Windows prerelease](https://github.com/Infatoshi/phonon/releases?q=win-beta)
-and double-click it. It needs Windows 10 or 11 on x64. Sixteen gigabytes of
-memory is comfortable; eight is the floor.
+and double-click it. It installs for your user only (no administrator needed),
+adds Phonon to the Start menu and to sign-in, and starts it. If the PC lacks the
+Microsoft Visual C++ runtime, which the downloaded speech and correction
+runtimes link against, the installer runs Microsoft's redistributable and
+Windows asks once for permission. Uninstall from **Settings > Apps**; it asks
+whether to keep the downloaded models. It needs Windows 10 or 11 on x64. Sixteen
+gigabytes of memory is comfortable; eight is the floor.
+
+The bare `phonon-win.exe` still runs without installing. It then needs the
+[Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+on its own; Phonon checks before downloading anything and says so if it is missing.
 
 The build is not code signed. SmartScreen shows **Windows protected your PC**
 the first time. Choose **More info**, then **Run anyway**. There is no way
 around this without an Extended Validation certificate.
 
-First run downloads about 3.8 GB: the sherpa-onnx tools, the llama.cpp CPU
-build, Parakeet as int8 ONNX, and the Gemma correction weights. The tray
+First run downloads about 1.6 GB: the sherpa-onnx tools, the llama.cpp build
+(CPU, plus Vulkan for a graphics card), Parakeet as int8 ONNX, and Phonon's
+refiner (the correction model the Mac app uses). With a Vulkan GPU that decodes
+fast enough, correction runs on it; otherwise on the CPU. The tray
 tooltip carries the progress; Windows hides new tray icons behind the **^**
 at the right of the taskbar, so look there. Everything after that is local
 and offline.
@@ -63,7 +74,11 @@ and offline.
 Hold **Right Ctrl** to dictate. Double-tap it to latch, then press it again to
 stop. Right-click the tray icon for the menu. Phonon swallows Right Ctrl while
 it runs, so Right Ctrl stops acting as a modifier; Left Ctrl is untouched.
-`PHONON_WIN_HOTKEY` takes `rightctrl`, `leftctrl`, `rightalt`, `rightshift`,
+To use another key, pick it under **Dictation key** in the tray menu (Right
+Ctrl, Right Alt, Ctrl+Space, Right Shift, Caps Lock or F13). On a keyboard with
+a Copilot key instead of Right Ctrl, Phonon switches to Right Alt (Ctrl+Space
+where Right Alt types characters) the first time that key is pressed.
+`PHONON_WIN_HOTKEY` overrides the menu and takes `rightctrl`, `leftctrl`, `rightalt`, `rightshift`,
 `capslock`, or `f13`.
 
 ```
@@ -73,6 +88,26 @@ phonon-win.exe selftest  # one real pass through both models; the release gate
 ```
 
 Everything lives in `%LOCALAPPDATA%\Phonon`. Delete that folder to start over.
+
+## Linux preview
+
+Ubuntu 24.04 or later and Debian-family systems on x64, GNOME or KDE Plasma, Wayland or X11. Continuous
+integration builds `phonon_<version>_amd64.deb` and runs one real dictation through the binary on every push.
+
+```bash
+sudo apt install ./phonon_<version>_amd64.deb
+phonon run      # or log out and back in: it starts at sign-in
+```
+
+The package installs a udev rule that lets the signed-in user read the keyboard and create a virtual one (the
+same mechanism Steam uses for controllers), so no group membership or logout is needed. Phonon reads the
+dictation key from the kernel, which works under Wayland where apps get no global hotkeys, and types by pasting
+with a virtual Control-V, putting your clipboard back afterwards. Terminals paste with Control-Shift-V, so in a
+terminal the text stays on the clipboard. Phonon does nothing while the screen is locked.
+
+First run downloads the same 1.6 GB as Windows, into `~/.local/share/phonon`. Hold **Right Ctrl** to dictate;
+`PHONON_HOTKEY` takes the Windows key names. Without the package, `phonon setup` prints the one-time rule to
+install.
 
 ## Pipeline
 

@@ -17,12 +17,179 @@ use crate::manifest;
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// A ready recogniser: the tool and the weights it needs.
+/// A ready recogniser: the tool and the weights it needs, and the resident
+/// model when the sherpa-onnx library loaded (otherwise every pass spawns the
+/// command-line tool, which reloads 0.6 GB of weights each time).
 #[derive(Debug, Clone)]
 pub struct Recognizer {
     tool: PathBuf,
     model_dir: PathBuf,
     threads: usize,
+    resident: Option<std::sync::Arc<resident::Resident>>,
+}
+
+/// Parakeet held in memory through the sherpa-onnx C API (csrc/sherpa_shim.c).
+mod resident {
+    use std::ffi::{c_char, c_int, c_void, CStr, CString};
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    use anyhow::{anyhow, bail, Result};
+
+    extern "C" {
+        fn phonon_asr_bind(lookup: extern "C" fn(*const c_char) -> *mut c_void) -> c_int;
+        fn phonon_asr_create(
+            encoder: *const c_char,
+            decoder: *const c_char,
+            joiner: *const c_char,
+            tokens: *const c_char,
+            threads: c_int,
+        ) -> *const c_void;
+        fn phonon_asr_file(recognizer: *const c_void, wav: *const c_char) -> *mut c_char;
+        fn phonon_asr_samples(
+            recognizer: *const c_void,
+            sample_rate: c_int,
+            samples: *const f32,
+            num_samples: c_int,
+        ) -> *mut c_char;
+        fn phonon_asr_free(text: *mut c_char);
+    }
+
+    /// The loaded library; it stays loaded for the life of the process.
+    static LIBRARY: OnceLock<libloading::Library> = OnceLock::new();
+
+    extern "C" fn lookup(name: *const c_char) -> *mut c_void {
+        let Some(lib) = LIBRARY.get() else {
+            return std::ptr::null_mut();
+        };
+        let name = unsafe { CStr::from_ptr(name) }.to_bytes_with_nul();
+        unsafe { lib.get::<*mut c_void>(name) }
+            .map(|s| *s)
+            .unwrap_or(std::ptr::null_mut())
+    }
+
+    pub struct Resident {
+        handle: Mutex<usize>,
+    }
+
+    impl std::fmt::Debug for Resident {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Resident")
+        }
+    }
+
+    #[cfg(windows)]
+    fn open(runtime: &Path) -> Result<libloading::Library> {
+        use libloading::os::windows::{Library, LOAD_WITH_ALTERED_SEARCH_PATH};
+        // altered search path: onnxruntime.dll is found beside the C API dll
+        let path = runtime.join("lib").join("sherpa-onnx-c-api.dll");
+        Ok(
+            unsafe { Library::load_with_flags(&path, LOAD_WITH_ALTERED_SEARCH_PATH) }
+                .map_err(|e| anyhow!("load {}: {e}", path.display()))?
+                .into(),
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn open(runtime: &Path) -> Result<libloading::Library> {
+        let lib = runtime.join("lib");
+        // load onnxruntime by full path first, so the C API's dependency on it
+        // resolves without LD_LIBRARY_PATH in Phonon's own process
+        for dep in ["libonnxruntime.so", "libonnxruntime.dylib"] {
+            if lib.join(dep).is_file() {
+                std::mem::forget(
+                    unsafe { libloading::Library::new(lib.join(dep)) }
+                        .map_err(|e| anyhow!("load {dep}: {e}"))?,
+                );
+            }
+        }
+        let path = ["libsherpa-onnx-c-api.so", "libsherpa-onnx-c-api.dylib"]
+            .iter()
+            .map(|n| lib.join(n))
+            .find(|p| p.is_file())
+            .ok_or_else(|| anyhow!("no sherpa-onnx C API library in {}", lib.display()))?;
+        unsafe { libloading::Library::new(&path) }
+            .map_err(|e| anyhow!("load {}: {e}", path.display()))
+    }
+
+    impl Resident {
+        pub fn load(runtime: &Path, model_dir: &Path, threads: usize) -> Result<Self> {
+            if LIBRARY.get().is_none() {
+                let _ = LIBRARY.set(open(runtime)?);
+            }
+            let missing = unsafe { phonon_asr_bind(lookup) };
+            if missing != 0 {
+                bail!("sherpa-onnx C API is missing symbol #{missing}");
+            }
+            let c = |name: &str| {
+                CString::new(model_dir.join(name).to_string_lossy().as_bytes()).unwrap()
+            };
+            let (enc, dec, joi, tok) = (
+                c("encoder.int8.onnx"),
+                c("decoder.int8.onnx"),
+                c("joiner.int8.onnx"),
+                c("tokens.txt"),
+            );
+            let handle = unsafe {
+                phonon_asr_create(
+                    enc.as_ptr(),
+                    dec.as_ptr(),
+                    joi.as_ptr(),
+                    tok.as_ptr(),
+                    threads as c_int,
+                )
+            };
+            if handle.is_null() {
+                bail!("sherpa-onnx could not create the recogniser");
+            }
+            Ok(Self {
+                handle: Mutex::new(handle as usize),
+            })
+        }
+
+        /// Transcribe mono samples in -1..1 at `sample_rate`, without a file.
+        pub fn transcribe_samples(&self, sample_rate: u32, samples: &[f32]) -> Result<String> {
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| anyhow!("recogniser lock poisoned"))?;
+            let text = unsafe {
+                phonon_asr_samples(
+                    *handle as *const c_void,
+                    sample_rate as c_int,
+                    samples.as_ptr(),
+                    samples.len() as c_int,
+                )
+            };
+            if text.is_null() {
+                bail!("sherpa-onnx returned no text");
+            }
+            let out = unsafe { CStr::from_ptr(text) }
+                .to_string_lossy()
+                .trim()
+                .to_string();
+            unsafe { phonon_asr_free(text) };
+            Ok(out)
+        }
+
+        pub fn transcribe(&self, wav: &Path) -> Result<String> {
+            let handle = self
+                .handle
+                .lock()
+                .map_err(|_| anyhow!("recogniser lock poisoned"))?;
+            let path = CString::new(wav.to_string_lossy().as_bytes())?;
+            let text = unsafe { phonon_asr_file(*handle as *const c_void, path.as_ptr()) };
+            if text.is_null() {
+                bail!("sherpa-onnx could not read {}", wav.display());
+            }
+            let out = unsafe { CStr::from_ptr(text) }
+                .to_string_lossy()
+                .trim()
+                .to_string();
+            unsafe { phonon_asr_free(text) };
+            Ok(out)
+        }
+    }
 }
 
 /// One transcription.
@@ -90,7 +257,27 @@ impl Recognizer {
             tool,
             model_dir,
             threads,
+            resident: None,
         })
+    }
+
+    /// Load Parakeet into this process once, so passes skip the per-call model
+    /// load. On failure the command-line tool keeps working, per pass.
+    pub fn load_resident(&mut self) {
+        let runtime = fetch::component_dir(&manifest::SHERPA_RUNTIME);
+        let started = std::time::Instant::now();
+        match resident::Resident::load(&runtime, &self.model_dir, self.threads) {
+            Ok(r) => {
+                eprintln!(
+                    "phonon: speech model resident in {} ms",
+                    started.elapsed().as_millis()
+                );
+                self.resident = Some(std::sync::Arc::new(r));
+            }
+            Err(error) => eprintln!(
+                "phonon: resident speech model unavailable, using the tool per pass: {error:#}"
+            ),
+        }
     }
 
     /// The command line, so a failure can be reported exactly as it was run.
@@ -115,6 +302,25 @@ impl Recognizer {
         ]
     }
 
+    /// Whether Parakeet is loaded in this process (`transcribe_samples` works).
+    pub fn is_resident(&self) -> bool {
+        self.resident.is_some()
+    }
+
+    /// Transcribe samples in memory with the resident model; `None` when it is not
+    /// resident and the caller must write a file for the per-pass tool.
+    pub fn transcribe_samples(
+        &self,
+        sample_rate: u32,
+        samples: &[f32],
+    ) -> Option<Result<Transcript>> {
+        let r = self.resident.as_ref()?;
+        Some(
+            r.transcribe_samples(sample_rate, samples)
+                .map(|text| Transcript { text }),
+        )
+    }
+
     /// Transcribe one 16-bit single-channel wave file.
     pub fn transcribe(&self, wav: &Path) -> Result<Transcript> {
         if !wav.is_file() {
@@ -126,6 +332,11 @@ impl Recognizer {
         // do it too, but on Windows it returns an extended-length `\\?\` path
         // that not every C++ file reader accepts.
         let wav = absolute(wav)?;
+        if let Some(r) = &self.resident {
+            return Ok(Transcript {
+                text: r.transcribe(&wav)?,
+            });
+        }
         let mut command = Command::new(&self.tool);
         #[cfg(windows)]
         {

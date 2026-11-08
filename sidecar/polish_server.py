@@ -111,6 +111,8 @@ GUARD_MIN_WORDS = 8
 # fixed instructions and the vocabulary line, as in training. A refiner without
 # the key gets no mode line (its prompt is unchanged). The marker may override
 # this category -> mode table with "writing_modes_by_app_category".
+# MLX's cache of freed buffers (issue #27); see main().
+POLISH_MLX_CACHE_LIMIT = 1 << 30
 WRITING_MODE_BY_CATEGORY = {
     "chat": "casual",  # personal chat: Discord, iMessage, WhatsApp
     "work_chat": "formal",  # Slack, Teams, Google Chat
@@ -811,6 +813,13 @@ def main() -> None:
     except Exception as error:  # noqa: BLE001 - report to the engine, never crash silently
         emit({"ok": False, "error": f"correction runtime import failed: {error}"})
         return
+
+    # Issue #27 (fix from outside PR #33): MLX keeps freed GPU buffers in a cache
+    # it only reuses for a request of nearly the same size, and its default limit
+    # is effectively unbounded, so dictations of varying length grew this process
+    # by about 1 GB each. The limit caps idle buffers only, not what a request
+    # needs; asr_server.py sets the same one.
+    mx.set_cache_limit(POLISH_MLX_CACHE_LIMIT)
 
     print(f"model: {args.model}@{args.revision[:7]}", file=sys.stderr)
     try:

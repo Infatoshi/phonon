@@ -8,32 +8,46 @@
 //! The icon is owned by a message-only window. That window also runs the message
 //! loop the keyboard hook needs, so both live on the main thread.
 
+use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Result};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Security::{
+    GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD,
     NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetCursorPos, GetMessageW, LoadIconW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    TrackPopupMenu, TranslateMessage, HMENU, IDI_APPLICATION, MF_DISABLED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_DESTROY, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId,
+    LoadIconW, LoadImageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
+    TranslateMessage, EVENT_SYSTEM_FOREGROUND, HMENU, IDI_APPLICATION, IMAGE_ICON, MF_CHECKED,
+    MF_DISABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
+    TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_DESTROY,
+    WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
 /// Sent to the message-only window when the icon is clicked.
 const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by the worker thread when the tooltip text has changed.
 const WM_REFRESH: u32 = WM_APP + 2;
+/// Posted by the keyboard hook the first time it sees the Copilot key.
+const WM_COPILOT: u32 = WM_APP + 3;
 
 const ID_TOGGLE: usize = 1;
 const ID_OPEN_FOLDER: usize = 2;
 const ID_QUIT: usize = 3;
+/// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
+const ID_KEY: usize = 100;
 
 /// What the user picked from the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +58,8 @@ pub enum Command {
     OpenFolder,
     /// Leave.
     Quit,
+    /// The dictation key changed (menu pick or Copilot-key fallback).
+    KeyChanged,
 }
 
 static TRAY: OnceLock<Mutex<TrayHandle>> = OnceLock::new();
@@ -120,12 +136,157 @@ pub fn create(commands: Sender<Command>) -> Result<()> {
     let mut data = icon_data(hwnd);
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = WM_TRAY;
-    data.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
+    // The Phonon icon that build.rs embeds as resource 1 (winresource's
+    // application icon ID). A build without the resource gets the stock icon.
+    // MAKEINTRESOURCEW(1), at the notification area's small-icon size: LoadIconW
+    // only loads the large size and returned nothing for a 256-pixel-only icon.
+    data.hIcon = unsafe {
+        LoadImageW(
+            instance,
+            std::ptr::without_provenance(1),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            0,
+        )
+    } as _;
+    if data.hIcon.is_null() {
+        data.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
+    }
     fill(&mut data.szTip, "Phonon: starting");
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
         bail!("Shell_NotifyIconW could not add the icon");
     }
+    watch_foreground();
     Ok(())
+}
+
+/// Whether a process runs with an elevated (administrator) token. `None` when
+/// Windows will not say, for example for protected system processes.
+fn elevated(process: HANDLE) -> Option<bool> {
+    let mut token: HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut size = 0u32;
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        )
+    };
+    unsafe { CloseHandle(token) };
+    (ok != 0).then_some(elevation.TokenIsElevated != 0)
+}
+
+fn self_elevated() -> bool {
+    static SELF: OnceLock<bool> = OnceLock::new();
+    *SELF.get_or_init(|| elevated(unsafe { GetCurrentProcess() }).unwrap_or(false))
+}
+
+/// Windows keeps a process without administrator rights from sending keys to,
+/// or even hearing keys typed into, an administrator window (UIPI). The hook
+/// never sees the dictation key there, so without a word the key would just do
+/// nothing. Say so the first time each such window comes to the front.
+fn watch_foreground() {
+    if self_elevated() {
+        return;
+    }
+    // Out of context: the callback runs on this thread, from the message loop.
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            std::ptr::null_mut(),
+            Some(on_foreground),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if hook.is_null() {
+        eprintln!("phonon: SetWinEventHook failed; administrator windows will not be flagged");
+    }
+}
+
+static WARNED: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
+
+unsafe extern "system" fn on_foreground(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    window: HWND,
+    _object: i32,
+    _child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    let window = if window.is_null() {
+        GetForegroundWindow()
+    } else {
+        window
+    };
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(window, &mut pid);
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if process.is_null() {
+        return;
+    }
+    let is_admin = elevated(process);
+    CloseHandle(process);
+    if is_admin != Some(true) {
+        return;
+    }
+    let first = WARNED
+        .lock()
+        .map(|mut seen| seen.get_or_insert_with(HashSet::new).insert(pid))
+        .unwrap_or(false);
+    if first {
+        eprintln!("phonon: foreground pid {pid} is elevated");
+        notify(
+            "Phonon can't type into admin windows unless it runs as admin",
+            "This window runs as administrator, so Windows keeps Phonon from hearing the dictation key or typing here. Start Phonon as administrator to dictate into it.",
+            false,
+        );
+    }
+}
+
+/// Called from the keyboard hook: handle the Copilot key on this thread, out of
+/// the hook's time budget.
+pub fn post_copilot_key() {
+    if let Some(hwnd) = hwnd() {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(hwnd, WM_COPILOT, 0, 0)
+        };
+    }
+}
+
+fn pick_key(index: usize) {
+    let Some(&(_, code)) = super::hook::CHOICES.get(index) else {
+        return;
+    };
+    match super::hook::choose(code) {
+        Ok(()) => {
+            let label = super::hook::key_label(code);
+            notify(
+                &format!("Dictation key: {label}"),
+                &format!("Hold {label} to dictate. Double-tap it to latch."),
+                false,
+            );
+            send(Command::KeyChanged);
+        }
+        Err(error) => notify(
+            "Phonon could not change the key",
+            &format!("{error:#}"),
+            true,
+        ),
+    }
 }
 
 fn hwnd() -> Option<HWND> {
@@ -213,7 +374,18 @@ fn show_menu(hwnd: HWND) {
     let toggle = wide("Start or stop dictation");
     let folder = wide("Open the Phonon folder");
     let quit = wide("Quit Phonon");
+    let keys_title = wide(&format!("Dictation key: {}", super::hook::current_key().0));
+    let keys: HMENU = unsafe { CreatePopupMenu() };
+    let (_, current) = super::hook::current_key();
+    let labels: Vec<Vec<u16>> = super::hook::CHOICES
+        .iter()
+        .map(|(_, code)| wide(super::hook::key_label(*code)))
+        .collect();
     unsafe {
+        for (index, ((_, code), label)) in super::hook::CHOICES.iter().zip(&labels).enumerate() {
+            let checked = if *code == current { MF_CHECKED } else { 0 };
+            AppendMenuW(keys, MF_STRING | checked, ID_KEY + index, label.as_ptr());
+        }
         AppendMenuW(
             menu,
             MF_STRING | MF_DISABLED | MF_GRAYED,
@@ -222,6 +394,12 @@ fn show_menu(hwnd: HWND) {
         );
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, ID_TOGGLE, toggle.as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_POPUP,
+            keys as usize,
+            keys_title.as_ptr(),
+        );
         AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, folder.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, ID_QUIT, quit.as_ptr());
@@ -262,11 +440,25 @@ unsafe extern "system" fn window_proc(
                 ID_TOGGLE => send(Command::Toggle),
                 ID_OPEN_FOLDER => send(Command::OpenFolder),
                 ID_QUIT => send(Command::Quit),
+                id if (ID_KEY..ID_KEY + super::hook::CHOICES.len()).contains(&id) => {
+                    pick_key(id - ID_KEY)
+                }
                 _ => {}
             }
             0
         }
         WM_REFRESH => 0,
+        WM_COPILOT => {
+            if let Some(label) = super::hook::on_copilot_key() {
+                notify(
+                    &format!("Dictation key: {label}"),
+                    &format!("This keyboard has a Copilot key instead of Right Ctrl, so Phonon uses {label}. Hold it to dictate; change it from the tray menu."),
+                    false,
+                );
+                send(Command::KeyChanged);
+            }
+            0
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             0

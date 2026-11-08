@@ -1,0 +1,80 @@
+Mobile profilers for the refiner: what works on real phones (2026-11-06, Alberta time)
+
+Phones probed: OnePlus 11 5G (SM8550, Android API 34, flagship) and Galaxy A06 (MT6769, API 35, budget), Firebase
+Test Lab matrices matrix-3j3fu3537wyh3 and matrix-367ddm0lnw7nb (APKs gs://test-lab-frz7uhwu615j6-yvx9p07017mx4/
+phonon-apk/kb3-20261106-1824/, test RefinerKernelBenchTest with kb_perf=1 kb_perfetto=1 kb_perfcfg=top4).
+All commands run without root from the instrumentation's UiAutomation shell (shell uid) while the refiner decodes on
+a pinned 4-thread pool in the debuggable debug APK. UiAutomation does not run commands through a shell: no &&, pipes
+or redirects, one command per call. Test Lab pulls files with --directories-to-pull /sdcard/phonon_kb.
+
+ANDROID
+
+simpleperf stat, generic hardware events: WORKS on OnePlus 11 and Galaxy A06 (and the API 35 x86 emulator).
+  simpleperf stat --app ai.phonon.keyboard --duration 3 -e cpu-cycles,instructions,cache-references,cache-misses,stalled-cycles-backend
+  Shows per-event counts for the app's threads. OnePlus 11 (3 s of decode): 22.95 G cycles (2.13 GHz average per
+  busy thread), 79.2 G instructions (IPC 3.45), 155.6 M cache misses, 3.74 G backend stall cycles. A06: 17.0 G
+  cycles (1.66 GHz), 21.3 G instructions (IPC 1.25), 4.55 G backend stalls.
+  Harmless stderr: "Running child command in app uid isn't allowed". perf_event_paranoid=-1, security.perf_harden=1
+  on both phones.
+
+simpleperf stat, ARM PMU raw events: WORKS on both phones (the emulator does not have them).
+  simpleperf list raw          (lists the ARMv8/v9 common events: raw-l1d-cache-refill, raw-l2d-cache-refill,
+                                raw-l3d-cache-refill, raw-bus-access, raw-mem-access, raw-ll-cache-miss-rd,
+                                raw-ase-spec, raw-inst-spec, ...; the probe logs the first 55 lines)
+  simpleperf stat --app ai.phonon.keyboard --duration 3 -e raw-l2d-cache-refill,raw-l3d-cache-refill,raw-bus-access,raw-mem-access,raw-ll-cache-miss-rd
+  OnePlus 11: L2 refill 60.4 M, L3 refill 128.0 M, bus access 1.40 G, mem access 14.3 G, LL read miss 137.2 M in 3 s.
+  A06: L2 refill 85.3 M, L3 refill 37.7 M, bus access 677 M, mem access 347 M, LL read miss 16.5 M.
+  These give DRAM traffic per token (bus-access x bus width) to set against the 0.98 GB/token model.
+
+simpleperf record + report: WORKS on both phones (user-space symbols resolve; kernel symbols are hidden by
+kptr_restrict).
+  simpleperf record --app ai.phonon.keyboard --duration 3 -f 4000 -o /data/local/tmp/kb_perf.data
+  simpleperf report -i /data/local/tmp/kb_perf.data --sort symbol --percent-limit 0.8
+  simpleperf report -i /data/local/tmp/kb_perf.data --sort tid,comm --percent-limit 1
+  OnePlus 11 (42,825 samples, 0 lost; window covers prefill and decode): ggml_gemm_q4_K_8x8_q8_K 54.5%,
+  ggml_gemv_q4_K_8x8_q8_K 18.9%, repack forward_mul_mat 3.4%, ggml_gemm_q5_K_8x8_q8_K 3.2%, ggml_barrier 1.4%.
+  A06 (armv8.2_2 variant, repack off, 50,271 samples): ggml_vec_dot_q4_K_q8_K 72.4%, ggml_vec_dot_q5_K_q8_K 18.8%,
+  ggml_compute_forward_mul_mat 1.4%. Per-thread split shows the 4 pool threads at 21-31% each.
+  perf.data copied to /sdcard/phonon_kb/ and pulled by Test Lab (as test artifacts).
+
+Perfetto (CPU scheduling, frequency, idle): WORKS on both phones.
+  perfetto -o /data/misc/perfetto-traces/kb_trace.pftrace -t 6s sched freq idle
+  then cp /data/misc/perfetto-traces/kb_trace.pftrace /sdcard/phonon_kb/   (Test Lab pulls it)
+  traced is enabled (persist.traced.enable=1). Trace size: OnePlus 11 33.5 MB, A06 2.9 MB for 6 s.
+  Analysed on the Mac with trace_processor: uv run --with perfetto python trace_summary.py TRACE ai.phonon
+  (a local trace_summary.py: per-CPU busy %, app share, cpufreq min/avg/max, per-thread CPUs).
+  What it showed:
+  - OnePlus 11: the 4 pool threads stayed on cpus 7,3,4,5 as pinned. cpu7 (X3, 3.19 GHz max) averaged 2.25 GHz and
+    the A715 cores (2.80 GHz max) 1.94 GHz during decode, so the governor ran the cores at 60-70% of max clock.
+    Cores 0-2 and 6 (not ours) were 56-76% busy with other processes.
+  - Galaxy A06: all 8 cores 88-98% busy, ours only on 4 of them; the 2 A75 big cores averaged 1.23 GHz
+    (max seen 1.44 GHz), the A55 cluster 1.66 GHz. Decode during the trace ran at 467 ms/token against 182-260 ms
+    in the same session's other runs: the budget Test Lab phone is contended and its big cores are clock-capped.
+    This also explains why the A75 cores on the A06, moto g04 and realme C53 measured lower SDOT peaks than the A55s.
+
+llama cb_eval per-op profile: WORKS with 1 thread (from the 4:10 pm DEVLOG entry; run on Galaxy S25, A56, Pixel 10
+Pro, A16). Multi-thread profiles are not trustworthy (2.8 s/token on the emulator with the callback set).
+  RefinerKernelBenchTest -e kb_prof top1
+
+UNTESTED on Android: simpleperf/Perfetto on API 29-30 phones (Pixel 5, Galaxy S9) and on non-debuggable release
+builds (needs android:profileableByShell), Perfetto heapprofd/callstack sampling, GPU tools (AGI), and the
+Perfetto Android "cpu_freq" data source config form (only the lightweight -t mode was used).
+
+IOS (iPhone 17 Pro, A19 Pro, iOS 26.7.1, device <DEVICE_UDID>)
+
+UPDATE 2026-11-06 8:51 pm: after the unlock, CPU Counters and Time Profiler both recorded on the phone (exit 0,
+40 s, all processes, around a selftest; traces kept locally, not yet analysed), and the
+kbench microbench ran (rows in ios.tsv). The "UNTESTED" lines below are the state before that.
+
+xctrace record "CPU Counters": UNTESTED on the phone. The phone was "unavailable" to devicectl for the whole run
+(locked/not reachable) and the A/B script (pid 85927) was still waiting for it, so nothing was run on it.
+xctrace 27.2 on this Mac lists the device (iOS 26.7.1) and has the templates CPU Counters,
+CPU Profiler, Time Profiler, Processor Trace and System Trace.
+  Command prepared (to start when the A/B is finished and the phone accepts a launch):
+  xcrun xctrace record --device <DEVICE_UDID> --template "CPU Counters" --time-limit 40s \
+    --output trace-CPU_Counters.trace --all-processes --no-prompt     (around one selftest_phone.sh run)
+xctrace record "Time Profiler": UNTESTED on the phone, same reason; same command with --template "Time Profiler".
+On-device microbench (bandwidth, SDOT/SMMLA/FMA/fp16 peaks): built, not run (same reason). Standalone app
+sh.phonon.kbench (a local microbench, not part of the Phonon product): launch with
+  xcrun devicectl device process launch --device <DEVICE_UDID> sh.phonon.kbench --kbench --stamp S
+  and copy Documents/kbench.jsonl back with devicectl device copy from --domain-identifier sh.phonon.kbench.

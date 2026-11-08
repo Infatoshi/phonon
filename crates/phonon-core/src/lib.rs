@@ -12,6 +12,9 @@
 //!   {"cmd":"screen_context","id":"...","text":"..."}  — screen text for the open stream
 //!   {"cmd":"stream_app","id":"...","app":{...}}  — the open stream's target app, once resolved
 //!   {"cmd":"reload_dictionary"}
+//!   {"cmd":"byok","base_url":"https://…/v1","model":"…","api_key":"…","timeout_ms":6000}
+//!   — the user's own OpenAI-compatible endpoint refines instead of the local refiner,
+//!   which stays the fallback; without base_url/model it is off. Memory only.
 //!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
 //!   {"cmd":"shutdown"}
@@ -106,6 +109,10 @@ pub struct Engine {
     started: Instant,
     /// FIFO of polish requests (serve-json returns in order).
     polish_requests: Vec<PolishRequest>,
+    /// The user's own OpenAI-compatible endpoint (`{"cmd":"byok"}`), off when None.
+    byok: Option<phonon_llm::byok::Endpoint>,
+    /// Endpoint requests in flight, by polish request id.
+    byok_jobs: HashMap<String, ByokJob>,
     dictionary: data::DictionaryFile,
     styles: app_context::StylePreferenceCache,
     /// Capitalizations of ordinary words seen this session, in memory only.
@@ -137,10 +144,12 @@ pub struct Engine {
     /// when the speaker stops inside the last chunk the final polish asks for the same one.
     stream_envelope: Option<(String, String, String)>,
     /// The open stream's target app category (`stream_start` / `stream_app`), so background
-    /// commits carry the writing mode the final polish will use; and the category the last
-    /// commit went out with.
+    /// commits carry the writing mode the final polish will use; and the category and
+    /// writing mode the last commit went out with.
     stream_category: Option<(String, app_context::AppCategory)>,
-    stream_commit_category: Option<app_context::AppCategory>,
+    /// The open stream's target bundle id, for a per-app writing mode.
+    stream_bundle: Option<(String, String)>,
+    stream_commit_category: (Option<app_context::AppCategory>, Option<String>),
     /// The open stream whose background drafts go out as `draft` results: settings.json
     /// `live_text` as of its `stream_start` (re-read only when the file changed), so a
     /// flipped setting applies from the next dictation without an engine restart.
@@ -197,6 +206,65 @@ struct PolishRequest {
     /// Local history is on: the app and text-box context may be kept in the
     /// corpus entry. Off, nothing read from the screen or a field is written.
     keep_context: bool,
+    /// The writing mode the text is laid out for (line breaks): the user's pick for
+    /// the app, else the app category's mode.
+    mode: Option<String>,
+}
+
+/// Dictionary terms sent to the user's own endpoint with a transcript.
+const BYOK_VOCABULARY_CAP: usize = 80;
+
+/// A request to the user's own endpoint (issue #24) running beside the local refiner.
+struct ByokJob {
+    deadline: Instant,
+    reply: std::sync::mpsc::Receiver<Result<String>>,
+}
+
+/// The endpoint's text for request `id`, waiting until its deadline at most;
+/// None (use the local result) on an error, a timeout or no request.
+fn take_byok_result(jobs: &mut HashMap<String, ByokJob>, id: Option<&str>) -> Option<String> {
+    let job = jobs.remove(id?)?;
+    let wait = job.deadline.saturating_duration_since(Instant::now());
+    match job.reply.recv_timeout(wait) {
+        Ok(Ok(text)) => Some(text),
+        Ok(Err(error)) => {
+            eprintln!("phonon engine: own endpoint failed, local result used: {error:#}");
+            None
+        }
+        Err(_) => {
+            eprintln!("phonon engine: own endpoint timed out, local result used");
+            None
+        }
+    }
+}
+
+/// The endpoint's text survives the output guard (it is not swapped back for the raw
+/// transcript); otherwise the local refiner's result is the better fallback.
+fn byok_text_passes(dictionary: &data::DictionaryFile, source: &str, remote: &str) -> bool {
+    let guarded = safe_polish_output(dictionary, source, remote).text;
+    let raw = dictionary.apply_exact_replacements(source).text;
+    guarded != raw || dictionary.apply_exact_replacements(remote.trim()).text == raw
+}
+
+/// Line breaks of the inserted text: numbered lists one per line in every mode but
+/// casual; the greeting and sign-off on their own lines only in email (`email_layout`),
+/// never in Slack or Teams although they map to formal.
+fn final_layout(text: &str, mode: &str, category: Option<app_context::AppCategory>) -> String {
+    if category == Some(app_context::AppCategory::Email) {
+        app_context::email_layout(&phonon_llm::linebreak::lists(text))
+    } else {
+        phonon_llm::linebreak::layout(text, mode, false)
+    }
+}
+
+/// The refiner's writing mode for an app category (`polish_server.WRITING_MODE_BY_CATEGORY`).
+fn category_mode(category: Option<app_context::AppCategory>) -> &'static str {
+    match category.map(|category| category.as_str()) {
+        Some("chat") => "casual",
+        Some("work_chat") | Some("email") => "formal",
+        Some("ai_prompt") | Some("code") => "prompt",
+        _ => "minimal",
+    }
 }
 
 impl Engine {
@@ -236,6 +304,8 @@ impl Engine {
             root: root.to_path_buf(),
             started: Instant::now(),
             polish_requests: Vec::new(),
+            byok: None,
+            byok_jobs: HashMap::new(),
             dictionary,
             styles: app_context::StylePreferenceCache::new(None),
             repeated_edits: edits::RepeatedEdits::default(),
@@ -254,7 +324,8 @@ impl Engine {
             finishing: HashMap::new(),
             stream_envelope: None,
             stream_category: None,
-            stream_commit_category: None,
+            stream_bundle: None,
+            stream_commit_category: (None, None),
             live_text_stream: None,
         })
     }
@@ -518,6 +589,20 @@ impl Engine {
                                 });
                             }
                         } else {
+                            // The user's own endpoint, when set and in time; the guard in
+                            // finish_correction still applies to its text.
+                            let text = match take_byok_result(&mut self.byok_jobs, id.as_deref()) {
+                                Some(remote)
+                                    if byok_text_passes(
+                                        &self.dictionary,
+                                        &request.source_text,
+                                        &remote,
+                                    ) =>
+                                {
+                                    remote
+                                }
+                                _ => text,
+                            };
                             let mut corrected = finish_correction(
                                 &self.dictionary,
                                 &request.source_text,
@@ -525,9 +610,11 @@ impl Engine {
                                 &request.style,
                             );
                             let app_category = request.app.as_ref().map(|app| app.category);
-                            if app_category == Some(app_context::AppCategory::Email) {
-                                corrected.text = app_context::email_layout(&corrected.text);
-                            }
+                            corrected.text = final_layout(
+                                &corrected.text,
+                                request.mode.as_deref().unwrap_or("minimal"),
+                                app_category,
+                            );
                             if let Some(recording_id) = id
                                 .as_ref()
                                 .and_then(|request_id| self.recording_ids.get(request_id))
@@ -808,7 +895,8 @@ impl Engine {
             self.finishing.clear();
             self.stream_envelope = None;
             self.stream_category = None;
-            self.stream_commit_category = None;
+            self.stream_bundle = None;
+            self.stream_commit_category = (None, None);
             self.live_text_stream = self.styles.live_text().then(|| stream_id.to_string());
             if let Some(app) = app {
                 self.stream_app(stream_id, app);
@@ -833,8 +921,9 @@ impl Engine {
     /// arrives after key down); later commits carry its category.
     pub fn stream_app(&mut self, id: &str, app: &serde_json::Value) {
         if self.segment_streams.contains_key(id) {
-            self.stream_category = app_context::AppContext::from_request(app)
-                .map(|app| (id.to_string(), app.category));
+            let app = app_context::AppContext::from_request(app);
+            self.stream_category = app.as_ref().map(|app| (id.to_string(), app.category));
+            self.stream_bundle = app.map(|app| (id.to_string(), app.bundle_id));
         }
     }
 
@@ -865,8 +954,13 @@ impl Engine {
             _ => String::new(),
         };
         let category = self.stream_commit_context(id);
+        let bundle = match (&self.stream_bundle, id) {
+            (Some((stream_id, bundle)), Some(id)) if stream_id == id => Some(bundle.clone()),
+            _ => None,
+        };
+        let mode = self.styles.writing_mode_for(bundle.as_deref());
         if matches!(&self.stream_envelope, Some((t, s, _)) if *t == text && *s == screen)
-            && category == self.stream_commit_category
+            && (category, mode.clone()) == self.stream_commit_category
         {
             return None; // a round that heard nothing new: the sidecar has this one already
         }
@@ -876,7 +970,7 @@ impl Engine {
         let live = id.filter(|id| self.live_text_stream.as_deref() == Some(*id));
         let context = app_context::with_writing_mode(
             stream_commit_json(category, live.map(|id| (id, index))),
-            self.styles.writing_mode().as_deref(),
+            mode.as_deref(),
         );
         let polisher = self.polisher.as_mut()?;
         let error = polisher
@@ -884,7 +978,7 @@ impl Engine {
             .err()
             .map(|error| format!("stream commit: {error:#}"));
         self.stream_envelope = Some((text, screen, input));
-        self.stream_commit_category = category;
+        self.stream_commit_category = (category, mode);
         error
     }
 
@@ -963,10 +1057,16 @@ impl Engine {
             None => Vec::new(),
         };
         let textbox = textbox.and_then(app_context::TextboxContext::from_request);
+        let mode = self
+            .styles
+            .writing_mode_for(app.as_ref().map(|app| app.bundle_id.as_str()));
         let context = app_context::with_writing_mode(
             app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
-            self.styles.writing_mode().as_deref(),
+            mode.as_deref(),
         );
+        let layout_mode = mode
+            .clone()
+            .unwrap_or_else(|| category_mode(app.as_ref().map(|app| app.category)).to_string());
         self.polish_requests.push(PolishRequest {
             id: id.map(str::to_string),
             source_text: text.to_string(),
@@ -975,6 +1075,7 @@ impl Engine {
             style,
             textbox,
             keep_context,
+            mode: Some(layout_mode.clone()),
         });
         let Some(polisher) = self.polisher.as_mut() else {
             bail!("the required local correction model is unavailable");
@@ -983,7 +1084,45 @@ impl Engine {
             self.polish_requests.pop();
             return Err(error);
         }
+        // The user's own endpoint refines the same transcript beside the local refiner;
+        // the local result stands in whenever it fails or is late.
+        if let (Some(endpoint), Some(id)) = (self.byok.clone(), id) {
+            let mut vocabulary = self
+                .polish_requests
+                .last()
+                .map(|r| r.screen_context_terms.clone())
+                .unwrap_or_default();
+            for term in self.dictionary.asr_terms() {
+                if vocabulary.len() >= BYOK_VOCABULARY_CAP {
+                    break;
+                }
+                if !vocabulary.contains(&term) {
+                    vocabulary.push(term);
+                }
+            }
+            let system = phonon_llm::byok::system_prompt(Some(&layout_mode), &vocabulary);
+            let transcript = text.to_string();
+            let (tx, rx) = mpsc::channel();
+            let deadline = Instant::now() + endpoint.timeout;
+            thread::spawn(move || {
+                let _ = tx.send(phonon_llm::byok::complete(&endpoint, &system, &transcript));
+            });
+            self.byok_jobs.insert(
+                id.to_string(),
+                ByokJob {
+                    deadline,
+                    reply: rx,
+                },
+            );
+        }
         Ok(())
+    }
+
+    /// `{"cmd":"byok"}`: set or clear the user's own endpoint (issue #24). The bar
+    /// reads the key from the Keychain and sends it here; it is kept in memory only.
+    pub fn set_byok(&mut self, endpoint: Option<phonon_llm::byok::Endpoint>) {
+        self.byok = endpoint;
+        self.byok_jobs.clear();
     }
 
     pub fn polish_available(&self) -> bool {
@@ -1399,6 +1538,12 @@ pub fn run_engine_serve() -> Result<()> {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
                         }
                     }
+                    "byok" => {
+                        let endpoint = phonon_llm::byok::Endpoint::from_command(&v);
+                        let on = endpoint.is_some();
+                        eng.set_byok(endpoint);
+                        emit(&json!({"type":"status","kind":"byok","on":on}));
+                    }
                     "prewarm" => {
                         if let Err(e) = eng.prewarm_polish() {
                             emit(&json!({"type":"error","msg":format!("{e:#}")}));
@@ -1559,6 +1704,131 @@ mod tests {
     use crate::data::{DictionaryEntry, DictionaryFile};
     use serde_json::json;
     use std::collections::HashMap;
+
+    /// Issue #24: the endpoint's text wins only when it arrives in time and passes
+    /// the guard; an error, a timeout, a hung server or a runaway reply all fall back
+    /// to the local result.
+    #[test]
+    fn own_endpoint_falls_back_to_the_local_result() {
+        use super::{byok_text_passes, take_byok_result, ByokJob};
+        use std::time::{Duration, Instant};
+        let mut jobs: HashMap<String, ByokJob> = HashMap::new();
+        let job = |result: Option<anyhow::Result<String>>, wait_ms: u64| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            if let Some(result) = result {
+                tx.send(result).unwrap();
+            } else {
+                std::mem::forget(tx); // never answers
+            }
+            ByokJob {
+                deadline: Instant::now() + Duration::from_millis(wait_ms),
+                reply: rx,
+            }
+        };
+        jobs.insert("ok".into(), job(Some(Ok("Remote text.".into())), 500));
+        jobs.insert(
+            "err".into(),
+            job(Some(Err(anyhow::anyhow!("HTTP 500"))), 500),
+        );
+        jobs.insert("late".into(), job(None, 200));
+        assert_eq!(
+            take_byok_result(&mut jobs, Some("ok")).as_deref(),
+            Some("Remote text.")
+        );
+        assert_eq!(take_byok_result(&mut jobs, Some("err")), None);
+        let started = Instant::now();
+        assert_eq!(take_byok_result(&mut jobs, Some("late")), None);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "waits only to the deadline"
+        );
+        assert_eq!(take_byok_result(&mut jobs, Some("unknown")), None);
+        assert_eq!(take_byok_result(&mut jobs, None), None);
+        assert!(jobs.is_empty());
+
+        // a real HTTP endpoint that accepts and never answers: the local result stands
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = phonon_llm::byok::Endpoint {
+            base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+            model: "m".into(),
+            api_key: String::new(),
+            timeout: Duration::from_millis(600),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let deadline = Instant::now() + endpoint.timeout;
+        std::thread::spawn(move || {
+            let _ = tx.send(phonon_llm::byok::complete(&endpoint, "S", "t"));
+        });
+        jobs.insert(
+            "hung".into(),
+            ByokJob {
+                deadline,
+                reply: rx,
+            },
+        );
+        assert_eq!(take_byok_result(&mut jobs, Some("hung")), None);
+        drop(listener);
+
+        let dictionary = DictionaryFile::default();
+        let source = "run v llm on black well tonight and log the throughput";
+        assert!(byok_text_passes(
+            &dictionary,
+            source,
+            "Run vLLM on Blackwell tonight and log the throughput."
+        ));
+        assert!(!byok_text_passes(&dictionary, source, ""), "empty reply");
+        assert!(
+            !byok_text_passes(
+                &dictionary,
+                source,
+                &"Sure! Here is a long answer. ".repeat(20)
+            ),
+            "an answer instead of a correction"
+        );
+        assert!(
+            byok_text_passes(&dictionary, "ship it", "ship it"),
+            "unchanged is fine"
+        );
+    }
+
+    #[test]
+    fn greeting_and_sign_off_lines_only_in_email() {
+        use super::final_layout;
+        let text = "Hi Sarah, the build is green. Thanks, Chris";
+        // Slack and Teams map to formal: the message stays one line
+        assert_eq!(
+            final_layout(text, "formal", Some(AppCategory::WorkChat)),
+            text
+        );
+        // email: greeting and sign-off on their own lines
+        let email = final_layout(text, "formal", Some(AppCategory::Email));
+        assert!(email.starts_with("Hi Sarah,\n"), "{email:?}");
+        assert!(email.contains("\nThanks"), "{email:?}");
+        // numbered lists break in both, as before
+        let steps = "Hi Sarah, two things: 1. ship it 2. tag it";
+        assert_eq!(
+            final_layout(steps, "formal", Some(AppCategory::WorkChat)),
+            "Hi Sarah, two things:\n1. ship it\n2. tag it"
+        );
+        assert!(final_layout(steps, "formal", Some(AppCategory::Email))
+            .contains("\n1. ship it\n2. tag it"));
+        assert_eq!(
+            final_layout("1. eggs 2. milk", "casual", Some(AppCategory::Chat)),
+            "1. eggs 2. milk"
+        );
+    }
+
+    #[test]
+    fn layout_modes_follow_the_category_table() {
+        use super::category_mode;
+        assert_eq!(category_mode(Some(AppCategory::Chat)), "casual");
+        assert_eq!(category_mode(Some(AppCategory::WorkChat)), "formal");
+        assert_eq!(category_mode(Some(AppCategory::Email)), "formal");
+        assert_eq!(category_mode(Some(AppCategory::Code)), "prompt");
+        assert_eq!(category_mode(Some(AppCategory::AiPrompt)), "prompt");
+        assert_eq!(category_mode(Some(AppCategory::Docs)), "minimal");
+        assert_eq!(category_mode(None), "minimal");
+    }
 
     #[test]
     fn a_live_text_draft_maps_to_a_draft_result_event() {

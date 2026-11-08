@@ -19,7 +19,9 @@ bzip2 = "0.6"
 clap = { version = "4", features = ["derive"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hound = "3"
+libloading = "0.8"
 phonon-hotkey = { path = "../phonon-hotkey" }
+phonon-llm = { path = "../phonon-llm" }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
@@ -30,7 +32,14 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 native-tls = "0.2"
 ureq = { version = "2", default-features = false, features = ["json", "gzip", "native-tls"] }
 
-[target.'cfg(windows)'.build-dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"
+# build.rs embeds the icon and version resource whenever the target is Windows, including cross builds (llvm-rc)
 winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
@@ -40,12 +49,15 @@ cpal = "0.15"
 version = "0.59"
 features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_Console",
     "Win32_Graphics_Gdi",
     "Win32_System_DataExchange",
+    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Threading",
+    "Win32_UI_Accessibility",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
