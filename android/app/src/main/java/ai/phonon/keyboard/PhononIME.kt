@@ -125,7 +125,9 @@ class PhononIME : InputMethodService() {
         val r = refiner
         val json = if (r != null && raw.isNotEmpty()) r.refine(raw, mode) else null
         val t2 = SystemClock.elapsedRealtime()
-        val text = json?.let { refinedText(it) } ?: raw
+        // Refiner gated off by RAM (r == null): the raw transcript still gets the line-break stage, since Parakeet
+        // already writes "1. ... 2. ..." for dictated steps (Galaxy A16 5G, Test Lab 2026-11-08).
+        val text = json?.let { refinedText(it) } ?: if (r == null) LineBreaks.apply(raw, mode) else raw
         Log.i(TAG, "PIPELINE source=$source audio_ms=${samples.size / 16} asr_ms=${t1 - t0} refine_ms=${t2 - t1} " +
             "raw=\"$raw\" refined=${json ?: "null"} ${Mem.snapshot()}")
         main.post { commitResult(text, tUp, source) }
@@ -146,8 +148,13 @@ class PhononIME : InputMethodService() {
         // one as Enter, which would send half the dictation: those fields get one line.
         val multiLine = ((currentInputEditorInfo?.inputType ?: 0) and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
         val text = if (multiLine) result else result.replace('\n', ' ')
-        val ok = ic?.commitText(text, 1) ?: false
-        Log.i(TAG, "E2E source=$source key_up_to_commit_ms=${SystemClock.elapsedRealtime() - tUp} committed=$ok text=\"$text\"")
+        // commitText returns true even with no real field behind it (a dialog over the app, a window without an
+        // editor: the system then binds a TYPE_NULL editor), so "committed" also needs a bound text field. The text
+        // is still sent: some real editors are TYPE_NULL (terminal apps read the commit as key input).
+        val bound = currentInputStarted && (currentInputEditorInfo?.inputType ?: InputType.TYPE_NULL) != InputType.TYPE_NULL
+        val ok = (ic?.commitText(text, 1) ?: false) && bound
+        Log.i(TAG, "E2E source=$source key_up_to_commit_ms=${SystemClock.elapsedRealtime() - tUp} committed=$ok " +
+            "bound=$bound text=\"$text\"")
         setStatus(if (ok) "committed" else "no field")
     }
 

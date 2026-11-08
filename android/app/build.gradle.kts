@@ -19,7 +19,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
-                arguments += listOf("-DLLAMA_DIR=" + project.property("phonon.llamaDir"), "-DCMAKE_BUILD_TYPE=Release")
+                // 16 KB ELF segment alignment for every native library we build (ggml, llama, the refiner JNI):
+                // 4 KB-aligned libraries made Android 16 show PageSizeMismatchDialog over the app (Pixel 10 Pro,
+                // Test Lab, 2026-11-08), and Google Play requires 16 KB support for apps targeting Android 15+.
+                arguments += listOf("-DLLAMA_DIR=" + project.property("phonon.llamaDir"), "-DCMAKE_BUILD_TYPE=Release",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
                 cppFlags += listOf("-O3")
             }
         }
