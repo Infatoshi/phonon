@@ -2287,7 +2287,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         promptPermissions()
         showMainWindow()
         startEngine()
-        installToggleHotKey()
+        installToggleHandler()
+        syncToggleHotKey()
         installHotkey()
         refreshStatusTitle()
         showIdle()
@@ -2631,6 +2632,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         applyDockVisibility()
         refreshStatusTitle()
         if enginesReady { sendOwnEndpoint() }
+        syncToggleHotKey()
         competitors.settingsChanged()
         if !appStore.settings.meetingCapture { meetings.stop(reason: "turned_off") }
         meetings.refresh()
@@ -3588,9 +3590,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // MARK: Hotkey
 
-    /// Carbon hotkeys do not require Input Monitoring, so toggle recording remains
-    /// usable while macOS is waiting for Right-Option monitoring permission.
-    private func installToggleHotKey() {
+    /// Handles the toggle hotkey; `syncToggleHotKey()` registers it.
+    private func installToggleHandler() {
         var eventSpec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -3613,20 +3614,33 @@ final class AppController: NSObject, NSApplicationDelegate {
             Unmanaged.passUnretained(self).toOpaque(),
             &toggleHandler
         )
+        if handlerStatus != noErr {
+            NSLog("phonon: Ctrl+Space handler installation failed (\(handlerStatus))")
+        }
+    }
 
-        let hotKeyId = EventHotKeyID(signature: 0x50484F4E, id: 1)  // PHON
-        let hotKeyStatus = RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(controlKey),
-            hotKeyId,
-            GetApplicationEventTarget(),
-            0,
-            &toggleHotKey
-        )
-        if handlerStatus != noErr || hotKeyStatus != noErr {
-            NSLog(
-                "phonon: Ctrl+Space registration failed (handler=\(handlerStatus), hotkey=\(hotKeyStatus))"
+    /// Registers the toggle hotkey only while the shortcut mode uses it. Carbon
+    /// hotkeys work without Input Monitoring, unlike the hold keys, but a
+    /// registered one never reaches other apps.
+    private func syncToggleHotKey() {
+        let wanted = shortcutAllows(source: "control-space")
+        if !wanted, let toggleHotKey {
+            UnregisterEventHotKey(toggleHotKey)
+            self.toggleHotKey = nil
+        } else if wanted, toggleHotKey == nil {
+            let hotKeyId = EventHotKeyID(signature: 0x50484F4E, id: 1)  // PHON
+            let status = RegisterEventHotKey(
+                UInt32(kVK_Space),
+                UInt32(controlKey),
+                hotKeyId,
+                GetApplicationEventTarget(),
+                0,
+                &toggleHotKey
             )
+            if status != noErr {
+                toggleHotKey = nil
+                NSLog("phonon: Ctrl+Space registration failed (\(status))")
+            }
         }
     }
 
