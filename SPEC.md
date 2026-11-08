@@ -399,15 +399,23 @@ drop meaning (claims, explanations, requests, examples and qualifiers stay in ev
 allows otherwise.
 
 Modes, chosen from the target app's category (`app_context::AppCategory`):
-- minimal (docs, other): the universal rules and nothing else; one paragraph.
+- minimal (docs, other): the universal rules and nothing else; one paragraph, except that explicitly dictated steps
+  ("first ... then ...", "step one ...", numbered items) become a numbered list, one item per line.
 - casual (chat): the speaker's informal words kept, a restated point kept once, every sentence lowercase except
-  names, acronyms and "I", no final period.
+  names, acronyms and "I", no final period; dictated steps stay inline (no list).
 - formal (email): complete sentences, grammar slips fixed without rephrasing, slang to its plain form, dictated
-  greeting and sign-off on their own lines, paragraphs on topic changes; nothing added.
+  greeting and sign-off on their own lines, paragraphs on topic changes, explicitly dictated steps as a numbered
+  list, one item per line; nothing added.
 - prompt (AI prompt, code): a revised, contradicted or restated request kept once in its final version; pure
   hesitation dropped, context and explanation kept; separate steps as a numbered list; backticks around code allowed;
   never answers or extends the request.
 The student sees the mode as one system-prompt line ("Writing mode: casual (a chat message).").
+
+Line breaks (2026-11-07): every refiner released so far writes none, because the label gates rebuilt targets
+from whitespace tokens. Until a newline-preserving retrain ships, the shared output stage applies a deterministic
+rule after the refiner (reference: the research `linebreak_rule.py`, ported as `phonon_llm::linebreak`): in minimal, formal and prompt, two or more inline markers "1. ",
+"2. ", ... in increasing order start one line each; in formal, a leading greeting ("Hi Sarah,") and a trailing
+sign-off ("Best regards, Chris") go on their own lines and the body line starts with a capital; casual is unchanged.
 
 In the app: a refiner trained with modes lists its lines in `phonon_refiner.json` as `"writing_modes": {mode: line}`
 (optional `"writing_modes_by_app_category"` overrides the category table). The correction sidecar puts the line of
@@ -418,6 +426,29 @@ no line, so its prompt is unchanged. Streaming refine needs the mode before key 
 known at key down in `stream_start` (`"app"`) and the resolved one (a browser tab's host) in `stream_app`; the
 engine sends its category with every `stream_commit`, so background drafts are refined under the same prompt as
 the final correction. A mode that changes after a draft only costs speed: the answer is the final prompt's.
+
+Per-app override (Settings > Advanced > Writing mode per app; settings.json `writing_modes_by_app`, bundle id ->
+minimal | casual | formal | prompt): wins over `writing_style` and the category, for the final polish and background
+commits alike (`StylePreferenceCache::writing_mode_for`). There is no verbatim mode; a terminal agent such as Claude
+Code takes its terminal's bundle id.
+
+Line breaks (shared output stage, `phonon_llm::linebreak`, after the refiner or the user's endpoint and the guard):
+training targets were joined with single spaces, so the refiner emits no newlines. In every mode but casual, two or
+more inline "N." / "N)" markers numbered 1, 2, 3... in order each start a line. A leading greeting and a trailing
+sign-off go on their own lines only when the app category is email (`email_layout`), never in Slack or Teams although
+they map to formal: "Hi Sarah," alone on a line reads wrong in a chat message (`phonon_llm::linebreak::layout`; the
+reference's formal rule stays as `line_breaks`). The Windows/Linux corrector does not know the target app and only
+breaks lists. A port of the research
+`linebreak_rule.py`; measured there: prompt step lists 0 -> 96%, formal greetings 0 -> 91%, sign-offs 0 -> 97%;
+held-out outputs changed: minimal 0/301, casual 0/297, prompt 21/285 (real lists), formal 4/300. The Windows and Linux
+corrector applies the same function.
+
+Your own model endpoint (issue #24; settings.json `byok_enabled`, `byok_base_url`, `byok_model`; the API key in the
+login Keychain, service `com.infatoshi.phonon.byok`): off by default, no default endpoint, no Phonon-hosted service.
+The bar sends `{"cmd":"byok"}` with the key over the engine's stdin; the engine posts the raw transcript, the mode line
+and up to 80 dictionary terms to the OpenAI-compatible `/chat/completions` (system `curl`, config on stdin) beside the
+local refiner, and uses its text if it arrives within 6 s and passes the output guard; otherwise the local result.
+ASR stays local.
 
 Measured by a blind pairwise judge (Claude Opus 5.5, both orders, a verdict only when both orders agree) that
 reads the spec, the mode and the evidence of what was said (both raw recognizers, and the creator's captions on the

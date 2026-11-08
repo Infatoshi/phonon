@@ -254,6 +254,8 @@ const CODE_BUNDLES: &[&str] = &[
     "com.sublimetext.*",
     "com.panic.Nova",
     "com.barebones.bbedit",
+    // Lapis, the desktop host for terminal coding agents
+    "dev.lapis.desktop",
 ];
 const DOCS_BUNDLES: &[&str] = &[
     "notion.id",
@@ -409,6 +411,10 @@ pub fn polish_context(
 /// else (`app`, absent, unknown) follows the app's category.
 const WRITING_STYLES: &[&str] = &["minimal", "casual", "formal"];
 
+/// settings.json `writing_modes_by_app` values: bundle id -> one of the refiner's
+/// four modes (Settings > Advanced > Writing mode per app). Others are ignored.
+const APP_WRITING_MODES: &[&str] = &["minimal", "casual", "formal", "prompt"];
+
 /// Add the user's fixed writing mode to a sidecar `context` (the sidecar then
 /// uses it instead of the app category's mode).
 pub fn with_writing_mode(context: Option<Value>, mode: Option<&str>) -> Option<Value> {
@@ -436,6 +442,8 @@ pub struct StylePreferenceCache {
     /// `writing_style` from the same file when it names one refiner mode
     /// (Settings > Advanced); None follows the app.
     writing_mode: Option<String>,
+    /// `writing_modes_by_app` from the same file: bundle id -> mode.
+    app_writing_modes: std::collections::BTreeMap<String, String>,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
     /// File reads and parse attempts (for tests and diagnostics).
@@ -478,6 +486,18 @@ impl StylePreferenceCache {
         self.writing_mode.clone()
     }
 
+    /// The writing mode for a dictation into `bundle_id`: the user's per-app pick
+    /// first, then the one mode picked for every app, else None (follow the app's
+    /// category).
+    pub fn writing_mode_for(&mut self, bundle_id: Option<&str>) -> Option<String> {
+        self.refresh();
+        bundle_id
+            .filter(|id| !id.is_empty())
+            .and_then(|id| self.app_writing_modes.get(id))
+            .cloned()
+            .or_else(|| self.writing_mode.clone())
+    }
+
     fn refresh(&mut self) {
         let Some(path) = self
             .path
@@ -493,6 +513,7 @@ impl StylePreferenceCache {
             self.styles.clear();
             self.live_text = false;
             self.writing_mode = None;
+            self.app_writing_modes.clear();
             return;
         };
         let stamp = Some((meta.modified().ok(), meta.len()));
@@ -536,6 +557,22 @@ impl StylePreferenceCache {
                     .and_then(Value::as_str)
                     .filter(|mode| WRITING_STYLES.contains(mode))
                     .map(str::to_string);
+                self.app_writing_modes = settings
+                    .extra
+                    .get("writing_modes_by_app")
+                    .and_then(Value::as_object)
+                    .map(|modes| {
+                        modes
+                            .iter()
+                            .filter_map(|(app, mode)| {
+                                let mode = mode.as_str()?;
+                                APP_WRITING_MODES
+                                    .contains(&mode)
+                                    .then(|| (app.clone(), mode.to_string()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.content = Some(hash);
                 self.failed = None;
             }
@@ -729,6 +766,7 @@ mod tests {
         assert_eq!(categorize("com.apple.MobileSMS", None), AppCategory::Chat);
         assert_eq!(categorize("com.apple.mail", None), AppCategory::Email);
         assert_eq!(categorize("com.mitchellh.ghostty", None), AppCategory::Code);
+        assert_eq!(categorize("dev.lapis.desktop", None), AppCategory::Code);
         assert_eq!(
             categorize("com.jetbrains.rustrover", None),
             AppCategory::Code
@@ -932,8 +970,51 @@ mod tests {
             .unwrap();
             assert_eq!(cache.writing_mode().as_deref(), mode, "{style}");
         }
+        // per-app writing mode: wins over the global pick; unknown modes are ignored
+        std::fs::write(
+            &path,
+            r#"{"schema_version":2,"writing_style":"formal","writing_modes_by_app":
+                {"com.mitchellh.ghostty":"minimal","dev.lapis.desktop":"prompt",
+                 "com.hnc.Discord":"verbatim","com.apple.mail":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cache
+                .writing_mode_for(Some("com.mitchellh.ghostty"))
+                .as_deref(),
+            Some("minimal")
+        );
+        assert_eq!(
+            cache.writing_mode_for(Some("dev.lapis.desktop")).as_deref(),
+            Some("prompt")
+        );
+        for other in [
+            Some("com.hnc.Discord"),
+            Some("com.apple.mail"),
+            Some(""),
+            None,
+        ] {
+            assert_eq!(
+                cache.writing_mode_for(other).as_deref(),
+                Some("formal"),
+                "{other:?}"
+            );
+        }
+        std::fs::write(
+            &path,
+            r#"{"schema_version":2,"writing_modes_by_app":{"com.mitchellh.ghostty":"casual"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cache
+                .writing_mode_for(Some("com.mitchellh.ghostty"))
+                .as_deref(),
+            Some("casual")
+        );
+        assert_eq!(cache.writing_mode_for(Some("com.apple.mail")), None);
         std::fs::remove_file(&path).unwrap();
         assert_eq!(cache.writing_mode(), None);
+        assert_eq!(cache.writing_mode_for(Some("com.mitchellh.ghostty")), None);
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
         assert!(!cache.live_text(), "no file: the default");
         let _ = std::fs::remove_dir_all(&directory);

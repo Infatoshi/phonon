@@ -14,6 +14,8 @@
 //! reach the old FluidVoice helper instead; they exist only so `phonon bench` /
 //! `phonon profile` can compare against that baseline locally.
 
+pub mod byok;
+pub mod linebreak;
 mod paths;
 
 use anyhow::{bail, Context, Result};
