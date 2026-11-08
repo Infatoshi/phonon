@@ -442,3 +442,15 @@ def test_snapshot_completeness(tmp_path):
     assert not has_mlx_weights(str(tmp_path))
     (tmp_path / "model-00001.safetensors").write_text("")
     assert has_mlx_weights(str(tmp_path))
+
+
+def test_mlx_cache_is_capped_before_the_model_loads():
+    """Issue #27: without a cap MLX kept ~1 GB of freed buffers per dictation."""
+    import inspect
+
+    from sidecar import polish_server
+
+    assert polish_server.POLISH_MLX_CACHE_LIMIT == 1 << 30
+    source = inspect.getsource(polish_server.main)
+    cap = source.index("mx.set_cache_limit(POLISH_MLX_CACHE_LIMIT)")
+    assert cap < source.index("resolve_model_dir(")
