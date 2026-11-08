@@ -7,11 +7,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 BIN=${1:-target/release/phonon-win}
 [ -x "$BIN" ] || { echo "no binary at $BIN (cargo build --release -p phonon-win)"; exit 1; }
-VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+# PHONON_DEB_VERSION overrides the package version (a prerelease such as 1.0.1~beta3: apt sorts it above
+# 1.0.0 and below 1.0.1, so `apt install ./file.deb` upgrades a beta that carried the same Cargo version).
+# The file name uses "-" for "~".
+VERSION=${PHONON_DEB_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}
+FILE_VERSION=${VERSION//\~/-}
 # the newest glibc symbol the binary links against (2.39 when built on Ubuntu 24.04)
 GLIBC=$(objdump -T "$BIN" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1 | cut -d_ -f2)
 L=crates/phonon-win/linux
-OUT=target/deb; ROOT=$OUT/phonon_${VERSION}_amd64
+OUT=target/deb; ROOT=$OUT/phonon_${FILE_VERSION}_amd64
 rm -rf "$ROOT"; mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/lib/udev/rules.d" "$ROOT/usr/lib/modules-load.d" \
   "$ROOT/usr/share/applications" "$ROOT/etc/xdg/autostart" "$ROOT/usr/share/doc/phonon"
 install -m 0755 "$BIN" "$ROOT/usr/bin/phonon"
@@ -53,5 +57,5 @@ set -e
 udevadm control --reload 2>/dev/null || true
 EOF
 chmod 0755 "$ROOT/DEBIAN/postinst" "$ROOT/DEBIAN/postrm"
-dpkg-deb --root-owner-group --build "$ROOT" "$OUT/phonon_${VERSION}_amd64.deb" >/dev/null
-ls -la "$OUT/phonon_${VERSION}_amd64.deb"
+dpkg-deb --root-owner-group --build "$ROOT" "$OUT/phonon_${FILE_VERSION}_amd64.deb" >/dev/null
+ls -la "$OUT/phonon_${FILE_VERSION}_amd64.deb"
