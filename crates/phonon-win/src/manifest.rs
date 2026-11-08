@@ -50,9 +50,12 @@ pub const SHERPA_VERSION: &str = "1.13.6";
 pub const LLAMA_BUILD: &str = "b12132";
 pub const ASR_MODEL_ID: &str = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 pub const ASR_MODEL_REVISION: &str = "1ab9323565ddb038682214b292f588070a538ce2";
-/// Phonon's public refiner, the model every platform corrects with; repository and revision are the macOS
-/// constants, so the platforms cannot drift apart.
-pub use phonon_llm::{POLISH_MODEL_ID, POLISH_MODEL_REVISION};
+/// Phonon's public refiner; the repository is the macOS constant.
+pub use phonon_llm::POLISH_MODEL_ID;
+/// The revision Windows and Linux fetch: the 1.0 upload, which their builds were tested with. macOS 1.0.1 pins
+/// a later revision of the same repository (`phonon_llm::POLISH_MODEL_REVISION`); move this one when the
+/// Windows and Linux builds are retested with it.
+pub const POLISH_MODEL_REVISION: &str = "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e";
 /// The GGUF file name inside the correction model directory.
 pub const POLISH_GGUF: &str = "phonon-refiner-1.7b-Q4_K_S-e4.gguf";
 
