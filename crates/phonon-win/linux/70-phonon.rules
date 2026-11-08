@@ -1,0 +1,5 @@
+# Phonon dictation: give the signed-in desktop user (systemd-logind "uaccess", the same mechanism Steam's
+# steam-devices rules use) read access to keyboards, for the hold-to-talk key, and write access to /dev/uinput,
+# for the paste keystroke. Applies on install without logging out; no group changes.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"

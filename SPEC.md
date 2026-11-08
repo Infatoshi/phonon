@@ -519,7 +519,8 @@ text is restored a quarter of a second later.
 ### Known gaps
 
 - Unsigned. SmartScreen warns on first launch.
-- No microphone priority list, no streaming preview, no screen context, no
+- No microphone priority list or new-microphone prompt (plan under
+  "Microphone"), no streaming preview, no screen context, no
   dictionary retrieval, and no corpus. Windows runs the recognise-and-correct
   path only.
 - Unpacking uses the `tar` that ships with Windows 10 build 17063 and later.

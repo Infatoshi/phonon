@@ -237,8 +237,10 @@ pub fn ensure(component: &Component, on_progress: &mut dyn FnMut(Progress)) -> R
 
     match component.unpack {
         Unpack::None => {
+            // `downloads/` and the component live under the same data root, so a
+            // rename moves the weights instead of keeping a second 3 GB copy.
             for (asset, path) in &downloaded {
-                fs::copy(path, staging.join(asset.name))
+                fs::rename(path, staging.join(asset.name))
                     .with_context(|| format!("place {}", asset.name))?;
             }
         }
@@ -271,7 +273,25 @@ pub fn ensure(component: &Component, on_progress: &mut dyn FnMut(Progress)) -> R
     let _ = fs::remove_dir_all(&final_dir);
     fs::rename(&staging, &final_dir)
         .with_context(|| format!("install into {}", final_dir.display()))?;
+    // The component is in place; its verified archives are only dead weight now.
+    for (_, path) in &downloaded {
+        let _ = fs::remove_file(path);
+    }
     Ok(final_dir)
+}
+
+/// Remove verified downloads left behind by an install that predates their cleanup.
+/// Only names the manifest knows are touched, and only once their component is
+/// installed, so an interrupted first run still resumes without paying again.
+fn remove_installed_downloads() {
+    for component in crate::manifest::ALL {
+        if !installed(component) {
+            continue;
+        }
+        for asset in component.assets {
+            let _ = fs::remove_file(paths::downloads().join(asset.name));
+        }
+    }
 }
 
 /// Fetch and install everything first run needs.
@@ -280,6 +300,14 @@ pub fn ensure_all(on_progress: &mut dyn FnMut(Progress)) -> Result<()> {
     bail!("the prebuilt Linux runtimes require x86_64");
     for component in crate::manifest::ALL {
         ensure(component, on_progress)?;
+    }
+    remove_installed_downloads();
+    // Folders an earlier version installed and this one no longer reads.
+    for dir in crate::manifest::SUPERSEDED {
+        let path = paths::data_root().join(dir);
+        if path.is_dir() {
+            let _ = fs::remove_dir_all(&path);
+        }
     }
     Ok(())
 }

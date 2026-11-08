@@ -100,16 +100,48 @@ impl Recording {
         &self.device_name
     }
 
-    /// Stop, and write what was captured to `path`.
-    pub fn finish(self, path: &Path) -> Result<PathBuf> {
+    /// Stop, and hand over what was captured.
+    pub fn stop(self) -> Result<Captured> {
         drop(self.stream);
-        let samples = {
-            let buffer = self
-                .buffer
-                .lock()
-                .map_err(|_| anyhow!("the capture buffer was poisoned"))?;
-            buffer.samples.clone()
-        };
+        let samples = self
+            .buffer
+            .lock()
+            .map_err(|_| anyhow!("the capture buffer was poisoned"))?
+            .samples
+            .clone();
+        Ok(Captured {
+            samples,
+            sample_rate: self.sample_rate,
+        })
+    }
+
+    /// Seconds captured so far.
+    pub fn seconds(&self) -> f64 {
+        self.buffer
+            .lock()
+            .map(|buffer| buffer.samples.len() as f64 / self.sample_rate.max(1) as f64)
+            .unwrap_or(0.0)
+    }
+}
+
+/// A finished recording, in memory.
+pub struct Captured {
+    samples: Vec<i16>,
+    pub sample_rate: u32,
+}
+
+impl Captured {
+    /// The samples as -1..1 floats, for the recogniser.
+    pub fn to_f32(&self) -> Vec<f32> {
+        self.samples
+            .iter()
+            .map(|&sample| f32::from(sample) / 32768.0)
+            .collect()
+    }
+
+    /// Write a 16-bit mono wave file.
+    pub fn write(&self, path: &Path) -> Result<PathBuf> {
+        let samples = &self.samples;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -121,19 +153,11 @@ impl Recording {
         };
         let mut writer = hound::WavWriter::create(path, spec)
             .with_context(|| format!("create {}", path.display()))?;
-        for sample in &samples {
+        for sample in samples {
             writer.write_sample(*sample)?;
         }
         writer.finalize().context("close the wave file")?;
         Ok(path.to_path_buf())
-    }
-
-    /// Seconds captured so far.
-    pub fn seconds(&self) -> f64 {
-        self.buffer
-            .lock()
-            .map(|buffer| buffer.samples.len() as f64 / self.sample_rate.max(1) as f64)
-            .unwrap_or(0.0)
     }
 }
 

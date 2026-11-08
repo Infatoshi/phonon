@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Phonon
+GenericName=Dictation
+Comment=Hold Right Ctrl and speak; the text appears where you type
+Exec=phonon run
+Icon=phonon
+Terminal=false
+Categories=Utility;Accessibility;
+X-GNOME-Autostart-enabled=true
