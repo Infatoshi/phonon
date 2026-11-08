@@ -77,6 +77,21 @@ void phonon_asr_destroy(const void *recognizer) {
 
 // Transcribe a wave file. Returns a malloc'd UTF-8 string (free with phonon_asr_free), or NULL when the
 // file cannot be read.
+// guard.cc: runs decode inside a C++ try block; nonzero with the message in `error` when ONNX Runtime threw.
+int phonon_try_decode(void (*decode)(const void *, const void *), const void *recognizer, const void *stream,
+                      char *error, int error_len);
+
+// The last decode failure. One recogniser call runs at a time (Rust holds a mutex), so a static buffer is enough.
+static char last_error[512];
+
+const char *phonon_asr_last_error(void) { return last_error; }
+
+static int decode_guarded(const SherpaOnnxOfflineRecognizer *r, const SherpaOnnxOfflineStream *s) {
+  last_error[0] = 0;
+  return phonon_try_decode((void (*)(const void *, const void *))p_decode, r, s, last_error,
+                           (int)sizeof(last_error));
+}
+
 char *phonon_asr_file(const void *recognizer, const char *wav_path) {
   const SherpaOnnxWave *wave = p_read_wave(wav_path);
   if (!wave) return NULL;
@@ -92,7 +107,11 @@ char *phonon_asr_file(const void *recognizer, const char *wav_path) {
   const SherpaOnnxOfflineRecognizer *r = (const SherpaOnnxOfflineRecognizer *)recognizer;
   const SherpaOnnxOfflineStream *s = p_stream(r);
   p_accept(s, wave->sample_rate, wave->samples, wave->num_samples);
-  p_decode(r, s);
+  if (decode_guarded(r, s)) {
+    p_stream_destroy(s);
+    p_free_wave(wave);
+    return NULL;
+  }
   const SherpaOnnxOfflineRecognizerResult *res = p_result(s);
   const char *text = res && res->text ? res->text : "";
   size_t n = strlen(text);
@@ -116,7 +135,10 @@ char *phonon_asr_samples(const void *recognizer, int sample_rate, const float *s
   const SherpaOnnxOfflineRecognizer *r = (const SherpaOnnxOfflineRecognizer *)recognizer;
   const SherpaOnnxOfflineStream *s = p_stream(r);
   p_accept(s, sample_rate, samples, num_samples);
-  p_decode(r, s);
+  if (decode_guarded(r, s)) {
+    p_stream_destroy(s);
+    return NULL;
+  }
   const SherpaOnnxOfflineRecognizerResult *res = p_result(s);
   const char *text = res && res->text ? res->text : "";
   size_t n = strlen(text);

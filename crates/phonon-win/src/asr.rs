@@ -53,6 +53,18 @@ mod resident {
             num_samples: c_int,
         ) -> *mut c_char;
         fn phonon_asr_free(text: *mut c_char);
+        fn phonon_asr_last_error() -> *const c_char;
+    }
+
+    /// The message of the last decode that ONNX Runtime failed (csrc/guard.cc).
+    fn last_error() -> String {
+        let text = unsafe { phonon_asr_last_error() };
+        if text.is_null() {
+            return String::new();
+        }
+        unsafe { CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// The loaded library; it stays loaded for the life of the process.
@@ -162,7 +174,7 @@ mod resident {
                 )
             };
             if text.is_null() {
-                bail!("sherpa-onnx returned no text");
+                bail!("sherpa-onnx could not transcribe: {}", last_error());
             }
             let out = unsafe { CStr::from_ptr(text) }
                 .to_string_lossy()
@@ -180,7 +192,14 @@ mod resident {
             let path = CString::new(wav.to_string_lossy().as_bytes())?;
             let text = unsafe { phonon_asr_file(*handle as *const c_void, path.as_ptr()) };
             if text.is_null() {
-                bail!("sherpa-onnx could not read {}", wav.display());
+                let error = last_error();
+                if error.is_empty() {
+                    bail!("sherpa-onnx could not read {}", wav.display());
+                }
+                bail!(
+                    "sherpa-onnx could not transcribe {}: {error}",
+                    wav.display()
+                );
             }
             let out = unsafe { CStr::from_ptr(text) }
                 .to_string_lossy()
@@ -190,6 +209,72 @@ mod resident {
             Ok(out)
         }
     }
+}
+
+/// The longest audio one recogniser pass gets. The exported encoder takes at most
+/// 400 s (its relative-position table is 5,000 frames of 80 ms: 399.7 s decodes,
+/// 400.2 s makes ONNX Runtime throw, which terminated Phonon: exit 134, Linux build,
+/// 2026-11-08), and long passes also lose words. LibriSpeech test-clean, 915 s, WER
+/// by pass length: 1.31 (30 s), 1.35 (60 s), 2.03 (120 s), 2.92 (240 s), 2.83 (360 s),
+/// 1.35 one utterance at a time. Owner dictations over 60 s (77 clips, 155 min):
+/// 21.20 in 60 s passes vs 21.66 in one pass (-0.46 [-0.84, +0.01]). x86 CPU, sherpa
+/// int8, 2026-11-08. Android uses the same rule (android Engines.kt `Passes`).
+pub const MAX_PASS_SECONDS: usize = 60;
+
+/// [start, end) sample ranges of at most `MAX_PASS_SECONDS` that cover `samples`,
+/// each cut at the quietest 100 ms of the last quarter of its window (15 s), so a cut
+/// lands in a pause rather than inside a word where one exists.
+pub fn passes(samples: &[f32], sample_rate: u32) -> Vec<(usize, usize)> {
+    let rate = sample_rate.max(10) as usize;
+    let max = MAX_PASS_SECONDS * rate;
+    let frame = rate / 10;
+    let search = max / 4;
+    let mut out = Vec::new();
+    let mut start = 0;
+    while samples.len() - start > max {
+        let limit = start + max;
+        let (mut cut, mut quietest) = (limit, f32::INFINITY);
+        let mut at = limit - search;
+        while at + frame <= limit {
+            let energy: f32 = samples[at..at + frame].iter().map(|x| x * x).sum();
+            if energy < quietest {
+                quietest = energy;
+                cut = at + frame / 2;
+            }
+            at += frame;
+        }
+        out.push((start, cut));
+        start = cut;
+    }
+    out.push((start, samples.len()));
+    out
+}
+
+/// A wave file's mono samples in -1..1 and its rate, when it is longer than one
+/// pass; `None` for anything shorter (the caller hands the file over as it is).
+fn read_if_long(wav: &Path) -> Result<Option<(u32, Vec<f32>)>> {
+    let mut reader =
+        hound::WavReader::open(wav).with_context(|| format!("open {}", wav.display()))?;
+    let spec = reader.spec();
+    let channels = usize::from(spec.channels.max(1));
+    if (reader.duration() as usize) <= MAX_PASS_SECONDS * spec.sample_rate as usize {
+        return Ok(None);
+    }
+    let interleaved: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            let scale = (1_i64 << (spec.bits_per_sample.max(1) - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .map(|sample| sample.map(|value| value as f32 / scale))
+                .collect::<Result<_, _>>()?
+        }
+    };
+    let mono = interleaved
+        .chunks(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect();
+    Ok(Some((spec.sample_rate, mono)))
 }
 
 /// One transcription.
@@ -315,10 +400,17 @@ impl Recognizer {
         samples: &[f32],
     ) -> Option<Result<Transcript>> {
         let r = self.resident.as_ref()?;
-        Some(
-            r.transcribe_samples(sample_rate, samples)
-                .map(|text| Transcript { text }),
-        )
+        let mut parts = Vec::new();
+        for (start, end) in passes(samples, sample_rate) {
+            match r.transcribe_samples(sample_rate, &samples[start..end]) {
+                Ok(text) if !text.is_empty() => parts.push(text),
+                Ok(_) => {}
+                Err(error) => return Some(Err(error)),
+            }
+        }
+        Some(Ok(Transcript {
+            text: parts.join(" "),
+        }))
     }
 
     /// Transcribe one 16-bit single-channel wave file.
@@ -333,6 +425,12 @@ impl Recognizer {
         // that not every C++ file reader accepts.
         let wav = absolute(wav)?;
         if let Some(r) = &self.resident {
+            // Too long for one pass: read it here and split it (see `passes`).
+            if let Some((rate, samples)) = read_if_long(&wav)? {
+                if let Some(result) = self.transcribe_samples(rate, &samples) {
+                    return result;
+                }
+            }
             return Ok(Transcript {
                 text: r.transcribe(&wav)?,
             });
@@ -372,6 +470,50 @@ impl Recognizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_audio_is_one_pass() {
+        let samples = vec![0.1_f32; 16_000 * 45];
+        assert_eq!(passes(&samples, 16_000), vec![(0, samples.len())]);
+        assert_eq!(passes(&[], 16_000), vec![(0, 0)]);
+    }
+
+    #[test]
+    fn long_audio_splits_in_the_pauses_and_every_pass_fits() {
+        let rate = 16_000;
+        // 150 s of "speech" with a 200 ms pause at 55 s and another at 110 s
+        let mut samples = vec![0.5_f32; rate * 150];
+        for pause in [55, 110] {
+            samples[pause * rate..pause * rate + rate / 5].fill(0.0);
+        }
+        let windows = passes(&samples, rate as u32);
+        assert_eq!(windows.len(), 3);
+        assert_eq!(windows[0].0, 0);
+        assert_eq!(windows.last().unwrap().1, samples.len());
+        for pair in windows.windows(2) {
+            assert_eq!(pair[0].1, pair[1].0, "passes must be contiguous");
+        }
+        for (start, end) in &windows {
+            assert!(end - start <= MAX_PASS_SECONDS * rate);
+        }
+        // each cut falls inside its pause
+        for (cut, pause) in [(windows[0].1, 55), (windows[1].1, 110)] {
+            assert!(
+                (pause * rate..pause * rate + rate / 5).contains(&cut),
+                "cut {cut}"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_without_a_pause_still_fits() {
+        let samples = vec![0.5_f32; 16_000 * 1000];
+        let windows = passes(&samples, 16_000);
+        assert!(windows
+            .iter()
+            .all(|(start, end)| end - start <= MAX_PASS_SECONDS * 16_000));
+        assert_eq!(windows.last().unwrap().1, samples.len());
+    }
 
     /// One real standard-output block, copied from the sherpa-onnx manual.
     const SAMPLE: &str = r#"{"lang": "", "emotion": "", "event": "", "text": " Well, I don't wish to see it any more, observed Phebe.", "timestamps": [0.32, 0.64], "tokens":[" Well", ","], "words": []}"#;

@@ -259,7 +259,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
     let Some(recording) = recording else { return };
     let key_up = std::time::Instant::now();
     tray::set_status("transcribing");
-    match recording.finish().and_then(|wav| engine.run(&wav)) {
+    match recording.finish().and_then(|wav| engine.dictate(&wav)) {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {

@@ -69,15 +69,63 @@ class Refiner private constructor(private var handle: Long) {
     }
 }
 
+/**
+ * Long recordings go to Parakeet in passes. The exported int8 encoder takes at most 400 s (its position table is
+ * 5,000 frames of 80 ms; 400.2 s throws), and long single passes also lose words: LibriSpeech test-clean, 915 s,
+ * one pass per <= L s: WER 1.31 (30 s), 1.35 (60 s), 2.03 (120 s), 2.92 (240 s), 2.83 (360 s); 1.35 one utterance
+ * at a time (x86 CPU, 2026-11-08). Same rule as the desktop build (crates/phonon-win/src/asr.rs `passes`).
+ */
+object Passes {
+    const val MAX_SECONDS = 60
+
+    /** [from, to) ranges of at most MAX_SECONDS covering [n] samples, each cut at the quietest 100 ms in the last
+     *  quarter of its window ([energy] gives a range's energy). */
+    fun split(n: Int, rate: Int, energy: (Int, Int) -> Double): List<Pair<Int, Int>> {
+        val max = MAX_SECONDS * rate
+        val frame = rate / 10
+        val search = max / 4
+        val out = mutableListOf<Pair<Int, Int>>()
+        var start = 0
+        while (n - start > max) {
+            val limit = start + max
+            var cut = limit
+            var quietest = Double.MAX_VALUE
+            var at = limit - search
+            while (at + frame <= limit) {
+                val e = energy(at, at + frame)
+                if (e < quietest) { quietest = e; cut = at + frame / 2 }
+                at += frame
+            }
+            out += start to cut
+            start = cut
+        }
+        out += start to n
+        return out
+    }
+}
+
 /** sherpa-onnx with NeMo Parakeet TDT 0.6B v2 int8. */
 class Asr private constructor(private val rec: OfflineRecognizer) {
-    fun transcribe(samples: FloatArray): String {
+    /** 16 kHz mono samples to text, in passes of at most [Passes.MAX_SECONDS] (see [Passes]). */
+    fun transcribe(samples: FloatArray): String =
+        Passes.split(samples.size, 16000) { from, to -> energy(samples, from, to) }
+            .map { (from, to) -> pass(samples.copyOfRange(from, to)) }
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
+
+    private fun pass(samples: FloatArray): String {
         val s = rec.createStream()
         s.acceptWaveform(samples, 16000)
         rec.decode(s)
         val text = rec.getResult(s).text.trim()
         s.release()
         return text
+    }
+
+    private fun energy(samples: FloatArray, from: Int, to: Int): Double {
+        var e = 0.0
+        for (i in from until to) e += samples[i].toDouble() * samples[i]
+        return e
     }
 
     companion object {
