@@ -36,14 +36,19 @@ pub fn asr_smoke_passed(text: &str) -> bool {
 ///
 /// It deliberately does not assert which words the model chose: a rewrite is a
 /// legitimate correction. It catches the two real failures, a collapse to one
-/// word and a runaway expansion.
+/// word and a runaway expansion. The correction may drop one word or 0.5% of the
+/// spoken words, whichever is larger: on a long recording the refiner removes a few
+/// fillers and markers (3 and 4 of 1,094 and 2,369 words on public LibriSpeech
+/// recordings of 410 s and 900 s), which the one-word allowance of the 3-word
+/// fixture would fail. Up to 199 words the rule is the macOS one.
 pub fn llm_audio_smoke_passed(asr_text: &str, corrected: &str) -> bool {
     let spoken = normalized_words(asr_text);
     let corrected = normalized_words(corrected);
     if spoken.is_empty() || corrected.is_empty() {
         return false;
     }
-    let floor = spoken.len().saturating_sub(1).max(1);
+    let dropped = (spoken.len() / 200).max(1);
+    let floor = spoken.len().saturating_sub(dropped).max(1);
     corrected.len() >= floor && corrected.len() <= spoken.len() + 2
 }
 
@@ -71,6 +76,22 @@ mod tests {
             "Hello Fluid Voice.",
             "Hello Fluid Voice, and here is a much longer answer than was asked for."
         ));
+    }
+
+    #[test]
+    fn a_long_transcript_may_lose_half_a_percent() {
+        let spoken = vec!["word"; 1094].join(" ");
+        let kept = |n: usize| vec!["word"; n].join(" ");
+        // 1,094 words: 5 may go (0.5%), 6 may not
+        assert!(llm_audio_smoke_passed(&spoken, &kept(1091)));
+        assert!(llm_audio_smoke_passed(&spoken, &kept(1089)));
+        assert!(!llm_audio_smoke_passed(&spoken, &kept(1088)));
+        // short: still one word
+        let short = vec!["word"; 199].join(" ");
+        assert!(llm_audio_smoke_passed(&short, &kept(198)));
+        assert!(!llm_audio_smoke_passed(&short, &kept(197)));
+        // the expansion bound is unchanged
+        assert!(!llm_audio_smoke_passed(&spoken, &kept(1097)));
     }
 
     #[test]
