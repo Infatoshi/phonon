@@ -330,4 +330,19 @@ final class AppDataTests: XCTestCase {
             String(decoding: encoded, as: UTF8.self).contains("\"show_idle_capsule\":false"))
         XCTAssertFalse(try JSONDecoder().decode(NativeSettings.self, from: encoded).showIdleCapsule)
     }
+
+    func testBackgroundAudioDefaultsToLowerAndRoundTrips() throws {
+        let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
+        XCTAssertEqual(empty.backgroundAudio, .lower)
+        let junk = try JSONDecoder().decode(
+            NativeSettings.self, from: Data(#"{"background_audio":"loud"}"#.utf8))
+        XCTAssertEqual(junk.backgroundAudio, .lower)
+        var settings = NativeSettings()
+        settings.backgroundAudio = .mute
+        let encoded = try JSONEncoder().encode(settings)
+        XCTAssertTrue(
+            String(decoding: encoded, as: UTF8.self).contains("\"background_audio\":\"mute\""))
+        XCTAssertEqual(
+            try JSONDecoder().decode(NativeSettings.self, from: encoded).backgroundAudio, .mute)
+    }
 }

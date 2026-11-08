@@ -2,6 +2,7 @@ import XCTest
 
 @testable import PhononBar
 
+/// Issue #23 (Left Option triggered the Right Option hold); cases from outside PR #29.
 final class RightOptionKeyTests: XCTestCase {
     private let alt: UInt64 = 0x80000  // NX_ALTERNATEMASK
     private let leftBit: UInt64 = 0x20  // NX_DEVICELALTKEYMASK
@@ -19,7 +20,6 @@ final class RightOptionKeyTests: XCTestCase {
     func testRightStaysDownWhileLeftIsPressedAndReleased() {
         let both = alt | leftBit | rightBit
         XCTAssertTrue(RightOptionKey.isDown(keyCode: 58, rawFlags: both, wasDown: true))
-        // Left released while right is still held: the generic Option flag stays set.
         XCTAssertTrue(RightOptionKey.isDown(keyCode: 58, rawFlags: alt | rightBit, wasDown: true))
     }
 
@@ -39,7 +39,15 @@ final class RightOptionKeyTests: XCTestCase {
     func testEventsWithoutDeviceBitsFallBackToTheKeyCode() {
         XCTAssertTrue(RightOptionKey.isDown(keyCode: 61, rawFlags: alt, wasDown: false))
         XCTAssertFalse(RightOptionKey.isDown(keyCode: 58, rawFlags: alt, wasDown: false))
-        // Some other modifier changed while Option state is unknowable: keep the last answer.
         XCTAssertTrue(RightOptionKey.isDown(keyCode: 56, rawFlags: alt, wasDown: true))
+    }
+
+    /// The left key through the whole edge path never starts a recording.
+    func testLeftOptionPressAndReleaseProducesNoEdge() {
+        var edges = HoldKeyEdges()
+        let down = RightOptionKey.isDown(keyCode: 58, rawFlags: alt | leftBit, wasDown: edges.isDown)
+        XCTAssertEqual(edges.update(pressed: down, ownKey: false), .none)
+        let up = RightOptionKey.isDown(keyCode: 58, rawFlags: 0, wasDown: edges.isDown)
+        XCTAssertEqual(edges.update(pressed: up, ownKey: false), .none)
     }
 }

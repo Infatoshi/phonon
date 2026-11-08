@@ -235,7 +235,11 @@ struct PhononWindowRoot: View {
             if startup.loaderVisible {
                 ZStack {
                     EmberTheme.background
-                    ModelStartupView(state: startup)
+                    VStack(spacing: 4) {
+                        ModelStartupView(state: startup)
+                        // A missing permission is fixed while the models load.
+                        PermissionBanner(store: main.store).frame(width: 640)
+                    }
                 }
                 .contentShape(Rectangle())
                 .transition(.opacity)
@@ -292,11 +296,23 @@ enum ShortcutPolicy {
     static func allows(mode: String, source: String) -> Bool {
         sources(for: mode).contains(source)
     }
+
+    /// The mode has a hold key (fn or Right Option), which needs Input Monitoring.
+    static func usesHoldKey(mode: String) -> Bool {
+        let sources = sources(for: mode)
+        return sources.contains("fn") || sources.contains("right-option")
+    }
+
+    /// What the hold key is called in the UI.
+    static func holdKeyName(mode: String) -> String {
+        sources(for: mode).contains("fn") ? "Globe (fn)" : "Right Option"
+    }
 }
 
-/// Tells the right Option key from the left one. The generic Option flag is set
-/// while either is held, so the device-dependent bits (IOKit `NX_DEVICERALTKEYMASK`
-/// and `NX_DEVICELALTKEYMASK`) say which one it is.
+/// Tells the right Option key from the left one (issue #23; ported from outside
+/// PR #29). The generic Option flag is set while either is held, so the
+/// device-dependent bits (IOKit `NX_DEVICERALTKEYMASK` and `NX_DEVICELALTKEYMASK`)
+/// say which one it is.
 enum RightOptionKey {
     static let alternate: UInt64 = 0x80000
     static let deviceLeft: UInt64 = 0x20
@@ -319,6 +335,83 @@ enum RightOptionKey {
     }
 }
 
+/// Turns the hold key's level (is it held, per the event flags) into edges.
+///
+/// A flags-changed event for the key's own key code while it already reads as
+/// held means its release never reached Phonon (the event tap was disabled for
+/// a moment, issue #21): before this, that press was ignored and its release
+/// stopped nothing, so the press after a lost release never started dictation.
+struct HoldKeyEdges {
+    enum Edge: Equatable {
+        case down
+        case up
+        /// Pressed again without a release in between.
+        case repress
+        case none
+    }
+
+    private(set) var isDown = false
+
+    mutating func update(pressed: Bool, ownKey: Bool) -> Edge {
+        switch (pressed, isDown) {
+        case (true, false):
+            isDown = true
+            return .down
+        case (false, true):
+            isDown = false
+            return .up
+        case (true, true):
+            return ownKey ? .repress : .none
+        case (false, false):
+            return .none
+        }
+    }
+
+    mutating func reset() { isDown = false }
+}
+
+/// Two lone taps of the hold key close together are someone trying to start
+/// dictation with a tap (issue #21): each one recorded a fraction of a second
+/// that the speech gate threw away, and nothing told them to hold the key.
+struct LoneTapHint {
+    static let windowNs: UInt64 = 6_000_000_000
+    static let cooldownNs: UInt64 = 600_000_000_000
+
+    private var lastTapNs: UInt64?
+    private var shownNs: UInt64?
+
+    /// Returns true when the hint should show now.
+    mutating func noteLoneTap(at now: UInt64) -> Bool {
+        defer { lastTapNs = now }
+        guard let last = lastTapNs, now >= last, now - last <= Self.windowNs else { return false }
+        if let shown = shownNs, now >= shown, now - shown < Self.cooldownNs { return false }
+        shownNs = now
+        return true
+    }
+}
+
+/// macOS's own use of the Globe key (System Settings > Keyboard > "Press 🌐 key to",
+/// `com.apple.HIToolbox` `AppleFnUsageType`): 0 does nothing, 1 changes the input
+/// source, 2 shows emoji, 3 starts Apple's dictation. Anything but 0 also fires on
+/// the taps Phonon listens for. An absent key is the system default, which is not 0.
+enum GlobeKeySetting {
+    static func conflicts(usageType: Int?) -> Bool { usageType != 0 }
+
+    static func action(usageType: Int?) -> String {
+        switch usageType {
+        case 1: return "changes the input source"
+        case 2: return "shows Emoji & Symbols"
+        case 3: return "starts Apple's dictation"
+        default: return "does something of its own"
+        }
+    }
+
+    static func currentUsageType() -> Int? {
+        UserDefaults(suiteName: "com.apple.HIToolbox")?.object(forKey: "AppleFnUsageType")
+            as? Int
+    }
+}
+
 /// Tap and double-tap logic for a hold-to-talk key, fed raw key-down and
 /// key-up events with monotonic nanosecond timestamps.
 ///
@@ -327,6 +420,10 @@ enum RightOptionKey {
 /// lands inside `doubleTapWindowNs` of the first release latches the recording
 /// on; while latched the next key-down stops it. A lone tap is a short capture
 /// that the no-speech gate discards downstream.
+///
+/// With `tapToggles` (settings.json `tap_to_toggle`, issue #34) a single tap
+/// latches instead: the recording that began at key-down keeps going, and the
+/// next key-down stops it. A hold is still push-to-talk.
 struct HoldKeyTapLatch {
     enum Action: Equatable {
         case start
@@ -339,7 +436,11 @@ struct HoldKeyTapLatch {
 
     let tapMaxNs: UInt64
     let doubleTapWindowNs: UInt64
+    var tapToggles = false
     private(set) var latched = false
+    /// The last release was a lone tap that stopped a recording (a double-tap
+    /// may still follow). Tap-to-toggle never leaves one.
+    var awaitingSecondTap: Bool { lastTapUpAt != nil }
     private var downAt: UInt64?
     private var lastTapUpAt: UInt64?
     private var secondTapCandidate = false
@@ -368,7 +469,7 @@ struct HoldKeyTapLatch {
         guard let downAt else { return .none }
         self.downAt = nil
         let isTap = now >= downAt && now - downAt <= tapMaxNs
-        if isTap && secondTapCandidate {
+        if isTap && (secondTapCandidate || tapToggles) {
             secondTapCandidate = false
             latched = true
             return .none
@@ -448,6 +549,12 @@ struct AudioInputDevice: Equatable {
     /// Bluetooth headset microphones drop the headset to phone-call audio the
     /// moment any process opens them, so they are never chosen by inference.
     var isBluetooth: Bool = false
+    /// CoreAudio's persistent device UID: stable across reconnects and
+    /// reboots, unlike `id`. The new-microphone prompt keys on it.
+    var uid: String = ""
+    /// Aggregate and virtual inputs (call apps' voice-processing aggregates,
+    /// loopback drivers) are never offered as a new microphone.
+    var isVirtual: Bool = false
 
     var isBuiltIn: Bool {
         name.localizedCaseInsensitiveContains("MacBook")
@@ -506,12 +613,19 @@ enum CoreAudioInputDevices {
         let defaultID = defaultInputID()
         return ids.compactMap { id in
             guard hasInputStreams(id), let name = deviceName(id) else { return nil }
+            let transport = transportType(id)
             return AudioInputDevice(
-                id: id, name: name, isDefault: id == defaultID, isBluetooth: isBluetooth(id))
+                id: id, name: name, isDefault: id == defaultID,
+                isBluetooth: transport == kAudioDeviceTransportTypeBluetooth
+                    || transport == kAudioDeviceTransportTypeBluetoothLE,
+                uid: deviceUID(id) ?? "",
+                isVirtual: transport == kAudioDeviceTransportTypeAggregate
+                    || transport == kAudioDeviceTransportTypeAutoAggregate
+                    || transport == kAudioDeviceTransportTypeVirtual)
         }
     }
 
-    private static func isBluetooth(_ id: AudioDeviceID) -> Bool {
+    private static func transportType(_ id: AudioDeviceID) -> UInt32? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyTransportType,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -520,9 +634,34 @@ enum CoreAudioInputDevices {
         var transport: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &transport) == noErr
-        else { return false }
-        return transport == kAudioDeviceTransportTypeBluetooth
-            || transport == kAudioDeviceTransportTypeBluetoothLE
+        else { return nil }
+        return transport
+    }
+
+    /// The caller owns the returned CFString (CoreAudio's rule for this property).
+    private static func deviceUID(_ id: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &uid) == noErr, let uid
+        else { return nil }
+        return uid.takeRetainedValue() as String
+    }
+
+    /// Fires on the main queue whenever a device appears or disappears.
+    static func observeDeviceListChanges(_ handler: @escaping () -> Void) {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main
+        ) { _, _ in handler() }
     }
 
     /// Fires on the main queue whenever the system default input changes.
@@ -784,7 +923,13 @@ struct PillView: View {
     var fixedTime: Date?
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        // Idle and hidden draw nothing that changes over time, so the clock stops there: an unpaused timeline redrew
+        // the still capsule 30 times a second forever (about 5% of a core on an M4 Air, 2026-11-05).
+        TimelineView(
+            .animation(
+                minimumInterval: 1.0 / 30.0,
+                paused: (state.mode == .idle || state.mode == .hidden) && !state.meetingRecording)
+        ) { context in
             let date = fixedTime ?? context.date
             let energy = visualEnergy(at: date)
             let size = shellSize(energy: energy)
@@ -1681,11 +1826,14 @@ final class MicRecorder {
     }
 
     nonisolated private static func pcm16Data(_ samples: [Float]) -> Data {
-        var pcm = Data(capacity: samples.count * 2)
-        for s in samples {
-            let clipped = max(-1.0, min(1.0, s))
-            var v = Int16((clipped * Float(Int16.max)).rounded()).littleEndian
-            withUnsafeBytes(of: &v) { pcm.append(contentsOf: $0) }
+        // one preallocated buffer filled in place: the per-sample append was 21 ms at 117 s of audio (1.3 ms this way)
+        var pcm = Data(count: samples.count * 2)
+        pcm.withUnsafeMutableBytes { raw in
+            let out = raw.bindMemory(to: Int16.self)
+            for (i, s) in samples.enumerated() {
+                let clipped = max(-1.0, min(1.0, s))
+                out[i] = Int16((clipped * Float(Int16.max)).rounded()).littleEndian
+            }
         }
         return pcm
     }
@@ -1802,6 +1950,10 @@ struct E2EProfileRecord: Codable {
     /// Final transcript to correction request: the time spent waiting for
     /// screen context (bounded by `ScreenContextWait`).
     var screenWaitMs: Double? = nil
+    /// Since launch: times macOS disabled the event tap, and hold-key presses that
+    /// arrived with no release before them (a lost release; issue #21).
+    var eventTapDisables: Int? = nil
+    var hotkeyRepresses: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case timestamp
@@ -1830,6 +1982,8 @@ struct E2EProfileRecord: Codable {
         case llmTtftMs = "llm_ttft_ms"
         case llmTokensPerSecond = "llm_tokens_per_second"
         case screenWaitMs = "screen_wait_ms"
+        case eventTapDisables = "event_tap_disables"
+        case hotkeyRepresses = "hotkey_represses"
     }
 }
 
@@ -1994,11 +2148,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
     private let cues = CueSounds()
+    /// Settings `background_audio`: lowers or mutes other audio while the key is held.
+    private let ducker = AudioDucker()
     private var modelStartupWindow: NSPanel?
     private var mainWindow: NSWindow?
     private let engine = EngineClient()
     private let recorder = MicRecorder()
     private var statusItem: NSStatusItem?
+    /// The menu-bar title before the permission warning: "ϕ", "ϕ ●" (meeting), "ϕ…".
+    private var statusBase = "ϕ"
+    /// Top of the menu-bar menu while a permission keeps dictation from working.
+    private var attentionMenuItem: NSMenuItem?
+    /// Re-checks permissions every few seconds while one is missing, so granting it
+    /// in System Settings clears the warning without a click in Phonon.
+    private var permissionWatch: Timer?
+    private var lastPermissionState: [PermissionAttention] = []
+    private var requestedInputMonitoring = false
     private var streamingMenuItem: NSMenuItem?
     private var showInDockMenuItem: NSMenuItem?
     private var microphoneMenuItem: NSMenuItem?
@@ -2006,10 +2171,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var activeId: String?
     private var rawText = ""
     private var isRecording = false
-    private var optionDown = false
-    private var fnDown = false
+    private var optionEdges = HoldKeyEdges()
+    private var fnEdges = HoldKeyEdges()
     private var fnTapLatch = HoldKeyTapLatch()
     private var optionTapLatch = HoldKeyTapLatch()
+    private var loneTapHint = LoneTapHint()
+    /// Times macOS disabled the event tap (a lost key release is likely each time).
+    private var eventTapDisables = 0
+    private var hotkeyRepresses = 0
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var toggleHotKey: EventHotKeyRef?
@@ -2060,11 +2229,13 @@ final class AppController: NSObject, NSApplicationDelegate {
         store: appStore, keyWatch: editKeyWatch,
         send: { [weak self] command in self?.engine.send(command) })
     private lazy var meetings = MeetingController(store: appStore)
+    private lazy var newMicrophones = NewMicrophoneController(store: appStore)
     private var meetingMenuItem: NSMenuItem?
     private lazy var updates = UpdateController(store: appStore)
     private var updateMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ducker.recoverAfterCrash()
         applyDockVisibility()
         setupMainMenu()
         appStore.onDictionaryChanged = { [weak self] in
@@ -2075,6 +2246,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         appStore.onPermissionsRefresh = { [weak self] in
             self?.refreshPermissionDependentServices()
+        }
+        notPasted.onOpenSettings = { [weak self] in
+            self?.notPasted.dismiss()
+            self?.showSettings()
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
         state.showWhenIdle = appStore.settings.showIdleCapsule
@@ -2114,6 +2289,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         startEngine()
         installToggleHotKey()
         installHotkey()
+        refreshStatusTitle()
         showIdle()
 
         warmMicrophoneIfAuthorized()
@@ -2135,6 +2311,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         competitors.subscribeToLaunches()
         competitors.check(trigger: "launch")
+
+        // Ask once per new microphone (SPEC "Microphone"); the first run of
+        // this only records what is connected.
+        newMicrophones.isBusy = { [weak self] in
+            guard let self else { return false }
+            return self.isRecording || self.processing
+        }
+        newMicrophones.onRankingChanged = { [weak self] in self?.applySettings() }
+        newMicrophones.start()
 
         updates.isBusy = { [weak self] in
             guard let self else { return false }
@@ -2306,6 +2491,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         item.button?.title = "ϕ"
         item.button?.toolTip = "Phonon"
         let menu = NSMenu()
+        let attention = NSMenuItem(title: "", action: #selector(showMainWindow), keyEquivalent: "")
+        attention.isHidden = true
+        menu.addItem(attention)
+        attentionMenuItem = attention
         menu.addItem(
             NSMenuItem(title: "Open Phonon…", action: #selector(showMainWindow), keyEquivalent: ","))
         let updateItem = NSMenuItem(title: "", action: #selector(showUpdate), keyEquivalent: "")
@@ -2349,6 +2538,53 @@ final class AppController: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Quit Phonon", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
         statusItem = item
+        refreshStatusTitle()
+    }
+
+    /// Tells the engine about the user's own endpoint (issue #24); the key comes from
+    /// the Keychain and only ever travels over the engine's stdin. Read only when the
+    /// endpoint is on, so a user who never set one is never asked about the Keychain.
+    private func sendOwnEndpoint() {
+        let settings = appStore.settings
+        let key = settings.byokEnabled ? OwnEndpoint.readKey() : nil
+        engine.send(OwnEndpoint.engineCommand(settings: settings, apiKey: key))
+    }
+
+    /// The menu-bar title and its warning line follow `PermissionAttention`.
+    private func refreshStatusTitle() {
+        let items = appStore.permissionAttention
+        lastPermissionState = items
+        let blocking = items.first(where: \.blocksDictation)
+        statusItem?.button?.title = blocking == nil ? statusBase : statusBase + " ⚠"
+        statusItem?.button?.toolTip = blocking.map { "Phonon: \($0.title)" } ?? "Phonon"
+        if let first = blocking ?? items.first {
+            attentionMenuItem?.title = first.menuTitle
+            attentionMenuItem?.isHidden = false
+        } else {
+            attentionMenuItem?.isHidden = true
+        }
+        if items.isEmpty {
+            permissionWatch?.invalidate()
+            permissionWatch = nil
+        } else if permissionWatch == nil {
+            permissionWatch = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) {
+                [weak self] _ in
+                Task { @MainActor in self?.checkPermissionsChanged() }
+            }
+        }
+    }
+
+    /// Cheap checks; a full refresh (and the event tap retry) only on a change.
+    private func checkPermissionsChanged() {
+        let now = PermissionAttention.items(
+            inputMonitoring: CGPreflightListenEventAccess(),
+            microphone: appStore.microphonePermission,
+            accessibility: appStore.accessibilityPermission,
+            shortcutMode: appStore.settings.shortcutMode,
+            globeUsageType: GlobeKeySetting.currentUsageType())
+        guard now != lastPermissionState else { return }
+        appStore.refreshPermissions()  // calls refreshPermissionDependentServices
+        refreshStatusTitle()
     }
 
     @objc private func showModelStatus() {
@@ -2393,6 +2629,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             recorder.releaseHardware()
         }
         applyDockVisibility()
+        refreshStatusTitle()
+        if enginesReady { sendOwnEndpoint() }
         competitors.settingsChanged()
         if !appStore.settings.meetingCapture { meetings.stop(reason: "turned_off") }
         meetings.refresh()
@@ -2401,7 +2639,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// A recording meeting is always visible: a dot on the menu bar item and
     /// a Stop item in its menu.
     private func meetingRecordingChanged(_ app: String?) {
-        statusItem?.button?.title = app == nil ? "ϕ" : "ϕ ●"
+        statusBase = app == nil ? "ϕ" : "ϕ ●"
+        refreshStatusTitle()
         meetingMenuItem?.isHidden = app == nil
         meetingMenuItem?.title = app.map { "Stop Meeting Notes (\($0))" } ?? "Stop Meeting Notes"
     }
@@ -2452,7 +2691,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         appStore.engineMessage = "Engine restarting"
         streamActive = false
         hideLiveText()
-        statusItem?.button?.title = "ϕ…"
+        statusBase = "ϕ…"
+        refreshStatusTitle()
         modelStartupState.markRestarting()
         showMainWindow()
         if processing, let submittedTranscribe, submittedTranscribe.id == activeId {
@@ -2491,7 +2731,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             modelStartupState.markReady()
             engineRestartWork?.cancel()
             engineRestartWork = nil
-            statusItem?.button?.title = meetings.isRecording ? "ϕ ●" : "ϕ"
+            statusBase = meetings.isRecording ? "ϕ ●" : "ϕ"
+            refreshStatusTitle()
+            sendOwnEndpoint()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 guard self?.enginesReady == true else { return }
                 self?.modelStartupState.hideLoader()
@@ -2625,10 +2867,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                             editSnapshot, passID: id, pasted: Typer.spaced(final),
                             record: appStore.settings.localHistory)
                     }
-                    if let record = e2eTrace?.finish(
+                    if var record = e2eTrace?.finish(
                         textCharacters: final.count,
                         insertionSucceeded: insertionSucceeded
                     ) {
+                        // issue #21 evidence: how often keys had to be resynced
+                        record.eventTapDisables = eventTapDisables
+                        record.hotkeyRepresses = hotkeyRepresses
                         E2EProfileStore.append(record)
                     }
                     e2eTrace = nil
@@ -2918,6 +3163,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             startScreenContext(enabled: wantScreen)
         }
         if appStore.settings.soundFeedback { cues.playStart() }
+        ducker.start(appStore.settings.backgroundAudio)
         showListening()
         e2eTrace?.panelShownNs = DispatchTime.now().uptimeNanoseconds
         recorder.onAmplitude = { [weak self] a in
@@ -2966,6 +3212,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             e2eTrace?.recordingStartedNs = DispatchTime.now().uptimeNanoseconds
         } catch {
             isRecording = false
+            ducker.stop()
             hidePill()
             NSLog("mic: \(error.localizedDescription)")
         }
@@ -2980,6 +3227,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         e2eTrace?.keyUpHandledNs = DispatchTime.now().uptimeNanoseconds
         isRecording = false
         processing = true
+        ducker.stop()  // the audio comes back while the text is corrected
         micSilenceCheck?.cancel()
         if case .micSilent = notPasted.current { notPasted.dismiss() }
         heldSeconds = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? 0
@@ -3399,6 +3647,11 @@ final class AppController: NSObject, NSApplicationDelegate {
                 if let tap = app.eventTap {
                     CGEvent.tapEnable(tap: tap, enable: true)
                 }
+                // Key events while the tap was off are gone, a release among them
+                // perhaps: re-read which modifiers are held now.
+                let held = CGEventSource.flagsState(.combinedSessionState)
+                let reason = type == .tapDisabledByTimeout ? "timeout" : "user input"
+                Task { @MainActor in app.resyncHoldKeys(held: held, reason: reason) }
                 return Unmanaged.passUnretained(event)
             }
             app.handleCGEvent(type: type, event: event)
@@ -3415,9 +3668,16 @@ final class AppController: NSObject, NSApplicationDelegate {
             )
         else {
             appStore.inputMonitoringAvailable = false
-            statusItem?.button?.toolTip =
-                "Phonon: Control-Space works; allow Input Monitoring for the hold key"
             NSLog("phonon: Globe/Right-Option unavailable (Input Monitoring not granted)")
+            // Once per launch: macOS shows its own prompt the first time and adds
+            // Phonon to the Input Monitoring list, so only the switch is left.
+            if !requestedInputMonitoring
+                && ShortcutPolicy.usesHoldKey(mode: appStore.settings.shortcutMode)
+            {
+                requestedInputMonitoring = true
+                _ = CGRequestListenEventAccess()
+            }
+            refreshStatusTitle()
             return
         }
         eventTap = tap
@@ -3429,6 +3689,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func refreshPermissionDependentServices() {
+        // After the checks below settle `inputMonitoringAvailable`.
+        defer { DispatchQueue.main.async { [weak self] in self?.refreshStatusTitle() } }
         warmMicrophoneIfAuthorized()
         guard CGPreflightListenEventAccess() else {
             if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
@@ -3468,7 +3730,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         if type == .flagsChanged {
             let flags = event.flags
             let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
-            let rawFlags = flags.rawValue
+            // Right Option only: the left key sets the same generic flag (#23).
+            let rightOption = { (wasDown: Bool) in
+                RightOptionKey.isDown(keyCode: keyCode, rawFlags: flags.rawValue, wasDown: wasDown)
+            }
             // The Globe/fn key reports through this same tap as its own flag.
             // Require it to be the only modifier, so fn-qualified keys such as
             // the arrow cluster can never open a recording.
@@ -3484,49 +3749,99 @@ final class AppController: NSObject, NSApplicationDelegate {
                 if self.shortcutAllows(source: "right-option") {
                     // Same tap logic as the Globe key: hold to talk, double-tap to
                     // keep recording hands-free, tap once to stop.
-                    if self.optionTapLatch.latched && !self.isRecording {
-                        self.optionTapLatch.reset()
-                    }
-                    let rightOption = RightOptionKey.isDown(
-                        keyCode: keyCode, rawFlags: rawFlags, wasDown: self.optionDown)
-                    if rightOption && !self.optionDown {
-                        self.optionDown = true
-                        self.applyHoldKey(
-                            self.optionTapLatch.keyDown(at: eventNs),
-                            source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
-                    } else if !rightOption && self.optionDown {
-                        self.optionDown = false
-                        self.applyHoldKey(
-                            self.optionTapLatch.keyUp(at: eventNs),
-                            source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
-                    }
+                    let edge = self.optionEdges.update(
+                        pressed: rightOption(self.optionEdges.isDown),
+                        ownKey: keyCode == RightOptionKey.rightKeyCode)
+                    self.holdKey(edge, source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
                 } else {
-                    self.optionDown = false
+                    self.optionEdges.reset()
                     self.optionTapLatch.reset()
                 }
                 if self.shortcutAllows(source: "fn") {
-                    // Something else (Ctrl+Space, the menu) may have ended a
-                    // latched recording; the next press must start, not stop.
-                    if self.fnTapLatch.latched && !self.isRecording {
-                        self.fnTapLatch.reset()
-                    }
-                    if onlyFn && !self.fnDown {
-                        self.fnDown = true
-                        self.applyHoldKey(
-                            self.fnTapLatch.keyDown(at: eventNs),
-                            source: "fn", eventNs: eventNs, callbackNs: callbackNs)
-                    } else if !onlyFn && self.fnDown {
-                        self.fnDown = false
-                        self.applyHoldKey(
-                            self.fnTapLatch.keyUp(at: eventNs),
-                            source: "fn", eventNs: eventNs, callbackNs: callbackNs)
-                    }
+                    let edge = self.fnEdges.update(
+                        pressed: onlyFn, ownKey: keyCode == Self.functionKeyCode)
+                    self.holdKey(edge, source: "fn", eventNs: eventNs, callbackNs: callbackNs)
                 } else {
-                    self.fnDown = false
+                    self.fnEdges.reset()
                     self.fnTapLatch.reset()
                 }
             }
         }
+    }
+
+    /// kVK_Function: the flags-changed event of the Globe/fn key itself.
+    nonisolated static let functionKeyCode = 63
+
+    private func tapLatch(for source: String) -> HoldKeyTapLatch {
+        source == "fn" ? fnTapLatch : optionTapLatch
+    }
+
+    private func setTapLatch(_ latch: HoldKeyTapLatch, for source: String) {
+        if source == "fn" { fnTapLatch = latch } else { optionTapLatch = latch }
+    }
+
+    /// One edge of a hold key through its tap latch.
+    private func holdKey(
+        _ edge: HoldKeyEdges.Edge, source: String, eventNs: UInt64, callbackNs: UInt64
+    ) {
+        var latch = tapLatch(for: source)
+        latch.tapToggles = appStore.settings.tapToToggle
+        // Something else (Ctrl+Space, the menu) may have ended a latched
+        // recording; the next press must start, not stop.
+        if latch.latched && !isRecording { latch.reset() }
+        var actions: [HoldKeyTapLatch.Action] = []
+        switch edge {
+        case .down:
+            actions = [latch.keyDown(at: eventNs)]
+        case .up:
+            actions = [latch.keyUp(at: eventNs)]
+        case .repress:
+            // The release before this press was lost (#21). A hold that is still
+            // recording ends here, as that release would have ended it; otherwise
+            // this press starts a dictation like any other.
+            hotkeyRepresses += 1
+            NSLog("phonon: \(source) pressed again without a release; resynced")
+            if isRecording && !latch.latched {
+                actions = [latch.keyUp(at: eventNs)]
+            } else if latch.latched {
+                actions = [latch.keyDown(at: eventNs)]
+            } else {
+                _ = latch.keyUp(at: eventNs)
+                actions = [latch.keyDown(at: eventNs)]
+            }
+        case .none:
+            return
+        }
+        setTapLatch(latch, for: source)
+        for action in actions {
+            applyHoldKey(action, source: source, eventNs: eventNs, callbackNs: callbackNs)
+        }
+        if edge == .up, actions == [.stop], latch.awaitingSecondTap,
+            loneTapHint.noteLoneTap(at: eventNs)
+        {
+            showLoneTapHint()
+        }
+    }
+
+    /// After macOS turned the event tap off and on again: a hold key that reads
+    /// as held but no longer is had its release lost; release it now.
+    func resyncHoldKeys(held: CGEventFlags, reason: String) {
+        eventTapDisables += 1
+        NSLog("phonon: event tap was disabled (\(reason)), \(eventTapDisables) so far; resyncing keys")
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        if fnEdges.isDown && !held.contains(.maskSecondaryFn) {
+            holdKey(fnEdges.update(pressed: false, ownKey: false), source: "fn",
+                eventNs: nowNs, callbackNs: nowNs)
+        }
+        if optionEdges.isDown && !held.contains(.maskAlternate) {
+            holdKey(optionEdges.update(pressed: false, ownKey: false), source: "right-option",
+                eventNs: nowNs, callbackNs: nowNs)
+        }
+    }
+
+    private func showLoneTapHint() {
+        guard !isRecording, notPasted.current == nil else { return }
+        notPasted.show(.tapHint(key: ShortcutPolicy.holdKeyName(mode: appStore.settings.shortcutMode)))
     }
 
     /// A `.regular` app built without a nib gets no menu bar, and AppKit hangs
@@ -3634,6 +3949,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         terminating = true
+        ducker.restoreNow()
         engineRestartWork?.cancel()
         screenContextTask?.cancel()
         stopScreenSwitchWatch()

@@ -28,7 +28,8 @@ the personalization. Fine-tuning is a later, opt-in POC (see end).
    dictation apps on.
 1. Inventory (seconds, no model). Detect: `~/.claude/projects`,
    `~/.codex/sessions`, `~/.grok/sessions`, Cursor SQLite, Aqua Voice
-   `settings.json`, Wispr Flow SQLite, superwhisper and VoiceInk history,
+   `settings.json`, Wispr Flow SQLite, superwhisper and VoiceInk history
+   (the app reads these as in "Import from other dictation apps"),
    git repos under `$HOME` to depth 3 (excluding `Library`), and with GitHub
    on, `gh repo list` names, descriptions and READMEs.
 2. Extract (deterministic). Per source, one line per user-authored message:
@@ -164,6 +165,32 @@ latched, the next key-down stops and commits. A lone tap yields a capture
 without speech, which the no-speech path discards. Right Option and
 Ctrl+Space remain as alternatives (`shortcut_mode` in settings.json).
 
+Tap to start and stop (`tap_to_toggle`, off by default, issue #34): a single
+tap latches recording on (the recording that began at key-down keeps going)
+and the next key-down stops it; a hold stays push-to-talk. Right Option is
+told from Left Option by the device-dependent flag bits (`NX_DEVICERALTKEYMASK`
+0x40 vs `NX_DEVICELALTKEYMASK` 0x20), falling back to the key code (61 right,
+58 left) when a keyboard sends none (#23, from outside PR #29).
+
+Reliability (#21): the hold key is tracked as edges of the event flags. A
+flags-changed event for the key's own key code (63 fn, 61 Right Option) while
+it already reads as held means its release was lost: a hold still recording
+stops there, otherwise the press starts a dictation (before, that press was
+ignored and its release stopped nothing). When macOS disables the event tap
+(timeout or user input), the held modifiers are re-read with
+`CGEventSource.flagsState` and a key no longer held is released. Two lone taps
+within 6 s show a card: hold the key, double-tap, or turn on tap to start and
+stop (once per 10 minutes). e2e.jsonl records `event_tap_disables` and
+`hotkey_represses` since launch.
+
+Permissions: a missing Input Monitoring (with a hold-key shortcut) or
+microphone shows a banner on every page of the main window and on the startup
+loader, "⚠" on the menu-bar item with a first menu line that opens the window;
+missing Accessibility and a Globe key macOS also acts on (`com.apple.HIToolbox`
+`AppleFnUsageType` not 0) show as advice. They are re-checked every 3 s while
+anything is missing. Input Monitoring is requested once per launch
+(`CGRequestListenEventAccess`) so Phonon is already in the list.
+
 ### Microphone
 
 Phonon never changes the system default input. With nothing ranked in
@@ -177,6 +204,63 @@ input changes, and reads back the input unit's live device before each
 capture, because AVAudioEngine can silently move the unit to the new
 default when it rebuilds its graph.
 
+#### New microphone prompt (macOS)
+
+When an input Phonon has never seen appears (a USB mic plugged in, AirPods
+connected), a card above the capsule asks "New microphone: <name>. Use it for
+dictation?" with three answers, all written to `microphone_priority` (the
+same list, at most three names, that Settings edits):
+
+- **Use first**: the name goes to the top, above the current first. With
+  nothing ranked it is ranked alone, so Phonon still follows the system input
+  while it is away. On a full list the last name drops off, and the card says
+  which.
+- **Add below**: the name goes under the current first, so it is used only
+  while that one is missing. With nothing ranked, "current" is the mic Phonon
+  uses today without the new one (usually the built-in), and both are ranked,
+  that one first. Not offered on a full list or with no other mic.
+- **Ignore**: nothing is ranked.
+
+A Bluetooth headset (CoreAudio transport type) gets "Add below" as the
+prominent button and the card says why: dictating through a headset mic drops
+the headset to call-quality audio. A non-Bluetooth mic gets "Use first".
+
+Each device is asked about once, keyed by CoreAudio's device UID, which
+survives reconnects. settings.json `microphones_seen` holds every UID seen;
+absent (a fresh install, or the first launch after upgrading) it is seeded
+with what is connected and nothing is asked. Aggregate and virtual inputs
+(call apps' voice-processing aggregates, loopback drivers) and devices a
+ranked name already matches become seen without a question. An unanswered
+card closes after 20 s and the device stays seen and unranked; Settings can
+still rank it. Detection is a `kAudioHardwarePropertyDevices` listener,
+scanned 1.5 s after the last change because a device and its input streams
+arrive separately. The card waits while dictating or inserting, never takes
+focus (the edit-learning card's non-activating panel, raised above it), and
+asks about several new devices one at a time. Code: `bar/Sources/NewMicrophone.swift`.
+
+#### Windows (planned, not built)
+
+Windows has no priority list yet: capture follows the system default input
+(`crates/phonon-win/src/win/capture.rs`) and the only UI is tray balloons,
+which carry no buttons. The prompt needs, in order:
+
+1. Ranking: read `microphone_priority` from a `settings.json` under the data
+   root, and in `capture::start` pick the first `host.input_devices()` whose
+   name contains a ranked name (case-insensitive), else the default. Bluetooth
+   hands-free inputs (endpoint form factor `Headset`, or the "Hands-Free" name
+   suffix) are skipped when nothing is ranked, as on macOS.
+2. Arrival: an `IMMNotificationClient` registered on the
+   `IMMDeviceEnumerator` (the `windows` crate's `Win32_Media_Audio`), keyed by
+   the endpoint ID string from `OnDeviceAdded` / `OnDeviceStateChanged` to
+   `DEVICE_STATE_ACTIVE`, capture endpoints only. Callbacks arrive on an MTA
+   thread; post the ID to the tray window with `PostMessageW`.
+3. Seen set: `microphones_seen` in the same file with the same rules (absent
+   means seed with the active capture endpoints, ask nothing).
+4. Prompt: a `TaskDialogIndirect` (comctl32 v6 manifest) with "Use first",
+   "Add below" and "Ignore", or a toast with three buttons once the app has an
+   AUMID. The decision logic is a port of `NewMicrophonePolicy` into
+   `phonon-audio` with the Swift tests carried over.
+
 ## Capsule and Dock (macOS, since 1.0.1)
 
 - The capsule and its panels sit above the Dock: the panel frame's bottom is the screen's visible frame
@@ -187,6 +271,24 @@ default when it rebuilds its graph.
 - Settings › System › "Show in Dock" (settings.json `show_in_dock`, default on), also in the ϕ menu. Off runs
   Phonon as a menu-bar-only (accessory) app; the window opens from the ϕ menu.
 - Both keys are app-side; phonon-core keeps them through its unknown-key passthrough.
+
+## Other audio while dictating (macOS, since 1.0.1)
+
+- Settings › Dictation › "Other audio while dictating" (settings.json `background_audio`: `off` | `lower` |
+  `mute`, default `lower`; unknown values read as `lower`). Speakers leak a playing video or song into the mic;
+  headphones do not.
+- Key down fades the default output device's main volume (CoreAudio VirtualMainVolume) over 0.3 s down 15 dB
+  (lower) or to silence (mute); key up fades it back over 1.2 s while the text is corrected.
+- The fade moves in dB through the device's own slider-to-dB curve, along a smootherstep S-curve (zero speed and
+  acceleration at both ends), on a dedicated userInteractive timer thread (10 ms ticks, 25 ms on Bluetooth, which
+  carries each change over the radio). Each tick computes the volume from elapsed time, so a busy main thread at
+  key up cannot stall or stretch it; the landing value is always written exactly.
+- A volume the user changes mid-dictation is kept (not overwritten at key up). A new dictation during the fade
+  back keeps the first volume as the one to restore. Devices without a settable volume are left alone.
+- The volume to restore is saved (UserDefaults `phonon.duck.restoreVolume`) while lowered: quit restores at once,
+  and the next launch repairs a crash mid-dictation. Meeting capture never ducks.
+- Not done: separating the speaker from other voices in the room. macOS voice processing (echo cancellation of the
+  Mac's own output) is the next step if ducking is not enough.
 
 ## Competing dictation apps
 
@@ -227,6 +329,83 @@ It does not detect other dictation apps.
 
 Untested before shipping: Wispr helper self-exit after SIGKILL, Aqua bridge
 orphan exit, superwhisper default hotkey and idle mic state.
+
+## Import from other dictation apps (macOS)
+
+A new user brings their words, snippets, past dictations, shortcut and
+microphone from the dictation app they used before. This is the "prior
+dictation apps" source of the vocabulary onboarding above, done in the app
+(`bar/Sources/DictationImport.swift`, sheet in `DictationImportView.swift`).
+
+- When: first run, right after the privacy sheet, if any app below is
+  detected; and any time from Settings › System › "Import from other dictation
+  apps". Detection reads no file contents and nothing under ~/Documents, so it
+  never triggers a macOS prompt; the scan starts only when the user presses
+  "Import from your other dictation apps". A scan of a 1.6 GB Wispr Flow
+  database with about 1,200 dictations took 3.6 s (History rows carry audio
+  blobs); it runs off the main thread behind a progress line.
+- What the user sees: the apps found, then per app what it holds ("120 words ·
+  4 replacements · 3 snippets · 900 dictations · shortcut Globe (fn) · mic
+  ..."), a switch each (on), one Import button, then what changed.
+- Read only. SQLite stores are read through a copy (with `-wal` and `-shm`) in
+  the temporary directory, removed afterwards; on APFS the copy is a clone.
+  Nothing is written to another app's files and nothing leaves the Mac.
+- Where it goes:
+  - Words and replacements: `dictionary.json`, `source` = the app id
+    (`wispr-flow`, `aqua-voice`, `superwhisper`, `voiceink`, `macwhisper`,
+    `fluidvoice`). An entry already present (same phrase ignoring case, same
+    replacement) is kept and only gains missing spoken forms. Nothing is
+    replaced or removed.
+  - Snippets (Wispr Flow): `macros.json`, unless the trigger exists.
+  - Dictations: `Imported/<app>.jsonl` (`id, source, timestamp, raw_text,
+    refined_text, edited_text, app`) as raw-to-final examples, and
+    `profile/extract/<app>.txt` (final text, one per line) for the miner. Both
+    are rewritten on every import, so importing twice doubles nothing. They do
+    not enter `Corpus/`: Home, Insights and Train Now count only Phonon's own
+    dictations. Dictations into private apps or sites
+    (`screen_context_denylist` plus the always-private list) are left out and
+    counted.
+  - Shortcut: set only when the first app (table order) with a key Phonon
+    offers names a different one (fn, Right Option, Control Space or a pair).
+  - Microphone: ranked first only when `microphone_priority` is empty, and
+    never a Bluetooth headset.
+
+| app | where | read |
+|---|---|---|
+| Wispr Flow | `~/Library/Application Support/Wispr Flow/flow.sqlite`; `config.json` | `Dictionary` (`isDeleted=0`; `isSnippet=1` to macros), `History` (`isArchived=0`; asrText, formattedText, editedText, app, url; list markup stripped); `prefs.user.shortcuts` (`ptt`, `popo`), `overrideAudioDeviceId` in `rankedAudioDevices[].name` |
+| Aqua Voice | `~/Library/Application Support/Aqua Voice/settings.json` | `dictionary` (strings), `replacements` (`from`, `to`), `history` (rawText, content, last 100), `hotkeys` (`activate`, `lock`), `nativeMicrophone` or `jsMicrophone` |
+| superwhisper | preferences `com.superduper.superwhisper` (`appFolderDirectory`, default ~/Documents; `KeyboardShortcuts_toggleRecording`); `<folder>/superwhisper/settings/settings.json`; `recordings/<epoch>/meta.json` | `vocabulary`, `replacements` (`original`, `with`); rawResult, llmResult or result, recordingDevice. Its `~/Library/Application Support/superwhisper/database/superwhisper.sqlite` holds no text outside FTS and is not read |
+| VoiceInk | `~/Library/Application Support/com.prakashjoshipax.VoiceInk/dictionary.store` and `default.store` (SwiftData); preferences `com.prakashjoshipax.VoiceInk` | `ZVOCABULARYWORD`, `ZWORDREPLACEMENT` (comma-separated originals, enabled only), `ZTRANSCRIPTION` (default.store; ZTEXT, ZENHANCEDTEXT); 1.x `CustomVocabularyItems`, `wordReplacements`; `CustomRecordingShortcut_primary` or `Shortcut_primaryRecording`; `selectedAudioDeviceUID` via CoreAudio |
+| MacWhisper | `~/Library/Application Support/MacWhisper/Database/main.sqlite` | `dictation` (`dateDeleted IS NULL`; transcribedText, processedText, targetAppBundleID). Its replacement list and dictation key are not in a verified location and are not read |
+| FluidVoice | `~/Library/Application Support/FluidVoice/parakeet_custom_vocabulary.json`; preferences `com.FluidApp.app` | `terms[].text` with `aliases` as spoken forms; `TranscriptionHistoryEntries` (rawText, processedText); `HotkeyShortcutKey` |
+
+Store layouts were checked against Wispr Flow 1.6, Aqua Voice 0.17.2,
+superwhisper 2.18, VoiceInk 2.21, MacWhisper 15.10 and FluidVoice 1.6 on
+2026-11-05. Not covered: Typeless, Spokenly, Willow Voice (casks exist; stores
+not inspected), MacWhisper replacements.
+
+### Windows (plan, not built)
+
+`phonon-win` has no dictionary, macros, corpus, settings UI or first run
+screen (see "Windows" › "Known gaps"), so there is nowhere for an import to
+land yet. When the Windows build gains a dictionary:
+
+- Wispr Flow for Windows is the same Electron app with the same stores under
+  `%APPDATA%\Wispr Flow\` (`flow.sqlite`, `config.json`; path from Wispr's
+  `platform-path-constants`). Its shortcuts are Windows virtual keys, not
+  Carbon codes, so the chord mapping needs its own table; the default
+  dictation key is Ctrl+Win, with an optional Caps Lock swap
+  (`windowsCapsLockShortcutSwappedAt`).
+- Aqua Voice for Windows is Electron too: `%APPDATA%\Aqua Voice\settings.json`
+  with the same keys (unverified on Windows).
+- superwhisper for Windows: store layout unverified. VoiceInk, MacWhisper and
+  FluidVoice are macOS only.
+- Shape: a `phonon-core` reader for `flow.sqlite` and Aqua `settings.json`
+  shared by both platforms (the Wispr parsing in `pairs.rs` and
+  `phonon dictionary import-wispr` already lives there), and on Windows a
+  tray menu item "Import from other dictation apps" that reports counts in a
+  message box. Microphone and key import wait for a microphone list and a
+  configurable key beyond `PHONON_WIN_HOTKEY`.
 
 ## Update check (macOS, since 1.0)
 
