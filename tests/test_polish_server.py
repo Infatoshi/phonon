@@ -22,9 +22,9 @@ from sidecar.polish_server import (
     refiner_vocabulary,
     resolve_model_dir,
     restore_terms,
-    with_transcript,
     snapshot_is_complete,
     split_rendered_prompt,
+    with_transcript,
     writing_mode,
 )
 
@@ -172,7 +172,7 @@ def test_writing_mode_follows_the_app_category(tmp_path):
         json.dumps({"writing_modes": MODE_LINES})
     )
     lines, table = read_writing_modes(str(tmp_path))
-    pick = lambda context: writing_mode(lines, table, context)[0]  # noqa: E731
+    pick = lambda context: writing_mode(lines, table, context)[0]
     assert pick({"app_category": "chat"}) == "casual"
     assert pick({"app_category": "work_chat"}) == "formal"
     assert pick({"app_category": "email"}) == "formal"
@@ -192,7 +192,7 @@ def test_a_picked_writing_style_overrides_the_app(tmp_path):
         json.dumps({"writing_modes": MODE_LINES})
     )
     lines, table = read_writing_modes(str(tmp_path))
-    pick = lambda context: writing_mode(lines, table, context)  # noqa: E731
+    pick = lambda context: writing_mode(lines, table, context)
     assert pick({"app_category": "chat", "writing_mode": "formal"}) == (
         "formal",
         MODE_LINES["formal"],

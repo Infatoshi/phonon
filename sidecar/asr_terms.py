@@ -93,7 +93,7 @@ def flat_trie(vocabulary, terms):
     )
     boundary = np.array(
         [
-            p.startswith("▁") or not any(c.isalnum() for c in p) or p.startswith("'")
+            p.startswith(("▁", "'")) or not any(c.isalnum() for c in p)
             for p in vocabulary
         ]
         + [True] * 8,

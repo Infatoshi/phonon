@@ -315,7 +315,8 @@ def test_a_long_dictation_freezes_its_head_and_never_hits_the_context_cap(backen
     assert s.head[-1].endswith(".")
     tail, _ = s.final(" ".join(spoken))
     # the fake model rewrites word by word, so the parts join to the one-request answer
-    assert sum(s.pieces(tail), []) == reference([int(w.rstrip(".")) for w in spoken])
+    joined = [x for piece in s.pieces(tail) for x in piece]
+    assert joined == reference([int(w.rstrip(".")) for w in spoken])
     # a short dictation is one request, as before
     s.reset()
     s.commit(" ".join(spoken[:10]))

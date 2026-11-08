@@ -200,7 +200,7 @@ def test_a_refused_dictionary_keeps_the_old_one(tmp_path, fake_pa):
 
 
 def test_set_terms_on_a_dead_helper_does_nothing(fake_pa, tmp_path):
-    m, log = fake_pa("exit")
+    m, _log = fake_pa("exit")
     m.metal_rows(SAMPLES, FRAMES)
     assert m.dead
     assert "Metal ASR is off" in m.set_terms(["vLLM"])
