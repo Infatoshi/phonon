@@ -61,6 +61,100 @@ enum LineBreaks {
         return tail[start..<tail.endIndex]
     }
 
+    // MARK: - chat join
+
+    /// Closing phrases a chat message's sign-off line may hold (`chat_join`).
+    private static let chatSignOffs: [String] = [
+        "best regards", "kind regards", "warm regards", "warmest regards", "all the best", "best wishes",
+        "many thanks", "thank you", "thanks", "regards", "best", "cheers", "sincerely", "talk soon", "warmly",
+    ]
+
+    /// `chat_join(text)` of the Rust: in a chat app's formal mode, the newlines a refiner (RLQv4U on) wrote
+    /// after a leading greeting line and before and inside a trailing sign-off become single spaces; after a
+    /// list the sign-off keeps one line of its own. Every other newline and every word stays. The keyboard
+    /// cannot see which app it types into, so nothing on iOS calls this yet; it is here so the ports agree.
+    static func chatJoin(_ text: String) -> String {
+        var t = text
+        if let nl = t.firstIndex(of: "\n") {
+            let head = rtrim(String(t[..<nl]))
+            let body = ltrim(String(t[nl...]))
+            if isGreetingLine(head) && !body.isEmpty { t = head + " " + afterComma(head, body) }
+        }
+        let lines = rtrim(t).components(separatedBy: "\n")
+        for k in [2, 1] where lines.count > k {
+            let block = lines[(lines.count - k)...].map { rtrim(ltrim($0)) }
+            let fits = k == 2 ? isClosing(block[0]) && isName(block[1]) : isSignOffLine(block[0])
+            if !fits { continue }
+            let body = rtrim(lines[..<(lines.count - k)].joined(separator: "\n"))
+            guard let end = body.unicodeScalars.last, end == "." || end == "!" || end == "?" else { continue }
+            let last = body.components(separatedBy: "\n").last ?? body
+            let sep = markers(Array(last.unicodeScalars)).first?.0 == 0 ? "\n" : " "
+            t = body + sep + block.joined(separator: " ")
+            break
+        }
+        return t
+    }
+
+    private static func ltrim(_ s: String) -> String {
+        let c = Array(s.unicodeScalars)
+        var i = 0
+        while i < c.count && ws(c[i]) { i += 1 }
+        return str(c[i...])
+    }
+    private static func rtrim(_ s: String) -> String { str(trimEnd(Array(s.unicodeScalars)[...])) }
+
+    /// Common sentence openers that read lowercase after a greeting's comma (`JOINED_OPENERS`).
+    private static let joinedOpeners: Set<String> = [
+        "here", "this", "the", "we", "just", "so", "it", "that", "there", "quick", "can", "could", "would",
+    ]
+
+    /// `after_comma`: the body's first word lowercased when the greeting ends in a comma and the word is a
+    /// capitalized opener ("It", not "IT"); otherwise the body unchanged.
+    private static func afterComma(_ head: String, _ body: String) -> String {
+        let c = Array(body.unicodeScalars)
+        var n = 0
+        while n < c.count && c[n].properties.isAlphabetic { n += 1 }
+        let word = c[0..<n]
+        let capitalized = (word.first?.properties.isUppercase ?? false)
+            && word.dropFirst().allSatisfy { $0.properties.isLowercase }
+        let lower = str(word).lowercased()
+        guard head.hasSuffix(","), capitalized, joinedOpeners.contains(lower) else { return body }
+        return lower + str(c[n...])
+    }
+
+    /// A greeting word, at most six words, ending in ",", "!" or ".".
+    private static func isGreetingLine(_ line: String) -> Bool {
+        let words = line.split(whereSeparator: { $0.unicodeScalars.allSatisfy(ws) }).count
+        guard (1...6).contains(words), let end = line.unicodeScalars.last,
+              end == "," || end == "!" || end == "." else { return false }
+        let c = Array(line.unicodeScalars)
+        return greetingWords.contains { w in hasPrefix(c, at: 0, w) && !(w.count < c.count && isWord(c[w.count])) }
+    }
+
+    /// A closing phrase alone, bare or with its punctuation.
+    private static func isClosing(_ line: String) -> Bool {
+        var core = line
+        while let e = core.unicodeScalars.last, e == "," || e == "!" || e == "." { core.unicodeScalars.removeLast() }
+        let lower = Array(core.unicodeScalars).map(lowerASCII)
+        return chatSignOffs.contains { lower == Array($0.unicodeScalars) }
+    }
+
+    /// One to three capitalized name words.
+    private static func isName(_ line: String) -> Bool {
+        let words = line.split(whereSeparator: { $0.unicodeScalars.allSatisfy(ws) })
+        return (1...3).contains(words.count) && words.allSatisfy { w in
+            guard let f = w.unicodeScalars.first, f.properties.isUppercase else { return false }
+            return w.unicodeScalars.allSatisfy { $0.properties.isAlphabetic || $0 == "." || $0 == "-" || $0 == "'" }
+        }
+    }
+
+    /// "Thanks!", "Best regards," or "Best regards, Chris".
+    private static func isSignOffLine(_ line: String) -> Bool {
+        if isClosing(line) { return true }
+        guard let comma = line.firstIndex(of: ",") else { return false }
+        return isClosing(String(line[..<comma])) && isName(ltrim(String(line[line.index(after: comma)...])))
+    }
+
     // MARK: - lists
 
     /// Inline numbered markers in order become one per line (the reference's `lists`).

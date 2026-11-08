@@ -43,6 +43,139 @@ pub fn layout(text: &str, mode: &str, email: bool) -> String {
     }
 }
 
+/// Closing phrases a chat message's sign-off line may hold (`chat_join`): the reference's
+/// list plus the app's email list (phonon-core `app_context::SIGN_OFFS`).
+const CHAT_SIGN_OFFS: &[&str] = &[
+    "best regards",
+    "kind regards",
+    "warm regards",
+    "warmest regards",
+    "all the best",
+    "best wishes",
+    "many thanks",
+    "thank you",
+    "thanks",
+    "regards",
+    "best",
+    "cheers",
+    "sincerely",
+    "talk soon",
+    "warmly",
+];
+
+/// Chat apps in formal mode (Slack, Teams, Google Chat). Refiners from RLQv4U on emit an
+/// email's layout themselves in formal mode ("Hello team,\n\nBody.\n\nBest regards,\nChris"),
+/// and a greeting or sign-off alone on a line reads wrong in a chat message. This joins
+/// those newlines back into single spaces: the newlines after a leading greeting line, and
+/// the newlines before a trailing sign-off and inside it. Every other newline (lists,
+/// paragraphs) stays, and so do the words. Text without such lines comes back unchanged.
+pub fn chat_join(text: &str) -> String {
+    let mut t = text.to_string();
+    // greeting: a first line that is only a greeting ("Hi Sarah,", "Dear Ms. Chen,")
+    if let Some(nl) = t.find('\n') {
+        let head = t[..nl].trim_end();
+        let body = t[nl..].trim_start();
+        if is_greeting_line(head) && !body.is_empty() {
+            t = format!("{head} {}", after_comma(head, body));
+        }
+    }
+    // sign-off: the last line, or the last two ("Best regards," then "Chris")
+    let lines: Vec<&str> = t.trim_end().split('\n').collect();
+    for k in [2, 1] {
+        if lines.len() <= k {
+            continue;
+        }
+        let block: Vec<&str> = lines[lines.len() - k..].iter().map(|l| l.trim()).collect();
+        let fits = match block.as_slice() {
+            [phrase, name] => is_closing(phrase) && is_name(name),
+            [line] => is_sign_off_line(line),
+            _ => false,
+        };
+        if !fits {
+            continue;
+        }
+        let body = lines[..lines.len() - k].join("\n");
+        let body = body.trim_end();
+        if body.is_empty() || !body.ends_with(['.', '!', '?']) {
+            continue;
+        }
+        // after a list, the sign-off keeps a line of its own (one line, not two)
+        let last = body.rsplit('\n').next().unwrap_or(body);
+        let sep = if markers(last).first().is_some_and(|&(at, _)| at == 0) {
+            "\n"
+        } else {
+            " "
+        };
+        t = format!("{body}{sep}{}", block.join(" "));
+        break;
+    }
+    t
+}
+
+/// Common sentence openers that read lowercase after a greeting's comma ("Good morning
+/// everyone, here is"). A closed list, so names keep their capital ("Hi Sam, Berlin").
+const JOINED_OPENERS: &[&str] = &[
+    "here", "this", "the", "we", "just", "so", "it", "that", "there", "quick", "can", "could",
+    "would",
+];
+
+/// The body after a joined greeting: its first word lowercased when the greeting ends in a
+/// comma and the word is one of `JOINED_OPENERS`; otherwise unchanged.
+fn after_comma(head: &str, body: &str) -> String {
+    let word: String = body.chars().take_while(|c| c.is_alphabetic()).collect();
+    let lower = word.to_lowercase();
+    // capitalized only ("It", not "IT" the department)
+    let capitalized = word.chars().next().is_some_and(char::is_uppercase)
+        && word.chars().skip(1).all(char::is_lowercase);
+    if head.ends_with(',') && capitalized && JOINED_OPENERS.contains(&lower.as_str()) {
+        format!("{lower}{}", &body[word.len()..])
+    } else {
+        body.to_string()
+    }
+}
+
+/// "Hi Sarah," / "Good morning, Sam." / "Dear Ms. Chen,": a greeting word, at most six
+/// words, ending in a comma, "!" or ".".
+fn is_greeting_line(line: &str) -> bool {
+    let words = line.split_whitespace().count();
+    if !(1..=6).contains(&words) || !line.ends_with([',', '!', '.']) {
+        return false;
+    }
+    GREETING_WORDS.iter().any(|word| {
+        line.get(..word.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(word))
+            && !line[word.len()..].chars().next().is_some_and(is_word)
+    })
+}
+
+/// A closing phrase alone, bare or with its punctuation ("Best regards," / "Thanks!").
+fn is_closing(line: &str) -> bool {
+    let core = line.trim_end_matches([',', '!', '.']);
+    CHAT_SIGN_OFFS.iter().any(|p| core.eq_ignore_ascii_case(p))
+}
+
+/// One to three capitalized name words ("Chris", "Mary Ann Lee").
+fn is_name(line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    (1..=3).contains(&words.len())
+        && words.iter().all(|w| {
+            w.chars().next().is_some_and(char::is_uppercase)
+                && w.chars()
+                    .all(|c| c.is_alphabetic() || matches!(c, '.' | '-' | '\''))
+        })
+}
+
+/// One sign-off line: "Thanks!", "Best regards," or "Best regards, Chris".
+fn is_sign_off_line(line: &str) -> bool {
+    if is_closing(line) {
+        return true;
+    }
+    match line.split_once(',') {
+        Some((phrase, name)) => is_closing(phrase) && is_name(name.trim()),
+        None => false,
+    }
+}
+
 /// Inline numbered markers in order become one per line (the reference's `lists`).
 pub fn lists(t: &str) -> String {
     let mut seq = Vec::new();
@@ -323,6 +456,57 @@ mod tests {
             layout("1. eggs 2. milk", "casual", false),
             "1. eggs 2. milk"
         );
+    }
+
+    #[test]
+    fn chat_join_undoes_only_greeting_and_sign_off_lines() {
+        assert_eq!(
+            chat_join("Hello team,\n\nThe build is green.\n\nBest regards,\nChris"),
+            "Hello team, the build is green. Best regards, Chris"
+        );
+        assert_eq!(
+            chat_join("Dear Ms. Chen,\nThe build is green.\nWarm regards, Chris Lee"),
+            "Dear Ms. Chen, the build is green. Warm regards, Chris Lee"
+        );
+        assert_eq!(
+            chat_join("Good morning, Sam.\n\nShip it today.\n\nThanks!"),
+            "Good morning, Sam. Ship it today. Thanks!"
+        );
+        // after a greeting's comma a common opener goes lowercase; names, "I" and
+        // acronyms keep their capitals, and so does anything after a greeting's period
+        for (input, want) in [
+            (
+                "Good morning everyone,\n\nHere is the recipe.",
+                "Good morning everyone, here is the recipe.",
+            ),
+            ("Hi Sam,\n\nBerlin is booked.", "Hi Sam, Berlin is booked."),
+            ("Hi Sam,\nI'm in.", "Hi Sam, I'm in."),
+            ("Hi team,\nIT is down.", "Hi team, IT is down."),
+            ("Hi team,\nThere's cake.", "Hi team, there's cake."),
+            ("Hi team,\nPlease review.", "Hi team, Please review."),
+            (
+                "Good morning, Sam.\nThe plan holds.",
+                "Good morning, Sam. The plan holds.",
+            ),
+        ] {
+            assert_eq!(chat_join(input), want, "{input:?}");
+        }
+        // after a list the sign-off keeps its own line, joined into one
+        assert_eq!(
+            chat_join("Hi all,\n\nSteps:\n1. Grate it.\n2. Serve it.\n\nBest regards,\nChris"),
+            "Hi all, Steps:\n1. Grate it.\n2. Serve it.\nBest regards, Chris"
+        );
+        // paragraphs, lists, a non-greeting first line and a non-sign-off last line stay
+        for t in [
+            "The build is green.\n\nShip it today.",
+            "Hi Sam, the build is green. Thanks, Chris",
+            "Steps:\n1. ship it\n2. tag it",
+            "Hi,\n1. ship it\n2. tag it",
+            "Ship it.\nThanks for the review of the release notes",
+            "Hi Sam,",
+        ] {
+            assert_eq!(chat_join(t), t.replacen("Hi,\n", "Hi, ", 1), "{t:?}");
+        }
     }
 
     #[test]

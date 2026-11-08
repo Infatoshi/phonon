@@ -248,10 +248,17 @@ fn byok_text_passes(dictionary: &data::DictionaryFile, source: &str, remote: &st
 
 /// Line breaks of the inserted text: numbered lists one per line in every mode but
 /// casual; the greeting and sign-off on their own lines only in email (`email_layout`),
-/// never in Slack or Teams although they map to formal.
+/// never in Slack or Teams although they map to formal. A chat app in formal mode also
+/// gets the greeting and sign-off newlines the refiner wrote itself joined back
+/// (`linebreak::chat_join`); lists stay.
 fn final_layout(text: &str, mode: &str, category: Option<app_context::AppCategory>) -> String {
-    if category == Some(app_context::AppCategory::Email) {
+    use app_context::AppCategory;
+    if category == Some(AppCategory::Email) {
         app_context::email_layout(&phonon_llm::linebreak::lists(text))
+    } else if mode == "formal"
+        && matches!(category, Some(AppCategory::WorkChat | AppCategory::Chat))
+    {
+        phonon_llm::linebreak::layout(&phonon_llm::linebreak::chat_join(text), mode, false)
     } else {
         phonon_llm::linebreak::layout(text, mode, false)
     }
@@ -1815,6 +1822,30 @@ mod tests {
         assert_eq!(
             final_layout("1. eggs 2. milk", "casual", Some(AppCategory::Chat)),
             "1. eggs 2. milk"
+        );
+    }
+
+    #[test]
+    fn model_written_greeting_and_sign_off_lines_join_only_in_chat() {
+        use super::final_layout;
+        // RLQv4U's formal output on a public fmt_v0 email probe
+        let model = "Hello team,\n\nThe dependencies are pinned. Please let me know.\n\nBest regards,\nChris";
+        assert_eq!(
+            final_layout(model, "formal", Some(AppCategory::WorkChat)),
+            "Hello team, the dependencies are pinned. Please let me know. Best regards, Chris"
+        );
+        // the mail app keeps the email layout; other categories are untouched
+        let email = final_layout(model, "formal", Some(AppCategory::Email));
+        assert!(email.starts_with("Hello team,\n"), "{email:?}");
+        assert!(email.contains("\nChris"), "{email:?}");
+        for category in [None, Some(AppCategory::Docs), Some(AppCategory::Other)] {
+            assert_eq!(final_layout(model, "formal", category), model);
+        }
+        // a list inside the chat message keeps its lines
+        let steps = "Hi Sarah,\n\nTwo things:\n1. ship it\n2. tag it\n\nThanks,\nChris";
+        assert_eq!(
+            final_layout(steps, "formal", Some(AppCategory::WorkChat)),
+            "Hi Sarah, Two things:\n1. ship it\n2. tag it\n\nThanks,\nChris"
         );
     }
 
