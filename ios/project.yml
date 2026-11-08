@@ -1,0 +1,124 @@
+# Phonon for iPhone, milestone 1: the no-bounce keyboard.
+# The app holds a microphone session alive in the background (opened once); the Phonon keyboard's mic button
+# signals it (Darwin notifications), the app transcribes, writes the text to the shared app group and signals back,
+# and the keyboard inserts it. Recognition is Apple's on-device recognizer for now; Parakeet + the LFM refiner next.
+# Generate: PHONON_TEAM_ID=<your Apple team ID> xcodegen generate (in this folder). Build/install: ./run.sh
+name: PhononiOS
+options:
+  bundleIdPrefix: sh.phonon
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: ${PHONON_TEAM_ID}
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  # Parakeet TDT v2 on CoreML (Apache-2.0); the app's recognizer, same model as the Mac
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    from: 0.18.2
+schemes:
+  # explicit because a shared scheme stops Xcode autocreating this one (run.sh builds -scheme Phonon)
+  Phonon:
+    build:
+      targets:
+        Phonon: all
+  PhononSelftest:
+    build:
+      targets:
+        Phonon: all
+        PhononSelftest: [test]
+    test:
+      config: Debug
+      targets: [PhononSelftest]
+targets:
+  Phonon:
+    type: application
+    platform: iOS
+    sources: [App, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.phonon.ios
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_CFBundleDisplayName: Phonon
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Phonon
+        UILaunchScreen: {}
+        UIBackgroundModes: [audio]
+        NSMicrophoneUsageDescription: Phonon listens while you hold the keyboard's mic button and turns your speech into text on this iPhone.
+        NSSpeechRecognitionUsageDescription: Phonon transcribes your dictation on this iPhone.
+        CFBundleURLTypes:
+          - CFBundleURLName: sh.phonon.ios
+            CFBundleURLSchemes: [phonon]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    # App Group: the app and keyboard share values as files in the group container (Shared/IPC.swift). Named
+    # pasteboards were dropped because iOS blocks them for a backgrounded app, which froze the session heartbeat.
+    # Shared keychain group (allowed by the team's wildcard profile): the app <-> keyboard channel (Shared/IPC.swift).
+    # App Group: IPC prefers the group container; the shared keychain stays as the fallback.
+    entitlements:
+      path: App/Phonon.entitlements
+      properties:
+        keychain-access-groups: ["$(AppIdentifierPrefix)sh.phonon.shared"]
+        com.apple.security.application-groups: [group.sh.phonon.ios]
+    dependencies:
+      - target: PhononKeyboard
+      - package: FluidAudio
+      # llama.cpp b12132 prebuilt (GitHub release llama-b12132-xcframework.zip); the refiner runs on its CPU backend
+      - framework: Frameworks/llama.xcframework
+        embed: true
+  # The refiner self-test as an XCTest for Firebase Test Lab (./testlab.sh). The 943 MB model is copied into the
+  # test bundle at build time from PHONON_SELFTEST_MODEL (not kept in the source tree).
+  PhononSelftest:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.phonon.ios.selftest
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Phonon.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Phonon
+        BUNDLE_LOADER: $(TEST_HOST)
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        PHONON_SELFTEST_MODEL: $(SRCROOT)/build/selftest-model/refiner.gguf
+    dependencies:
+      - target: Phonon
+    postCompileScripts:
+      - name: Copy refiner model
+        script: |
+          set -e
+          test -f "$PHONON_SELFTEST_MODEL" || { echo "error: no model at $PHONON_SELFTEST_MODEL"; exit 1; }
+          cp -c "$PHONON_SELFTEST_MODEL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner.gguf" 2>/dev/null \
+            || cp "$PHONON_SELFTEST_MODEL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner.gguf"
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/refiner.gguf
+  PhononKeyboard:
+    type: app-extension
+    platform: iOS
+    sources: [Keyboard, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.phonon.ios.keyboard
+        TARGETED_DEVICE_FAMILY: "1"
+    entitlements:
+      path: Keyboard/PhononKeyboard.entitlements
+      properties:
+        keychain-access-groups: ["$(AppIdentifierPrefix)sh.phonon.shared"]
+        com.apple.security.application-groups: [group.sh.phonon.ios]
+    info:
+      path: Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: Phonon
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            RequestsOpenAccess: true
+            PrimaryLanguage: en-US
+            IsASCIICapable: false
+            PrefersRightToLeft: false
