@@ -37,6 +37,32 @@ pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
 
+/// A local Parakeet folder used instead of the pinned download: the pinned MLX snapshot's layout (config.json,
+/// model.safetensors, tokenizer files), e.g. a fine-tuned model with its weights merged in. The sidecar loads it as
+/// it is, for MLX and for pa (which reads <dir>/model.safetensors); no revision applies. Unset: the pinned model.
+pub const ASR_MODEL_DIR_ENV: &str = "PHONON_ASR_MODEL_DIR";
+
+/// The sidecar's `--model` (and `--revision`, for the pinned hub model only). `model_dir` is the value of
+/// PHONON_ASR_MODEL_DIR: empty or unset means the pinned model; anything else must be a folder holding config.json
+/// and model.safetensors, or the spawn fails loudly instead of quietly running the stock model.
+pub fn asr_model_args(model_dir: Option<&str>) -> Result<Vec<String>> {
+    let Some(dir) = model_dir.map(str::trim).filter(|d| !d.is_empty()) else {
+        return Ok(vec![
+            "--model".into(),
+            ASR_MODEL_ID.into(),
+            "--revision".into(),
+            ASR_MODEL_REVISION.into(),
+        ]);
+    };
+    let path = Path::new(dir);
+    for file in ["config.json", "model.safetensors"] {
+        if !path.join(file).is_file() {
+            bail!("{ASR_MODEL_DIR_ENV}={dir}: no {file} there");
+        }
+    }
+    Ok(vec!["--model".into(), dir.into()])
+}
+
 /// Pinned interpreter for both sidecars. Without this, uv falls back to whatever
 /// `python3` it finds, which on a Mac with no developer tooling is the system
 /// CPython 3.9 that MLX publishes no wheels for. An open-ended range would also
@@ -163,6 +189,7 @@ impl AsrSidecar {
             bail!("missing {}", script.display());
         }
         let uv = resolve_uv().context("uv not found; install it with Homebrew")?;
+        let model_args = asr_model_args(std::env::var(ASR_MODEL_DIR_ENV).ok().as_deref())?;
         let started = Instant::now();
         let mut command = Command::new(&uv);
         command
@@ -175,7 +202,7 @@ impl AsrSidecar {
                 "python",
             ])
             .arg(&script)
-            .args(["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION])
+            .args(&model_args)
             .env(
                 "PHONON_STREAM_REFINE",
                 if stream_refine { "1" } else { "0" },
@@ -372,8 +399,42 @@ impl Drop for AsrSidecar {
 
 #[cfg(test)]
 mod tests {
-    use super::Waker;
+    use super::{asr_model_args, Waker, ASR_MODEL_ID, ASR_MODEL_REVISION};
     use std::sync::mpsc;
+
+    #[test]
+    fn asr_model_args_pin_the_hub_model_without_an_override() {
+        let pinned = vec!["--model", ASR_MODEL_ID, "--revision", ASR_MODEL_REVISION];
+        assert_eq!(asr_model_args(None).unwrap(), pinned);
+        assert_eq!(asr_model_args(Some("")).unwrap(), pinned);
+        assert_eq!(asr_model_args(Some("  ")).unwrap(), pinned);
+    }
+
+    #[test]
+    fn asr_model_args_pass_a_model_folder_without_a_revision() {
+        let dir = std::env::temp_dir().join(format!("phonon-asr-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_str().unwrap().to_string();
+
+        // incomplete folders fail instead of silently running the stock model
+        let err = asr_model_args(Some(&path)).unwrap_err().to_string();
+        assert!(err.contains("config.json"), "{err}");
+        std::fs::write(dir.join("config.json"), "{}").unwrap();
+        let err = asr_model_args(Some(&path)).unwrap_err().to_string();
+        assert!(err.contains("model.safetensors"), "{err}");
+
+        std::fs::write(dir.join("model.safetensors"), b"").unwrap();
+        assert_eq!(
+            asr_model_args(Some(&path)).unwrap(),
+            vec!["--model", path.as_str()]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn asr_model_args_reject_a_missing_folder() {
+        assert!(asr_model_args(Some("/nonexistent/phonon-asr-model")).is_err());
+    }
 
     #[test]
     fn waker_nudges_with_an_empty_line_once_set() {

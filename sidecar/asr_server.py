@@ -198,6 +198,20 @@ def stream_transcriber(model, req: dict):
     return StreamTranscriber(transcribe_words, **settings)
 
 
+def model_source(model_id: str, revision: str | None, need_folder: bool) -> str:
+    """Where the Parakeet weights load from. An existing directory (the engine's PHONON_ASR_MODEL_DIR: a folder in
+    the pinned snapshot's layout, config.json + model.safetensors + tokenizer files) is used as it is, revision
+    ignored, for both MLX and pa (pa_client reads <source>/model.safetensors). Otherwise a hub id: parakeet_mlx has
+    no revision argument, so a revision (or pa, which needs the files on disk) resolves the exact snapshot first."""
+    if os.path.isdir(model_id):
+        return model_id
+    if revision or need_folder:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_id, revision=revision)
+    return model_id
+
+
 def main() -> None:
     model_id = "mlx-community/parakeet-tdt-0.6b-v2"
     revision = None
@@ -234,13 +248,7 @@ def main() -> None:
     metal_cfg = metal_asr_config()
     metal = False
     try:
-        # parakeet_mlx has no revision argument, so pin by resolving the exact
-        # snapshot first and loading it from disk.
-        source = model_id
-        if revision or metal_cfg:
-            from huggingface_hub import snapshot_download
-
-            source = snapshot_download(model_id, revision=revision)
+        source = model_source(model_id, revision, bool(metal_cfg))
         model = None
         if metal_cfg:
             try:
