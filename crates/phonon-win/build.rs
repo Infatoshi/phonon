@@ -9,6 +9,12 @@ fn main() {
         .include("csrc")
         .warnings(false)
         .compile("phonon_sherpa_shim");
+    // C++ so a decode that throws becomes an error, not a terminated process.
+    cc::Build::new()
+        .cpp(true)
+        .file("csrc/guard.cc")
+        .warnings(false)
+        .compile("phonon_sherpa_guard");
     // the target, not the build host: a cross build from Linux (cargo-xwin) uses llvm-rc
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();

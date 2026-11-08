@@ -81,8 +81,9 @@ impl Engine {
         self.recognizer.is_resident()
     }
 
-    /// Run captured audio (mono, -1..1) through both stages without writing a file.
-    /// Requires a resident speech model (`resident`).
+    /// Run a dictation's captured audio (mono, -1..1) through both stages without
+    /// writing a file. Requires a resident speech model (`resident`). A correction
+    /// that fails leaves the raw transcript (see `correct_or_raw`).
     pub fn run_samples(&self, sample_rate: u32, samples: &[f32]) -> Result<PassResult> {
         let started = Instant::now();
         let transcript = self
@@ -91,18 +92,39 @@ impl Engine {
             .ok_or_else(|| anyhow::anyhow!("the speech model is not resident"))?
             .context("transcribe the recording")?;
         let asr_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(self.correct_or_raw(transcript.text, asr_ms))
+    }
+
+    /// Run a dictation's wave file through both stages; like `run`, except that a
+    /// correction that fails leaves the raw transcript.
+    pub fn dictate(&self, wav: &Path) -> Result<PassResult> {
         let started = Instant::now();
-        let polished = self
-            .corrector
-            .correct(&transcript.text)
-            .context("correct the transcript")?;
-        let polish_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(PassResult {
-            raw: transcript.text,
+        let transcript = self
+            .recognizer
+            .transcribe(wav)
+            .with_context(|| format!("transcribe {}", wav.display()))?;
+        let asr_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(self.correct_or_raw(transcript.text, asr_ms))
+    }
+
+    /// The corrected text, or the raw transcript when correction fails: a dictation
+    /// the user spoke is inserted either way, never dropped (the correction server
+    /// rejected a 900 s transcript with HTTP 400 before sentence groups, 2026-11-08).
+    fn correct_or_raw(&self, raw: String, asr_ms: f64) -> PassResult {
+        let started = Instant::now();
+        let polished = match self.corrector.correct(&raw) {
+            Ok(polished) => polished,
+            Err(error) => {
+                eprintln!("phonon: correction failed, inserting the raw transcript: {error:#}");
+                raw.clone()
+            }
+        };
+        PassResult {
+            raw,
             polished,
             asr_ms,
-            polish_ms,
-        })
+            polish_ms: started.elapsed().as_secs_f64() * 1000.0,
+        }
     }
 
     /// Run one wave file through both stages.

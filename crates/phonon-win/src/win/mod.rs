@@ -375,13 +375,21 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
     // No file on the way to the text: with every core busy, Defender's scan of
     // the wave file Phonon wrote and read back cost 4.7 s, and its first-use
     // scans of the speech model's files over a minute (QA VM, 2026-11-07). The
-    // history copy is written after the text is in.
+    // history copy is written after the text is in, except for a recording over a
+    // minute: that one is saved first, so nothing long is lost if transcription
+    // fails or Phonon dies (a 410 s pass terminated the process, 2026-11-08).
+    let saved_first = engine.resident() && captured.seconds() > 60.0;
+    if saved_first {
+        if let Err(error) = captured.write(&path) {
+            eprintln!("phonon: could not keep the recording: {error:#}");
+        }
+    }
     let outcome = if engine.resident() {
         engine.run_samples(captured.sample_rate, &captured.to_f32())
     } else {
-        captured.write(&path).and_then(|wav| engine.run(&wav))
+        captured.write(&path).and_then(|wav| engine.dictate(&wav))
     };
-    let keep = engine.resident();
+    let keep = engine.resident() && !saved_first;
     match outcome {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());

@@ -437,6 +437,68 @@ fn correct_at(base: &str, raw: &str, mode: &str) -> Result<String> {
     if raw.trim().is_empty() {
         return Ok(String::new());
     }
+    // A long transcript is corrected in sentence groups: the prompt plus its output
+    // budget must fit the server's context, or the answer stops mid-text (410 s
+    // dictation: "n_tokens = 2047, truncated = 1", the tail lost) or the request
+    // fails (900 s: "request (3239 tokens) exceeds the available context size").
+    let mut parts = Vec::new();
+    let mut guard_fired = false;
+    for group in sentence_groups(raw, GROUP_WORDS) {
+        let (text, fired) = correct_one(base, &group, mode)?;
+        guard_fired |= fired;
+        parts.push(text);
+    }
+    let text = parts.join(" ");
+    // a length-guard fallback is the raw transcript and stays as it is, as on the Mac
+    if guard_fired {
+        return Ok(text);
+    }
+    // the shared output stage: numbered steps one per line (phonon_llm::linebreak,
+    // same as the Mac engine); greeting and sign-off lines are for email only, and
+    // this corrector does not know the target app, so it never splits them
+    Ok(phonon_llm::linebreak::layout(&text, mode, false))
+}
+
+/// Words per correction request. With the 2048-token context: about 330 transcript
+/// tokens, a 68-token prompt head and a 1.5 x 330 + 32 output budget, under 1,000.
+const GROUP_WORDS: usize = 250;
+
+/// The transcript split after sentence ends (. ? !) into groups of at most
+/// `max_words` words; a run-on sentence longer than that is cut at the word limit.
+/// One group, the whole text, when it is short enough.
+fn sentence_groups(raw: &str, max_words: usize) -> Vec<String> {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    if words.len() <= max_words {
+        return vec![raw.trim().to_string()];
+    }
+    let mut groups = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    let mut sentence: Vec<&str> = Vec::new();
+    for word in words {
+        sentence.push(word);
+        let ends = word.ends_with(['.', '?', '!']);
+        if ends || sentence.len() >= max_words {
+            if current.len() + sentence.len() > max_words && !current.is_empty() {
+                groups.push(current.join(" "));
+                current.clear();
+            }
+            current.append(&mut sentence);
+        }
+    }
+    if current.len() + sentence.len() > max_words && !current.is_empty() {
+        groups.push(current.join(" "));
+        current.clear();
+    }
+    current.append(&mut sentence);
+    if !current.is_empty() {
+        groups.push(current.join(" "));
+    }
+    groups
+}
+
+/// One correction request, with the length guard (true when it kept the raw
+/// text); no layout.
+fn correct_one(base: &str, raw: &str, mode: &str) -> Result<(String, bool)> {
     let tokens = tokenize(base, &prompt(raw, mode))?;
     let budget = output_budget(tokenize(base, raw.trim())?.len() as u32);
     let value: serde_json::Value = http::agent()
@@ -459,12 +521,8 @@ fn correct_at(base: &str, raw: &str, mode: &str) -> Result<String> {
     let (text, fired) = guarded(raw, &parse_reply(&value)?);
     if fired {
         eprintln!("phonon: length guard kept the raw transcript");
-        return Ok(text);
     }
-    // the shared output stage: numbered steps one per line (phonon_llm::linebreak,
-    // same as the Mac engine); greeting and sign-off lines are for email only, and
-    // this corrector does not know the target app, so it never splits them
-    Ok(phonon_llm::linebreak::layout(&text, mode, false))
+    Ok((text, fired))
 }
 
 /// The correction model, resident: a server on the GPU when the machine has a
@@ -643,6 +701,35 @@ impl Corrector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_transcript_is_one_group() {
+        assert_eq!(
+            sentence_groups("  Hello there.  ", 250),
+            vec!["Hello there."]
+        );
+    }
+
+    #[test]
+    fn long_transcripts_split_after_sentences_and_keep_every_word() {
+        let sentence = "one two three four five six seven eight nine ten.";
+        let raw = vec![sentence; 60].join(" "); // 600 words
+        let groups = sentence_groups(&raw, 250);
+        assert_eq!(groups.len(), 3);
+        for group in &groups {
+            assert!(group.split_whitespace().count() <= 250);
+            assert!(group.ends_with('.'), "cut mid-sentence: {group}");
+        }
+        assert_eq!(groups.join(" "), raw);
+    }
+
+    #[test]
+    fn a_run_on_sentence_is_cut_at_the_word_limit() {
+        let raw = vec!["word"; 610].join(" ");
+        let groups = sentence_groups(&raw, 250);
+        assert!(groups.iter().all(|g| g.split_whitespace().count() <= 250));
+        assert_eq!(groups.join(" "), raw);
+    }
 
     #[test]
     fn the_prompt_matches_the_iphone_build() {

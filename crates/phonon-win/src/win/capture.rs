@@ -131,6 +131,11 @@ pub struct Captured {
 }
 
 impl Captured {
+    /// Length in seconds.
+    pub fn seconds(&self) -> f64 {
+        self.samples.len() as f64 / f64::from(self.sample_rate.max(1))
+    }
+
     /// The samples as -1..1 floats, for the recogniser.
     pub fn to_f32(&self) -> Vec<f32> {
         self.samples
