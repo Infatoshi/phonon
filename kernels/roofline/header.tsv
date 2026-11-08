@@ -1,0 +1,1 @@
+device	os	unit	read_GBps_measured	read_GBps_spec	int8_peak_GOPS	fp16_peak_GFLOPS	fp32_peak_GFLOPS	decode_floor_ms_per_tok	decode_measured_ms_per_tok	decode_pct_of_floor	prefill_GOPS_measured	prefill_pct_of_int8_peak	profilers_verified	method	date

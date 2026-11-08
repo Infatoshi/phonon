@@ -1,0 +1,471 @@
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index 1a9cf55..3ac5c16 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -100,9 +100,95 @@ enum mmvq_parameter_table_id {
+     MMVQ_PARAMETERS_RDNA2,
+     MMVQ_PARAMETERS_RDNA3_0,
+     MMVQ_PARAMETERS_RDNA4,
+-    MMVQ_PARAMETERS_GB10
++    MMVQ_PARAMETERS_GB10,
++    MMVQ_PARAMETERS_PASCAL
+ };
+ 
++// Pascal (sm_60/61, no tensor cores, dp4a only): batch-1 k-quant matvec block shape, tuned on GTX 1080 Ti
++#ifndef MMVQ_PASCAL_NWARPS
++#define MMVQ_PASCAL_NWARPS 2
++#endif
++#ifndef MMVQ_PASCAL_RPB
++#define MMVQ_PASCAL_RPB 2
++#endif
++
++// ints of q4_K quants per thread in the Pascal q4_K matvec (stock: 2). More per thread amortizes the scale
++// decode and index math, which matter on Pascal where the matvec is close to issue-bound.
++#ifndef MMVQ_PASCAL_Q4K_VDR
++#define MMVQ_PASCAL_Q4K_VDR 4
++#endif
++
++static constexpr __host__ __device__ bool mmvq_pascal_tuned_type(ggml_type type) {
++    return type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K;
++}
++
++// q4_K x q8_1 dot product over VDR contiguous ints of one 32-byte quant group (64 weights: low nibbles belong to
++// sub-block 2g, high nibbles to sub-block 2g+1). iqs = VDR*t selects group g = iqs/8 and ints iqs%8 .. iqs%8+VDR-1.
++template <int VDR>
++static __device__ __forceinline__ float vec_dot_q4_K_q8_1_pascal(
++    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
++    static_assert(VDR == 2 || VDR == 4 || VDR == 8, "bad VDR");
++
++    const block_q4_K * bq4_K = (const block_q4_K *) vbq + kbx;
++
++    const int g  = iqs / 8;
++    const int w0 = iqs % 8;
++
++    int v[VDR];
++    const int * q4 = (const int *) (bq4_K->qs + 32*g) + w0;
++    if constexpr (VDR == 2) {
++        const int2 t = *(const int2 *) q4;
++        v[0] = t.x; v[1] = t.y;
++    } else {
++#pragma unroll
++        for (int l = 0; l < VDR/4; ++l) {
++            const int4 t = ((const int4 *) q4)[l];
++            v[4*l+0] = t.x; v[4*l+1] = t.y; v[4*l+2] = t.z; v[4*l+3] = t.w;
++        }
++    }
++
++    const uint16_t * scales = (const uint16_t *) bq4_K->scales;
++    const int jm = g & 1;
++
++    const uint32_t s0 = scales[jm + 0];
++    const uint32_t s2 = scales[jm + 2];
++    const uint32_t s4 = scales[jm + 4];
++
++    const uint32_t hi = (uint32_t) -(int32_t) (g >= 2);
++
++    uint16_t aux[2];
++    aux[0] = (uint16_t) (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
++    aux[1] = (uint16_t) (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
++    const uint8_t * sc = (const uint8_t *) aux;
++    const uint8_t * m  = sc + 2;
++
++    float sumf_d = 0.0f;
++    float sumf_m = 0.0f;
++
++#pragma unroll
++    for (int i = 0; i < QR4_K; ++i) {
++        const block_q8_1 * bq8i = bq8_1 + 2*g + i;
++        const float d8 = __low2float(bq8i->ds);
++        const int * q8 = (const int *) bq8i->qs + w0;
++
++        int dot1 = 0;
++        int dot2 = 0;
++#pragma unroll
++        for (int l = 0; l < VDR; ++l) {
++            const int u = q8[l];
++            dot1 = ggml_cuda_dp4a((v[l] >> (4*i)) & 0x0F0F0F0F, u, dot1);
++            dot2 = ggml_cuda_dp4a(0x01010101, u, dot2);
++        }
++
++        sumf_d += d8 * (dot1 * sc[i]);
++        sumf_m += d8 * (dot2 * m[i]);
++    }
++
++    const float2 dm4f = __half22float2(bq4_K->dm);
++
++    return dm4f.x*sumf_d - dm4f.y*sumf_m;
++}
++
+ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
+ #if defined(RDNA4)
+     return MMVQ_PARAMETERS_RDNA4;
+@@ -116,6 +202,8 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
+     return MMVQ_PARAMETERS_TURING;
+ #elif __CUDA_ARCH__ == GGML_CUDA_CC_DGX_SPARK
+     return MMVQ_PARAMETERS_GB10;
++#elif __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL && __CUDA_ARCH__ < GGML_CUDA_CC_VOLTA
++    return MMVQ_PARAMETERS_PASCAL;
+ #else
+     return MMVQ_PARAMETERS_GENERIC;
+ #endif
+@@ -140,6 +228,9 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
+     if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_DGX_SPARK) {
+         return MMVQ_PARAMETERS_GB10;
+     }
++    if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_PASCAL && ggml_cuda_highest_compiled_arch(cc) < GGML_CUDA_CC_VOLTA) {
++        return MMVQ_PARAMETERS_PASCAL;
++    }
+     return MMVQ_PARAMETERS_GENERIC;
+ }
+ 
+@@ -450,6 +541,12 @@ static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
+ }
+ 
+ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_dst, mmvq_parameter_table_id table_id, bool small_k = false, bool halve_iters = false) {
++    if (table_id == MMVQ_PARAMETERS_PASCAL) {
++        if (ncols_dst == 1 && !small_k && mmvq_pascal_tuned_type(type)) {
++            return MMVQ_PASCAL_NWARPS;
++        }
++        table_id = MMVQ_PARAMETERS_GENERIC;
++    }
+     if (table_id == MMVQ_PARAMETERS_GENERIC) {
+         switch (ncols_dst) {
+             case 1:
+@@ -593,6 +690,12 @@ static constexpr __host__ __device__ bool mmvq_two_rows_ncols1(ggml_type type) {
+ }
+ 
+ static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
++    if (table_id == MMVQ_PARAMETERS_PASCAL) {
++        if (ncols_dst == 1 && !small_k && mmvq_pascal_tuned_type(type)) {
++            return MMVQ_PASCAL_RPB;
++        }
++        table_id = MMVQ_PARAMETERS_GENERIC;
++    }
+     if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
+         switch (ncols_dst) {
+             case 1:
+@@ -634,13 +737,14 @@ static __global__ void mul_mat_vec_q(
+ 
+     constexpr int qk  = ggml_cuda_type_traits<type>::qk;
+     constexpr int qi  = ggml_cuda_type_traits<type>::qi;
+-    constexpr int vdr = get_vdr_mmvq(type);
+     constexpr mmvq_parameter_table_id table_id = get_device_table_id();
++    constexpr bool pascal_q4_K = table_id == MMVQ_PARAMETERS_PASCAL && type == GGML_TYPE_Q4_K && !small_k && MMVQ_PASCAL_Q4K_VDR != 2;
++    constexpr int vdr = pascal_q4_K ? MMVQ_PASCAL_Q4K_VDR : get_vdr_mmvq(type);
+     constexpr int nwarps = calc_nwarps(type, ncols_dst, table_id, small_k, halve_iters);
+     constexpr int rows_per_cuda_block = calc_rows_per_block(type, ncols_dst, table_id, small_k, nwarps);
+     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+ 
+-    constexpr vec_dot_q_cuda_t vec_dot_q_cuda = get_vec_dot_q_cuda(type);
++    constexpr vec_dot_q_cuda_t vec_dot_q_cuda = pascal_q4_K ? vec_dot_q4_K_q8_1_pascal<MMVQ_PASCAL_Q4K_VDR> : get_vec_dot_q_cuda(type);
+ 
+     const     int tid = warp_size*threadIdx.y + threadIdx.x;
+     const     int row0 = rows_per_cuda_block*blockIdx.x;
+@@ -1300,6 +1404,281 @@ static void mul_mat_vec_q_switch_ncols_dst(
+             GGML_ABORT("fatal error");
+     }
+ }
++// ---------------------------------------------------------------------------------------------------------------
++// Pascal batch-1 q4_K matvec. On sm_61 the stock kernel is load/issue bound (~150-220 GB/s of ~360 achievable):
++// every thread issues ~12 narrow loads per 8 bytes of weights and re-reads y from L2/tex for each row.
++// Here: y (q8_1) is staged once per block into shared memory (64-value groups at an 80-byte stride, so LDS.128 is
++// bank-conflict free, plus per-q8-block d and integer sum), each lane handles one 32-byte quant group of a
++// superblock with three 16-byte loads (header + 2x quants), each warp handles MMVQ_PASCAL_R rows, warp-reduce.
++// Integer dot products are exact; only the float accumulation order differs from the stock kernel.
++// ---------------------------------------------------------------------------------------------------------------
++#ifndef MMVQ_PASCAL_KERNEL
++#define MMVQ_PASCAL_KERNEL 1
++#endif
++#ifndef MMVQ_PASCAL_NW
++#define MMVQ_PASCAL_NW 16
++#endif
++#ifndef MMVQ_PASCAL_R
++#define MMVQ_PASCAL_R 1
++#endif
++#ifndef MMVQ_PASCAL_BPS // resident blocks per SM for the persistent grid, 0 = one block per row tile
++#define MMVQ_PASCAL_BPS 1
++#endif
++#ifndef MMVQ_PASCAL_FUSE_Q8 // quantize the f32 activations inside the matvec instead of a quantize_q8_1 launch
++#define MMVQ_PASCAL_FUSE_Q8 1
++#endif
++
++struct mmvq_pascal_yd {
++    float d;
++    int   s;
++};
++
++static __device__ __forceinline__ float mmvq_pascal_q4_K_group(
++        const int4 h, const int4 q0, const int4 q1, const int g,
++        const int4 y0, const int4 y1, const int4 y2, const int4 y3, const mmvq_pascal_yd ya, const mmvq_pascal_yd yb) {
++    // h = {dm, scales[0..3], scales[4..7], scales[8..11]}
++    const uint32_t sw[3] = {(uint32_t) h.y, (uint32_t) h.z, (uint32_t) h.w};
++    const int jm = g & 1;
++    const uint32_t s0 = (sw[0] >> (16*jm)) & 0xFFFF;
++    const uint32_t s2 = (sw[1] >> (16*jm)) & 0xFFFF;
++    const uint32_t s4 = (sw[2] >> (16*jm)) & 0xFFFF;
++    const uint32_t hi = (uint32_t) -(int32_t) (g >= 2);
++    const uint32_t a0 = ((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi);
++    const uint32_t a1 = ((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi);
++    const int sc0 = a0 & 0xFF, sc1 = (a0 >> 8) & 0xFF;
++    const int m0  = a1 & 0xFF, m1  = (a1 >> 8) & 0xFF;
++
++    const int v[8] = {q0.x, q0.y, q0.z, q0.w, q1.x, q1.y, q1.z, q1.w};
++    const int u0[8] = {y0.x, y0.y, y0.z, y0.w, y1.x, y1.y, y1.z, y1.w};
++    const int u1[8] = {y2.x, y2.y, y2.z, y2.w, y3.x, y3.y, y3.z, y3.w};
++
++    int dot0 = 0;
++    int dot1 = 0;
++#pragma unroll
++    for (int l = 0; l < 8; ++l) {
++        dot0 = ggml_cuda_dp4a( v[l]       & 0x0F0F0F0F, u0[l], dot0);
++        dot1 = ggml_cuda_dp4a((v[l] >> 4) & 0x0F0F0F0F, u1[l], dot1);
++    }
++
++    float sumf_d = 0.0f;
++    float sumf_m = 0.0f;
++    sumf_d += ya.d * (dot0 * sc0);
++    sumf_m += ya.d * (ya.s * m0);
++    sumf_d += yb.d * (dot1 * sc1);
++    sumf_m += yb.d * (yb.s * m1);
++
++    const float2 dm = __half22float2(*(const half2 *) &h.x);
++    return dm.x*sumf_d - dm.y*sumf_m;
++}
++
++template <int NW, int R, bool has_gate, bool y_f32>
++__launch_bounds__(NW*WARP_SIZE, 1)
++static __global__ void mul_mat_vec_q4_K_pascal(
++        const char * __restrict__ vx, const char * __restrict__ vgate, const block_q8_1 * __restrict__ y,
++        const float * __restrict__ yf, float * __restrict__ dst, const int ncols_x, const int nrows_x, const int64_t stride_row_bytes,
++        const ggml_glu_op glu_op, const float glu_limit) {
++    extern __shared__ int4 mmvq_pascal_smem[];
++    const int ngroups = ncols_x / 64;           // 64-value groups == pairs of q8_1 blocks
++    int4 * ys = mmvq_pascal_smem;                // ngroups * 5 int4 (4 data + 1 pad)
++    mmvq_pascal_yd * yd = (mmvq_pascal_yd *) (ys + 5*ngroups); // 2*ngroups
++
++    const int tid = threadIdx.y*WARP_SIZE + threadIdx.x;
++
++    const int niter = (ngroups + WARP_SIZE - 1) / WARP_SIZE; // k iterations per row tile, warp-uniform
++    int tile = blockIdx.x*NW + threadIdx.y;
++    int k    = 0;
++
++    // load the weights of (tile t, iteration kk) for this lane; lanes past the last group re-read a valid one
++    const auto load = [&](const int t, const int kk, int4 (&H)[R], int4 (&Q0)[R], int4 (&Q1)[R],
++                          int4 (&HG)[R], int4 (&Q0G)[R], int4 (&Q1G)[R]) {
++        const int u  = min((int) threadIdx.x + WARP_SIZE*kk, ngroups - 1);
++        const int sb = u / 4;
++        const int g  = u % 4;
++#pragma unroll
++        for (int r = 0; r < R; ++r) {
++            const int row = min(t*R + r, nrows_x - 1);
++            const char * b = vx + row*stride_row_bytes + sb*sizeof(block_q4_K);
++            H[r]  = *(const int4 *) b;
++            Q0[r] = *(const int4 *) (b + 16 + 32*g);
++            Q1[r] = *(const int4 *) (b + 32 + 32*g);
++            if constexpr (has_gate) {
++                const char * bg = vgate + row*stride_row_bytes + sb*sizeof(block_q4_K);
++                HG[r]  = *(const int4 *) bg;
++                Q0G[r] = *(const int4 *) (bg + 16 + 32*g);
++                Q1G[r] = *(const int4 *) (bg + 32 + 32*g);
++            }
++        }
++    };
++
++    // weights do not depend on the previous kernel, so start their loads before waiting on / staging y
++    int4 h[R], q0[R], q1[R], hg[R], q0g[R], q1g[R];
++    if (tile*R < nrows_x) {
++        load(tile, 0, h, q0, q1, hg, q0g, q1g);
++    }
++
++    ggml_cuda_pdl_sync();
++
++    if constexpr (y_f32) {
++        // quantize the f32 activations to q8_1 straight into shared memory, one warp per 32 values, with the
++        // exact arithmetic of quantize_q8_1 (d is rounded through half like block_q8_1::ds), so no separate
++        // quantize kernel is launched
++        int8_t * ysb = (int8_t *) ys;
++        const int nb = ncols_x / QK8_1;
++        for (int b = threadIdx.y; b < nb; b += NW) {
++            const float xi = yf[b*QK8_1 + threadIdx.x];
++            float amax = fabsf(xi);
++            amax = warp_reduce_max<QK8_1>(amax);
++            const float  d = amax / 127.0f;
++            const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
++            const int sum = warp_reduce_sum<QK8_1>((int) q);
++            ysb[(b/2)*80 + (b%2)*32 + threadIdx.x] = q;
++            if (threadIdx.x == 0) {
++                yd[b] = {__half2float(__float2half(d)), sum};
++            }
++        }
++    } else {
++    // stage y: ints of quants
++        int * ysi = (int *) ys;
++        const int nints = ncols_x / 4;
++        for (int i = tid; i < nints; i += NW*WARP_SIZE) {
++            const int b = i / 8;
++            const int w = i % 8;
++            ysi[(b/2)*20 + (b%2)*8 + w] = ((const int *) y[b].qs)[w];
++        }
++        const int nb = ncols_x / QK8_1;
++        for (int b = tid; b < nb; b += NW*WARP_SIZE) {
++            const int * q = (const int *) y[b].qs;
++            int s = 0;
++#pragma unroll
++            for (int w = 0; w < 8; ++w) {
++                s = ggml_cuda_dp4a(0x01010101, q[w], s);
++            }
++            yd[b] = {__low2float(y[b].ds), s};
++        }
++    }
++    __syncthreads();
++
++    // persistent over row tiles: y is staged once per block, each warp walks (tile of R rows, k) pairs where
++    // lane handles group u = lane + 32*k; weights for the next pair are loaded before the current one is
++    // computed, and the first pair is loaded before y is staged (see prefetch above)
++    float acc[R]  = {0.0f};
++    float accg[R] = {0.0f};
++
++    while (tile*R < nrows_x) {
++        int ntile = tile;
++        int nk    = k + 1;
++        if (nk == niter) {
++            nk = 0;
++            ntile += gridDim.x*NW;
++        }
++        int4 nh[R], nq0[R], nq1[R], nhg[R], nq0g[R], nq1g[R];
++        if (ntile*R < nrows_x) {
++            load(ntile, nk, nh, nq0, nq1, nhg, nq0g, nq1g);
++        }
++
++        const int u = threadIdx.x + WARP_SIZE*k;
++        if (u < ngroups) {
++            const int g  = u % 4;
++            const int4 y0 = ys[5*u + 0];
++            const int4 y1 = ys[5*u + 1];
++            const int4 y2 = ys[5*u + 2];
++            const int4 y3 = ys[5*u + 3];
++            const mmvq_pascal_yd ya = yd[2*u + 0];
++            const mmvq_pascal_yd yb = yd[2*u + 1];
++#pragma unroll
++            for (int r = 0; r < R; ++r) {
++                acc[r] += mmvq_pascal_q4_K_group(h[r], q0[r], q1[r], g, y0, y1, y2, y3, ya, yb);
++                if constexpr (has_gate) {
++                    accg[r] += mmvq_pascal_q4_K_group(hg[r], q0g[r], q1g[r], g, y0, y1, y2, y3, ya, yb);
++                }
++            }
++        }
++
++        if (nk == 0) {
++            const int row0 = tile*R;
++#pragma unroll
++            for (int r = 0; r < R; ++r) {
++                acc[r] = warp_reduce_sum<WARP_SIZE>(acc[r]);
++                if constexpr (has_gate) {
++                    accg[r] = warp_reduce_sum<WARP_SIZE>(accg[r]);
++                }
++            }
++            if (threadIdx.x < R && row0 + (int) threadIdx.x < nrows_x) {
++                float result = 0.0f;
++                float gv = 0.0f;
++#pragma unroll
++                for (int r = 0; r < R; ++r) {
++                    if (r == (int) threadIdx.x) {
++                        result = acc[r];
++                        gv = accg[r];
++                    }
++                }
++                if constexpr (has_gate) {
++                    result = ggml_cuda_op_glu_single(glu_op, gv, result, glu_limit);
++                }
++                dst[row0 + threadIdx.x] = result;
++            }
++#pragma unroll
++            for (int r = 0; r < R; ++r) {
++                acc[r]  = 0.0f;
++                accg[r] = 0.0f;
++            }
++        }
++
++#pragma unroll
++        for (int r = 0; r < R; ++r) {
++            h[r] = nh[r]; q0[r] = nq0[r]; q1[r] = nq1[r];
++            if constexpr (has_gate) {
++                hg[r] = nhg[r]; q0g[r] = nq0g[r]; q1g[r] = nq1g[r];
++            }
++        }
++        tile = ntile;
++        k    = nk;
++    }
++    GGML_UNUSED(glu_limit);
++}
++
++// vy: q8_1 activations, or nullptr when yf (contiguous f32 activations, quantized in-kernel) is given
++static bool mul_mat_vec_q4_K_pascal_try(
++        const void * vx, const void * vy, const float * yf, const int32_t * ids, const ggml_cuda_mm_fusion_args_device & fusion, float * dst,
++        const int ncols_x, const int nrows_x, const int ncols_dst, const int stride_row_x,
++        const int nchannels_dst, const int nsamples_dst, cudaStream_t stream) {
++    const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
++    if (!(GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc < GGML_CUDA_CC_VOLTA)) {
++        return false;
++    }
++    if (ncols_dst != 1 || ids || nchannels_dst != 1 || nsamples_dst != 1 || ncols_x % QK_K != 0 ||
++            fusion.x_bias || fusion.gate_bias || fusion.x_scale || fusion.gate_scale || fusion.shared_up) {
++        return false;
++    }
++    const int ngroups = ncols_x / 64;
++    const size_t smem = ngroups*5*sizeof(int4) + 2*ngroups*sizeof(mmvq_pascal_yd);
++    if (smem > 48*1024) {
++        return false;
++    }
++    constexpr int NW = MMVQ_PASCAL_NW;
++    constexpr int R  = MMVQ_PASCAL_R;
++    const dim3 block_dims(WARP_SIZE, NW, 1);
++    int nblocks = (nrows_x + NW*R - 1) / (NW*R);
++    if (MMVQ_PASCAL_BPS > 0) {
++        nblocks = std::min(nblocks, MMVQ_PASCAL_BPS*ggml_cuda_info().devices[ggml_cuda_get_device()].nsm);
++    }
++    const dim3 block_nums(nblocks, 1, 1);
++    const int64_t stride_row_bytes = (int64_t) stride_row_x * sizeof(block_q4_K);
++    const block_q8_1 * yq = (const block_q8_1 *) vy;
++    const char * vgate = (const char *) fusion.gate;
++#define MMVQ_PASCAL_LAUNCH(G, F) \
++    mul_mat_vec_q4_K_pascal<NW, R, G, F><<<block_nums, block_dims, smem, stream>>>( \
++        (const char *) vx, vgate, yq, yf, dst, ncols_x, nrows_x, stride_row_bytes, fusion.glu_op, fusion.glu_limit)
++    if (yf) {
++        if (vgate) { MMVQ_PASCAL_LAUNCH(true, true); } else { MMVQ_PASCAL_LAUNCH(false, true); }
++    } else {
++        if (vgate) { MMVQ_PASCAL_LAUNCH(true, false); } else { MMVQ_PASCAL_LAUNCH(false, false); }
++    }
++#undef MMVQ_PASCAL_LAUNCH
++    return true;
++}
++
+ static void mul_mat_vec_q_switch_type(
+         const void * vx, const ggml_type type_x, const void * vy, const int32_t * ids, const ggml_cuda_mm_fusion_args_device fusion, float * dst,
+         const int ncols_x, const int nrows_x, const int ncols_dst,
+@@ -1376,6 +1755,10 @@ static void mul_mat_vec_q_switch_type(
+                  nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst, ids_stride, stream);
+             break;
+         case GGML_TYPE_Q4_K:
++            if (MMVQ_PASCAL_KERNEL && mul_mat_vec_q4_K_pascal_try(vx, vy, nullptr, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x,
++                                                                  nchannels_dst, nsamples_dst, stream)) {
++                break;
++            }
+             mul_mat_vec_q_switch_ncols_dst<GGML_TYPE_Q4_K>
+                 (vx, vy, ids, fusion, dst, ncols_x, nrows_x, ncols_dst, stride_row_x, stride_col_y, stride_col_dst,
+                  nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y, stride_channel_dst,
+@@ -1548,6 +1931,14 @@ void ggml_cuda_mul_mat_vec_q(
+         }
+     }
+ 
++    // Pascal batch-1 q4_K: quantize inside the matvec, skipping the separate quantize_q8_1 launch
++    if (MMVQ_PASCAL_KERNEL && MMVQ_PASCAL_FUSE_Q8 && src0->type == GGML_TYPE_Q4_K && !ids &&
++            ne11 == 1 && ne12 == 1 && ne13 == 1 && ne02 == 1 && ne03 == 1 && ne10 == ne00 &&
++            mul_mat_vec_q4_K_pascal_try(src0->data, nullptr, src1_d, nullptr, fusion_local, dst_d, ne00, ne01, /*ncols_dst =*/ 1,
++                                        nb01 / ts_src0, /*nchannels_dst =*/ 1, /*nsamples_dst =*/ 1, stream)) {
++        return;
++    }
++
+     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+     ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
+     {

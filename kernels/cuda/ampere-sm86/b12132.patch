@@ -1,0 +1,1329 @@
+ M ggml/src/ggml-backend.cpp
+ M ggml/src/ggml-cuda/common.cuh
+ M ggml/src/ggml-cuda/ggml-cuda.cu
+ M ggml/src/ggml-cuda/mmvq.cu
+ M ggml/src/ggml-cuda/norm.cu
+ M ggml/src/ggml-cuda/norm.cuh
+ M ggml/src/ggml-cuda/ssm-conv.cu
+ M ggml/src/ggml-cuda/ssm-conv.cuh
+ M src/llama-context.cpp
+?? ggml/src/ggml-cuda/._CMakeLists.txt
+?? ggml/src/ggml-cuda/._acc.cu
+?? ggml/src/ggml-cuda/._acc.cuh
+?? ggml/src/ggml-cuda/._add-id.cu
+?? ggml/src/ggml-cuda/._add-id.cuh
+?? ggml/src/ggml-cuda/._allreduce.cu
+?? ggml/src/ggml-cuda/._allreduce.cuh
+?? ggml/src/ggml-cuda/._arange.cu
+?? ggml/src/ggml-cuda/._arange.cuh
+?? ggml/src/ggml-cuda/._argmax.cu
+?? ggml/src/ggml-cuda/._argmax.cuh
+?? ggml/src/ggml-cuda/._argsort.cu
+?? ggml/src/ggml-cuda/._argsort.cuh
+?? ggml/src/ggml-cuda/._batch-get.cu
+?? ggml/src/ggml-cuda/._batch-get.cuh
+?? ggml/src/ggml-cuda/._binbcast.cu
+?? ggml/src/ggml-cuda/._binbcast.cuh
+?? ggml/src/ggml-cuda/._clamp.cu
+?? ggml/src/ggml-cuda/._clamp.cuh
+?? ggml/src/ggml-cuda/._col2im-1d.cu
+?? ggml/src/ggml-cuda/._col2im-1d.cuh
+?? ggml/src/ggml-cuda/._common.cuh
+?? ggml/src/ggml-cuda/._concat.cu
+?? ggml/src/ggml-cuda/._concat.cuh
+?? ggml/src/ggml-cuda/._conv-transpose-1d.cu
+?? ggml/src/ggml-cuda/._conv-transpose-1d.cuh
+?? ggml/src/ggml-cuda/._conv2d-dw.cu
+?? ggml/src/ggml-cuda/._conv2d-dw.cuh
+?? ggml/src/ggml-cuda/._conv2d-transpose.cu
+?? ggml/src/ggml-cuda/._conv2d-transpose.cuh
+?? ggml/src/ggml-cuda/._conv2d.cu
+?? ggml/src/ggml-cuda/._conv2d.cuh
+?? ggml/src/ggml-cuda/._conv3d.cu
+?? ggml/src/ggml-cuda/._conv3d.cuh
+?? ggml/src/ggml-cuda/._convert.cu
+?? ggml/src/ggml-cuda/._convert.cuh
+?? ggml/src/ggml-cuda/._count-equal.cu
+?? ggml/src/ggml-cuda/._count-equal.cuh
+?? ggml/src/ggml-cuda/._cp-async.cuh
+?? ggml/src/ggml-cuda/._cpy-utils.cuh
+?? ggml/src/ggml-cuda/._cpy.cu
+?? ggml/src/ggml-cuda/._cpy.cuh
+?? ggml/src/ggml-cuda/._cross-entropy-loss.cu
+?? ggml/src/ggml-cuda/._cross-entropy-loss.cuh
+?? ggml/src/ggml-cuda/._cumsum.cu
+?? ggml/src/ggml-cuda/._cumsum.cuh
+?? ggml/src/ggml-cuda/._dequantize.cuh
+?? ggml/src/ggml-cuda/._diag.cu
+?? ggml/src/ggml-cuda/._diag.cuh
+?? ggml/src/ggml-cuda/._diagmask.cu
+?? ggml/src/ggml-cuda/._diagmask.cuh
+?? ggml/src/ggml-cuda/._dsv4-hc.cu
+?? ggml/src/ggml-cuda/._dsv4-hc.cuh
+?? ggml/src/ggml-cuda/._fattn-common.cuh
+?? ggml/src/ggml-cuda/._fattn-mma-f16.cuh
+?? ggml/src/ggml-cuda/._fattn-tile.cu
+?? ggml/src/ggml-cuda/._fattn-tile.cuh
+?? ggml/src/ggml-cuda/._fattn-vec.cuh
+?? ggml/src/ggml-cuda/._fattn.cu
+?? ggml/src/ggml-cuda/._fattn.cuh
+?? ggml/src/ggml-cuda/._fill.cu
+?? ggml/src/ggml-cuda/._fill.cuh
+?? ggml/src/ggml-cuda/._fwht.cu
+?? ggml/src/ggml-cuda/._fwht.cuh
+?? ggml/src/ggml-cuda/._gated-delta-net-mma.cu
+?? ggml/src/ggml-cuda/._gated-delta-net-mma.cuh
+?? ggml/src/ggml-cuda/._gated_delta_net.cu
+?? ggml/src/ggml-cuda/._gated_delta_net.cuh
+?? ggml/src/ggml-cuda/._getrows.cu
+?? ggml/src/ggml-cuda/._getrows.cuh
+?? ggml/src/ggml-cuda/._ggml-cuda.cu
+?? ggml/src/ggml-cuda/._gla.cu
+?? ggml/src/ggml-cuda/._gla.cuh
+?? ggml/src/ggml-cuda/._im2col.cu
+?? ggml/src/ggml-cuda/._im2col.cuh
+?? ggml/src/ggml-cuda/._lightning-indexer.cu
+?? ggml/src/ggml-cuda/._lightning-indexer.cuh
+?? ggml/src/ggml-cuda/._mean.cu
+?? ggml/src/ggml-cuda/._mean.cuh
+?? ggml/src/ggml-cuda/._mma.cuh
+?? ggml/src/ggml-cuda/._mmf.cu
+?? ggml/src/ggml-cuda/._mmf.cuh
+?? ggml/src/ggml-cuda/._mmid.cu
+?? ggml/src/ggml-cuda/._mmid.cuh
+?? ggml/src/ggml-cuda/._mmq-config-ampere.cuh
+?? ggml/src/ggml-cuda/._mmq-config-blackwell.cuh
+?? ggml/src/ggml-cuda/._mmq-config-cdna.cuh
+?? ggml/src/ggml-cuda/._mmq-config-gcn.cuh
+?? ggml/src/ggml-cuda/._mmq-config-pascal-dp4a.cuh
+?? ggml/src/ggml-cuda/._mmq-config-pascal-older.cuh
+?? ggml/src/ggml-cuda/._mmq-config-rdna2.cuh
+?? ggml/src/ggml-cuda/._mmq-config-rdna3-5.cuh
+?? ggml/src/ggml-cuda/._mmq-config-rdna3.cuh
+?? ggml/src/ggml-cuda/._mmq-config-rdna4.cuh
+?? ggml/src/ggml-cuda/._mmq-load-tiles.cuh
+?? ggml/src/ggml-cuda/._mmq-vec-dot.cuh
+?? ggml/src/ggml-cuda/._mmq.cu
+?? ggml/src/ggml-cuda/._mmq.cuh
+?? ggml/src/ggml-cuda/._mmvf.cu
+?? ggml/src/ggml-cuda/._mmvf.cuh
+?? ggml/src/ggml-cuda/._mmvq.cu
+?? ggml/src/ggml-cuda/._mmvq.cuh
+?? ggml/src/ggml-cuda/._moe-weighted-reduction.cu
+?? ggml/src/ggml-cuda/._moe-weighted-reduction.cuh
+?? ggml/src/ggml-cuda/._norm.cu
+?? ggml/src/ggml-cuda/._norm.cuh
+?? ggml/src/ggml-cuda/._opt-step-adamw.cu
+?? ggml/src/ggml-cuda/._opt-step-adamw.cuh
+?? ggml/src/ggml-cuda/._opt-step-sgd.cu
+?? ggml/src/ggml-cuda/._opt-step-sgd.cuh
+?? ggml/src/ggml-cuda/._out-prod.cu
+?? ggml/src/ggml-cuda/._out-prod.cuh
+?? ggml/src/ggml-cuda/._pad.cu
+?? ggml/src/ggml-cuda/._pad.cuh
+?? ggml/src/ggml-cuda/._pad_reflect_1d.cu
+?? ggml/src/ggml-cuda/._pad_reflect_1d.cuh
+?? ggml/src/ggml-cuda/._pool1d.cu
+?? ggml/src/ggml-cuda/._pool1d.cuh
+?? ggml/src/ggml-cuda/._pool2d.cu
+?? ggml/src/ggml-cuda/._pool2d.cuh
+?? ggml/src/ggml-cuda/._quantize.cu
+?? ggml/src/ggml-cuda/._quantize.cuh
+?? ggml/src/ggml-cuda/._reduce_rows.cuh
+?? ggml/src/ggml-cuda/._roll.cu
+?? ggml/src/ggml-cuda/._roll.cuh
+?? ggml/src/ggml-cuda/._rope.cu
+?? ggml/src/ggml-cuda/._rope.cuh
+?? ggml/src/ggml-cuda/._scale.cu
+?? ggml/src/ggml-cuda/._scale.cuh
+?? ggml/src/ggml-cuda/._set-rows.cu
+?? ggml/src/ggml-cuda/._set-rows.cuh
+?? ggml/src/ggml-cuda/._set.cu
+?? ggml/src/ggml-cuda/._set.cuh
+?? ggml/src/ggml-cuda/._snake.cu
+?? ggml/src/ggml-cuda/._snake.cuh
+?? ggml/src/ggml-cuda/._softcap.cu
+?? ggml/src/ggml-cuda/._softcap.cuh
+?? ggml/src/ggml-cuda/._softmax.cu
+?? ggml/src/ggml-cuda/._softmax.cuh
+?? ggml/src/ggml-cuda/._solve_tri.cu
+?? ggml/src/ggml-cuda/._solve_tri.cuh
+?? ggml/src/ggml-cuda/._ssm-conv.cu
+?? ggml/src/ggml-cuda/._ssm-conv.cuh
+?? ggml/src/ggml-cuda/._ssm-scan.cu
+?? ggml/src/ggml-cuda/._ssm-scan.cuh
+?? ggml/src/ggml-cuda/._sum.cu
+?? ggml/src/ggml-cuda/._sum.cuh
+?? ggml/src/ggml-cuda/._sumrows.cu
+?? ggml/src/ggml-cuda/._sumrows.cuh
+?? ggml/src/ggml-cuda/._top-k-mask.cu
+?? ggml/src/ggml-cuda/._top-k-mask.cuh
+?? ggml/src/ggml-cuda/._top-k.cu
+?? ggml/src/ggml-cuda/._top-k.cuh
+?? ggml/src/ggml-cuda/._topk-moe.cu
+?? ggml/src/ggml-cuda/._topk-moe.cuh
+?? ggml/src/ggml-cuda/._tri.cu
+?? ggml/src/ggml-cuda/._tri.cuh
+?? ggml/src/ggml-cuda/._tsembd.cu
+?? ggml/src/ggml-cuda/._tsembd.cuh
+?? ggml/src/ggml-cuda/._unary.cu
+?? ggml/src/ggml-cuda/._unary.cuh
+?? ggml/src/ggml-cuda/._upscale.cu
+?? ggml/src/ggml-cuda/._upscale.cuh
+?? ggml/src/ggml-cuda/._vecdotq.cuh
+?? ggml/src/ggml-cuda/._wkv.cu
+?? ggml/src/ggml-cuda/._wkv.cuh
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_1-ncols2_16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_1-ncols2_32.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_1-ncols2_8.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_16-ncols2_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_16-ncols2_2.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_16-ncols2_4.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_2-ncols2_16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_2-ncols2_32.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_2-ncols2_4.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_2-ncols2_8.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_32-ncols2_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_32-ncols2_2.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_4-ncols2_16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_4-ncols2_2.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_4-ncols2_4.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_4-ncols2_8.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_64-ncols2_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_8-ncols2_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_8-ncols2_2.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_8-ncols2_4.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-mma-f16-instance-ncols1_8-ncols2_8.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq112-dv112.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq128-dv128.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq192-dv128.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq256-dv256.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq320-dv256.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq40-dv40.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq512-dv512.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq576-dv512.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq64-dv64.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq72-dv72.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq80-dv80.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-tile-instance-dkq96-dv96.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-bf16-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-f16-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_0-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q4_1-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_0-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q5_1-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-bf16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-f16.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._fattn-vec-instance-q8_0-q8_0.cu
+?? ggml/src/ggml-cuda/template-instances/._generate_cu_files.py
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_1.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_10.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_11.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_12.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_13.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_14.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_15.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_16.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_2.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_3.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_4.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_5.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_6.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_7.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_8.cu
+?? ggml/src/ggml-cuda/template-instances/._mmf-instance-ncols_9.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq1_s.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq2_s.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq2_xs.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq2_xxs.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq3_s.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq3_xxs.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq4_nl.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-iq4_xs.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-mxfp4.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-nvfp4.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q1_0.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q2_0.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q2_k.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q3_k.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q4_0.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q4_1.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q4_k.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q5_0.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q5_1.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q5_k.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q6_k.cu
+?? ggml/src/ggml-cuda/template-instances/._mmq-instance-q8_0.cu
+?? ggml/src/ggml-cuda/vendors/._cuda.h
+?? ggml/src/ggml-cuda/vendors/._hip.h
+?? ggml/src/ggml-cuda/vendors/._musa.h
+?? src/._llama-context.cpp
+?? src/._llama-context.h
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 3520b43..9dd200c 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -28,6 +28,23 @@
+ #include <sys/sysctl.h>
+ #endif
+ 
++// PHONON_PHASE_TIMING=1: host time inside ggml_backend_sched_compute_splits, printed at exit
++namespace {
++struct phonon_sched_timer {
++    bool    on = getenv("PHONON_PHASE_TIMING") != nullptr;
++    int64_t t_copy = 0, t_compute = 0, t_other = 0, n_calls = 0, n_splits = 0, n_inputs = 0;
++    std::vector<int64_t> v_copy, v_comp;
++    static int64_t med(std::vector<int64_t> v) { std::sort(v.begin(), v.end()); return v.empty() ? 0 : v[v.size() / 2]; }
++    ~phonon_sched_timer() {
++        if (on && n_calls) {
++            fprintf(stderr, "phonon sched timing over %lld compute calls: median input copies %lld us, median backend compute_async %lld us; splits/call %.2f, inputs/call %.2f\n",
++                (long long) n_calls, (long long) med(v_copy), (long long) med(v_comp),
++                n_splits / (double) n_calls, n_inputs / (double) n_calls);
++        }
++    }
++} g_sched_timer;
++const bool g_sched_batched_uploads = getenv("PHONON_NO_BATCHED_UPLOADS") == nullptr;
++}
+ 
+ // backend buffer type
+ 
+@@ -2127,6 +2144,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+     struct ggml_backend_sched_split * splits = sched->splits;
+ 
+     int prev_backend_id = -1;
++    const bool    ptime = g_sched_timer.on;
++    const int64_t pt0   = ptime ? ggml_time_us() : 0;
++    int64_t pt_copy = 0, pt_comp = 0;
++    if (ptime) { g_sched_timer.n_calls++; g_sched_timer.n_splits += sched->n_splits; }
+ 
+     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
+         struct ggml_backend_sched_split * split = &splits[split_id];
+@@ -2145,10 +2166,43 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+ 
+         // copy the input tensors to the split backend
+         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
++        const int64_t ptc0 = ptime ? ggml_time_us() : 0;
++        if (ptime) { g_sched_timer.n_inputs += split->n_inputs; }
++        // phonon: inputs that live in host memory go to the split backend as async uploads behind a single wait for the
++        // previous use of this copy slot, then one synchronize, instead of a blocking wait + blocking copy per input
++        bool phonon_waited   = false;
++        bool phonon_uploaded = false;
+         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+-            if (!ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
+-                ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
++            struct ggml_tensor * input = split->inputs[input_id];
++            if (ggml_backend_sched_is_host_weight(input)) {
++                continue;
+             }
++            if (g_sched_batched_uploads && split_backend->iface.set_tensor_async != NULL && input->buffer &&
++                    ggml_backend_buffer_is_host(input->buffer)) {
++                struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
++                if (input_cpy != input && ggml_are_same_layout(input, input_cpy) && ggml_is_contiguous(input)) {
++                    if (!phonon_waited) {
++                        if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
++                            ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
++                        } else {
++                            ggml_backend_synchronize(split_backend);
++                        }
++                        phonon_waited = true;
++                    }
++                    ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, input);
++                    if (input_backend != NULL) {
++                        ggml_backend_synchronize(input_backend);
++                    }
++                    ggml_backend_tensor_set_async(split_backend, input_cpy, input->data, 0, ggml_nbytes(input));
++                    phonon_uploaded = true;
++                    continue;
++                }
++            }
++            ggml_backend_sched_copy_input(sched, split, input);
++        }
++        if (phonon_uploaded) {
++            // the host buffers may be rewritten as soon as compute returns, so the uploads must have landed
++            ggml_backend_synchronize(split_backend);
+         }
+         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+             if (ggml_backend_sched_is_host_weight(split->inputs[input_id])) {
+@@ -2157,7 +2211,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         }
+ 
+         if (!sched->callback_eval) {
++            const int64_t ptc1 = ptime ? ggml_time_us() : 0;
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
++            if (ptime) { const int64_t ptc2 = ggml_time_us(); pt_copy += ptc1 - ptc0; pt_comp += ptc2 - ptc1; }
+             if (ec != GGML_STATUS_SUCCESS) {
+                 return ec;
+             }
+@@ -2203,6 +2259,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
+         prev_backend_id = split_backend_id;
+     }
+ 
++    if (ptime) {
++        const int64_t total = ggml_time_us() - pt0;
++        g_sched_timer.t_copy += pt_copy; g_sched_timer.t_compute += pt_comp; g_sched_timer.t_other += total - pt_copy - pt_comp;
++        g_sched_timer.v_copy.push_back(pt_copy); g_sched_timer.v_comp.push_back(pt_comp);
++    }
++
+     return GGML_STATUS_SUCCESS;
+ }
+ 
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index bc83ea3..f30a555 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -1575,6 +1575,42 @@ struct ggml_backend_cuda_context {
+     ggml_cuda_pool & pool() {
+         return pool(device);
+     }
++
++    // phonon: single-row q8_1 activation cache for MMVQ. One persistent device buffer holds the q8_1 copy of the
++    // f32 row at q8c_src (ne10 values). Matvecs that read the same row reuse it instead of quantizing again, and
++    // rms_norm kernels can fill it directly. Invalidated when any node writes over q8c_src and at graph start.
++    static constexpr size_t q8c_cap = 64*1024; // bytes, q8_1 for rows of up to 58k values
++    void *       q8c_buf    = nullptr;
++    const void * q8c_src    = nullptr;
++    int64_t      q8c_ne10   = 0;
++    int          q8c_stream = -1;
++
++    void * q8c_buffer() {
++        if (q8c_buf == nullptr) {
++            ggml_cuda_set_device(device);
++            CUDA_CHECK(cudaMalloc(&q8c_buf, q8c_cap));
++        }
++        return q8c_buf;
++    }
++    void q8c_invalidate() { q8c_src = nullptr; q8c_ne10 = 0; q8c_stream = -1; q8c_protect = nullptr; }
++    bool q8c_hit(const void * src, int64_t ne10) const {
++        return q8c_buf != nullptr && src != nullptr && src == q8c_src && ne10 == q8c_ne10 && q8c_stream == curr_stream_no;
++    }
++    void q8c_set(const void * src, int64_t ne10) { q8c_src = src; q8c_ne10 = ne10; q8c_stream = curr_stream_no; }
++    // set by the op that wrote src itself, so the write check right after that op must not drop it
++    const void * q8c_protect = nullptr;
++    void q8c_set_produced(const void * src, int64_t ne10) { q8c_set(src, ne10); q8c_protect = src; }
++    // invalidate if [data, data+nbytes) overlaps the cached source row
++    void q8c_check_write(const void * data, size_t nbytes) {
++        if (q8c_src == nullptr || data == nullptr) {
++            return;
++        }
++        const char * a0 = (const char *) data;
++        const char * b0 = (const char *) q8c_src;
++        if (a0 < b0 + q8c_ne10*sizeof(float) && b0 < a0 + nbytes) {
++            q8c_invalidate();
++        }
++    }
+ };
+ 
+ struct ggml_cuda_mm_fusion_args_host {
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 9c467ce..6ddf6c0 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -94,6 +94,21 @@
+ #include <string>
+ #include <vector>
+ 
++// PHONON_PHASE_TIMING=1: host time inside ggml_backend_cuda_graph_compute, printed at exit
++namespace {
++struct phonon_cuda_timer {
++    bool    on = getenv("PHONON_PHASE_TIMING") != nullptr;
++    int64_t t_check = 0, t_eval = 0, t_launch = 0, n_calls = 0, n_replay = 0, n_nodes = 0;
++    ~phonon_cuda_timer() {
++        if (on && n_calls) {
++            fprintf(stderr, "phonon cuda timing over %lld graph replays (us/call): graph checks %.1f, evaluate/capture (excl. launch) %.1f, cudaGraphLaunch %.1f; replays %lld, ggml nodes/call %.0f\n",
++                (long long) n_calls, t_check / (double) n_calls, (t_eval - t_launch) / (double) n_calls, t_launch / (double) n_calls,
++                (long long) n_replay, n_nodes / (double) n_calls);
++        }
++    }
++} g_cuda_timer;
++}
++
+ static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
+ 
+ #define GGML_LOG_WARN_ONCE(str) \
+@@ -749,6 +764,9 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
+     if (copy_event != nullptr) {
+         CUDA_CHECK(cudaEventDestroy(copy_event));
+     }
++    if (q8c_buf != nullptr) {
++        CUDA_CHECK(cudaFree(q8c_buf));
++    }
+     for (int i = 0; i < GGML_CUDA_MAX_DEVICES; ++i) {
+         for (int j = 0; j < GGML_CUDA_MAX_STREAMS; ++j) {
+             if (streams[i][j] != nullptr) {
+@@ -4099,6 +4117,48 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph
+ 
+     ggml_tensor * node = cgraph->nodes[i];
+ 
++    // phonon: post-norm + residual add + next pre-norm in one kernel
++    if (node->op == GGML_OP_RMS_NORM && i + 4 < cgraph->n_nodes &&
++            cgraph->nodes[i + 3]->op == GGML_OP_RMS_NORM && cgraph->nodes[i + 3]->src[0] == cgraph->nodes[i + 2] &&
++            ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD }, {}) &&
++            ggml_cuda_can_fuse(cgraph, i + 3, { GGML_OP_RMS_NORM, GGML_OP_MUL }, {})) {
++        if (ggml_cuda_op_rms_norm_add_rms_norm_fused(*cuda_ctx, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2],
++                                                     cgraph->nodes[i + 3], cgraph->nodes[i + 4])) {
++            return 4;
++        }
++    }
++
++    // phonon: LFM short-convolution decode step, MUL(b,x) -> CONCAT(state, bx^T) -> CPY(state') -> SSM_CONV -> MUL(c, conv)
++    if (node->op == GGML_OP_MUL && cuda_ctx->stream_context().concurrent_events.empty()) {
++        ggml_tensor * found[4] = { nullptr, nullptr, nullptr, nullptr }; // concat, cpy, ssm_conv, mul_y
++        const ggml_op want[4] = { GGML_OP_CONCAT, GGML_OP_CPY, GGML_OP_SSM_CONV, GGML_OP_MUL };
++        int nf = 0;
++        int j  = i + 1;
++        for (; j < cgraph->n_nodes && nf < 4; ++j) {
++            ggml_tensor * t = cgraph->nodes[j];
++            if (ggml_cuda_is_view_or_noop(t)) {
++                continue;
++            }
++            if (t->op != want[nf]) {
++                break;
++            }
++            found[nf++] = t;
++        }
++        if (nf == 4) {
++            ggml_tensor * concat = found[0];
++            ggml_tensor * cpy    = found[1];
++            ggml_tensor * conv   = found[2];
++            ggml_tensor * mul_y  = found[3];
++            const bool shape_ok =
++                concat->src[1] && concat->src[1]->op == GGML_OP_TRANSPOSE && concat->src[1]->src[0] == node &&
++                cpy->src[0] && cpy->src[0]->view_src == concat &&
++                conv->src[0] == concat && mul_y->src[1] == conv;
++            if (shape_ok && ggml_cuda_op_shortconv_step_fused(*cuda_ctx, node, concat, cpy, conv, mul_y)) {
++                return j - 1 - i;
++            }
++        }
++    }
++
+     if (node->op == GGML_OP_MUL_MAT_ID && cuda_ctx->stream_context().concurrent_events.empty() &&
+             ggml_cuda_match_shared_expert(cgraph, i, i + 3) &&
+             ggml_cuda_should_fuse_mul_mat_vec_q(cgraph->nodes[i + 2]->src[1])) {
+@@ -4986,6 +5046,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+                 stream_ctx.concurrent_events.clear();
+             }
+ 
++            cuda_ctx->q8c_invalidate();
+             for (int i = 0; i < cgraph->n_nodes; i++) {
+                 ggml_tensor * node = cgraph->nodes[i];
+ #ifdef USE_CUDA_GRAPH
+@@ -5039,6 +5100,15 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+ 
+                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
+ 
++                // phonon: drop the cached q8_1 row if this node (or fused group) wrote over it
++                for (int k = i; k <= i + nodes_to_skip; ++k) {
++                    const ggml_tensor * w = cgraph->nodes[k];
++                    if (!ggml_cuda_is_view_or_noop(w) && w->data != cuda_ctx->q8c_protect) {
++                        cuda_ctx->q8c_check_write(w->data, ggml_nbytes(w));
++                    }
++                }
++                cuda_ctx->q8c_protect = nullptr;
++
+                 if (nodes_to_skip != 0) {
+ #ifdef GGML_CUDA_DEBUG
+                     const int last_fused = i + nodes_to_skip;
+@@ -5100,9 +5170,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+ 
+     if (use_cuda_graph && !cuda_graph_update_required) {
+         // the chunks were launched during capture, otherwise launch them here
++        const int64_t ptl0 = g_cuda_timer.on ? ggml_time_us() : 0;
+         for (cudaGraphExec_t instance : graph->instances) {
+             CUDA_CHECK(cudaGraphLaunch(instance, cuda_ctx->stream()));
+         }
++        if (g_cuda_timer.on) { g_cuda_timer.t_launch += ggml_time_us() - ptl0; g_cuda_timer.n_replay++; }
+ #else
+         GGML_UNUSED(graph_key);
+         graph_evaluated_or_captured = true;
+@@ -5129,6 +5201,7 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
+ 
+ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
++    const int64_t ptc_start = g_cuda_timer.on ? ggml_time_us() : 0;
+ 
+     ggml_cuda_set_device(cuda_ctx->device);
+ 
+@@ -5185,7 +5258,13 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
+     }
+ 
++    const int64_t pte0 = g_cuda_timer.on ? ggml_time_us() : 0;
+     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
++    if (g_cuda_timer.on && use_cuda_graph && !cuda_graph_update_required) {
++        const int64_t pte1 = ggml_time_us();
++        g_cuda_timer.t_check += pte0 - ptc_start; g_cuda_timer.t_eval += pte1 - pte0;
++        g_cuda_timer.n_calls++; g_cuda_timer.n_nodes += cgraph->n_nodes;
++    }
+ 
+     return GGML_STATUS_SUCCESS;
+ }
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index 1a9cf55..ba456a4 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -1452,6 +1452,167 @@ static void mul_mat_vec_q_switch_type(
+     }
+ }
+ 
++// phonon: batch-1 Q4_K x q8_1 matvec with 16-byte weight loads.
++// One warp per output row; 8 lanes cover one 256-value Q4_K super-block (lane c of 8 reads qs[16c, 16c+16), i.e. half
++// of sub-blocks 2j and 2j+1 with j = c/2), so a warp streams 4 super-blocks (576 bytes) per iteration.
++// Optionally computes a second matrix (gate) on the same activations and applies SWIGLU: dst = x * silu(gate).
++#define PHONON_Q4K_WARPS 4
++#ifndef PHONON_Q4K_ROWS
++#define PHONON_Q4K_ROWS 1 // 2 rows per warp measured slower on the 3090 (output matvec 183 -> 193 us)
++#endif
++#ifndef PHONON_Q4K_ROWS_GATE
++#define PHONON_Q4K_ROWS_GATE 1
++#endif
++
++template <bool has_gate>
++static __device__ __forceinline__ void phonon_q4k_accum(
++        const block_q4_K * __restrict__ bx, const int4 * __restrict__ hdr, const int4 qsv,
++        const int * __restrict__ u, const float2 d8a, const float2 d8b, const int j, const int h, float & acc) {
++    // header: dm (half2) + scales[12]
++    const int4 hv = *hdr;
++    const half2 dm = *((const half2 *) &hv.x);
++    const uint8_t * scales = ((const uint8_t *) &hv) + 4;
++    const int sb0 = 2*j;
++    const int sb1 = 2*j + 1;
++    uint8_t sc0, m0, sc1, m1;
++    if (sb0 < 4) { sc0 = scales[sb0] & 63; m0 = scales[sb0 + 4] & 63; }
++    else { sc0 = (scales[sb0 + 4] & 0xF) | ((scales[sb0 - 4] >> 6) << 4); m0 = (scales[sb0 + 4] >> 4) | ((scales[sb0] >> 6) << 4); }
++    if (sb1 < 4) { sc1 = scales[sb1] & 63; m1 = scales[sb1 + 4] & 63; }
++    else { sc1 = (scales[sb1 + 4] & 0xF) | ((scales[sb1 - 4] >> 6) << 4); m1 = (scales[sb1 + 4] >> 4) | ((scales[sb1] >> 6) << 4); }
++
++    const int v[4] = { qsv.x, qsv.y, qsv.z, qsv.w };
++    int dot0 = 0, dot1 = 0, s0 = 0, s1 = 0;
++#pragma unroll
++    for (int k = 0; k < 4; ++k) {
++        dot0 = ggml_cuda_dp4a( v[k]       & 0x0F0F0F0F, u[k],     dot0);
++        dot1 = ggml_cuda_dp4a((v[k] >> 4) & 0x0F0F0F0F, u[4 + k], dot1);
++        s0   = ggml_cuda_dp4a(0x01010101, u[k],     s0);
++        s1   = ggml_cuda_dp4a(0x01010101, u[4 + k], s1);
++    }
++    const float sumf_d = d8a.x * (dot0 * sc0) + d8b.x * (dot1 * sc1);
++    const float sumf_m = d8a.x * (s0 * m0)    + d8b.x * (s1 * m1);
++    const float2 dmf = __half22float2(dm);
++    acc += dmf.x*sumf_d - dmf.y*sumf_m;
++    GGML_UNUSED(bx); GGML_UNUSED(h);
++}
++
++template <bool has_gate, int R>
++__launch_bounds__(PHONON_Q4K_WARPS*WARP_SIZE, 1)
++static __global__ void phonon_mmvq_q4k(
++        const void * __restrict__ vx, const void * __restrict__ vgate, const block_q8_1 * __restrict__ y,
++        float * __restrict__ dst, const int nblocks, const int nrows, const int64_t stride_row) {
++    const int lane = threadIdx.x;
++    const int row  = (blockIdx.x*PHONON_Q4K_WARPS + threadIdx.y)*R;
++    if (row >= nrows) {
++        return;
++    }
++    const int c = lane % 8;     // 16-byte chunk of qs
++    const int j = c / 2;        // sub-block pair
++    const int h = c % 2;        // half of the 32-value sub-block
++    const block_q4_K * bx = (const block_q4_K *) vx + row*stride_row;
++    const block_q4_K * bg = has_gate ? (const block_q4_K *) vgate + row*stride_row : nullptr;
++
++    // R rows per warp share each activation load
++    float acc[R];
++    float accg[R];
++#pragma unroll
++    for (int r = 0; r < R; ++r) {
++        acc[r]  = 0.0f;
++        accg[r] = 0.0f;
++    }
++
++#pragma unroll 2
++    for (int kb = lane / 8; kb < nblocks; kb += 4) {
++        int4 qsv[R];
++        int4 hdv[R];
++        int4 qsg[R];
++        int4 hdg[R];
++#pragma unroll
++        for (int r = 0; r < R; ++r) {
++            if (R == 1 || row + r < nrows) {
++                qsv[r] = *((const int4 *) (bx[r*stride_row + kb].qs + 16*c));
++                hdv[r] = *((const int4 *) (bx + r*stride_row + kb));
++                if constexpr (has_gate) {
++                    qsg[r] = *((const int4 *) (bg[r*stride_row + kb].qs + 16*c));
++                    hdg[r] = *((const int4 *) (bg + r*stride_row + kb));
++                }
++            }
++        }
++        const block_q8_1 * ya = y + kb*8 + 2*j;
++        const block_q8_1 * yb = ya + 1;
++        int u[8];
++        const int * qa = (const int *) ya->qs + 4*h;
++        const int * qb = (const int *) yb->qs + 4*h;
++#pragma unroll
++        for (int k = 0; k < 4; ++k) {
++            u[k]     = qa[k];
++            u[4 + k] = qb[k];
++        }
++        const float2 d8a = __half22float2(ya->ds);
++        const float2 d8b = __half22float2(yb->ds);
++#pragma unroll
++        for (int r = 0; r < R; ++r) {
++            if (R == 1 || row + r < nrows) {
++                phonon_q4k_accum<has_gate>(bx, &hdv[r], qsv[r], u, d8a, d8b, j, h, acc[r]);
++                if constexpr (has_gate) {
++                    phonon_q4k_accum<has_gate>(bg, &hdg[r], qsg[r], u, d8a, d8b, j, h, accg[r]);
++                }
++            }
++        }
++    }
++
++#pragma unroll
++    for (int r = 0; r < R; ++r) {
++        acc[r] = warp_reduce_sum(acc[r]);
++        if constexpr (has_gate) {
++            accg[r] = warp_reduce_sum(accg[r]);
++        }
++        if (lane == 0 && (R == 1 || row + r < nrows)) {
++            float result = acc[r];
++            if constexpr (has_gate) {
++                result *= ggml_cuda_op_silu_single(accg[r]);
++            }
++            dst[row + r] = result;
++        }
++    }
++}
++
++static bool phonon_mmvq_q4k_try(
++        const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, const ggml_tensor * dst,
++        const ggml_cuda_mm_fusion_args_host * fusion, const void * vy, cudaStream_t stream) {
++    static const bool disabled = getenv("PHONON_NO_Q4K_MMVQ") != nullptr;
++    if (disabled || src0->type != GGML_TYPE_Q4_K || ids || src1->ne[1] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1 ||
++            src0->ne[2] != 1 || src0->ne[3] != 1 || src0->ne[0] % QK_K != 0 || !ggml_is_contiguous(dst)) {
++        return false;
++    }
++    const void * vgate = nullptr;
++    if (fusion) {
++        if (fusion->x_bias || fusion->gate_bias || fusion->x_scale || fusion->gate_scale || fusion->shared_up) {
++            return false;
++        }
++        if (fusion->gate) {
++            if (fusion->glu_op != GGML_GLU_OP_SWIGLU || fusion->gate->type != src0->type || fusion->gate->nb[1] != src0->nb[1]) {
++                return false;
++            }
++            vgate = fusion->gate->data;
++        }
++    }
++    const int nrows   = src0->ne[1];
++    const int nblocks = src0->ne[0] / QK_K;
++    const int64_t stride_row = src0->nb[1] / ggml_type_size(src0->type);
++    const dim3 block(WARP_SIZE, PHONON_Q4K_WARPS);
++    constexpr int RG = PHONON_Q4K_ROWS_GATE;
++    constexpr int RN = PHONON_Q4K_ROWS;
++    if (vgate) {
++        const dim3 grid((nrows + PHONON_Q4K_WARPS*RG - 1) / (PHONON_Q4K_WARPS*RG));
++        phonon_mmvq_q4k<true, RG><<<grid, block, 0, stream>>>(src0->data, vgate, (const block_q8_1 *) vy, (float *) dst->data, nblocks, nrows, stride_row);
++    } else {
++        const dim3 grid((nrows + PHONON_Q4K_WARPS*RN - 1) / (PHONON_Q4K_WARPS*RN));
++        phonon_mmvq_q4k<false, RN><<<grid, block, 0, stream>>>(src0->data, nullptr, (const block_q8_1 *) vy, (float *) dst->data, nblocks, nrows, stride_row);
++    }
++    return true;
++}
++
+ void ggml_cuda_mul_mat_vec_q(
+         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
+         const ggml_cuda_mm_fusion_args_host * fusion) {
+@@ -1549,12 +1710,26 @@ void ggml_cuda_mul_mat_vec_q(
+     }
+ 
+     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+-    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
+-    {
++    // phonon: a single contiguous row goes through the context's q8_1 cache (shared by matvecs on the same row)
++    const bool use_q8c = !ids && ne11 == 1 && ne12 == 1 && ne13 == 1 && ne10 == ne10_padded &&
++        size_t(ne10_padded/QK8_1*sizeof(block_q8_1)) <= ggml_backend_cuda_context::q8c_cap;
++    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool());
++    if (!use_q8c) {
++        src1_q8_1.alloc(ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
++    }
++    char * src1_q8_1_d = use_q8c ? (char *) ctx.q8c_buffer() : src1_q8_1.get();
++    if (!use_q8c || !ctx.q8c_hit(src1_d, ne10)) {
+         const int64_t s11 = src1->nb[1] / ts_src1;
+         const int64_t s12 = src1->nb[2] / ts_src1;
+         const int64_t s13 = src1->nb[3] / ts_src1;
+-        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
++        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1_d, src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
++        if (use_q8c) {
++            ctx.q8c_set(src1_d, ne10);
++        }
++    }
++
++    if (phonon_mmvq_q4k_try(src0, src1, ids, dst, fusion, src1_q8_1_d, stream)) {
++        return;
+     }
+ 
+     const int64_t s01 = src0->nb[1] / ts_src0;
+@@ -1580,7 +1755,7 @@ void ggml_cuda_mul_mat_vec_q(
+     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
+ 
+     mul_mat_vec_q_switch_type(
+-        src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
++        src0->data, src0->type, src1_q8_1_d, ids_d, fusion_local, dst_d, ne00,
+         ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
+         ne02, nchannels_y, nchannels_dst, s02, stride_channel_y, stride_channel_dst,
+         ne03,              ne3,           s03, s13,              s3,               ids_stride, stream);
+diff --git a/ggml/src/ggml-cuda/norm.cu b/ggml/src/ggml-cuda/norm.cu
+index 3f0ea6f..1937c66 100644
+--- a/ggml/src/ggml-cuda/norm.cu
++++ b/ggml/src/ggml-cuda/norm.cu
+@@ -107,7 +107,8 @@ static __global__ void rms_norm_f32(const float * x,
+                                     const uint3   add_nrows_packed     = make_uint3(0, 0, 0),
+                                     const uint3   add_nchannels_packed = make_uint3(0, 0, 0),
+                                     const uint3   add_nsamples_packed  = make_uint3(0, 0, 0),
+-                                    const float   scale_out            = 1.0f) {
++                                    const float   scale_out            = 1.0f,
++                                    void *        q8_out               = nullptr) {
+     ggml_cuda_pdl_lc();
+     const int nrows = gridDim.x;
+     const int row   = blockIdx.x;
+@@ -189,6 +190,24 @@ static __global__ void rms_norm_f32(const float * x,
+                             r.w *= scale_out;
+                         }
+                         dst4[i] = r;
++                        if (q8_out != nullptr) {
++                            // phonon: also emit the row as q8_1 (same math as quantize_q8_1), 8 lanes per 32 values;
++                            // the host only sets q8_out for a single row whose float4 count fills every thread
++                            float amax = fmaxf(fmaxf(fabsf(r.x), fabsf(r.y)), fmaxf(fabsf(r.z), fabsf(r.w)));
++                            amax = warp_reduce_max<8>(amax);
++                            const float d = amax / 127.0f;
++                            char4 q;
++                            q.x = amax == 0.0f ? 0 : roundf(r.x / d);
++                            q.y = amax == 0.0f ? 0 : roundf(r.y / d);
++                            q.z = amax == 0.0f ? 0 : roundf(r.z / d);
++                            q.w = amax == 0.0f ? 0 : roundf(r.w / d);
++                            const int sum = warp_reduce_sum<8>((int) q.x + (int) q.y + (int) q.z + (int) q.w);
++                            block_q8_1 * yq = (block_q8_1 *) q8_out + i/8;
++                            *((char4 *) (yq->qs + 4*(i%8))) = q;
++                            if (i % 8 == 0) {
++                                yq->ds = make_half2(d, d * sum);
++                            }
++                        }
+                     }
+                 }
+             } else {
+@@ -392,11 +411,12 @@ static void group_norm_f32_cuda(
+             mul, mul_stride_row, mul_stride_channel, mul_stride_sample, \
+             mul_ncols_packed, mul_nrows_packed, mul_nchannels_packed, mul_nsamples_packed, \
+             add, add_stride_row, add_stride_channel, add_stride_sample, \
+-            add_ncols_packed, add_nrows_packed, add_nchannels_packed, add_nsamples_packed, scale_out); \
++            add_ncols_packed, add_nrows_packed, add_nchannels_packed, add_nsamples_packed, scale_out, \
++            (VEC) ? q8_out : nullptr); \
+     } while (0)
+ 
+ template <bool do_multiply, bool do_add, bool do_scale>
+-static void rms_norm_f32_dispatch(
++static bool rms_norm_f32_dispatch(
+         const dim3     blocks_num,
+         const ggml_tensor * x_t,   float * dst,   const int ncols, const int nchannels, const int nsamples,
+         const int64_t  stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps,
+@@ -404,7 +424,7 @@ static void rms_norm_f32_dispatch(
+         const uint3    mul_ncols_packed, const uint3 mul_nrows_packed, const uint3 mul_nchannels_packed, const uint3 mul_nsamples_packed,
+         const ggml_tensor * add_t, const int64_t add_stride_row, const int64_t add_stride_channel, const int64_t add_stride_sample,
+         const uint3    add_ncols_packed, const uint3 add_nrows_packed, const uint3 add_nchannels_packed, const uint3 add_nsamples_packed,
+-        cudaStream_t   stream, const float scale_out = 1.0f) {
++        cudaStream_t   stream, const float scale_out = 1.0f, void * q8_out = nullptr) {
+     static_assert(!do_add || do_multiply, "fusing add is not supported without multiplying");
+     static_assert(!do_scale || !do_multiply, "fusing scale is not supported with multiplying");
+ 
+@@ -425,6 +445,10 @@ static void rms_norm_f32_dispatch(
+     }
+ 
+     const int n4 = ncols / 4;
++    // q8_1 output needs every thread of the single block to hold exactly one float4
++    if (!(vec && (n4 == 128 || n4 == 256 || n4 == 512 || n4 == 1024))) {
++        q8_out = nullptr;
++    }
+     if (vec) {
+         if (n4 <= 32) {
+             RMS_NORM_LAUNCH(32,   1, true);
+@@ -446,6 +470,7 @@ static void rms_norm_f32_dispatch(
+     } else {
+         RMS_NORM_LAUNCH(1024, 1, false);
+     }
++    return q8_out != nullptr;
+ }
+ #undef RMS_NORM_LAUNCH
+ 
+@@ -462,7 +487,7 @@ static void rms_norm_f32_cuda(
+         stream, scale_out);
+ }
+ 
+-static void rms_norm_mul_f32_cuda(const ggml_tensor * x_t,
++static bool rms_norm_mul_f32_cuda(const ggml_tensor * x_t,
+                                   const ggml_tensor * mul_t,
+                                   const ggml_tensor * add_t,
+                                   float             * dst,
+@@ -488,11 +513,15 @@ static void rms_norm_mul_f32_cuda(const ggml_tensor * x_t,
+                                   const uint32_t add_nchannels,
+                                   const uint32_t add_nsamples,
+                                   const float    eps,
+-                                  cudaStream_t   stream) {
++                                  cudaStream_t   stream,
++                                  void *         q8_out = nullptr) {
+     const dim3 blocks_num(nrows, MIN(nchannels, UINT16_MAX), MIN(nsamples, UINT16_MAX));
++    if (nrows != 1 || nchannels != 1 || nsamples != 1) {
++        q8_out = nullptr;
++    }
+     if (mul_t == nullptr) {
+         rms_norm_f32_cuda(x_t, dst, ncols, nrows, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps, stream);
+-        return;
++        return false;
+     }
+     const uint3 mul_ncols_packed     = init_fastdiv_values(mul_ncols);
+     const uint3 mul_nrows_packed     = init_fastdiv_values(mul_nrows);
+@@ -501,22 +530,22 @@ static void rms_norm_mul_f32_cuda(const ggml_tensor * x_t,
+     const uint3 zero_packed          = make_uint3(0, 0, 0);
+ 
+     if (add_t == nullptr) {
+-        rms_norm_f32_dispatch</*do_multiply*/true, /*do_add*/false, /*do_scale*/false>(
++        return rms_norm_f32_dispatch</*do_multiply*/true, /*do_add*/false, /*do_scale*/false>(
+             blocks_num, x_t, dst, ncols, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps,
+             mul_t, mul_stride_row, mul_stride_channel, mul_stride_sample,
+             mul_ncols_packed, mul_nrows_packed, mul_nchannels_packed, mul_nsamples_packed,
+-            nullptr, 0, 0, 0, zero_packed, zero_packed, zero_packed, zero_packed, stream);
++            nullptr, 0, 0, 0, zero_packed, zero_packed, zero_packed, zero_packed, stream, 1.0f, q8_out);
+     } else {
+         const uint3 add_ncols_packed     = init_fastdiv_values(add_ncols);
+         const uint3 add_nrows_packed     = init_fastdiv_values(add_nrows);
+         const uint3 add_nchannels_packed = init_fastdiv_values(add_nchannels);
+         const uint3 add_nsamples_packed  = init_fastdiv_values(add_nsamples);
+-        rms_norm_f32_dispatch</*do_multiply*/true, /*do_add*/true, /*do_scale*/false>(
++        return rms_norm_f32_dispatch</*do_multiply*/true, /*do_add*/true, /*do_scale*/false>(
+             blocks_num, x_t, dst, ncols, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps,
+             mul_t, mul_stride_row, mul_stride_channel, mul_stride_sample,
+             mul_ncols_packed, mul_nrows_packed, mul_nchannels_packed, mul_nsamples_packed,
+             add_t, add_stride_row, add_stride_channel, add_stride_sample,
+-            add_ncols_packed, add_nrows_packed, add_nchannels_packed, add_nsamples_packed, stream);
++            add_ncols_packed, add_nrows_packed, add_nchannels_packed, add_nsamples_packed, stream, 1.0f, q8_out);
+     }
+ }
+ 
+@@ -683,14 +712,20 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor *
+     const int mul_nchannels = mul_src->ne[2];
+     const int mul_nsamples  = mul_src->ne[3];
+ 
+-    rms_norm_mul_f32_cuda(rms_norm_src, mul_src, nullptr, dst_d,
++    // phonon: a single normalized row usually feeds matvecs, so emit its q8_1 copy into the context cache
++    const bool q8_want = ne01 == 1 && ne02 == 1 && ne03 == 1 && ne00 % 512 == 0 &&
++        size_t(ne00/QK8_1*sizeof(block_q8_1)) <= ggml_backend_cuda_context::q8c_cap;
++    const bool q8_done = rms_norm_mul_f32_cuda(rms_norm_src, mul_src, nullptr, dst_d,
+                           ne00, ne01, ne02, ne03,
+                           /*s00*/ s01, s02, s03,
+                           /*mul_s00*/ mul_s01, mul_s02, mul_s03,
+                           mul_ncols, mul_nrows, mul_nchannels, mul_nsamples,
+                           /*add_s00*/ 0, 0, 0,
+                           0, 0, 0, 0,
+-                          eps, stream);
++                          eps, stream, q8_want ? ctx.q8c_buffer() : nullptr);
++    if (q8_done) {
++        ctx.q8c_set_produced(dst_d, ne00);
++    }
+ }
+ 
+ void ggml_cuda_op_rms_norm_fused_add(ggml_backend_cuda_context & ctx,
+@@ -823,3 +858,128 @@ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+ 
+     l2_norm_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+ }
++
++// phonon: see norm.cuh. Each thread holds one float4; statement order matches rms_norm_f32's vec path so results are
++// bit-identical to running the fused RMS_NORM/MUL/ADD kernel and then the fused RMS_NORM/MUL kernel.
++template <int block_size>
++static __global__ void __launch_bounds__(block_size, 1) rms_norm_add_rms_norm_f32(
++        const float * __restrict__ x, const float * __restrict__ mul1, const float * __restrict__ addv,
++        const float * __restrict__ mul2, float * __restrict__ dst_add, float * __restrict__ dst2, void * __restrict__ q8,
++        const int ncols, const float eps1, const float eps2) {
++    __shared__ float s_sum[32];
++    const int i = threadIdx.x;
++
++    float4 xs = ((const float4 *) x)[i];
++    float tmp = 0.0f;
++    tmp += xs.x*xs.x + xs.y*xs.y + xs.z*xs.z + xs.w*xs.w;
++    tmp = block_reduce<block_reduce_method::SUM, block_size>(tmp, s_sum);
++    const float scale1 = rsqrtf(tmp / ncols + eps1);
++    float4 r = make_float4(scale1*xs.x, scale1*xs.y, scale1*xs.z, scale1*xs.w);
++    {
++        const float4 m = ((const float4 *) mul1)[i];
++        r.x *= m.x;
++        r.y *= m.y;
++        r.z *= m.z;
++        r.w *= m.w;
++        const float4 a = ((const float4 *) addv)[i];
++        r.x += a.x;
++        r.y += a.y;
++        r.z += a.z;
++        r.w += a.w;
++    }
++    ((float4 *) dst_add)[i] = r;
++    __syncthreads(); // s_sum is reused
++
++    xs = r;
++    tmp = 0.0f;
++    tmp += xs.x*xs.x + xs.y*xs.y + xs.z*xs.z + xs.w*xs.w;
++    tmp = block_reduce<block_reduce_method::SUM, block_size>(tmp, s_sum);
++    const float scale2 = rsqrtf(tmp / ncols + eps2);
++    r = make_float4(scale2*xs.x, scale2*xs.y, scale2*xs.z, scale2*xs.w);
++    {
++        const float4 m = ((const float4 *) mul2)[i];
++        r.x *= m.x;
++        r.y *= m.y;
++        r.z *= m.z;
++        r.w *= m.w;
++    }
++    ((float4 *) dst2)[i] = r;
++
++    if (q8 != nullptr) {
++        float amax = fmaxf(fmaxf(fabsf(r.x), fabsf(r.y)), fmaxf(fabsf(r.z), fabsf(r.w)));
++        amax = warp_reduce_max<8>(amax);
++        const float d = amax / 127.0f;
++        char4 q;
++        q.x = amax == 0.0f ? 0 : roundf(r.x / d);
++        q.y = amax == 0.0f ? 0 : roundf(r.y / d);
++        q.z = amax == 0.0f ? 0 : roundf(r.z / d);
++        q.w = amax == 0.0f ? 0 : roundf(r.w / d);
++        const int sum = warp_reduce_sum<8>((int) q.x + (int) q.y + (int) q.z + (int) q.w);
++        block_q8_1 * yq = (block_q8_1 *) q8 + i/8;
++        *((char4 *) (yq->qs + 4*(i%8))) = q;
++        if (i % 8 == 0) {
++            yq->ds = make_half2(d, d * sum);
++        }
++    }
++}
++
++static const ggml_tensor * phonon_other_src(const ggml_tensor * op, const ggml_tensor * known) {
++    if (op->src[0] == known) {
++        return op->src[1];
++    }
++    if (op->src[1] == known) {
++        return op->src[0];
++    }
++    return nullptr;
++}
++
++static bool phonon_row_ok(const ggml_tensor * t, int64_t n) {
++    return t && t->type == GGML_TYPE_F32 && t->ne[0] == n && ggml_nrows(t) == 1 && ggml_is_contiguous(t) &&
++        ((uintptr_t) t->data & 15) == 0;
++}
++
++bool ggml_cuda_op_rms_norm_add_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * norm1, ggml_tensor * mul1,
++                                              ggml_tensor * add, ggml_tensor * norm2, ggml_tensor * mul2) {
++    static const bool disabled = getenv("PHONON_NO_NORM2_FUSION") != nullptr;
++    if (disabled) {
++        return false;
++    }
++    const ggml_tensor * x  = norm1->src[0];
++    const int64_t       n  = x->ne[0];
++    const ggml_tensor * w1 = phonon_other_src(mul1, norm1);
++    const ggml_tensor * a  = phonon_other_src(add, mul1);
++    const ggml_tensor * w2 = phonon_other_src(mul2, norm2);
++    if (norm2->src[0] != add || !w1 || !a || !w2) {
++        return false;
++    }
++    if (!phonon_row_ok(x, n) || !phonon_row_ok(w1, n) || !phonon_row_ok(a, n) || !phonon_row_ok(w2, n) ||
++            !phonon_row_ok(add, n) || !phonon_row_ok(mul2, n) || !phonon_row_ok(mul1, n) || !phonon_row_ok(norm1, n) || !phonon_row_ok(norm2, n)) {
++        return false;
++    }
++    const int n4 = (int) n / 4;
++    if (n % 4 != 0 || !(n4 == 128 || n4 == 256 || n4 == 512 || n4 == 1024)) {
++        return false;
++    }
++    float eps1, eps2;
++    memcpy(&eps1, norm1->op_params, sizeof(float));
++    memcpy(&eps2, norm2->op_params, sizeof(float));
++    const bool q8_ok = n % 512 == 0 && size_t(n/QK8_1*sizeof(block_q8_1)) <= ggml_backend_cuda_context::q8c_cap;
++    void * q8 = q8_ok ? ctx.q8c_buffer() : nullptr;
++    cudaStream_t stream = ctx.stream();
++    const float * xd  = (const float *) x->data;
++    const float * w1d = (const float *) w1->data;
++    const float * ad  = (const float *) a->data;
++    const float * w2d = (const float *) w2->data;
++    float * dadd = (float *) add->data;
++    float * d2   = (float *) mul2->data;
++    switch (n4) {
++        case 128:  rms_norm_add_rms_norm_f32<128> <<<1, 128,  0, stream>>>(xd, w1d, ad, w2d, dadd, d2, q8, (int) n, eps1, eps2); break;
++        case 256:  rms_norm_add_rms_norm_f32<256> <<<1, 256,  0, stream>>>(xd, w1d, ad, w2d, dadd, d2, q8, (int) n, eps1, eps2); break;
++        case 512:  rms_norm_add_rms_norm_f32<512> <<<1, 512,  0, stream>>>(xd, w1d, ad, w2d, dadd, d2, q8, (int) n, eps1, eps2); break;
++        default:   rms_norm_add_rms_norm_f32<1024><<<1, 1024, 0, stream>>>(xd, w1d, ad, w2d, dadd, d2, q8, (int) n, eps1, eps2); break;
++    }
++    if (q8_ok) {
++        ctx.q8c_set_produced(d2, n);
++    }
++    return true;
++}
+diff --git a/ggml/src/ggml-cuda/norm.cuh b/ggml/src/ggml-cuda/norm.cuh
+index 95618df..d1897ee 100644
+--- a/ggml/src/ggml-cuda/norm.cuh
++++ b/ggml/src/ggml-cuda/norm.cuh
+@@ -18,3 +18,8 @@ void ggml_cuda_op_rms_norm_fused_add(ggml_backend_cuda_context & ctx,
+ void ggml_cuda_op_rms_norm_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+ 
+ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
++
++// phonon: RMS_NORM -> MUL -> ADD -> RMS_NORM -> MUL on one row in one block (post-norm + residual + next pre-norm).
++// Writes the ADD result and the final MUL result (plus its q8_1 copy into the context cache). Returns false if unsupported.
++bool ggml_cuda_op_rms_norm_add_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * norm1, ggml_tensor * mul1,
++                                              ggml_tensor * add, ggml_tensor * norm2, ggml_tensor * mul2);
+diff --git a/ggml/src/ggml-cuda/ssm-conv.cu b/ggml/src/ggml-cuda/ssm-conv.cu
+index f41438b..fffec1a 100644
+--- a/ggml/src/ggml-cuda/ssm-conv.cu
++++ b/ggml/src/ggml-cuda/ssm-conv.cu
+@@ -205,3 +205,87 @@ void ggml_cuda_op_ssm_conv(ggml_backend_cuda_context & ctx, ggml_tensor * dst, g
+                           out->nb[2], nc, nr, n_t, n_s, stream);
+     }
+ }
++
++// phonon: one thread per channel. window = [state(d_conv values), b*x]; y = c * sum_j window[j]*w[j]; state' = window[1..].
++// Arithmetic mirrors MUL -> CONCAT -> SSM_CONV -> MUL exactly. Optionally writes y as q8_1 (one warp = one q8_1 block).
++template <int K>
++static __global__ void shortconv_step_f32(
++        const float * __restrict__ state, const int64_t state_nb1,
++        const float * __restrict__ b, const float * __restrict__ x, const float * __restrict__ c,
++        const float * __restrict__ w, const int64_t w_nb1,
++        float * __restrict__ state_out, float * __restrict__ y, void * __restrict__ q8, const int n) {
++    const int ch = blockIdx.x*blockDim.x + threadIdx.x;
++    if (ch >= n) {
++        return;
++    }
++    float win[K];
++#pragma unroll
++    for (int j = 0; j < K - 1; ++j) {
++        win[j] = state[ch*state_nb1 + j];
++    }
++    win[K - 1] = b[ch] * x[ch];
++
++    float sumf = 0.0f;
++#pragma unroll
++    for (int j = 0; j < K; ++j) {
++        sumf += win[j] * w[ch*w_nb1 + j];
++    }
++    sumf += 0.0f;
++
++#pragma unroll
++    for (int j = 0; j < K - 1; ++j) {
++        state_out[ch*(K - 1) + j] = win[j + 1];
++    }
++    const float yi = c[ch] * sumf;
++    y[ch] = yi;
++
++    if (q8 != nullptr) {
++        // same math as quantize_q8_1 (32 lanes = 32 consecutive values)
++        float amax = warp_reduce_max<QK8_1>(fabsf(yi));
++        const float  d = amax / 127.0f;
++        const int8_t q = amax == 0.0f ? 0 : roundf(yi / d);
++        const int  sum = warp_reduce_sum<QK8_1>((int) q);
++        block_q8_1 * yq = (block_q8_1 *) q8 + ch / QK8_1;
++        yq->qs[ch % QK8_1] = q;
++        if (ch % QK8_1 == 0) {
++            yq->ds = make_half2(d, d * sum);
++        }
++    }
++}
++
++bool ggml_cuda_op_shortconv_step_fused(ggml_backend_cuda_context & ctx, const ggml_tensor * mul_bx, const ggml_tensor * concat,
++                                       const ggml_tensor * cpy, const ggml_tensor * conv, ggml_tensor * mul_y) {
++    static const bool disabled = getenv("PHONON_NO_SHORTCONV_FUSION") != nullptr;
++    constexpr int K = 7;
++    const ggml_tensor * state = concat->src[0];
++    const ggml_tensor * w     = conv->src[1];
++    const ggml_tensor * dst_state = cpy->src[1];
++    const ggml_tensor * b = mul_bx->src[0];
++    const ggml_tensor * x = mul_bx->src[1];
++    const ggml_tensor * c = mul_y->src[0];
++    const int n = (int) mul_y->ne[0];
++    if (disabled || concat->ne[0] != K || concat->ne[2] != 1 || concat->ne[1] != n || ggml_get_op_params_i32(concat, 0) != 0 ||
++            w->ne[0] != K || w->ne[1] != n || state->ne[0] != K - 1 || state->ne[1] != n ||
++            mul_bx->ne[0] != n || ggml_nrows(mul_bx) != 1 || ggml_nrows(mul_y) != 1 || conv->ne[0] != n || ggml_nrows(conv) != 1 ||
++            b->ne[0] != n || x->ne[0] != n || c->ne[0] != n || ggml_nrows(b) != 1 || ggml_nrows(x) != 1 || ggml_nrows(c) != 1 ||
++            state->type != GGML_TYPE_F32 || w->type != GGML_TYPE_F32 || dst_state->type != GGML_TYPE_F32 ||
++            b->type != GGML_TYPE_F32 || x->type != GGML_TYPE_F32 || c->type != GGML_TYPE_F32 || mul_y->type != GGML_TYPE_F32 ||
++            state->nb[0] != sizeof(float) || w->nb[0] != sizeof(float) || b->nb[0] != sizeof(float) || x->nb[0] != sizeof(float) ||
++            c->nb[0] != sizeof(float) || !ggml_is_contiguous(dst_state) || ggml_nelements(dst_state) != (int64_t) (K - 1)*n ||
++            ggml_nelements(cpy->src[0]) != (int64_t) (K - 1)*n ||
++            cpy->src[0]->nb[1] != concat->nb[1] || (const char *) cpy->src[0]->data != (const char *) concat->data + sizeof(float)) {
++        return false;
++    }
++    const bool q8_ok = n % 256 == 0 && size_t(n/QK8_1*sizeof(block_q8_1)) <= ggml_backend_cuda_context::q8c_cap;
++    void * q8 = q8_ok ? ctx.q8c_buffer() : nullptr;
++    const int nth = 256;
++    shortconv_step_f32<K><<<(n + nth - 1)/nth, nth, 0, ctx.stream()>>>(
++        (const float *) state->data, state->nb[1]/sizeof(float),
++        (const float *) b->data, (const float *) x->data, (const float *) c->data,
++        (const float *) w->data, w->nb[1]/sizeof(float),
++        (float *) dst_state->data, (float *) mul_y->data, q8, n);
++    if (q8_ok) {
++        ctx.q8c_set_produced(mul_y->data, n);
++    }
++    return true;
++}
+diff --git a/ggml/src/ggml-cuda/ssm-conv.cuh b/ggml/src/ggml-cuda/ssm-conv.cuh
+index 8514ca8..a2d16f8 100644
+--- a/ggml/src/ggml-cuda/ssm-conv.cuh
++++ b/ggml/src/ggml-cuda/ssm-conv.cuh
+@@ -1,3 +1,8 @@
+ #include "common.cuh"
+ 
+ void ggml_cuda_op_ssm_conv(ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_tensor * bias_add_node = nullptr, ggml_tensor * silu_dst = nullptr);
++
++// phonon: fused single-token LFM short-convolution step (see ggml_cuda_try_fuse). Returns false if the shapes are not
++// the supported single-token, single-sequence case, in which case nothing was launched.
++bool ggml_cuda_op_shortconv_step_fused(ggml_backend_cuda_context & ctx, const ggml_tensor * mul_bx, const ggml_tensor * concat,
++                                       const ggml_tensor * cpy, const ggml_tensor * conv, ggml_tensor * mul_y);
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 63b2032..fc714e5 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -23,6 +23,49 @@
+ #include <string>
+ #include <unordered_map>
+ 
++// PHONON_PHASE_TIMING=1: host-side phase timing of single-token decode calls, printed when the context is freed
++namespace {
++struct phonon_phase_timer {
++    enum { PREP, GRAPH, INPUTS, LAUNCH, POST, OUTSIDE, SYNC, N };
++    bool    on   = getenv("PHONON_PHASE_TIMING") != nullptr;
++    int64_t acc[N] = {};
++    int64_t n      = 0;
++    int64_t t_last_exit = 0;
++    int64_t t_entry = 0;
++    int64_t t_launch_end = 0;
++    bool    single = false;
++    struct guard {
++        explicit guard(size_t n_tokens) {
++            if (!g_ptimer_ref().on) { return; }
++            auto & p = g_ptimer_ref();
++            const int64_t t = ggml_time_us();
++            p.single = n_tokens == 1;
++            if (p.single && p.t_last_exit) { p.add(OUTSIDE, p.t_last_exit, t); }
++            p.t_entry = t;
++        }
++        ~guard() {
++            if (!g_ptimer_ref().on) { return; }
++            auto & p = g_ptimer_ref();
++            const int64_t t = ggml_time_us();
++            if (p.single) { p.add(POST, p.t_launch_end, t); p.n++; }
++            p.t_last_exit = p.single ? t : 0;
++        }
++    };
++    static phonon_phase_timer & g_ptimer_ref();
++    std::vector<int64_t> v[N];
++    void add(int i, int64_t t0, int64_t t1) { if (on && single) { acc[i] += t1 - t0; v[i].push_back(t1 - t0); } }
++    static int64_t med(std::vector<int64_t> x) { std::sort(x.begin(), x.end()); return x.empty() ? 0 : x[x.size() / 2]; }
++    void dump() {
++        if (!on || n == 0) { return; }
++        static const char * names[N] = { "decode prep (batch, memory slot)", "graph reuse/build+alloc", "set_inputs (H2D)",
++            "graph_compute launch", "decode post (logits D2H enqueue)", "caller between decodes", "synchronize wait" };
++        fprintf(stderr, "phonon phase timing over %lld single-token decodes (us per token, mean and median):\n", (long long) n);
++        for (int i = 0; i < N; ++i) { fprintf(stderr, "  %-36s %8.1f %8lld\n", names[i], acc[i] / (double) n, (long long) med(v[i])); }
++    }
++} g_ptimer;
++phonon_phase_timer & phonon_phase_timer::g_ptimer_ref() { return g_ptimer; }
++}
++
+ //
+ // llama_context
+ //
+@@ -638,6 +681,7 @@ llama_context::llama_context(
+ llama_context::~llama_context() {
+     // wait for any pending asynchronous copies into the output buffers before they are freed
+     synchronize();
++    g_ptimer.dump();
+ 
+     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
+     if (!model.no_alloc() && !opt_ctx) {
+@@ -949,7 +993,9 @@ void llama_context::synchronize() {
+         return;
+     }
+ 
++    const int64_t t_sync0 = g_ptimer.on ? ggml_time_us() : 0;
+     ggml_backend_sched_synchronize(sched.get());
++    if (g_ptimer.on) { g_ptimer.add(phonon_phase_timer::SYNC, t_sync0, ggml_time_us()); }
+ 
+     // FIXME: if multiple single tokens are evaluated without a synchronization,
+     // the stats will be added to the prompt evaluation stats
+@@ -1681,6 +1727,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         return nullptr;
+     }
+ 
++    const int64_t t_pu0 = g_ptimer.on ? ggml_time_us() : 0;
+     auto * res = get_gf_res_prev();
+     auto * gf  = res->get_gf();
+ 
+@@ -1727,6 +1774,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         gf_res_prev_active = res;
+     }
+ 
++    const int64_t t_pu1 = g_ptimer.on ? ggml_time_us() : 0;
+     // set the input data for the input tensors
+     {
+         //const auto t_start_us = ggml_time_us();
+@@ -1737,7 +1785,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+ 
++    const int64_t t_pu2 = g_ptimer.on ? ggml_time_us() : 0;
+     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
++    if (g_ptimer.on) {
++        const int64_t t_pu3 = ggml_time_us();
++        g_ptimer.add(phonon_phase_timer::GRAPH,  t_pu0, t_pu1);
++        g_ptimer.add(phonon_phase_timer::INPUTS, t_pu1, t_pu2);
++        g_ptimer.add(phonon_phase_timer::LAUNCH, t_pu2, t_pu3);
++        g_ptimer.add(phonon_phase_timer::PREP,   g_ptimer.t_entry, t_pu0);
++        g_ptimer.t_launch_end = t_pu3;
++    }
+     if (status != GGML_STATUS_SUCCESS) {
+         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
+         ret = status;
+@@ -1998,6 +2055,7 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
+ }
+ 
+ int llama_context::decode(const llama_batch_ext & batch_inp) {
++    phonon_phase_timer::guard phonon_ptimer_guard(batch_inp.tokens.size());
+     if (!memory) {
+         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
+         return encode(batch_inp);
