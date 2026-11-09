@@ -248,7 +248,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     READY.store(true, Ordering::Release);
     tray::notify(
         "Phonon is ready",
-        &format!("Hold {name} to dictate. Double-tap it to latch."),
+        &format!("Hold {name} to dictate, or tap it to start and tap again to stop."),
         false,
     );
 

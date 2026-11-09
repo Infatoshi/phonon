@@ -71,9 +71,6 @@ struct NativeSettings: Codable, Equatable {
     var showIdleCapsule: Bool
     /// Other audio while the key is held: left alone, lowered (default) or muted.
     var backgroundAudio: BackgroundAudio
-    /// A short tap of the hold key (fn or Right Option) starts dictation and the
-    /// next tap stops it; a hold stays push-to-talk (issue #34). Off by default.
-    var tapToToggle: Bool
     /// Per-app writing mode, bundle id -> refiner mode (`minimal`, `casual`,
     /// `formal`, `prompt`). Wins over `writing_style` and the app's category.
     var writingModesByApp: [String: String]
@@ -112,7 +109,6 @@ struct NativeSettings: Codable, Equatable {
         case showInDock = "show_in_dock"
         case showIdleCapsule = "show_idle_capsule"
         case backgroundAudio = "background_audio"
-        case tapToToggle = "tap_to_toggle"
         case writingModesByApp = "writing_modes_by_app"
         case byokEnabled = "byok_enabled"
         case byokBaseURL = "byok_base_url"
@@ -148,7 +144,6 @@ struct NativeSettings: Codable, Equatable {
         showInDock: Bool = true,
         showIdleCapsule: Bool = true,
         backgroundAudio: BackgroundAudio = .lower,
-        tapToToggle: Bool = false,
         writingModesByApp: [String: String] = [:],
         byokEnabled: Bool = false,
         byokBaseURL: String = "",
@@ -182,7 +177,6 @@ struct NativeSettings: Codable, Equatable {
         self.showInDock = showInDock
         self.showIdleCapsule = showIdleCapsule
         self.backgroundAudio = backgroundAudio
-        self.tapToToggle = tapToToggle
         self.writingModesByApp = writingModesByApp
         self.byokEnabled = byokEnabled
         self.byokBaseURL = byokBaseURL
@@ -248,9 +242,7 @@ struct NativeSettings: Codable, Equatable {
             try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
         backgroundAudio =
             (try? values.decodeIfPresent(String.self, forKey: .backgroundAudio))
-            .flatMap { $0 }.flatMap(BackgroundAudio.init(rawValue:)) ?? .lower
-        tapToToggle = (try? values.decodeIfPresent(Bool.self, forKey: .tapToToggle)) ?? false
-        // Unknown modes are dropped on read, so a hand edit cannot pin a mode the
+            .flatMap { $0 }.flatMap(BackgroundAudio.init(rawValue:)) ?? .lower        // Unknown modes are dropped on read, so a hand edit cannot pin a mode the
         // refiner does not have.
         writingModesByApp =
             ((try? values.decodeIfPresent([String: String].self, forKey: .writingModesByApp))

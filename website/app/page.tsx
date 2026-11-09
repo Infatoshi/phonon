@@ -111,7 +111,7 @@ export default function Home() {
           </p>
           <ul className="windows-facts">
             <li>Hold Right Ctrl to dictate.</li>
-            <li>Double-tap to latch.</li>
+            <li>Or tap it to start and tap again to stop.</li>
             <li>Speech recognition and correction both run on the CPU with no account and no cloud.</li>
           </ul>
         </div>

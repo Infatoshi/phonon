@@ -132,28 +132,26 @@ final class MainWindowDataTests: XCTestCase {
         XCTAssertEqual(NativeAppStore(supportDirectory: directory).settings.writingStyle, .formal)
     }
 
-    func testTapToToggleAndPerAppModesRoundTripThroughSettingsJSON() throws {
+    /// A settings.json from before tap-to-toggle became the only behaviour still loads,
+    /// and its old `tap_to_toggle` key is left alone like any key the app no longer reads.
+    func testPerAppModesRoundTripThroughSettingsJSON() throws {
         let url = directory.appendingPathComponent("settings.json")
         try Data(
-            #"{"schema_version":2,"writing_modes_by_app":{"com.mitchellh.ghostty":"prompt","com.hnc.Discord":"verbatim"},"profile_prefix":true}"#
+            #"{"schema_version":2,"tap_to_toggle":false,"writing_modes_by_app":{"com.mitchellh.ghostty":"prompt","com.hnc.Discord":"verbatim"},"profile_prefix":true}"#
                 .utf8
         ).write(to: url)
         let store = NativeAppStore(supportDirectory: directory)
-        XCTAssertFalse(store.settings.tapToToggle, "off by default")
         XCTAssertEqual(
             store.settings.writingModesByApp, ["com.mitchellh.ghostty": "prompt"],
             "an unknown mode is dropped")
-        store.updateSettings { $0.tapToToggle = true }
         store.setAppWritingMode("com.apple.Terminal", .minimal)
         store.setAppWritingMode("com.mitchellh.ghostty", nil)
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        XCTAssertEqual(object["tap_to_toggle"] as? Bool, true)
         XCTAssertEqual(
             object["writing_modes_by_app"] as? [String: String], ["com.apple.Terminal": "minimal"])
         XCTAssertEqual(object["profile_prefix"] as? Bool, true, "engine keys survive")
         let reread = NativeAppStore(supportDirectory: directory).settings
-        XCTAssertTrue(reread.tapToToggle)
         XCTAssertEqual(reread.writingModesByApp, ["com.apple.Terminal": "minimal"])
     }
 

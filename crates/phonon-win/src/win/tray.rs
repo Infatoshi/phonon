@@ -276,7 +276,7 @@ fn pick_key(index: usize) {
             let label = super::hook::key_label(code);
             notify(
                 &format!("Dictation key: {label}"),
-                &format!("Hold {label} to dictate. Double-tap it to latch."),
+                &format!("Hold {label} to dictate, or tap it to start and tap again to stop."),
                 false,
             );
             send(Command::KeyChanged);

@@ -11,20 +11,17 @@ import SwiftUI
 ///   the mic.
 /// - `micSilent`: shown while the key is held when the mic delivers only digital silence
 ///   (Wispr's "no audio during dictation").
-/// - `tapHint`: two quick taps of the hold key that each recorded nothing (issue #21):
-///   the key has to be held, or tap-to-toggle turned on.
 /// Every card has a close button (issue #22).
 enum Notice: Equatable {
     case notPasted(String)
     case needsAccessibility(String)
     case notHeard(mic: String)
     case micSilent(mic: String)
-    case tapHint(key: String)
 
     var text: String? {
         switch self {
         case .notPasted(let text), .needsAccessibility(let text): return text
-        case .notHeard, .micSilent, .tapHint: return nil
+        case .notHeard, .micSilent: return nil
         }
     }
 }
@@ -35,7 +32,6 @@ final class NotPastedModel: ObservableObject {
     @Published var visible = false
     var onHover: (Bool) -> Void = { _ in }
     var onClose: () -> Void = {}
-    var onOpenSettings: () -> Void = {}
 
     var text: String {
         get { notice.text ?? "" }
@@ -76,12 +72,6 @@ struct NotPastedView: View {
             return ("Phonon didn't hear anything.", "Listening on \(mic). Hold the key while you talk.")
         case .micSilent(let mic):
             return ("Your mic isn't sending any sound.", "\(mic) is silent. Check it isn't muted.")
-        case .tapHint(let key):
-            return (
-                "Hold \(key) while you talk.",
-                "A quick tap records nothing. Double-tap to keep listening, or turn on "
-                    + "\"Tap to start and stop\" in Settings."
-            )
         }
     }
 
@@ -98,7 +88,7 @@ struct NotPastedView: View {
             }
             HStack(spacing: 12) {
                 if model.notice.text == nil {
-                    Image(systemName: isTapHint ? "keyboard" : "mic.slash")
+                    Image(systemName: "mic.slash")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(EmberTheme.ember2)
                         .frame(width: 24)
@@ -125,9 +115,6 @@ struct NotPastedView: View {
                 case .notHeard, .micSilent:
                     Button("Sound settings") { Self.open(Self.soundInputPane) }
                         .buttonStyle(NoticeLinkButtonStyle())
-                case .tapHint:
-                    Button("Settings") { model.onOpenSettings() }
-                        .buttonStyle(NoticeLinkButtonStyle())
                 }
             }
         }
@@ -152,11 +139,6 @@ struct NotPastedView: View {
                 .padding(.top, 6)
                 .padding(.trailing, 6)
         }
-    }
-
-    private var isTapHint: Bool {
-        if case .tapHint = model.notice { return true }
-        return false
     }
 
     static let accessibilityPane =
@@ -322,12 +304,6 @@ final class NotPastedController {
             self.hovering = false
             self.dismiss()
         }
-    }
-
-    /// Where the tap hint's Settings button goes.
-    var onOpenSettings: () -> Void {
-        get { model.onOpenSettings }
-        set { model.onOpenSettings = newValue }
     }
 
     /// What is showing, or nil once dismissed.

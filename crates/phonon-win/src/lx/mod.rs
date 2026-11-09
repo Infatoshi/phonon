@@ -1,7 +1,7 @@
 //! The Linux desktop application: tray, dictation key, capture, correction, insertion.
 //!
 //! The same flow as Windows (`win/mod.rs`): first-run download, a startup check
-//! on the embedded fixture, then hold the key to dictate, double-tap to latch.
+//! on the embedded fixture, then hold the key to dictate, or tap it to start and tap again to stop.
 //! Works on X11 and Wayland alike because the key and the paste go through the
 //! kernel (evdev and uinput), not through the display server.
 
@@ -171,7 +171,7 @@ fn app() -> Result<()> {
     tray::set_status(&idle);
     tray::notify(
         "Phonon is ready",
-        &format!("Hold {name} to dictate. Double-tap it to latch."),
+        &format!("Hold {name} to dictate, or tap it to start and tap again to stop."),
         false,
     );
 

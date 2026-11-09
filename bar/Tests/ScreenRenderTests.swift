@@ -287,10 +287,9 @@ final class ScreenRenderTests: XCTestCase {
         try snapshot(view, size: CGSize(width: 790, height: 2200), name: "settings_full")
     }
 
-    /// Settings with tap-to-toggle on and two apps pinned to a writing mode.
+    /// Settings with two apps pinned to a writing mode.
     func testSettingsWithPerAppModesRender() throws {
         let store = store()
-        store.updateSettings { $0.tapToToggle = true }
         store.setAppWritingMode("com.apple.Terminal", .minimal)
         store.setAppWritingMode("com.tinyspeck.slackmacgap", .casual)
         XCTAssertEqual(store.dictatedApps.first?.bundleID, "com.apple.Terminal")
@@ -440,7 +439,6 @@ final class ScreenRenderTests: XCTestCase {
             ("notice_accessibility", .needsAccessibility(text)),
             ("notice_not_heard", .notHeard(mic: "MacBook Pro Microphone")),
             ("notice_mic_silent", .micSilent(mic: "AirPods Pro")),
-            ("notice_tap_hint", .tapHint(key: "Globe (fn)")),
         ]
         for (name, notice) in notices {
             let model = NotPastedModel()

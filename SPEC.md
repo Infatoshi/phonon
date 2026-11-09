@@ -159,28 +159,26 @@ No enrollment scripts. Users do not read generated sentences aloud.
 ### Shortcut
 
 Default is the bare Globe (fn) key, because the default user is on a Mac
-keyboard. Key-down starts recording at once. A press under 250 ms is a tap;
-a second tap within 350 ms of the first release latches recording on; while
-latched, the next key-down stops and commits. A lone tap yields a capture
-without speech, which the no-speech path discards. Right Option and
-Ctrl+Space remain as alternatives (`shortcut_mode` in settings.json).
-
-Tap to start and stop (`tap_to_toggle`, off by default, issue #34): a single
-tap latches recording on (the recording that began at key-down keeps going)
-and the next key-down stops it; a hold stays push-to-talk. Right Option is
+keyboard. Key-down starts recording at once. There are two ways to use the
+key and no setting between them: hold it to talk (release stops and commits),
+or tap it (a press of 250 ms or less) to latch recording on, which keeps the
+recording that began at key-down going, and the next key-down stops and
+commits. There is no double-tap (removed 2026-11-09; `tap_to_toggle` from
+issue #34 is no longer read). Right Option and Ctrl+Space remain as
+alternatives (`shortcut_mode` in settings.json). Right Option is
 told from Left Option by the device-dependent flag bits (`NX_DEVICERALTKEYMASK`
 0x40 vs `NX_DEVICELALTKEYMASK` 0x20), falling back to the key code (61 right,
 58 left) when a keyboard sends none (#23, from outside PR #29).
 
 Reliability (#21): the hold key is tracked as edges of the event flags. A
 flags-changed event for the key's own key code (63 fn, 61 Right Option) while
-it already reads as held means its release was lost: a hold still recording
-stops there, otherwise the press starts a dictation (before, that press was
-ignored and its release stopped nothing). When macOS disables the event tap
-(timeout or user input), the held modifiers are re-read with
-`CGEventSource.flagsState` and a key no longer held is released. Two lone taps
-within 6 s show a card: hold the key, double-tap, or turn on tap to start and
-stop (once per 10 minutes). e2e.jsonl records `event_tap_disables` and
+it already reads as held means its release was lost: a latched recording
+stops on that press; a hold still recording stops there (if the lost release
+made it a tap, it latched and that press is the stop); idle, the press starts a
+dictation (before, that press was ignored and its release stopped nothing).
+When macOS disables the event tap (timeout or user input), the held modifiers
+are re-read with `CGEventSource.flagsState` and a key no longer held is
+released. e2e.jsonl records `event_tap_disables` and
 `hotkey_represses` since launch.
 
 Permissions: a missing Input Monitoring (with a hold-key shortcut) or
@@ -500,7 +498,7 @@ between threads on Windows, so a recording begins and ends on that thread.
 
 ### The dictation key
 
-Right Control, held to talk. Two taps latch; the next press stops. The rules
+Right Control, held to talk. A tap latches; the next press stops. The rules
 are `crates/phonon-hotkey`, ported from the Swift `HoldKeyTapLatch` and tested
 against the same cases. Phonon swallows the key, so Right Control stops acting
 as a modifier while Phonon runs. `PHONON_WIN_HOTKEY` moves it.

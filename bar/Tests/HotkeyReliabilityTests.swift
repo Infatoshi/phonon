@@ -3,7 +3,7 @@ import XCTest
 @testable import PhononBar
 
 /// Issue #21 (fn did not consistently start dictation) and the Input Monitoring
-/// onboarding: edge detection after a lost release, the lone-tap hint, the
+/// onboarding: edge detection after a lost release, the
 /// Globe-key conflict and what the permission banner shows.
 final class HotkeyReliabilityTests: XCTestCase {
     private func ms(_ value: UInt64) -> UInt64 { value * 1_000_000 }
@@ -37,18 +37,6 @@ final class HotkeyReliabilityTests: XCTestCase {
         XCTAssertEqual(latch.keyUp(at: ms(8_000)), .stop)
     }
 
-    func testLoneTapHintNeedsTwoTapsCloseTogether() {
-        var hint = LoneTapHint()
-        XCTAssertFalse(hint.noteLoneTap(at: ms(0)), "one accidental tap says nothing")
-        XCTAssertFalse(hint.noteLoneTap(at: ms(10_000)), "too far apart")
-        XCTAssertTrue(hint.noteLoneTap(at: ms(12_000)))
-        // shown: quiet for the cooldown, even for more quick taps
-        XCTAssertFalse(hint.noteLoneTap(at: ms(13_000)))
-        XCTAssertFalse(hint.noteLoneTap(at: ms(14_000)))
-        let later = ms(12_000) + LoneTapHint.cooldownNs
-        XCTAssertFalse(hint.noteLoneTap(at: later))
-        XCTAssertTrue(hint.noteLoneTap(at: later + ms(1_000)))
-    }
 
     func testGlobeKeyConflict() {
         XCTAssertFalse(GlobeKeySetting.conflicts(usageType: 0))
