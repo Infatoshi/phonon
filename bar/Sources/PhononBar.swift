@@ -467,6 +467,74 @@ struct HoldKeyTapLatch {
     }
 }
 
+/// When a latched dictation (one tap of fn or Right Option) stops on its own, so a stray tap
+/// cannot leave the mic recording until the next press. A held key never stops this way (its
+/// release does), and neither do Ctrl+Space or a meeting.
+///
+/// Speech is the capsule's `VoiceDetector` (the level meter against the room's floor), the
+/// same signal the live-text dot answers to, but only once it has lasted `speechRunSeconds`
+/// without a break: a keystroke or a click near the mic is one or two meter readings.
+/// Timestamps are seconds on any monotonic clock; the caller supplies them.
+struct LatchAutoStop {
+    enum Decision: Equatable {
+        case keepRecording
+        /// Nothing was said since the start: drop it, with no paste and no card.
+        case discard
+        /// Speech, then a long silence: stop and commit as the next press would.
+        case commit
+    }
+
+    // The two limits live here and nowhere else.
+    /// No speech at all this long after the start. Someone who tapped on purpose starts
+    /// talking within a second or two (the capsule and the start cue say it is listening);
+    /// 8 s leaves room to gather a thought and still frees the mic soon after a stray tap.
+    static let noSpeechSeconds: TimeInterval = 8
+    /// Silence this long after speech. Someone dictating a long prompt stops to read or think
+    /// for tens of seconds, and a commit pastes into whatever is focused, so this is a full
+    /// minute; someone who has walked away still gets their words committed.
+    static let silenceAfterSpeechSeconds: TimeInterval = 60
+    /// Voice this long without a break counts as speech: about a syllable, and longer than
+    /// a keystroke. Time, not a count of readings, because the meter's rate follows the
+    /// device's buffer size.
+    static let speechRunSeconds: TimeInterval = 0.15
+
+    let startedAt: TimeInterval
+    private(set) var lastSpeechAt: TimeInterval?
+    private var voiceSince: TimeInterval?
+    private var lastVoiceAt: TimeInterval?
+
+    init(startedAt: TimeInterval) {
+        self.startedAt = startedAt
+    }
+
+    var heardSpeech: Bool { lastSpeechAt != nil }
+
+    /// One reading of the voice detector.
+    mutating func note(voice: Bool, at now: TimeInterval) {
+        guard voice else {
+            voiceSince = nil
+            return
+        }
+        let since = voiceSince ?? now
+        voiceSince = since
+        lastVoiceAt = now
+        if now - since >= Self.speechRunSeconds { lastSpeechAt = now }
+    }
+
+    func decision(at now: TimeInterval) -> Decision {
+        // Voice that has just begun and not yet lasted `speechRunSeconds` holds a limit
+        // off, so talking right at the limit is not cut. Only while readings keep
+        // arriving: a mic that stopped mid-voice must not hold it off for ever.
+        if voiceSince != nil, let lastVoiceAt, now - lastVoiceAt < 1 {
+            return .keepRecording
+        }
+        if let lastSpeechAt {
+            return now - lastSpeechAt >= Self.silenceAfterSpeechSeconds ? .commit : .keepRecording
+        }
+        return now - startedAt >= Self.noSpeechSeconds ? .discard : .keepRecording
+    }
+}
+
 // MARK: - Transient screen context
 
 struct BarSettings: Decodable {
@@ -2155,6 +2223,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var fnEdges = HoldKeyEdges()
     private var fnTapLatch = HoldKeyTapLatch()
     private var optionTapLatch = HoldKeyTapLatch()
+    /// Hears speech from the start of every dictation; acted on only once a tap latched it.
+    private var latchAutoStop = LatchAutoStop(startedAt: 0)
+    private var latchAutoStopTimer: Timer?
     /// Times macOS disabled the event tap (a lost key release is likely each time).
     private var eventTapDisables = 0
     private var hotkeyRepresses = 0
@@ -3154,6 +3225,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self.state.level = a
                 self.checkMicSilence()
                 let voice = self.voiceDetector.isVoice(a)
+                self.latchAutoStop.note(voice: voice, at: ProcessInfo.processInfo.systemUptime)
                 if self.liveTextPass {
                     // the dot answers the voice at once, before any word is recognized
                     self.liveText.noteLevel(a)
@@ -3166,6 +3238,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         recordingStartedAt = Date()
         voiceDetector = VoiceDetector()
+        stopLatchAutoStop()
+        latchAutoStop = LatchAutoStop(startedAt: ProcessInfo.processInfo.systemUptime)
         // No buffers at all never calls onAmplitude, so check on a timer too.
         micSilenceCheck?.cancel()
         let check = DispatchWorkItem { [weak self] in self?.checkMicSilence() }
@@ -3209,6 +3283,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         e2eTrace?.keyUpHandledNs = DispatchTime.now().uptimeNanoseconds
         isRecording = false
         processing = true
+        stopLatchAutoStop()
         ducker.stop()  // the audio comes back while the text is corrected
         micSilenceCheck?.cancel()
         if case .micSilent = notPasted.current { notPasted.dismiss() }
@@ -3271,6 +3346,75 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
                 self.activeWavPath = path
                 self.submitTranscribe(path: path, id: id)
+            }
+        }
+    }
+
+    /// Watch a dictation a tap just latched, until it stops (`LatchAutoStop`). A timer, not
+    /// the meter, because a mic that delivers no buffers never calls `onAmplitude`.
+    private func armLatchAutoStop() {
+        guard isRecording, latchAutoStopTimer == nil else { return }
+        latchAutoStopTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.checkLatchAutoStop() }
+        }
+    }
+
+    private func stopLatchAutoStop() {
+        latchAutoStopTimer?.invalidate()
+        latchAutoStopTimer = nil
+    }
+
+    private func checkLatchAutoStop() {
+        guard isRecording, fnTapLatch.latched || optionTapLatch.latched else {
+            stopLatchAutoStop()
+            return
+        }
+        let decision = latchAutoStop.decision(at: ProcessInfo.processInfo.systemUptime)
+        guard decision != .keepRecording else { return }
+        // The key is up (it latched), so the next press must start, not stop.
+        fnTapLatch.reset()
+        optionTapLatch.reset()
+        switch decision {
+        case .commit:
+            NSLog(
+                "phonon: latched dictation silent for \(Int(LatchAutoStop.silenceAfterSpeechSeconds)) s after speech; stopping"
+            )
+            stopDictation(source: "latch-auto-stop")
+        case .discard:
+            NSLog(
+                "phonon: latched dictation heard no speech in \(Int(LatchAutoStop.noSpeechSeconds)) s; discarding"
+            )
+            discardDictation()
+        case .keepRecording:
+            break
+        }
+    }
+
+    /// End the open dictation as if it never started: no stop cue, no WAV, no transcription,
+    /// no paste and no card. For a latched dictation nobody spoke into.
+    private func discardDictation() {
+        guard isRecording else { return }
+        isRecording = false
+        stopLatchAutoStop()
+        ducker.stop()
+        micSilenceCheck?.cancel()
+        if case .micSilent = notPasted.current { notPasted.dismiss() }
+        dictationTargetTask?.cancel()
+        dropScreenContext()
+        if streamActive {
+            // Without stream_finish or a transcribe the engine emits no result for it; the
+            // next stream_start replaces it.
+            engine.send(["cmd": "stream_stop", "id": activeId ?? "p\(pass)"])
+            streamActive = false
+        }
+        recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
+        _ = recorder.takeSamples()
+        e2eTrace = nil
+        hidePill()
+        if competitors.hasPendingPrompt {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.presentCompetitorPromptWhenIdle()
             }
         }
     }
@@ -3812,6 +3956,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         for action in actions {
             applyHoldKey(action, source: source, eventNs: eventNs, callbackNs: callbackNs)
         }
+        if latch.latched && isRecording { armLatchAutoStop() }
     }
 
     /// After macOS turned the event tap off and on again: a hold key that reads
