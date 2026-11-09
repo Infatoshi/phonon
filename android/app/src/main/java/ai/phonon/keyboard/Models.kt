@@ -94,7 +94,6 @@ object ModelFetch {
         if (ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(CELLULAR_KEY, false)) gate.allowCellular()
         forceMetered?.let { gate.setUnmetered(!it); Log.i(TAG, "MODELS network forced unmetered=${!it}"); return }
         if (watching) return
-        watching = true
         val cm = ctx.getSystemService(ConnectivityManager::class.java)
         fun unmetered(c: NetworkCapabilities?) = c != null && (c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
             (Build.VERSION.SDK_INT >= 30 && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED)))
@@ -109,6 +108,7 @@ object ModelFetch {
             var last = gate.allowed()
             override fun onLost(n: Network) { last = false; gate.setUnmetered(false) }
         })
+        watching = true  // only once registered: a failure above is retried on the next start
         Log.i(TAG, "MODELS network unmetered=${gate.allowed()} (or cellular allowed)")
     }
 

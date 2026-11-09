@@ -80,10 +80,20 @@ class DownloadE2ETest {
     /** The first [bytes] of [f] into its ".part", fetched directly (not by ModelStore). */
     private fun seedPart(store: ModelStore, f: ModelFile, bytes: Long) {
         val part = File(store.root, f.path + ".part").apply { parentFile!!.mkdirs() }
-        val c = URL(f.url).openConnection() as HttpURLConnection
-        c.setRequestProperty("Range", "bytes=0-${bytes - 1}")
-        c.inputStream.use { input -> part.outputStream().use { input.copyTo(it, 1 shl 16) } }
-        log("SEED file=${f.path} http=${c.responseCode} bytes=${part.length()}")
+        // Test Lab's network drops connections now and then (seen twice on 2026-11-08): retry the seed itself
+        for (attempt in 1..4) {
+            try {
+                val c = URL(f.url).openConnection() as HttpURLConnection
+                c.setRequestProperty("Range", "bytes=0-${bytes - 1}")
+                c.inputStream.use { input -> part.outputStream().use { input.copyTo(it, 1 shl 16) } }
+                log("SEED file=${f.path} http=${c.responseCode} bytes=${part.length()} attempt=$attempt")
+                if (part.length() == bytes) return
+            } catch (e: java.io.IOException) {
+                log("SEED retry attempt=$attempt error=${e.message}")
+                SystemClock.sleep(3000L * attempt)
+            }
+        }
+        error("could not seed ${f.path}")
     }
 
     @Test
@@ -131,6 +141,10 @@ class DownloadE2ETest {
         log("DONE")
         assertTrue("first dictation did not reach the field", ok1)
         assertTrue("dictation after the refiner did not reach the field", ok2)
+        // above the RAM gate on Test Lab's network (unmetered) the refiner must actually arrive and load
+        if (Models.memTotalMb() >= Models.REFINER_MIN_TOTAL_MB)
+            assertTrue("the refiner did not load", ref.any { it.contains("REFINER_LOAD ok=true") })
+        assertTrue("a model step failed", ref.none { it.contains("MODELS failed") })
     }
 
     companion object {
