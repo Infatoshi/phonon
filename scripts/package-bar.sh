@@ -13,8 +13,21 @@ app_path="$bar_dir/dist/Phonon.app"
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=/home --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$project_dir=/phonon --cfg phonon_bundle"
 cargo build --release --package phonon-cli --bin phonon --manifest-path "$project_dir/Cargo.toml"
-swift build --disable-sandbox -c release --package-path "$bar_dir"
-bin_dir=$(swift build --disable-sandbox -c release --package-path "$bar_dir" --show-bin-path)
+# The same for PhononBar: the prefix maps cover #file literals and debug info (Swift and the ObjC target), and
+# ld -S leaves out the debug map (N_SO/N_OSO stabs naming every source directory and object file), which the
+# shipped app does not use. Function symbols stay, so crash reports still name functions.
+swift_flags=(-c release --package-path "$bar_dir"
+	-Xswiftc -file-prefix-map -Xswiftc "$project_dir=/phonon"
+	-Xswiftc -debug-prefix-map -Xswiftc "$project_dir=/phonon"
+	-Xcc "-ffile-prefix-map=$project_dir=/phonon"
+	-Xlinker -S)
+swift build --disable-sandbox "${swift_flags[@]}"
+bin_dir=$(swift build --disable-sandbox "${swift_flags[@]}" --show-bin-path)
+home_paths=$(LC_ALL=C grep -a -c -F "$HOME" "$bin_dir/PhononBar" || true)
+if [[ "$home_paths" != 0 ]]; then
+	printf 'PhononBar still holds %s path(s) under %s\n' "$home_paths" "$HOME" >&2
+	exit 1
+fi
 
 staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/phonon-app.XXXXXX")
 trap 'rm -rf "$staging_dir"' EXIT
