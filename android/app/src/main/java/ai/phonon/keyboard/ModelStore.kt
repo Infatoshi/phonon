@@ -38,16 +38,21 @@ class ModelStore(
 
     fun allReady(files: List<ModelFile>) = files.all { isReady(it) }
 
-    /** Bytes still to fetch for [files] (a resumable part counts as fetched). */
+    /** Bytes still to fetch for [files] (a resumable part counts as fetched; a complete part leaves 0). */
     fun remaining(files: List<ModelFile>) = files.filter { !isReady(it) }.sumOf { it.size - minOf(part(it).length(), it.size) }
 
     class Failure(message: String) : Exception(message)
 
+    /** [ensure]'s `allowed` turned false (the network became metered): the part stays for a later resume. */
+    class Paused(val path: String) : Exception("paused: $path")
+
     /**
      * Fetch every file of [files] that is not ready. [progress] gets (bytes done, bytes total) over the whole list.
-     * Throws [Failure] when the disk lacks space or a file still fails after [attempts] tries.
+     * Throws [Failure] when the disk lacks space or a file still fails after [attempts] tries, and [Paused] as soon
+     * as [allowed] returns false (checked before each request and every 64 KB; a pause is not a failed attempt).
      */
-    fun ensure(files: List<ModelFile>, attempts: Int = 8, progress: (Long, Long) -> Unit = { _, _ -> }) {
+    fun ensure(files: List<ModelFile>, attempts: Int = 8, allowed: () -> Boolean = { true },
+               progress: (Long, Long) -> Unit = { _, _ -> }) {
         root.mkdirs()
         val need = remaining(files)
         if (need > 0 && root.usableSpace < need + MARGIN) {
@@ -57,19 +62,19 @@ class ModelStore(
         var before = files.filter { isReady(it) }.sumOf { it.size }
         for (f in files) {
             if (isReady(f)) continue
-            fetch(f, attempts) { have -> progress(before + have, total) }
+            fetch(f, attempts, allowed) { have -> progress(before + have, total) }
             before += f.size
             progress(before, total)
         }
     }
 
-    private fun fetch(f: ModelFile, attempts: Int, progress: (Long) -> Unit) {
+    private fun fetch(f: ModelFile, attempts: Int, allowed: () -> Boolean, progress: (Long) -> Unit) {
         file(f).parentFile?.mkdirs()
         marker(f).delete()
         var last: Exception? = null
         for (attempt in 1..attempts) {
             try {
-                download(f, progress)
+                download(f, allowed, progress)
                 val p = part(f)
                 val got = sha256(p)
                 if (got != f.sha256) {
@@ -92,11 +97,12 @@ class ModelStore(
     }
 
     /** Bring "<name>.part" to the full size, resuming from its current length. */
-    private fun download(f: ModelFile, progress: (Long) -> Unit) {
+    private fun download(f: ModelFile, allowed: () -> Boolean, progress: (Long) -> Unit) {
         val p = part(f)
         var have = p.length()
         if (have > f.size) { p.delete(); have = 0 }
         if (have == f.size) return
+        if (!allowed()) throw Paused(f.path)
         val c = connect(f.url, have)
         try {
             val code = c.responseCode
@@ -116,6 +122,10 @@ class ModelStore(
                     val buf = ByteArray(1 shl 16)
                     var lastReport = 0L
                     while (true) {
+                        if (!allowed()) {  // everything written so far stays in the part
+                            log("DOWNLOAD paused file=${f.path} have=$have")
+                            throw Paused(f.path)
+                        }
                         val n = input.read(buf)
                         if (n < 0) break
                         if (have + n > f.size) throw IOException("more bytes than expected for ${f.path}")
@@ -173,3 +183,43 @@ class ModelStore(
         }
     }
 }
+
+/**
+ * Whether a large download may use the current network: an unmetered one (Wi-Fi, Ethernet), or any network once the
+ * user has allowed mobile data. Plain JVM: the Android side feeds [setUnmetered] from a network callback.
+ */
+class NetworkGate(@Volatile private var unmetered: Boolean = false, @Volatile private var cellularAllowed: Boolean = false) {
+    private val lock = Object()
+
+    fun allowed() = unmetered || cellularAllowed
+
+    fun setUnmetered(value: Boolean) = synchronized(lock) { unmetered = value; lock.notifyAll() }
+
+    fun allowCellular() = synchronized(lock) { cellularAllowed = true; lock.notifyAll() }
+
+    /** Blocks until [allowed]. */
+    fun awaitAllowed() = synchronized(lock) { while (!allowed()) lock.wait() }
+}
+
+/**
+ * [ModelStore.ensure] that only transfers while [gate] allows: it waits for the gate first (calling [onWaiting]),
+ * and a download paused by the network turning metered resumes from its part once the gate opens again.
+ */
+fun ModelStore.ensureWhenAllowed(files: List<ModelFile>, gate: NetworkGate, onWaiting: () -> Unit,
+                                 onAllowed: () -> Unit = {}, progress: (Long, Long) -> Unit = { _, _ -> }) {
+    while (true) {
+        if (!allowed(files, gate)) {
+            onWaiting()
+            gate.awaitAllowed()
+            onAllowed()
+        }
+        try {
+            ensure(files, allowed = gate::allowed, progress = progress)
+            return
+        } catch (_: ModelStore.Paused) {
+        }
+    }
+}
+
+/** Nothing left to transfer (every file ready or its part complete: hashing and the rename are local) needs no network. */
+private fun ModelStore.allowed(files: List<ModelFile>, gate: NetworkGate) = gate.allowed() || remaining(files) == 0L
