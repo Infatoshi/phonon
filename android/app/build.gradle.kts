@@ -11,8 +11,8 @@ android {
         applicationId = "ai.phonon.keyboard"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "1.0.2-beta.1"
         // x86_64 for the emulator, arm64-v8a for phones (the CMake file sets each ABI's CPU flags)
         ndk { abiFilters += listOf("x86_64", "arm64-v8a") }
         // androidTest/RefinerBenchTest: the refiner benchmark on a real phone (Firebase Test Lab)
@@ -28,9 +28,25 @@ android {
             }
         }
     }
+    // Release signing: the keystore stays outside the repository. Pass -Pphonon.releaseStoreFile=PATH and set
+    // PHONON_ANDROID_STORE_PASSWORD (key alias "phonon"); without them the release APK is built unsigned.
+    val releaseStore = project.findProperty("phonon.releaseStoreFile") as String?
+    signingConfigs {
+        if (releaseStore != null) {
+            create("release") {
+                storeFile = file(releaseStore)
+                storePassword = System.getenv("PHONON_ANDROID_STORE_PASSWORD")
+                keyAlias = "phonon"
+                keyPassword = System.getenv("PHONON_ANDROID_STORE_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         debug { isJniDebuggable = false; externalNativeBuild { cmake { arguments += "-DCMAKE_BUILD_TYPE=Release" } } }
+        release { if (releaseStore != null) signingConfig = signingConfigs.getByName("release") }
     }
+    // -Pphonon.testBuildType=release runs the instrumentation tests (Test Lab) against the release APK.
+    testBuildType = (project.findProperty("phonon.testBuildType") as String?) ?: "debug"
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     // sherpa-onnx prebuilt JNI libs (libsherpa-onnx-jni.so, libonnxruntime.so) are copied in by scripts/sync_build.sh
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
