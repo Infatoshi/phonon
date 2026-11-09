@@ -138,9 +138,10 @@ final class Refiner: @unchecked Sendable {
         // the length guard: a runaway or a failed decode falls back to the raw transcript
         let rawWords = raw.split(separator: " ").count
         let fired = !ok || text.isEmpty || Double(text.split(separator: " ").count) > 1.2 * Double(rawWords) + 20
-        // the shared output stage (crates/phonon-llm linebreak): numbered steps one per line, and in formal mode
-        // the greeting and sign-off on their own lines; the refiner itself never writes a newline
-        if fired { text = raw } else { text = LineBreaks.apply(text, mode: mode) }
+        // the shared output stage: the opener the refiner dropped back in front (crates/phonon-llm opener), then
+        // numbered steps one per line, and in formal mode the greeting and sign-off on their own lines (linebreak);
+        // the refiner itself never writes a newline
+        if fired { text = raw } else { text = LineBreaks.apply(Opener.restore(raw: raw, refined: text, mode: mode), mode: mode) }
         return Output(text: text, promptTokens: tokens.count, genTokens: gen,
                       prefillMs: Int(t1.timeIntervalSince(t0) * 1000), decodeMs: Int(t2.timeIntervalSince(t1) * 1000),
                       guardFired: fired)
