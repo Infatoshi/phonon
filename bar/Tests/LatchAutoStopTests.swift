@@ -79,6 +79,16 @@ final class LatchAutoStopTests: XCTestCase {
         XCTAssertEqual(stop.decision(at: 8.5), .keepRecording)
     }
 
+    /// Voice that began just before a limit holds it off while readings keep arriving, and
+    /// stops holding it off once they stop (a mic that died mid-voice).
+    func testVoiceJustBeginningHoldsTheLimitOff() {
+        var stop = LatchAutoStop(startedAt: 0)
+        stop.note(voice: true, at: 7.95)
+        XCTAssertFalse(stop.heardSpeech)
+        XCTAssertEqual(stop.decision(at: 8.0), .keepRecording)
+        XCTAssertEqual(stop.decision(at: 9.5), .discard, "no reading for over a second")
+    }
+
     func testTheLimitsAreTheChosenDefaults() {
         XCTAssertEqual(LatchAutoStop.noSpeechSeconds, 8)
         XCTAssertEqual(LatchAutoStop.silenceAfterSpeechSeconds, 60)

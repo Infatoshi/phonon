@@ -501,6 +501,7 @@ struct LatchAutoStop {
     let startedAt: TimeInterval
     private(set) var lastSpeechAt: TimeInterval?
     private var voiceSince: TimeInterval?
+    private var lastVoiceAt: TimeInterval?
 
     init(startedAt: TimeInterval) {
         self.startedAt = startedAt
@@ -516,10 +517,17 @@ struct LatchAutoStop {
         }
         let since = voiceSince ?? now
         voiceSince = since
+        lastVoiceAt = now
         if now - since >= Self.speechRunSeconds { lastSpeechAt = now }
     }
 
     func decision(at now: TimeInterval) -> Decision {
+        // Voice that has just begun and not yet lasted `speechRunSeconds` holds a limit
+        // off, so talking right at the limit is not cut. Only while readings keep
+        // arriving: a mic that stopped mid-voice must not hold it off for ever.
+        if voiceSince != nil, let lastVoiceAt, now - lastVoiceAt < 1 {
+            return .keepRecording
+        }
         if let lastSpeechAt {
             return now - lastSpeechAt >= Self.silenceAfterSpeechSeconds ? .commit : .keepRecording
         }
