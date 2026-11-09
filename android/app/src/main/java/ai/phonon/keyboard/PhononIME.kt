@@ -33,6 +33,7 @@ import kotlin.concurrent.thread
 /**
  * Phonon keyboard: QWERTY plus a hold-to-talk bar. The IME records the mic itself, transcribes with sherpa-onnx
  * Parakeet and refines with the LFM3-1.7B GGUF through llama.cpp, all in this process, then commits the text.
+ * The models are downloaded on first use (ModelFetch); each loads as soon as its files are verified.
  *
  * Debug broadcasts (adb shell am broadcast -p ai.phonon.keyboard -a ACTION ...):
  *   ai.phonon.keyboard.REFINE  --es text "..." [--es mode minimal] [--ez commit true]
@@ -88,36 +89,75 @@ class PhononIME : InputMethodService() {
         worker = Handler(HandlerThread("phonon-engines").apply { start() }.looper)
         val f = IntentFilter().apply { addAction(ACTION_REFINE); addAction(ACTION_WAV); addAction(ACTION_STATUS) }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, RECEIVER_EXPORTED) else registerReceiver(receiver, f)
-        val dir = getExternalFilesDir(null)!!.absolutePath
-        Log.i(TAG, "IME_CREATE models_dir=$dir ${Mem.snapshot()}")
-        worker.post {
-            asr = Asr.load("$dir/parakeet", THREADS)
-            asr?.let {  // warm-up, as on iOS and the Mac: the first decode pays ONNX Runtime's one-time setup
-                val t = SystemClock.elapsedRealtime()
-                it.transcribe(FloatArray(16000))
-                Log.i(TAG, "ASR_WARMUP ms=${SystemClock.elapsedRealtime() - t}")
-            }
-            val gguf = "$dir/refiner.gguf"
-            // null below the RAM gate: process() then commits the raw transcript
-            if (File(gguf).exists()) refiner = Refiner.loadAuto(gguf, File(filesDir, "refiner_tune.txt").path)
-            else Log.w(TAG, "no $gguf")
-            if (refiner != null) {  // warm-up, as on iOS: caches the minimal-mode prompt head
-                Log.i(TAG, "WARMUP ${refiner!!.refine("warm up", "minimal")}")
-            }
-            main.post { setStatus("ready: asr=${asr != null} refiner=${refiner != null}") }
+        Log.i(TAG, "IME_CREATE ${Mem.snapshot()}")
+        ModelFetch.addListener(onModels)
+        ModelFetch.start(this)
+    }
+
+    private val asrRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val refinerRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Called on the download thread (and once at registration): load each model as soon as its files are ready. */
+    private val onModels: (ModelFetch.State) -> Unit = { s ->
+        if (s.asrDir != null && asrRequested.compareAndSet(false, true)) worker.post { loadAsr(s.asrDir) }
+        if (s.done && refinerRequested.compareAndSet(false, true)) worker.post { loadRefiner(s.refinerPath) }
+        if (!s.done || s.error != null) main.post { setStatus(modelStatus()) }
+    }
+
+    private fun loadAsr(dir: String) {
+        Log.i(TAG, "ASR_DIR $dir")
+        asr = Asr.load(dir, THREADS)
+        asr?.let {  // warm-up, as on iOS and the Mac: the first decode pays ONNX Runtime's one-time setup
+            val t = SystemClock.elapsedRealtime()
+            it.transcribe(FloatArray(16000))
+            Log.i(TAG, "ASR_WARMUP ms=${SystemClock.elapsedRealtime() - t}")
         }
+        main.post { setStatus(if (asr != null) modelStatus() else "speech model failed to load") }
+    }
+
+    private fun loadRefiner(gguf: String?) {
+        // null below the RAM gate: process() then commits the raw transcript
+        if (gguf != null) refiner = Refiner.loadAuto(gguf, File(filesDir, "refiner_tune.txt").path)
+        else Log.i(TAG, "REFINER_LOAD ok=false skipped=no_file (below the RAM gate or not sideloaded)")
+        if (refiner != null) {  // warm-up, as on iOS: caches the minimal-mode prompt head
+            Log.i(TAG, "WARMUP ${refiner!!.refine("warm up", "minimal")}")
+        }
+        main.post { setStatus("ready: asr=${asr != null} refiner=${refiner != null}") }
     }
 
     override fun onDestroy() {
+        ModelFetch.removeListener(onModels)
         unregisterReceiver(receiver)
         super.onDestroy()
     }
 
     private fun setStatus(s: String) { status?.text = s }
 
+    /** The keyboard's status line while models arrive: a download in progress or failed stays visible after the
+     *  recogniser is ready, so a refiner that never arrives does not look like success. */
+    private fun modelStatus(): String {
+        val s = ModelFetch.state
+        return when {
+            refiner != null -> "ready"
+            asr == null -> s.message
+            s.done && s.error == null -> "dictation ready"
+            else -> "dictation ready; ${s.message}"
+        }
+    }
+
+    /** Each time the keyboard opens: retries a download that failed (a running or finished one is left alone). */
+    override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        if (ModelFetch.state.error != null) ModelFetch.start(this)
+    }
+
     /** Runs on the worker thread: ASR, refine, then commit on the main thread. */
     private fun process(samples: FloatArray, tUp: Long, source: String) {
-        val a = asr ?: run { Log.w(TAG, "ASR not loaded"); return }
+        val a = asr ?: run {
+            Log.w(TAG, "ASR not loaded")
+            main.post { setStatus("the speech model is not ready yet: ${ModelFetch.state.message}") }
+            return
+        }
         main.post { setStatus("transcribing...") }
         val t0 = SystemClock.elapsedRealtime()
         val raw = a.transcribe(samples)
@@ -206,7 +246,7 @@ class PhononIME : InputMethodService() {
         }
         status = TextView(this).apply {
             setTextColor(Color.LTGRAY); textSize = 12f; gravity = Gravity.CENTER
-            text = if (refiner != null) "ready" else "loading models..."
+            text = modelStatus()
         }
         root.addView(status)
         val mic = TextView(this).apply {
