@@ -38,7 +38,7 @@ class ModelStore(
 
     fun allReady(files: List<ModelFile>) = files.all { isReady(it) }
 
-    /** Bytes still to fetch for [files] (a resumable part counts as fetched). */
+    /** Bytes still to fetch for [files] (a resumable part counts as fetched; a complete part leaves 0). */
     fun remaining(files: List<ModelFile>) = files.filter { !isReady(it) }.sumOf { it.size - minOf(part(it).length(), it.size) }
 
     class Failure(message: String) : Exception(message)
@@ -206,11 +206,12 @@ class NetworkGate(@Volatile private var unmetered: Boolean = false, @Volatile pr
  * and a download paused by the network turning metered resumes from its part once the gate opens again.
  */
 fun ModelStore.ensureWhenAllowed(files: List<ModelFile>, gate: NetworkGate, onWaiting: () -> Unit,
-                                 progress: (Long, Long) -> Unit = { _, _ -> }) {
+                                 onAllowed: () -> Unit = {}, progress: (Long, Long) -> Unit = { _, _ -> }) {
     while (true) {
         if (!allowed(files, gate)) {
             onWaiting()
             gate.awaitAllowed()
+            onAllowed()
         }
         try {
             ensure(files, allowed = gate::allowed, progress = progress)
@@ -220,4 +221,5 @@ fun ModelStore.ensureWhenAllowed(files: List<ModelFile>, gate: NetworkGate, onWa
     }
 }
 
-private fun ModelStore.allowed(files: List<ModelFile>, gate: NetworkGate) = gate.allowed() || allReady(files)
+/** Nothing left to transfer (every file ready or its part complete: hashing and the rename are local) needs no network. */
+private fun ModelStore.allowed(files: List<ModelFile>, gate: NetworkGate) = gate.allowed() || remaining(files) == 0L

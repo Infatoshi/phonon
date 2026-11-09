@@ -209,6 +209,32 @@ class ModelStoreTest {
     }
 
     @Test
+    fun aCompletePartFinishesWithoutTheNetwork() {
+        val f = model()
+        File(root, "parakeet").mkdirs()
+        File(root, f.path + ".part").writeBytes(data)  // e.g. killed during the hash, or paused on the last chunk
+        var waited = 0
+        store().ensureWhenAllowed(listOf(f), NetworkGate(), onWaiting = { waited++ })
+        assertEquals(0, waited)
+        assertEquals(0L, served)
+        assertTrue(store().isReady(f))
+    }
+
+    @Test
+    fun theGateOpeningIsReported() {
+        val f = model()
+        val gate = NetworkGate()
+        var allowed = 0
+        val t = thread { store().ensureWhenAllowed(listOf(f), gate, onWaiting = {}, onAllowed = { allowed++ }) }
+        Thread.sleep(300)
+        assertEquals(0, allowed)
+        gate.setUnmetered(true)
+        t.join(10_000)
+        assertEquals(1, allowed)
+        assertTrue(store().isReady(f))
+    }
+
+    @Test
     fun aReadyFileNeedsNoNetwork() {
         val f = model()
         store().ensure(listOf(f))

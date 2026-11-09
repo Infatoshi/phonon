@@ -165,7 +165,9 @@ object ModelFetch {
                     Log.i(TAG, "MODELS refiner_wait_unmetered")
                     publish(state.copy(waitingForWifi = true,
                         message = "text model waits for Wi-Fi; tap here to download it on mobile data (988 MB)"))
-                }, progress = { d, t -> if (state.waitingForWifi) publish(state.copy(waitingForWifi = false)); textReport(d, t) })
+                }, onAllowed = {
+                    publish(state.copy(waitingForWifi = false, message = "downloading text model..."))
+                }, progress = textReport)
                 Log.i(TAG, "MODELS refiner_ready ms=${SystemClock.elapsedRealtime() - t0}")
                 publish(state.copy(refinerPath = store.file(Models.REFINER).path, message = "models ready", done = true))
             } else {
@@ -173,7 +175,8 @@ object ModelFetch {
             }
         } catch (e: Exception) {
             Log.e(TAG, "MODELS failed: ${e.message}")
-            publish(state.copy(message = "download failed: ${e.message} (open the keyboard again to retry)", error = e.message))
+            publish(state.copy(message = "download failed: ${e.message} (open the keyboard again to retry)", error = e.message,
+                waitingForWifi = false))
         }
     }
 }
