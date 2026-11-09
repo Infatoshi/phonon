@@ -81,7 +81,7 @@ final class LatchAutoStopTests: XCTestCase {
 
     func testTheLimitsAreTheChosenDefaults() {
         XCTAssertEqual(LatchAutoStop.noSpeechSeconds, 8)
-        XCTAssertEqual(LatchAutoStop.silenceAfterSpeechSeconds, 30)
+        XCTAssertEqual(LatchAutoStop.silenceAfterSpeechSeconds, 60)
         XCTAssertLessThan(LatchAutoStop.noSpeechSeconds, LatchAutoStop.silenceAfterSpeechSeconds)
     }
 }

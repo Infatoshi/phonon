@@ -489,9 +489,10 @@ struct LatchAutoStop {
     /// talking within a second or two (the capsule and the start cue say it is listening);
     /// 8 s leaves room to gather a thought and still frees the mic soon after a stray tap.
     static let noSpeechSeconds: TimeInterval = 8
-    /// Silence this long after speech. Pauses to think mid-dictation run to several seconds,
-    /// so this is well past them; someone who has walked away gets their words committed.
-    static let silenceAfterSpeechSeconds: TimeInterval = 30
+    /// Silence this long after speech. Someone dictating a long prompt stops to read or think
+    /// for tens of seconds, and a commit pastes into whatever is focused, so this is a full
+    /// minute; someone who has walked away still gets their words committed.
+    static let silenceAfterSpeechSeconds: TimeInterval = 60
     /// Voice this long without a break counts as speech: about a syllable, and longer than
     /// a keystroke. Time, not a count of readings, because the meter's rate follows the
     /// device's buffer size.

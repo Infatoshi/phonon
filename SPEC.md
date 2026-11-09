@@ -171,7 +171,7 @@ on (macOS; `LatchAutoStop` in `bar/Sources/PhononBar.swift`, where both limits
 live). Speech is the capsule's `VoiceDetector` on the level meter, counted only
 after 0.15 s of unbroken voice so keystrokes do not count. With no speech at all
 8 s after the start, the recording is dropped: no stop cue, no transcription,
-no paste, no card. After speech, 30 s without any stops and commits it as the
+no paste, no card. After speech, 60 s without any stops and commits it as the
 next press would (an empty result then says "didn't hear anything" as usual).
 A held key, Ctrl+Space and meeting recording never stop this way. Windows and
 Linux do not have this yet: their capture loops expose no level signal.
