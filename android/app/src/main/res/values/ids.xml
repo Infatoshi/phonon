@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="field" type="id" />
+    <item name="models" type="id" />
     <string name="app_name">Phonon Keyboard</string>
 </resources>
