@@ -1043,15 +1043,6 @@ struct SettingsView: View {
                         .pickerStyle(.menu)
                         .fixedSize()
                     }
-                    if ShortcutPolicy.usesHoldKey(mode: store.settings.shortcutMode) {
-                        SettingRow(
-                            "Tap to start and stop",
-                            help: "A quick tap of "
-                                + ShortcutPolicy.holdKeyName(mode: store.settings.shortcutMode)
-                                + " starts dictation and the next tap stops it and types. "
-                                + "Holding the key still works as push-to-talk."
-                        ) { toggle(\.tapToToggle) }
-                    }
                     SettingRow(
                         "Show the bar between dictations",
                         help: "Keep the small bar at the bottom of the screen when you are not "
@@ -1080,6 +1071,12 @@ struct SettingsView: View {
                             onSettingsChanged()
                         }
                     }
+                    SettingRow(
+                        "Keep the mic on between dictations",
+                        help: "Recording starts the moment you press the shortcut, and macOS "
+                            + "shows the mic as in use. Off opens the mic only while you "
+                            + "dictate; the first moment can be clipped."
+                    ) { toggle(\.instantMic) }
                     SettingRow(
                         "After a paste, the clipboard holds",
                         help: "Your dictation: press ⌘V to paste it again anywhere. What you "
@@ -1284,11 +1281,6 @@ struct SettingsView: View {
                     .disabled(store.history.isEmpty)
             }
             SettingRow(
-                "Instant microphone",
-                help: "Keep the microphone ready so recording starts the moment you press the "
-                    + "shortcut."
-            ) { toggle(\.instantMic) }
-            SettingRow(
                 "Recording cues", help: "Play a short sweep when a recording opens and closes."
             ) { toggle(\.soundFeedback) }
             SettingRow(
@@ -1340,10 +1332,7 @@ struct SettingsView: View {
 
     private var shortcutHelp: String {
         var lines: [String] = []
-        let latch =
-            store.settings.tapToToggle
-            ? "Tap once to keep recording, then tap again to stop."
-            : "Double-tap to keep recording, then tap once to stop."
+        let latch = "Or tap it once to keep recording, then tap again to stop."
         if ShortcutPolicy.allows(mode: store.settings.shortcutMode, source: "right-option") {
             lines.append("Hold Right Option to talk; release to insert. " + latch)
         }
