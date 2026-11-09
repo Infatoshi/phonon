@@ -79,6 +79,7 @@ object ModelFetch {
     @Synchronized fun start(ctx: Context) {
         if (worker?.isAlive == true || state.done) return
         val app = ctx.applicationContext
+        if (state.error != null) publish(state.copy(error = null, message = "retrying the download..."))
         worker = thread(name = "phonon-download") { run(app) }
     }
 
@@ -121,7 +122,7 @@ object ModelFetch {
             }
         } catch (e: Exception) {
             Log.e(TAG, "MODELS failed: ${e.message}")
-            publish(state.copy(message = "download failed: ${e.message} (reopen to retry)", error = e.message))
+            publish(state.copy(message = "download failed: ${e.message} (open the keyboard again to retry)", error = e.message))
         }
     }
 }

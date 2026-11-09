@@ -101,7 +101,7 @@ class PhononIME : InputMethodService() {
     private val onModels: (ModelFetch.State) -> Unit = { s ->
         if (s.asrDir != null && asrRequested.compareAndSet(false, true)) worker.post { loadAsr(s.asrDir) }
         if (s.done && refinerRequested.compareAndSet(false, true)) worker.post { loadRefiner(s.refinerPath) }
-        if (!s.done || s.error != null) main.post { setStatus(if (asr != null) "dictation ready; ${s.message}" else s.message) }
+        if (!s.done || s.error != null) main.post { setStatus(modelStatus()) }
     }
 
     private fun loadAsr(dir: String) {
@@ -112,7 +112,7 @@ class PhononIME : InputMethodService() {
             it.transcribe(FloatArray(16000))
             Log.i(TAG, "ASR_WARMUP ms=${SystemClock.elapsedRealtime() - t}")
         }
-        main.post { setStatus(if (asr != null) "dictation ready" else "speech model failed to load") }
+        main.post { setStatus(if (asr != null) modelStatus() else "speech model failed to load") }
     }
 
     private fun loadRefiner(gguf: String?) {
@@ -132,6 +132,24 @@ class PhononIME : InputMethodService() {
     }
 
     private fun setStatus(s: String) { status?.text = s }
+
+    /** The keyboard's status line while models arrive: a download in progress or failed stays visible after the
+     *  recogniser is ready, so a refiner that never arrives does not look like success. */
+    private fun modelStatus(): String {
+        val s = ModelFetch.state
+        return when {
+            refiner != null -> "ready"
+            asr == null -> s.message
+            s.done && s.error == null -> "dictation ready"
+            else -> "dictation ready; ${s.message}"
+        }
+    }
+
+    /** Each time the keyboard opens: retries a download that failed (a running or finished one is left alone). */
+    override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        if (ModelFetch.state.error != null) ModelFetch.start(this)
+    }
 
     /** Runs on the worker thread: ASR, refine, then commit on the main thread. */
     private fun process(samples: FloatArray, tUp: Long, source: String) {
@@ -228,7 +246,7 @@ class PhononIME : InputMethodService() {
         }
         status = TextView(this).apply {
             setTextColor(Color.LTGRAY); textSize = 12f; gravity = Gravity.CENTER
-            text = if (refiner != null) "ready" else if (asr != null) "dictation ready" else ModelFetch.state.message
+            text = modelStatus()
         }
         root.addView(status)
         val mic = TextView(this).apply {
