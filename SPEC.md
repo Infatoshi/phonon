@@ -164,7 +164,19 @@ key and no setting between them: hold it to talk (release stops and commits),
 or tap it (a press of 250 ms or less) to latch recording on, which keeps the
 recording that began at key-down going, and the next key-down stops and
 commits. There is no double-tap (removed 2026-11-09; `tap_to_toggle` from
-issue #34 is no longer read). Right Option and Ctrl+Space remain as
+issue #34 is no longer read).
+
+A latched recording also stops on its own, so a stray tap cannot leave the mic
+on (macOS; `LatchAutoStop` in `bar/Sources/PhononBar.swift`, where both limits
+live). Speech is the capsule's `VoiceDetector` on the level meter, counted only
+after 0.15 s of unbroken voice so keystrokes do not count. With no speech at all
+8 s after the start, the recording is dropped: no stop cue, no transcription,
+no paste, no card. After speech, 30 s without any stops and commits it as the
+next press would (an empty result then says "didn't hear anything" as usual).
+A held key, Ctrl+Space and meeting recording never stop this way. Windows and
+Linux do not have this yet: their capture loops expose no level signal.
+
+Right Option and Ctrl+Space remain as
 alternatives (`shortcut_mode` in settings.json). Right Option is
 told from Left Option by the device-dependent flag bits (`NX_DEVICERALTKEYMASK`
 0x40 vs `NX_DEVICELALTKEYMASK` 0x20), falling back to the key code (61 right,
