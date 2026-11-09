@@ -1230,7 +1230,11 @@ fn finish_correction(
     polished: &str,
     style: &[String],
 ) -> data::CorrectionResult {
-    let mut corrected = safe_polish_output(dictionary, source, polished);
+    // The opener the refiner dropped ("Okay, ...") goes back first, before the guard: the
+    // guard's deletion check would otherwise read the dropped opener as a lost word and
+    // swap the whole correction for the raw transcript.
+    let polished = phonon_llm::opener::restore(source, data::extract_transcript_payload(polished));
+    let mut corrected = safe_polish_output(dictionary, source, &polished);
     corrected.text = app_context::apply_style(&corrected.text, style, dictionary);
     corrected
 }
@@ -1932,6 +1936,30 @@ mod tests {
         expected.text = crate::app_context::apply_style(&expected.text, &style, &dictionary);
         assert_eq!(corrected.text, expected.text);
         assert!(corrected.text.contains("vLLM"));
+    }
+
+    #[test]
+    fn the_correction_path_restores_a_dropped_opener() {
+        use super::final_layout;
+        let dictionary = DictionaryFile::default();
+        let corrected = finish_correction(
+            &dictionary,
+            "okay so the build is green",
+            "So the build is green.",
+            &[],
+        );
+        assert_eq!(corrected.text, "Okay, so the build is green.");
+        // then the line breaks, as in the final polish
+        let corrected = finish_correction(
+            &dictionary,
+            "and the steps are 1. pull 2. build",
+            "The steps are 1. Pull 2. Build.",
+            &[],
+        );
+        assert_eq!(
+            final_layout(&corrected.text, "prompt", None),
+            "And the steps are\n1. Pull\n2. Build."
+        );
     }
 
     #[test]

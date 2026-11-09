@@ -621,6 +621,20 @@ breaks lists. A port of the research
 held-out outputs changed: minimal 0/301, casual 0/297, prompt 21/285 (real lists), formal 4/300. The Windows and Linux
 corrector applies the same function.
 
+Opener restore (shared output stage, `phonon_llm::opener::restore(raw, refined)`, on the refiner's or the user's
+endpoint's text before the line breaks): the refiner drops a leading discourse opener the owner keeps. When the raw
+transcript starts with Okay / Ok / OK, Well, And or Now (any case, optionally followed by a comma or period, so
+"Okay. Next..." counts) and the refined text does not start with that word (Ok and Okay count as the same), the opener
+goes back in front as "Okay, ", "Well, ", "Now, " or "And ", and the old first word is lowercased unless it is "I" or
+an I-contraction, all caps, internally capitalised (iPhone, GitHub), or written capitalised mid-sentence in the raw
+transcript (a proper noun). "So" is not an opener here: the owner keeps it only 16 times of 28. Nothing changes for
+an empty refined text, a transcript that is only the opener, or a refined text that already starts with it (a raw
+passthrough). On the Mac it runs in `finish_correction` before the output guard, so a refiner whose only deletion
+was the opener no longer trips the guard's deletion check, and live-text drafts get it too; Windows/Linux run it in
+`correct_at` and the iPhone in `Refiner.refine` (port in `ios/App/Opener.swift`, checked against the same
+`opener_cases.json`); Android does not have it yet. Measured offline on 608 of the owner's dictations: WER against
+the owner's references 9.74% -> about 8.6%, more than a full retrain gained.
+
 Your own model endpoint (issue #24; settings.json `byok_enabled`, `byok_base_url`, `byok_model`; the API key in the
 login Keychain, service `com.infatoshi.phonon.byok`): off by default, no default endpoint, no Phonon-hosted service.
 The bar sends `{"cmd":"byok"}` with the key over the engine's stdin; the engine posts the raw transcript, the mode line
