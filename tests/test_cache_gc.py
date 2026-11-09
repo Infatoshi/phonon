@@ -49,6 +49,17 @@ def test_prunes_old_revision_and_its_own_blobs(tmp_path):
     assert (other / "keepme").exists(), "other repos are untouched"
 
 
+def test_leaves_blobs_no_removed_snapshot_linked(tmp_path):
+    """A snapshot whose weights link was repointed outside the cache orphans the stock
+    blob; with no old revision to remove, nothing is deleted."""
+    repo = _repo(tmp_path, {NEW: {"config.json": "config"}},
+                 {"config": b"c", "stock_weights": b"w" * 100})
+    os.symlink(str(tmp_path / "elsewhere.safetensors"),
+               repo / "snapshots" / NEW / "model.safetensors")
+    assert prune_other_revisions(REPO, NEW, str(tmp_path)) == (0, 0)
+    assert sorted(os.listdir(repo / "blobs")) == ["config", "stock_weights"]
+
+
 def test_does_nothing_without_the_pinned_snapshot(tmp_path):
     repo = _repo(tmp_path, {OLD: {"target.gguf": "old_target"}}, {"old_target": b"x"})
     assert prune_other_revisions(REPO, NEW, str(tmp_path)) == (0, 0)
