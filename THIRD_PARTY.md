@@ -24,6 +24,20 @@ packages are still downloaded into the user's normal caches on first launch.
 - Size: 2,471,559,904 bytes
 - SHA-256: `b958c37a6baa6874a279108755c8f2818e27bf647d72d54800a234a421341dfe`
 
+## Phonon ASR: Parakeet TDT 0.6B v2 + N8avg, int8 ONNX (Windows, Linux, Android)
+
+- Source: <https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx>,
+  revision `76fbda42bfcf7be26cca2488f8fe38ea4328f755`
+- Upstream model: NVIDIA Parakeet TDT 0.6B v2 (CC-BY-4.0), with Phonon's N8avg
+  LoRA merged; exported in the layout of
+  <https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8>
+  (CC-BY-4.0). Trained on GLOBE (CC0), LibriSpeech (CC-BY-4.0), YODAS2 and
+  CC BY YouTube clips, and EdAcc (CC-BY-SA-4.0).
+- License: CC-BY-SA-4.0.
+- Files and SHA-256: `crates/phonon-win/src/manifest.rs` (`ASR_MODEL`) and
+  `android/.../Models.kt`; the encoder's weights are `encoder.int8.onnx.data`
+  (609,820,416 bytes).
+
 ## Phonon refiner 1.7B
 
 - Source: <https://huggingface.co/Infatoshi/phonon-refiner-1.7b>

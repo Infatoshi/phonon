@@ -48,8 +48,8 @@ impl Component {
 pub const SHERPA_VERSION: &str = "1.13.6";
 /// Same llama.cpp as the iPhone and Android builds; b10726 did not know the refiner's `lfm3` architecture.
 pub const LLAMA_BUILD: &str = "b12132";
-pub const ASR_MODEL_ID: &str = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
-pub const ASR_MODEL_REVISION: &str = "1ab9323565ddb038682214b292f588070a538ce2";
+pub const ASR_MODEL_ID: &str = "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx";
+pub const ASR_MODEL_REVISION: &str = "76fbda42bfcf7be26cca2488f8fe38ea4328f755";
 /// Phonon's public refiner; the repository is the macOS constant.
 pub use phonon_llm::POLISH_MODEL_ID;
 /// The revision Windows and Linux fetch: the 1.0 upload, which their builds were tested with. macOS 1.0.1 pins
@@ -127,33 +127,41 @@ pub const LLAMA_RUNTIME: Component = Component {
     sentinel: "llama-server",
 };
 
-/// Parakeet TDT 0.6b v2, the same acoustic model the macOS build runs, exported
-/// to ONNX and quantised to int8 for CPU.
+/// Parakeet TDT 0.6b v2 with Phonon's N8avg LoRA merged (trained on public speech only), exported to ONNX and
+/// quantised to int8 for CPU: -0.49 WER [-0.71, -0.28] against the stock int8 export on 578 real dictation clips.
+/// The encoder's weights are a separate `encoder.int8.onnx.data` beside it, which onnxruntime maps from disk.
+/// Decoder, joiner and tokens are byte-identical to the stock export. The Android keyboard downloads the same files.
 pub const ASR_MODEL: Component = Component {
-    dir: "models/parakeet-tdt-0.6b-v2-int8",
+    dir: "models/parakeet-tdt-0.6b-v2-n8avg-int8",
     label: "speech recognition model",
     assets: &[
         Asset {
             name: "encoder.int8.onnx",
-            url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/encoder.int8.onnx",
-            sha256: "a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab",
-            bytes: 652_184_296,
+            url: "https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx/resolve/76fbda42bfcf7be26cca2488f8fe38ea4328f755/encoder.int8.onnx",
+            sha256: "5c0a15da8929acd0ddd559471a201bd8ede3bbe2a7f2df6f606d68b8b73f52bb",
+            bytes: 42_405_802,
+        },
+        Asset {
+            name: "encoder.int8.onnx.data",
+            url: "https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx/resolve/76fbda42bfcf7be26cca2488f8fe38ea4328f755/encoder.int8.onnx.data",
+            sha256: "f91c1c8d1c8269c9d21d4d23e7590b924243ce6036a1ff787e0e1beb515dabca",
+            bytes: 609_820_416,
         },
         Asset {
             name: "decoder.int8.onnx",
-            url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/decoder.int8.onnx",
+            url: "https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx/resolve/76fbda42bfcf7be26cca2488f8fe38ea4328f755/decoder.int8.onnx",
             sha256: "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e",
             bytes: 7_257_753,
         },
         Asset {
             name: "joiner.int8.onnx",
-            url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/joiner.int8.onnx",
+            url: "https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx/resolve/76fbda42bfcf7be26cca2488f8fe38ea4328f755/joiner.int8.onnx",
             sha256: "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2",
             bytes: 1_739_080,
         },
         Asset {
             name: "tokens.txt",
-            url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/tokens.txt",
+            url: "https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx/resolve/76fbda42bfcf7be26cca2488f8fe38ea4328f755/tokens.txt",
             sha256: "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
             bytes: 9_384,
         },
@@ -182,12 +190,13 @@ pub const POLISH_MODEL: Component = Component {
 pub const ALL: &[Component] = &[SHERPA_RUNTIME, LLAMA_RUNTIME, ASR_MODEL, POLISH_MODEL];
 
 /// Data folders of earlier versions that `fetch::ensure_all` removes once the
-/// current components are in place: the CPU-only llama.cpp runtime (Windows,
-/// replaced by the Vulkan build, which carries the same CPU backends).
+/// current components are in place: the stock Parakeet export (replaced by
+/// N8avg) and, on Windows, the CPU-only llama.cpp runtime (replaced by the
+/// Vulkan build, which carries the same CPU backends).
 #[cfg(windows)]
-pub const SUPERSEDED: &[&str] = &["runtime/llama-b12132"];
+pub const SUPERSEDED: &[&str] = &["runtime/llama-b12132", "models/parakeet-tdt-0.6b-v2-int8"];
 #[cfg(not(windows))]
-pub const SUPERSEDED: &[&str] = &[];
+pub const SUPERSEDED: &[&str] = &["models/parakeet-tdt-0.6b-v2-int8"];
 
 /// Total first-run download in bytes.
 pub fn total_bytes() -> u64 {
