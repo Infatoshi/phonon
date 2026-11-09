@@ -250,7 +250,8 @@ def main() -> None:
     try:
         source = model_source(model_id, revision, bool(metal_cfg))
         if revision and not os.path.isdir(model_id):
-            # The pinned version is on disk: drop older versions of this model from the cache.
+            # The pinned version is on disk: note it as Phonon's, and drop older versions of
+            # this model that Phonon fetched (cache_gc's manifest) from the cache.
             try:
                 from cache_gc import prune_in_background
             except ImportError:
