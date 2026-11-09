@@ -75,4 +75,18 @@ final class UpdateCheckTests: XCTestCase {
         XCTAssertTrue(text.contains("\"update_announced\":\"0.2.5\""))
         XCTAssertEqual(try JSONDecoder().decode(NativeSettings.self, from: encoded), settings)
     }
+
+    /// The offer is a card with one button, never a modal alert that takes focus.
+    @MainActor
+    func testUpdateOfferGoesToTheCardWithOneButton() throws {
+        let update = AvailableUpdate(
+            version: "1.0.2", pageURL: try XCTUnwrap(URL(string: "https://example.com")))
+        let brew = UpdateController.offer(update, running: "1.0.1", brew: true)
+        XCTAssertEqual(brew.title, "Phonon 1.0.2 is available")
+        XCTAssertEqual(brew.action, "Update")
+        XCTAssertTrue(brew.detail.contains("Homebrew"))
+        XCTAssertTrue(
+            UpdateController.offer(update, running: "1.0.1", brew: false).detail
+                .contains("release page"))
+    }
 }

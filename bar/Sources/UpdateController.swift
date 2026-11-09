@@ -14,6 +14,10 @@ final class UpdateController {
     var isBusy: () -> Bool = { false }
     /// Tells the menu bar item which update, if any, to offer.
     var onAvailableChanged: ((AvailableUpdate?) -> Void)?
+    /// Shows a card that never takes focus (title, detail, button, its action). Never a
+    /// modal alert: one used to sit in front of the user's app until answered, and a
+    /// dictation started meanwhile had nowhere to go.
+    var showMessage: (String, String, String?, @escaping () -> Void) -> Void = { _, _, _, _ in }
 
     init(store: NativeAppStore) {
         self.store = store
@@ -83,51 +87,39 @@ final class UpdateController {
         if let update = store.availableUpdate { present(update) } else { check(manual: true) }
     }
 
+    /// What the update card says and does. Pure, so the wording is tested.
+    static func offer(_ update: AvailableUpdate, running: String, brew: Bool)
+        -> (title: String, detail: String, action: String)
+    {
+        (
+            "Phonon \(update.version) is available",
+            brew
+                ? "You have \(running). Update copies the Homebrew command; paste it into "
+                    + "Terminal, then open Phonon again."
+                : "You have \(running). Update opens the release page for the new Phonon.dmg.",
+            "Update"
+        )
+    }
+
     private func present(_ update: AvailableUpdate) {
         let brew = UpdateCheck.installedByHomebrew()
-        let running = UpdateCheck.runningVersion ?? "this version"
-        let alert = NSAlert()
-        alert.messageText = "Phonon \(update.version) is available"
-        alert.informativeText =
-            brew
-            ? "You have \(running). Update copies \"\(UpdateCheck.brewCommand)\". Paste it "
-                + "into Terminal, then open Phonon again."
-            : "You have \(running). Update opens the release page. Download Phonon.dmg and "
-                + "drag Phonon to Applications, replacing this copy."
-        alert.addButton(withTitle: "Update")
-        alert.addButton(withTitle: "Later")
-        if brew { alert.addButton(withTitle: "Release Notes") }
-        NSApp.activate(ignoringOtherApps: true)
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
+        let card = Self.offer(
+            update, running: UpdateCheck.runningVersion ?? "this version", brew: brew)
+        showMessage(card.title, card.detail, card.action) {
             if brew {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(UpdateCheck.brewCommand, forType: .string)
             } else {
                 NSWorkspace.shared.open(update.pageURL)
             }
-        case .alertThirdButtonReturn:
-            NSWorkspace.shared.open(update.pageURL)
-        default:
-            break
         }
     }
 
     private func presentUpToDate(_ running: String) {
-        let alert = NSAlert()
-        alert.messageText = "Phonon \(running) is up to date"
-        alert.informativeText = "No newer release is on GitHub."
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        showMessage("Phonon \(running) is up to date", "No newer release is on GitHub.", nil) {}
     }
 
     private func presentFailure(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "Could not check for updates"
-        alert.informativeText = error.localizedDescription
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        showMessage("Could not check for updates", error.localizedDescription, nil) {}
     }
 }
