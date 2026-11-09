@@ -853,6 +853,13 @@ def main() -> None:
     except Exception as error:  # noqa: BLE001
         emit({"ok": False, "error": f"correction model download failed: {error}"})
         return
+    if not os.path.isdir(args.model):
+        # The pinned version is on disk: drop older versions of this model from the cache.
+        try:
+            from cache_gc import prune_in_background
+        except ImportError:
+            from sidecar.cache_gc import prune_in_background
+        prune_in_background(args.model, args.revision, "correction model")
     refiner = os.path.isfile(os.path.join(local_dir, REFINER_MARKER_FILE))
     mode_lines, mode_table = read_writing_modes(local_dir) if refiner else ({}, {})
     engine_config = read_engine_config(local_dir) if refiner else None

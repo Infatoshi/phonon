@@ -47,7 +47,7 @@ cp -L "$uv_bin" "$staged_app/Contents/Helpers/uv"
 cp "$project_dir/sidecar/asr_server.py" "$staged_app/Contents/Resources/sidecar/asr_server.py"
 cp "$project_dir/sidecar/polish_server.py" "$staged_app/Contents/Resources/sidecar/polish_server.py"
 # modules the two sidecars import (streaming refine: SPEC "Streaming refine")
-for module in linereader fast_tdt stream_asr stream_vad stream_decode stream_draft stream_refiner pa_client asr_terms; do
+for module in linereader fast_tdt stream_asr stream_vad stream_decode stream_draft stream_refiner pa_client asr_terms cache_gc; do
 	cp "$project_dir/sidecar/$module.py" "$staged_app/Contents/Resources/sidecar/$module.py"
 done
 mkdir -p "$staged_app/Contents/Resources/sidecar/models"

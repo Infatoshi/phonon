@@ -249,6 +249,13 @@ def main() -> None:
     metal = False
     try:
         source = model_source(model_id, revision, bool(metal_cfg))
+        if revision and not os.path.isdir(model_id):
+            # The pinned version is on disk: drop older versions of this model from the cache.
+            try:
+                from cache_gc import prune_in_background
+            except ImportError:
+                from sidecar.cache_gc import prune_in_background
+            prune_in_background(model_id, revision, "speech model")
         model = None
         if metal_cfg:
             try:

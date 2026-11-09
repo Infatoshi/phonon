@@ -439,6 +439,14 @@ final class ScreenRenderTests: XCTestCase {
             ("notice_accessibility", .needsAccessibility(text)),
             ("notice_not_heard", .notHeard(mic: "MacBook Pro Microphone")),
             ("notice_mic_silent", .micSilent(mic: "AirPods Pro")),
+            (
+                "notice_update",
+                .message(
+                    title: "Phonon 1.0.2 is available",
+                    detail: "You have 1.0.1. Update copies the Homebrew command; paste it into "
+                        + "Terminal, then open Phonon again.",
+                    action: "Update")
+            ),
         ]
         for (name, notice) in notices {
             let model = NotPastedModel()

@@ -2301,6 +2301,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             guard let self else { return false }
             return self.isRecording || self.processing
         }
+        updates.showMessage = { [weak self] title, detail, action, perform in
+            self?.notPasted.showMessage(
+                title: title, detail: detail, action: action, perform: perform)
+        }
         updates.onAvailableChanged = { [weak self] update in
             self?.updateMenuItem?.isHidden = update == nil
             self?.updateMenuItem?.title = update.map { "Update to Phonon \($0.version)…" } ?? ""
