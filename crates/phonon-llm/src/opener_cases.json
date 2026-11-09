@@ -33,5 +33,6 @@
   {"id": "casual-so", "mode": "casual", "raw": "so see you at five", "refined": "see you at five", "expected": "see you at five"},
   {"id": "formal", "mode": "formal", "raw": "okay the build is green", "refined": "The build is green.", "expected": "The build is green."},
   {"id": "verbatim", "mode": "verbatim", "raw": "okay the build is green", "refined": "The build is green.", "expected": "The build is green."},
-  {"id": "unknown-mode", "mode": "", "raw": "okay the build is green", "refined": "The build is green.", "expected": "The build is green."}
+  {"id": "unknown-mode", "mode": "", "raw": "okay the build is green", "refined": "The build is green.", "expected": "The build is green."},
+  {"id": "collapsed-output", "mode": "prompt", "raw": "okay send the report to the team by friday", "refined": "Thanks.", "expected": "Thanks."}
 ]

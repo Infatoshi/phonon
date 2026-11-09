@@ -33,6 +33,8 @@ enum Opener {
         let rule = modes[mode] ?? .never
         let body = Scalars(refined.unicodeScalars).drop(while: ws)
         if rule == .never || body.isEmpty { return refined }
+        // a one-word output is a collapse; leave it for the output guard
+        if words(Scalars(body)).count <= 1 { return refined }
         var rawWords = words(Scalars(raw.unicodeScalars))
         guard !rawWords.isEmpty else { return refined }
         let first = rawWords.removeFirst()

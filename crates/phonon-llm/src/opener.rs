@@ -71,6 +71,11 @@ pub fn restore(raw: &str, refined: &str, mode: &str) -> String {
     if rule == ModeRule::Never || body.is_empty() {
         return refined.to_string();
     }
+    // A refiner output of one word is a collapse the output guard swaps for the raw
+    // transcript; an opener in front would make it two words and hide it from the guard.
+    if body.split_whitespace().count() <= 1 {
+        return refined.to_string();
+    }
     let mut raw_words = raw.split_whitespace();
     let Some(first) = raw_words.next() else {
         return refined.to_string();
