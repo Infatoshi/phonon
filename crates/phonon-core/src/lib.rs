@@ -615,6 +615,8 @@ impl Engine {
                                 &request.source_text,
                                 &text,
                                 &request.style,
+                                // no mode, no opener restore
+                                request.mode.as_deref().unwrap_or(""),
                             );
                             let app_category = request.app.as_ref().map(|app| app.category);
                             corrected.text = final_layout(
@@ -677,7 +679,21 @@ impl Engine {
                             }
                             _ => Vec::new(),
                         };
-                        let corrected = finish_correction(&self.dictionary, &source, &text, &style);
+                        // the draft's writing mode, resolved as the final polish resolves it
+                        let bundle = match &self.stream_bundle {
+                            Some((stream_id, bundle)) if *stream_id == id => Some(bundle.clone()),
+                            _ => None,
+                        };
+                        let category = match &self.stream_category {
+                            Some((stream_id, category)) if *stream_id == id => Some(*category),
+                            _ => None,
+                        };
+                        let mode = self
+                            .styles
+                            .writing_mode_for(bundle.as_deref())
+                            .unwrap_or_else(|| category_mode(category).to_string());
+                        let corrected =
+                            finish_correction(&self.dictionary, &source, &text, &style, &mode);
                         out.push(EngineEvent::DraftResult {
                             id,
                             text: corrected.text,
@@ -1224,16 +1240,20 @@ fn safe_polish_output(
 
 /// The one path from a refiner output to the text the user sees: the final polish result
 /// and the live-text drafts both go through it, so the overlay shows what would be pasted.
+/// `mode`: the writing mode the refiner ran under ("" when unknown: no opener restore,
+/// `phonon_llm::opener::MODES`).
 fn finish_correction(
     dictionary: &data::DictionaryFile,
     source: &str,
     polished: &str,
     style: &[String],
+    mode: &str,
 ) -> data::CorrectionResult {
     // The opener the refiner dropped ("Okay, ...") goes back first, before the guard: the
     // guard's deletion check would otherwise read the dropped opener as a lost word and
     // swap the whole correction for the raw transcript.
-    let polished = phonon_llm::opener::restore(source, data::extract_transcript_payload(polished));
+    let polished =
+        phonon_llm::opener::restore(source, data::extract_transcript_payload(polished), mode);
     let mut corrected = safe_polish_output(dictionary, source, &polished);
     corrected.text = app_context::apply_style(&corrected.text, style, dictionary);
     corrected
@@ -1930,8 +1950,13 @@ mod tests {
             ..DictionaryFile::default()
         };
         let style = vec!["lowercase_start".to_string()];
-        let corrected =
-            finish_correction(&dictionary, "run vee llm now", "Run vee llm now.", &style);
+        let corrected = finish_correction(
+            &dictionary,
+            "run vee llm now",
+            "Run vee llm now.",
+            &style,
+            "minimal",
+        );
         let mut expected = safe_polish_output(&dictionary, "run vee llm now", "Run vee llm now.");
         expected.text = crate::app_context::apply_style(&expected.text, &style, &dictionary);
         assert_eq!(corrected.text, expected.text);
@@ -1947,6 +1972,7 @@ mod tests {
             "okay so the build is green",
             "So the build is green.",
             &[],
+            "prompt",
         );
         assert_eq!(corrected.text, "Okay, so the build is green.");
         // then the line breaks, as in the final polish
@@ -1955,11 +1981,27 @@ mod tests {
             "and the steps are 1. pull 2. build",
             "The steps are 1. Pull 2. Build.",
             &[],
+            "prompt",
         );
         assert_eq!(
             final_layout(&corrected.text, "prompt", None),
             "And the steps are\n1. Pull\n2. Build."
         );
+        // formal, or a request without a mode: the refiner's text as it is (with a fix
+        // beside the dropped opener, or the guard swaps in the raw transcript)
+        for mode in ["formal", ""] {
+            let corrected = finish_correction(
+                &dictionary,
+                "okay the bild is green and the tests pass",
+                "The build is green and the tests pass.",
+                &[],
+                mode,
+            );
+            assert_eq!(
+                corrected.text, "The build is green and the tests pass.",
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]

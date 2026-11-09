@@ -9,6 +9,11 @@
 //! owner keeps it only 16 times of 28. Measured offline on 608 of the owner's dictations:
 //! WER against the owner's references 9.74% -> about 8.6%.
 //!
+//! Per writing mode (`MODES`, from those 608 dictations: 552 prompt, 32 minimal, 24
+//! casual, no formal): prompt and minimal restore; casual restores and, when the refined
+//! text starts lowercase, inserts the opener lowercase too; formal (an email or document
+//! should not open with "Okay,") and any other mode never restore.
+//!
 //! `opener_cases.json` holds the reference cases (also for the iPhone and Android ports).
 
 /// The opener words, lowercased, and the text each one is restored as.
@@ -20,10 +25,50 @@ const OPENERS: &[(&str, &str)] = &[
     ("now", "Now, "),
 ];
 
-/// `refined` with the opener `raw` starts with restored, or `refined` unchanged.
-pub fn restore(raw: &str, refined: &str) -> String {
+/// What a writing mode does with a dropped opener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModeRule {
+    /// Leave the refined text as it is.
+    Never,
+    /// Restore the opener capitalised ("Okay, the build...").
+    Restore,
+    /// Restore it, in lowercase when the refined text starts lowercase ("okay, the build...").
+    MatchCase,
+}
+
+/// Minimal mode restores too; one switch, since its per-mode data (32 items) is still
+/// being measured.
+const MINIMAL_RESTORES: bool = true;
+
+/// The one per-mode table. A mode not listed (verbatim, raw passthrough, unknown) never
+/// restores.
+const MODES: &[(&str, ModeRule)] = &[
+    ("prompt", ModeRule::Restore),
+    ("casual", ModeRule::MatchCase),
+    (
+        "minimal",
+        if MINIMAL_RESTORES {
+            ModeRule::Restore
+        } else {
+            ModeRule::Never
+        },
+    ),
+    ("formal", ModeRule::Never),
+];
+
+fn mode_rule(mode: &str) -> ModeRule {
+    MODES
+        .iter()
+        .find(|(name, _)| *name == mode)
+        .map_or(ModeRule::Never, |&(_, rule)| rule)
+}
+
+/// `refined` with the opener `raw` starts with restored under the writing `mode`
+/// (`MODES`), or `refined` unchanged.
+pub fn restore(raw: &str, refined: &str, mode: &str) -> String {
+    let rule = mode_rule(mode);
     let body = refined.trim_start();
-    if body.is_empty() {
+    if rule == ModeRule::Never || body.is_empty() {
         return refined.to_string();
     }
     let mut raw_words = raw.split_whitespace();
@@ -46,6 +91,10 @@ pub fn restore(raw: &str, refined: &str) -> String {
             && matches!(refined_opener.as_str(), "okay" | "ok"));
     if same {
         return refined.to_string();
+    }
+    // casual style written lowercase: the opener goes in lowercase, the rest as it is
+    if rule == ModeRule::MatchCase && body.chars().next().is_some_and(char::is_lowercase) {
+        return format!("{}{body}", prefix.to_lowercase());
     }
     let rest = if keeps_capital(refined_first, raw) {
         body.to_string()
@@ -95,6 +144,12 @@ fn keeps_capital(word: &str, raw: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Prompt mode, the one most dictations use (552 of 608); the word rules below are
+    /// the same in every mode that restores.
+    fn restore(raw: &str, refined: &str) -> String {
+        super::restore(raw, refined, "prompt")
+    }
+
     #[test]
     fn matches_the_reference_cases() {
         let cases: Vec<serde_json::Value> =
@@ -103,8 +158,80 @@ mod tests {
         for case in &cases {
             let raw = case["raw"].as_str().unwrap();
             let refined = case["refined"].as_str().unwrap();
+            let mode = case["mode"].as_str().unwrap();
+            if mode == "minimal" && !MINIMAL_RESTORES {
+                continue;
+            }
             let expected = case["expected"].as_str().unwrap();
-            assert_eq!(restore(raw, refined), expected, "{}", case["id"]);
+            assert_eq!(
+                super::restore(raw, refined, mode),
+                expected,
+                "{}",
+                case["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_restores() {
+        assert_eq!(
+            super::restore("okay ship it today", "Ship it today.", "prompt"),
+            "Okay, ship it today."
+        );
+    }
+
+    #[test]
+    fn minimal_restores_behind_its_switch() {
+        let want = if MINIMAL_RESTORES {
+            "Well, it depends."
+        } else {
+            "It depends."
+        };
+        assert_eq!(
+            super::restore("well it depends", "It depends.", "minimal"),
+            want
+        );
+    }
+
+    #[test]
+    fn casual_matches_the_refined_case() {
+        // lowercase casual text: the opener goes in lowercase, the rest unchanged
+        assert_eq!(
+            super::restore("okay see you at five", "see you at five", "casual"),
+            "okay, see you at five"
+        );
+        assert_eq!(
+            super::restore("and Sam is coming", "sam is coming", "casual"),
+            "and sam is coming"
+        );
+        // capitalised casual text: as in prompt
+        assert_eq!(
+            super::restore("okay see you at five", "See you at five.", "casual"),
+            "Okay, see you at five."
+        );
+        // "So" never, in casual either
+        assert_eq!(
+            super::restore("so see you at five", "see you at five", "casual"),
+            "see you at five"
+        );
+    }
+
+    #[test]
+    fn formal_never_restores() {
+        assert_eq!(
+            super::restore("okay the build is green", "The build is green.", "formal"),
+            "The build is green."
+        );
+    }
+
+    #[test]
+    fn verbatim_and_unknown_modes_never_restore() {
+        for mode in ["verbatim", "raw", "", "unknown"] {
+            assert_eq!(
+                super::restore("okay the build is green", "The build is green.", mode),
+                "The build is green.",
+                "{mode:?}"
+            );
         }
     }
 

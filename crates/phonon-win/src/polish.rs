@@ -457,7 +457,7 @@ fn correct_at(base: &str, raw: &str, mode: &str) -> Result<String> {
     // back in front (phonon_llm::opener), then numbered steps one per line
     // (phonon_llm::linebreak); greeting and sign-off lines are for email only, and
     // this corrector does not know the target app, so it never splits them
-    let text = phonon_llm::opener::restore(raw, &text);
+    let text = phonon_llm::opener::restore(raw, &text, mode);
     Ok(phonon_llm::linebreak::layout(&text, mode, false))
 }
 

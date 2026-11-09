@@ -7,18 +7,32 @@ import Foundation
 /// is "I", an I-contraction, all caps, internally capitalised, or capitalised mid-sentence in the transcript (a
 /// proper noun). "So" is left alone. Runs on the refiner's text before the line breaks.
 ///
+/// Per writing mode (`MODES` of the Rust): prompt and minimal restore; casual restores, in lowercase when the
+/// refined text starts lowercase; formal and any other mode never restore.
+///
 /// Works on Unicode scalars, as the Rust works on chars.
 enum Opener {
     typealias Scalars = [Unicode.Scalar]
+
+    private enum Rule { case never, restore, matchCase }
+
+    /// `MINIMAL_RESTORES` of the Rust.
+    private static let minimalRestores = true
+
+    /// `MODES` of the Rust; a mode not listed never restores.
+    private static let modes: [String: Rule] = [
+        "prompt": .restore, "casual": .matchCase, "minimal": minimalRestores ? .restore : .never, "formal": .never,
+    ]
 
     private static let openers: [String: String] = [
         "okay": "Okay, ", "ok": "Okay, ", "well": "Well, ", "and": "And ", "now": "Now, ",
     ]
 
-    /// `restore(raw, refined)` of the Rust.
-    static func restore(raw: String, refined: String) -> String {
+    /// `restore(raw, refined, mode)` of the Rust.
+    static func restore(raw: String, refined: String, mode: String) -> String {
+        let rule = modes[mode] ?? .never
         let body = Scalars(refined.unicodeScalars).drop(while: ws)
-        if body.isEmpty { return refined }
+        if rule == .never || body.isEmpty { return refined }
         var rawWords = words(Scalars(raw.unicodeScalars))
         guard !rawWords.isEmpty else { return refined }
         let first = rawWords.removeFirst()
@@ -29,6 +43,10 @@ enum Opener {
         let refinedOpener = lower(core(refinedFirst))
         let isOkay: (String) -> Bool = { $0 == "okay" || $0 == "ok" }
         if refinedOpener == opener || (isOkay(opener) && isOkay(refinedOpener)) { return refined }
+        // casual style written lowercase: the opener goes in lowercase, the rest as it is
+        if rule == .matchCase, let c = body.first, c.properties.isLowercase {
+            return prefix.lowercased() + String(String.UnicodeScalarView(body))
+        }
         var rest = String(String.UnicodeScalarView(body))
         if !keepsCapital(refinedFirst, raw: raw), let c = body.first {
             rest = c.properties.lowercaseMapping + String(String.UnicodeScalarView(body.dropFirst()))
