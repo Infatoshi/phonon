@@ -160,6 +160,66 @@ class ModelStoreTest {
     }
 
     @Test
+    fun aMeteredNetworkPausesMidFileAndTheResumeFinishesIt() {
+        val f = model()
+        var checks = 0
+        try {
+            store().ensure(listOf(f), allowed = { checks++ < 10 })  // the request plus 9 chunks of 64 KB
+            fail("expected a pause")
+        } catch (e: ModelStore.Paused) {
+            assertEquals(f.path, e.path)
+        }
+        val kept = File(root, f.path + ".part").length()
+        assertTrue("kept $kept", kept in 1..9L * 65536)  // 9 reads of at most 64 KB each
+        assertFalse(store().isReady(f))
+        store().ensure(listOf(f))
+        assertEquals(listOf(null, "bytes=$kept-"), ranges)
+        assertArrayEquals(data, store().file(f).readBytes())
+    }
+
+    @Test
+    fun theGatedDownloadWaitsWithoutTransferringUntilAllowed() {
+        val f = model()
+        val gate = NetworkGate(unmetered = false)
+        var waited = 0
+        val t = thread { store().ensureWhenAllowed(listOf(f), gate, onWaiting = { waited++ }) }
+        Thread.sleep(500)
+        assertTrue(t.isAlive)
+        assertEquals(1, waited)
+        assertEquals(0L, served)
+        gate.allowCellular()  // the user's tap
+        t.join(10_000)
+        assertFalse(t.isAlive)
+        assertTrue(store().isReady(f))
+        assertArrayEquals(data, store().file(f).readBytes())
+    }
+
+    @Test
+    fun anUnmeteredNetworkOpensTheGateAndAMeteredOneClosesIt() {
+        val gate = NetworkGate()
+        assertFalse(gate.allowed())
+        gate.setUnmetered(true)
+        assertTrue(gate.allowed())
+        gate.setUnmetered(false)
+        assertFalse(gate.allowed())
+        gate.allowCellular()
+        assertTrue(gate.allowed())
+        gate.setUnmetered(false)
+        assertTrue(gate.allowed())  // the override outlasts network changes
+    }
+
+    @Test
+    fun aReadyFileNeedsNoNetwork() {
+        val f = model()
+        store().ensure(listOf(f))
+        served = 0
+        var waited = 0
+        store().ensureWhenAllowed(listOf(f), NetworkGate(), onWaiting = { waited++ })
+        assertEquals(0, waited)
+        assertEquals(0L, served)
+    }
+
+    @Test
     fun theManifestIsPinnedAndHashed() {
         for (f in Models.ASR + Models.REFINER) {
             assertTrue(f.path, Regex("^[0-9a-f]{64}$").matches(f.sha256))

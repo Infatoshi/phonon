@@ -1,6 +1,10 @@
 package ai.phonon.keyboard
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import java.io.File
@@ -49,6 +53,9 @@ object Models {
  * Fetches the models once per process, for whichever comes first: the launcher activity or the keyboard. The
  * recogniser comes first, so dictation works (raw transcript) before the larger refiner arrives.
  *
+ * The refiner (988 MB) downloads only on an unmetered network unless the user allows mobile data once (one tap on
+ * the keyboard's status line or the launcher's button, remembered); the recogniser downloads on any network.
+ *
  * Models sideloaded into the app's external files dir (parakeet/encoder.int8.onnx there, as the Test Lab tests
  * stage them) take precedence and nothing is downloaded.
  */
@@ -60,12 +67,50 @@ object ModelFetch {
         val message: String = "preparing models...",
         val done: Boolean = false,
         val error: String? = null,
+        val waitingForWifi: Boolean = false, // the refiner waits for an unmetered network or the user's override
     )
 
     @Volatile var state = State()
         private set
     private val listeners = CopyOnWriteArrayList<(State) -> Unit>()
     private var worker: Thread? = null
+    private val gate = NetworkGate()
+    private var watching = false
+    private const val PREFS = "phonon"
+    private const val CELLULAR_KEY = "refiner_on_cellular"
+
+    /** Tests only: treat every network as metered (true) or unmetered (false) instead of asking Android. */
+    @Volatile var forceMetered: Boolean? = null
+
+    /** The user's one tap: download the refiner on mobile data from now on. */
+    fun allowCellular(ctx: Context) {
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(CELLULAR_KEY, true).apply()
+        Log.i(TAG, "MODELS cellular_allowed=1")
+        gate.allowCellular()
+    }
+
+    /** Feeds [gate] from the default network's NOT_METERED capability (or [forceMetered]). */
+    @Synchronized private fun watchNetwork(ctx: Context) {
+        if (ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(CELLULAR_KEY, false)) gate.allowCellular()
+        forceMetered?.let { gate.setUnmetered(!it); Log.i(TAG, "MODELS network forced unmetered=${!it}"); return }
+        if (watching) return
+        watching = true
+        val cm = ctx.getSystemService(ConnectivityManager::class.java)
+        fun unmetered(c: NetworkCapabilities?) = c != null && (c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
+            (Build.VERSION.SDK_INT >= 30 && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED)))
+        gate.setUnmetered(unmetered(cm.getNetworkCapabilities(cm.activeNetwork)))
+        cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(n: Network, c: NetworkCapabilities) {
+                val u = unmetered(c)
+                if (u != last) Log.i(TAG, "MODELS network unmetered=$u")
+                last = u
+                gate.setUnmetered(u)
+            }
+            var last = gate.allowed()
+            override fun onLost(n: Network) { last = false; gate.setUnmetered(false) }
+        })
+        Log.i(TAG, "MODELS network unmetered=${gate.allowed()} (or cellular allowed)")
+    }
 
     fun addListener(l: (State) -> Unit) { listeners += l; l(state) }
     fun removeListener(l: (State) -> Unit) { listeners -= l }
@@ -114,7 +159,13 @@ object ModelFetch {
             publish(state.copy(asrDir = asrDir, message = "speech model ready"))
             if (wantRefiner) {
                 lastPct = -1
-                store.ensure(listOf(Models.REFINER), progress = report("text model"))
+                watchNetwork(ctx)
+                val textReport = report("text model")
+                store.ensureWhenAllowed(listOf(Models.REFINER), gate, onWaiting = {
+                    Log.i(TAG, "MODELS refiner_wait_unmetered")
+                    publish(state.copy(waitingForWifi = true,
+                        message = "text model waits for Wi-Fi; tap here to download it on mobile data (988 MB)"))
+                }, progress = { d, t -> if (state.waitingForWifi) publish(state.copy(waitingForWifi = false)); textReport(d, t) })
                 Log.i(TAG, "MODELS refiner_ready ms=${SystemClock.elapsedRealtime() - t0}")
                 publish(state.copy(refinerPath = store.file(Models.REFINER).path, message = "models ready", done = true))
             } else {

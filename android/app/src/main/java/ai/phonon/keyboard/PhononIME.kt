@@ -247,6 +247,9 @@ class PhononIME : InputMethodService() {
         status = TextView(this).apply {
             setTextColor(Color.LTGRAY); textSize = 12f; gravity = Gravity.CENTER
             text = modelStatus()
+            contentDescription = "status"
+            // while the refiner waits for Wi-Fi, one tap allows mobile data (remembered)
+            setOnClickListener { if (ModelFetch.state.waitingForWifi) ModelFetch.allowCellular(this@PhononIME) }
         }
         root.addView(status)
         val mic = TextView(this).apply {
