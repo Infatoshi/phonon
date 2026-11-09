@@ -67,7 +67,7 @@ class _Manifest:
         import fcntl
 
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self._lock = open(self.path + ".lock", "a")  # noqa: SIM115 - held until __exit__
+        self._lock = open(self.path + ".lock", "a")  # held until __exit__
         fcntl.flock(self._lock, fcntl.LOCK_EX)
         try:
             with open(self.path) as handle:
