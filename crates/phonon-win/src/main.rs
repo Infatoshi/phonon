@@ -14,6 +14,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod asr;
+mod backends;
 mod fetch;
 mod http;
 mod manifest;
@@ -73,12 +74,29 @@ enum Command {
         /// Skip the fixture word check. Use for a file that is not the fixture.
         #[arg(long)]
         any_audio: bool,
+        /// Backend manifest (https://, http:// or file://) to pick a tuned GPU
+        /// runtime from. Defaults to the one the app reads.
+        #[arg(long)]
+        backends: Option<String>,
+    },
+    /// Internal: list the CUDA devices this environment shows (see backends.rs).
+    #[command(hide = true)]
+    CudaDevices,
+    /// Release tooling: sign a backend manifest, writing <manifest>.sig.
+    #[command(hide = true)]
+    SignBackends {
+        /// File holding the ed25519 seed as 64 hex characters.
+        #[arg(long)]
+        key: PathBuf,
+        manifest: PathBuf,
     },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
+        Command::CudaDevices => backends::print_cuda_devices(),
+        Command::SignBackends { key, manifest } => sign_backends(&key, &manifest),
         Command::Run => run(),
         Command::Fetch => fetch_all(),
         Command::Setup => setup(),
@@ -86,7 +104,15 @@ fn main() -> Result<()> {
             info();
             Ok(())
         }
-        Command::Selftest { wav, any_audio } => selftest(wav, any_audio),
+        Command::Selftest {
+            wav,
+            any_audio,
+            backends,
+        } => selftest(
+            wav,
+            any_audio,
+            backends.as_deref().or(backends::DEFAULT_MANIFEST),
+        ),
     }
 }
 
@@ -156,6 +182,21 @@ fn info() {
     );
 }
 
+/// Sign a manifest with the release key and say whether this build trusts it.
+fn sign_backends(key: &std::path::Path, manifest: &std::path::Path) -> Result<()> {
+    let seed = std::fs::read_to_string(key).with_context(|| format!("read {}", key.display()))?;
+    let bytes = std::fs::read(manifest).with_context(|| format!("read {}", manifest.display()))?;
+    let (signature, public) = backends::sign_manifest(&bytes, &seed)?;
+    let mut out = manifest.as_os_str().to_owned();
+    out.push(".sig");
+    std::fs::write(&out, format!("{signature}\n"))?;
+    println!("signed {} with public key {public}", manifest.display());
+    if !backends::MANIFEST_KEYS.contains(&public.as_str()) {
+        bail!("this key is not in backends::MANIFEST_KEYS; the app will refuse the manifest");
+    }
+    Ok(())
+}
+
 fn fetch_all() -> Result<()> {
     use std::io::{IsTerminal, Write};
     // A terminal gets one line rewritten in place; a log gets one line per file and
@@ -190,7 +231,7 @@ fn fetch_all() -> Result<()> {
 /// The release gate. It downloads what is missing, starts the real correction
 /// server, transcribes real audio, corrects it, and applies the same two rules
 /// the macOS readiness contract applies.
-fn selftest(wav: Option<PathBuf>, any_audio: bool) -> Result<()> {
+fn selftest(wav: Option<PathBuf>, any_audio: bool, backends: Option<&str>) -> Result<()> {
     fetch_all()?;
     let wav = match wav {
         Some(path) => path,
@@ -205,8 +246,13 @@ fn selftest(wav: Option<PathBuf>, any_audio: bool) -> Result<()> {
     };
     println!("selftest: {}", wav.display());
 
-    let engine = pipeline::Engine::start()?;
-    println!("  correction device: {:?}", engine.device());
+    let started = std::time::Instant::now();
+    let mut engine = pipeline::Engine::start(backends)?;
+    println!(
+        "  correction device: {:?} (engine ready in {} ms)",
+        engine.device(),
+        started.elapsed().as_millis()
+    );
     // as at key-down: a saturated CPU (Windows) moves the correction to one thread
     #[cfg(windows)]
     {
@@ -222,21 +268,48 @@ fn selftest(wav: Option<PathBuf>, any_audio: bool) -> Result<()> {
             started.elapsed().as_millis()
         );
     }
-    let result = engine.run(&wav)?;
+    let result = startup_check_with_fallback(&mut engine, &wav, any_audio)?;
     println!("  raw:      {:?}", result.raw);
     println!("  polished: {:?}", result.polished);
     println!(
-        "  asr {:.0} ms, correction {:.0} ms",
-        result.asr_ms, result.polish_ms
+        "  asr {:.0} ms, correction {:.0} ms on {:?}",
+        result.asr_ms,
+        result.polish_ms,
+        engine.device()
     );
-
-    if any_audio {
-        assert_usable(&result)?;
-    } else {
-        assert_startup(&result)?;
-    }
     println!("selftest passed");
     Ok(())
+}
+
+/// Run the readiness check; a GPU that fails it (a driver that answers wrongly)
+/// moves the correction model to the CPU and the check runs again, as the
+/// Windows app does.
+pub fn startup_check_with_fallback(
+    engine: &mut pipeline::Engine,
+    wav: &std::path::Path,
+    any_audio: bool,
+) -> Result<PassResult> {
+    let check = |engine: &pipeline::Engine| -> Result<PassResult> {
+        let result = engine.run(wav)?;
+        if any_audio {
+            assert_usable(&result)?;
+        } else {
+            assert_startup(&result)?;
+        }
+        Ok(result)
+    };
+    match check(engine) {
+        Ok(result) => {
+            engine.confirm_backend();
+            Ok(result)
+        }
+        Err(error) if engine.device() == polish::Device::Gpu => {
+            eprintln!("phonon: startup check failed on the GPU ({error:#}); retrying on the CPU");
+            engine.fall_back_to_cpu()?;
+            check(engine)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Both readiness rules, for the known fixture.
