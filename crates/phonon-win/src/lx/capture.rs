@@ -96,6 +96,11 @@ impl Recording {
         self.tool
     }
 
+    /// The file the recorder is writing.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn seconds(&self) -> f64 {
         self.started.elapsed().as_secs_f64()
     }

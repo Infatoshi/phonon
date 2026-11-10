@@ -16,6 +16,7 @@
 mod asr;
 mod backends;
 mod fetch;
+mod history;
 mod http;
 mod manifest;
 mod mode;

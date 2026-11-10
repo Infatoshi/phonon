@@ -46,13 +46,17 @@ const WM_COPILOT: u32 = WM_APP + 3;
 const ID_TOGGLE: usize = 1;
 const ID_OPEN_FOLDER: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_HISTORY: usize = 4;
+const ID_CLEAR_HISTORY: usize = 5;
+/// "Recent dictations" submenu items: ID_RECENT + index into the recent list.
+const ID_RECENT: usize = 300;
 /// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
 const ID_KEY: usize = 100;
 /// "Writing mode" submenu items: ID_MODE + index into `polish::MODES`.
 const ID_MODE: usize = 200;
 
 /// What the user picked from the menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Start or stop dictation without touching the keyboard.
     Toggle,
@@ -62,7 +66,30 @@ pub enum Command {
     Quit,
     /// The dictation key changed (menu pick or Copilot-key fallback).
     KeyChanged,
+    /// Turn local history on or off.
+    ToggleHistory,
+    /// Delete the history log and the kept recordings.
+    ClearHistory,
+    /// Copy this text, the full text of the "Recent dictations" item clicked, to the clipboard.
+    CopyRecent(String),
 }
+
+/// Local history as the menu shows it; the worker thread owns the files and
+/// refreshes this with `set_history`, so opening the menu reads no file.
+static HISTORY_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RECENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Show history as on or off, with these recent dictations (newest first).
+pub fn set_history(on: bool, recent: Vec<String>) {
+    HISTORY_ON.store(on, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut list) = RECENT.lock() {
+        *list = recent;
+    }
+}
+
+/// The recent list as the open (or last opened) menu listed it: a click on item
+/// `ID_RECENT + i` copies item `i` of this, never of the live `RECENT`.
+static SHOWN: Mutex<crate::history::Shown> = Mutex::new(crate::history::Shown::EMPTY);
 
 static TRAY: OnceLock<Mutex<TrayHandle>> = OnceLock::new();
 static COMMANDS: OnceLock<Mutex<Sender<Command>>> = OnceLock::new();
@@ -385,6 +412,56 @@ fn send(command: Command) {
     }
 }
 
+/// A menu label shows `&` as an underline marker; `&&` is a literal one.
+fn menu_text(text: &str) -> String {
+    text.replace('&', "&&")
+}
+
+/// "Keep history", "Recent dictations" and "Clear history". AppendMenuW copies
+/// each label, so the buffers may go when this returns.
+fn append_history_items(menu: HMENU) {
+    let on = HISTORY_ON.load(std::sync::atomic::Ordering::Relaxed);
+    let shown = RECENT
+        .lock()
+        .map(|list| crate::history::Shown::of(&list))
+        .unwrap_or_default();
+    let recent: Vec<Vec<u16>> = shown
+        .labels()
+        .iter()
+        .map(|label| wide(&menu_text(label)))
+        .collect();
+    if let Ok(mut slot) = SHOWN.lock() {
+        *slot = shown;
+    }
+    let keep = wide("Keep history");
+    let recent_title = wide("Recent dictations");
+    let empty = wide(if on {
+        "Nothing yet"
+    } else {
+        "Turn on Keep history to list them"
+    });
+    let clear = wide("Clear history");
+    unsafe {
+        let submenu: HMENU = CreatePopupMenu();
+        if recent.is_empty() {
+            AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, empty.as_ptr());
+        }
+        for (index, label) in recent.iter().enumerate() {
+            AppendMenuW(submenu, MF_STRING, ID_RECENT + index, label.as_ptr());
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        let checked = if on { MF_CHECKED } else { 0 };
+        AppendMenuW(menu, MF_STRING | checked, ID_HISTORY, keep.as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_POPUP,
+            submenu as usize,
+            recent_title.as_ptr(),
+        );
+        AppendMenuW(menu, MF_STRING, ID_CLEAR_HISTORY, clear.as_ptr());
+    }
+}
+
 fn show_menu(hwnd: HWND) {
     let menu: HMENU = unsafe { CreatePopupMenu() };
     if menu.is_null() {
@@ -437,6 +514,7 @@ fn show_menu(hwnd: HWND) {
             modes_title.as_ptr(),
         );
         AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, folder.as_ptr());
+        append_history_items(menu);
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, ID_QUIT, quit.as_ptr());
 
@@ -476,6 +554,14 @@ unsafe extern "system" fn window_proc(
                 ID_TOGGLE => send(Command::Toggle),
                 ID_OPEN_FOLDER => send(Command::OpenFolder),
                 ID_QUIT => send(Command::Quit),
+                ID_HISTORY => send(Command::ToggleHistory),
+                ID_CLEAR_HISTORY => send(Command::ClearHistory),
+                id if (ID_RECENT..ID_RECENT + crate::history::RECENT).contains(&id) => {
+                    let text = SHOWN.lock().ok().and_then(|s| s.text(id - ID_RECENT));
+                    if let Some(text) = text {
+                        send(Command::CopyRecent(text))
+                    }
+                }
                 id if (ID_KEY..ID_KEY + super::hook::CHOICES.len()).contains(&id) => {
                     pick_key(id - ID_KEY)
                 }

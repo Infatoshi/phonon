@@ -55,9 +55,13 @@ pub fn downloads() -> PathBuf {
     data_root().join("downloads")
 }
 
-/// Captured audio. Every pass keeps its own file.
+/// The recordings folder's name in the data root.
+pub const RECORDINGS: &str = "recordings";
+
+/// Captured audio, one file per dictation. Kept only while local history is on
+/// (see `history::keep_wav`).
 pub fn recordings() -> PathBuf {
-    data_root().join("recordings")
+    data_root().join(RECORDINGS)
 }
 
 #[cfg(test)]

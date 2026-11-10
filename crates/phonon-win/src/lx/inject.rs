@@ -108,6 +108,16 @@ fn control_v() -> Result<()> {
     Ok(())
 }
 
+/// Leave `text` on the clipboard, for the user to paste (the tray's recent list).
+pub fn copy(text: &str) -> Result<()> {
+    let clipboard = CLIPBOARD.get().ok_or_else(|| anyhow!("no clipboard"))?;
+    clipboard
+        .lock()
+        .map_err(|_| anyhow!("clipboard lock poisoned"))?
+        .set_text(text.to_string())
+        .map_err(|e| anyhow!("set the clipboard: {e}"))
+}
+
 /// Insert `text` into the focused window. Returns the path used.
 pub fn insert(text: &str) -> Result<&'static str> {
     if text.is_empty() {
