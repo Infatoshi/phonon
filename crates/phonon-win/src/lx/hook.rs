@@ -226,6 +226,14 @@ pub fn reset_latch() {
     }
 }
 
+/// Whether a tap has latched the recording on, so it may stop by itself. A held key is not.
+pub fn latched() -> bool {
+    STATE
+        .get()
+        .and_then(|state| state.lock().ok().map(|s| s.latch.latched()))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

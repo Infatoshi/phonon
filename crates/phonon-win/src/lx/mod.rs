@@ -14,6 +14,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use phonon_hotkey::autostop::{self, Decision};
 use phonon_hotkey::Action;
 
 use crate::fetch;
@@ -179,8 +180,33 @@ fn app() -> Result<()> {
         let event = match inbox.recv_timeout(Duration::from_millis(500)) {
             Ok(e) => e,
             Err(RecvTimeoutError::Timeout) => {
-                if let Some(r) = &recording {
-                    tray::set_status(&format!("recording {:.1} s", r.seconds()));
+                if let Some(r) = &mut recording {
+                    match r.auto_stop(hook::latched()) {
+                        Decision::KeepRecording => {
+                            tray::set_status(&format!("recording {:.1} s", r.seconds()))
+                        }
+                        // The key is up (it latched), so the next press must start, not
+                        // stop; then the same stop the next tap would make.
+                        Decision::Commit => {
+                            eprintln!(
+                                "phonon: latched dictation silent for {} s after speech; stopping",
+                                autostop::SILENCE_AFTER_SPEECH_SECONDS
+                            );
+                            hook::reset_latch();
+                            finish(&engine, recording.take(), &idle);
+                        }
+                        Decision::Discard => {
+                            eprintln!(
+                                "phonon: latched dictation heard no speech in {} s; discarding",
+                                autostop::NO_SPEECH_SECONDS
+                            );
+                            hook::reset_latch();
+                            if let Some(r) = recording.take() {
+                                r.discard();
+                            }
+                            tray::set_status(&idle);
+                        }
+                    }
                 }
                 continue;
             }
