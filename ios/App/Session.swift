@@ -318,7 +318,7 @@ final class Session: ObservableObject {
             func arg(_ name: String) -> String? {
                 args.firstIndex(of: name).flatMap { i in i + 1 < args.count ? args[i + 1] : nil }
             }
-            let threads = arg("--threads").flatMap { Int32($0) } ?? 4
+            let threads = arg("--threads").flatMap { Int32($0) } ?? Refiner.defaultThreads
             // A/B flags: --pool 0 = ggml's per-token threads, --stock 1 = stock worker QoS and repack chunking
             let usePool = arg("--pool") != "0"
             let stock = arg("--stock") == "1"

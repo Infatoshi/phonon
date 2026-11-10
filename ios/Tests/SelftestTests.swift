@@ -39,7 +39,7 @@ final class SelftestTests: XCTestCase {
               "active_cores": p.activeProcessorCount, "ram_mb": Int(p.physicalMemory >> 20),
               "thermal": p.thermalState.rawValue, "model_bytes": (try? FileManager.default.attributesOfItem(
                   atPath: url.path)[.size] as? Int) ?? -1])
-        let threads: Int32 = 4
+        let threads = Refiner.defaultThreads
         let t0 = Date()
         let r = try XCTUnwrap(Refiner(path: url.path, threads: threads), "model failed to load")
         let (fp0, peak0) = footprintMB()

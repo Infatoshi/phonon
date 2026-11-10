@@ -45,7 +45,11 @@ final class Refiner: @unchecked Sendable {
         ggml_cpu_phonon_set(stock ? 0 : 1, stock ? 0 : 64)
     }
 
-    init?(path: String, threads: Int32 = 4, persistentPool: Bool = true) {
+    /// 5 threads (2 P + 3 E cores on A19 Pro, one E core left for the system): on the iPhone 17 Pro, 2026-11-10,
+    /// 3 runs each, cached 621.5 ms vs 640.5 at 4 and 882.5 at 2; decode per token equal at 4 and 5 (18.6, 18.7).
+    static let defaultThreads: Int32 = 5
+
+    init?(path: String, threads: Int32 = Refiner.defaultThreads, persistentPool: Bool = true) {
         llama_backend_init()
         var mp = llama_model_default_params()
         mp.n_gpu_layers = 0
