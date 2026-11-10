@@ -72,6 +72,11 @@ impl Engine {
         self.corrector.prepare(busy);
     }
 
+    /// The startup check passed on this engine: keep only the tuned build in use.
+    pub fn confirm_backend(&mut self) {
+        self.corrector.confirm();
+    }
+
     /// Move the correction model from the GPU to the CPU.
     pub fn fall_back_to_cpu(&mut self) -> Result<()> {
         self.corrector.fall_back_to_cpu()

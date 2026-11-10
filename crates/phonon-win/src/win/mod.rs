@@ -228,6 +228,9 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     // telling the user Phonon is ready.
     tray::set_status("running the startup check");
     let mut check = startup_check(&engine);
+    if check.is_ok() {
+        engine.confirm_backend();
+    }
     if check.is_err() && engine.device() == Device::Gpu {
         // A GPU driver that answers wrongly must not cost the user dictation.
         eprintln!("phonon: startup check failed on the GPU; retrying on the CPU");
