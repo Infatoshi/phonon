@@ -41,6 +41,10 @@ final class Refiner: @unchecked Sendable {
 
     /// Stock ggml behaviour for A/B runs (selftest --stock 1): workers at QOS_CLASS_DEFAULT and the stock repack
     /// chunking. Process-wide; set before the Refiner is created.
+    /// Head-timing experiment only (selftest --fixgen N): decode exactly N tokens, ignoring end-of-text, so arms with
+    /// different output heads decode the same number of tokens at the same positions.
+    nonisolated(unsafe) static var fixedGen: Int? = nil
+
     static func setStock(_ stock: Bool) {
         ggml_cpu_phonon_set(stock ? 0 : 1, stock ? 0 : 64)
     }
@@ -119,7 +123,7 @@ final class Refiner: @unchecked Sendable {
         var tail = tokenize("\(raw)<|im_end|>\n<|im_start|>assistant\n<think></think>")
         let tokens = head + tail
         let inputTokens = tokenize(raw).count
-        let cap = Int(1.5 * Double(inputTokens)) + 32
+        let cap = Self.fixedGen ?? (Int(1.5 * Double(inputTokens)) + 32)
         let mem = llama_get_memory(ctx)
         llama_sampler_reset(sampler)
         let t0 = Date()
@@ -158,7 +162,7 @@ final class Refiner: @unchecked Sendable {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         while ok && gen < cap {
             var tok = llama_sampler_sample(sampler, ctx, -1)
-            if llama_vocab_is_eog(vocab, tok) { break }
+            if Self.fixedGen == nil && llama_vocab_is_eog(vocab, tok) { break }
             out += piece(tok)
             gen += 1
             hash = (hash ^ UInt64(UInt32(bitPattern: tok))) &* 0x100_0000_01b3

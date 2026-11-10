@@ -323,6 +323,7 @@ final class Session: ObservableObject {
             let usePool = arg("--pool") != "0"
             let stock = arg("--stock") == "1"
             Refiner.setStock(stock)
+            Refiner.fixedGen = arg("--fixgen").flatMap { Int($0) }
             let before = Self.threadPriorities()
             // head-timing experiment: --model NAME loads Documents/NAME (e.g. the 32k-row output head file)
             let path = arg("--model").map { url.deletingLastPathComponent().appendingPathComponent($0).path } ?? url.path
