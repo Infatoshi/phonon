@@ -16,7 +16,7 @@ struct Cursor {
     const uint8_t * p;
     const uint8_t * end;
     template <typename T> T get() {
-        if (p + sizeof(T) > end) throw std::runtime_error("gguf: truncated");
+        if (sizeof(T) > (size_t) (end - p)) throw std::runtime_error("gguf: truncated");
         T v;
         memcpy(&v, p, sizeof(T));
         p += sizeof(T);
@@ -24,7 +24,7 @@ struct Cursor {
     }
     std::string str() {
         const uint64_t n = get<uint64_t>();
-        if (p + n > end) throw std::runtime_error("gguf: truncated string");
+        if (n > (size_t) (end - p)) throw std::runtime_error("gguf: truncated string");
         std::string s((const char *) p, n);
         p += n;
         return s;
@@ -115,10 +115,15 @@ bool GGUF::open(const char * path, std::string * err) {
             t.nbytes = n_el / be * bs;
             infos.push_back(t);
         }
-        const uint64_t align = kv.count("general.alignment") ? (uint64_t) kv["general.alignment"].num[0] : 32;
+        auto ait = kv.find("general.alignment");
+        const uint64_t align = (ait != kv.end() && !ait->second.num.empty()) ? (uint64_t) ait->second.num[0] : 32;
+        if (align == 0) throw std::runtime_error("gguf: zero alignment");
         const uint64_t pos = (uint64_t) (c.p - (const uint8_t *) map);
         const uint64_t data = (pos + align - 1) / align * align;
         for (auto & t : infos) {
+            if (t.offset > file_size || data > file_size - t.offset || t.nbytes > file_size - (t.offset + data)) {
+                throw std::runtime_error("gguf: tensor " + t.name + " out of bounds");
+            }
             t.offset += data;
             tensors[t.name] = t;
         }

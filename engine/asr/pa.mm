@@ -289,6 +289,8 @@ int main(int argc, char ** argv) {
             wsize = (size_t) lseek(fd, 0, SEEK_END);
             const size_t wmap = (wsize + page - 1) / page * page;
             wptr = mmap(nullptr, wmap, PROT_READ, MAP_SHARED, fd, 0);
+            close(fd);
+            if (wptr == MAP_FAILED) { fprintf(stderr, "cannot map %s\n", argv[1]); return 1; }
             wbuf = [dev newBufferWithBytesNoCopy:wptr length:wmap options:MTLResourceStorageModeShared deallocator:nil];
         }
         auto W = [&](const std::string & n) -> uint32_t {
@@ -300,8 +302,10 @@ int main(int argc, char ** argv) {
             const std::string cb = getenv("PA_CHECK_WEIGHTS");
             std::ifstream f(cb.substr(0, cb.size() - 4) + ".idx");
             const int cfd = open(cb.c_str(), O_RDONLY);
+            if (cfd < 0) { fprintf(stderr, "cannot open %s\n", cb.c_str()); return 1; }
             const size_t csz = (size_t) lseek(cfd, 0, SEEK_END);
             const uint16_t * c = (const uint16_t *) mmap(nullptr, csz, PROT_READ, MAP_SHARED, cfd, 0);
+            close(cfd);
             std::string line;
             size_t n = 0, bad = 0, elems = 0;
             while (std::getline(f, line)) {
@@ -404,6 +408,8 @@ int main(int argc, char ** argv) {
                 qfd = open(qp.c_str(), O_RDONLY);
             }
             void * qptr = mmap(nullptr, qmap_len, PROT_READ, MAP_SHARED, qfd, 0);
+            close(qfd);
+            if (qptr == MAP_FAILED) { fprintf(stderr, "cannot map %s\n", qp.c_str()); return 1; }
             qbuf = [dev newBufferWithBytesNoCopy:qptr length:qmap_len options:MTLResourceStorageModeShared deallocator:nil];
         }
 
@@ -432,14 +438,16 @@ int main(int argc, char ** argv) {
             }
         }
         auto sub_len = [](uint32_t t) { return (t + 2 - 3) / 2 + 1; };
+        if (serve && sub_len(sub_len(sub_len(cap_mel))) > 2048) cap_mel = 8 * 2048;  // pa.metal attn: threadgroup float sc[2048]
         // valid lengths of the window, and the (optional, argv[5]) padded bucket of T frames: mel padded with zeros to
         // 8 T frames, every cross-frame op bounded by the valid length
         const int barg = !serve && argc > 5 ? atoi(argv[5]) : 0;  // > 0: bucket of barg frames; < 0: Tv rounded up to a multiple of -barg
         uint32_t Tm = 0, V1 = 0, V2 = 0, Tv = 0, Tb = 0, Tmb = 0, T1 = 0, T2 = 0, T3 = 0, T = 0, maxout = 0;
         auto set_window = [&](uint32_t tm) -> bool {
             Tm = tm; V1 = sub_len(Tm); V2 = sub_len(V1); Tv = sub_len(V2);
+            if (Tv > 2048) { fprintf(stderr, "valid frames %u > 2048\n", Tv); return false; }
             Tb = barg > 0 ? (uint32_t) barg : barg < 0 ? (Tv + (uint32_t) -barg - 1) / (uint32_t) -barg * (uint32_t) -barg : Tv;
-            if (Tb < Tv) { fprintf(stderr, "bucket %u < valid frames %u\n", Tb, Tv); return false; }
+            if (Tb < Tv || Tb > 2048) { fprintf(stderr, "bucket %u invalid for valid frames %u (max 2048)\n", Tb, Tv); return false; }
             Tmb = barg ? 8 * Tb : Tm;
             T1 = sub_len(Tmb); T2 = sub_len(T1); T3 = sub_len(T2); T = T3;
             maxout = 10 * Tv + 16;
@@ -776,6 +784,7 @@ int main(int argc, char ** argv) {
         auto run_pass = [&](double & g1, double & g2, double & wall, double & cpu) -> bool {
             TD.T = Tv;
             TD.maxout = maxout;
+            TD.maxspans = maxout;
             memset(U + aS, 0, (size_t) nS * 4);
             // the first slot: the prediction net on no token (zero input and state), then the joint from frame 0
             CT->need = 1;
@@ -890,10 +899,10 @@ int main(int argc, char ** argv) {
                 const float ms[3] = { (float) g1, (float) g2, (float) wall };
                 fwrite(ms, 4, 3, stdout);
                 // dictionary boosting: uint32 spans n, n x {start token, end token, canonical term, boosted}, flips, rollbacks
-                const uint32_t nsp = cnt != ~0u ? U[aSpans] : 0;
+                const uint32_t nsp = cnt != ~0u ? std::min(U[aSpans], TD.maxspans) : 0;
                 fwrite(&nsp, 4, 1, stdout);
                 fwrite(U + aSpans + 1, 4, (size_t) 4 * nsp, stdout);
-                const uint32_t fr[2] = { cnt != ~0u ? U[aSpans + 1 + 4 * cmaxout] : 0, cnt != ~0u ? U[aSpans + 2 + 4 * cmaxout] : 0 };
+                const uint32_t fr[2] = { cnt != ~0u ? U[aSpans + 1 + 4 * TD.maxspans] : 0, cnt != ~0u ? U[aSpans + 2 + 4 * TD.maxspans] : 0 };
                 fwrite(fr, 4, 2, stdout);
                 fflush(stdout);
             }
@@ -938,11 +947,11 @@ int main(int argc, char ** argv) {
             fprintf(f, "], \"steps\": [");
             for (uint32_t i = 0; i < std::min(U[aOut], maxout); ++i) fprintf(f, "%s%u", i ? ", " : "", U[aOut + 3 + 4 * i]);
             fprintf(f, "], \"spans\": [");
-            for (uint32_t i = 0; i < U[aSpans]; ++i) {
+            for (uint32_t i = 0; i < std::min(U[aSpans], TD.maxspans); ++i) {
                 const uint32_t * s = U + aSpans + 1 + 4 * i;
                 fprintf(f, "%s[%u, %u, %u, %u]", i ? ", " : "", s[0], s[1], s[2], s[3]);
             }
-            fprintf(f, "], \"flips\": %u, \"rollbacks\": %u}\n", U[aSpans + 1 + 4 * cmaxout], U[aSpans + 2 + 4 * cmaxout]);
+            fprintf(f, "], \"flips\": %u, \"rollbacks\": %u}\n", U[aSpans + 1 + 4 * TD.maxspans], U[aSpans + 2 + 4 * TD.maxspans]);
             fclose(f);
         }
         if (gpu_mel && getenv("PA_DUMP_MEL")) save_npy(getenv("PA_DUMP_MEL"), A + aMel, Tm, F0);  // debug: the GPU log-mel
