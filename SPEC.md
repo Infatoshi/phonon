@@ -310,10 +310,19 @@ default and cannot be told from a choice: those files read as on once, and the n
 which a `false` is the owner's and stays off. When the migration is what turns detection on (a schema 1 or 2 file
 without `meeting_capture: true`), `meeting_auto_start` is set to false with it, so someone who once enabled
 auto-start and then switched detection off is asked before any recording; they can turn auto-start back on. A file
-that already had detection on keeps its auto-start choice. Meetings/<id>/ holds metadata.json plus 5 s 48 kHz mono
+that already had detection on keeps its auto-start choice. Meetings/<id>/ holds metadata.json plus 5 s 16 kHz mono
 16-bit WAV chunks of two tracks on one host clock: mic/ (the user) and system/ (the call, ScreenCaptureKit). Each
 track's `<track>_start_offset_samples` places its sample 0 on the shared timeline; Notes shifts both so the
 earlier track starts at 0.
+- Rate (since 2026-11-10; `sample_rate` in metadata.json, older meetings are 48 kHz and read as before): 16 kHz is
+  what Parakeet consumes and what the call-echo gate of pull request #51 analyses (16 kHz frames, 220 Hz to 4 kHz,
+  delay to 2 ms), so nothing downstream loses anything. Two tracks are 230.5 MB per hour (720 chunks of 160,044
+  bytes each) plus metadata.json, against 691 MB at 48 kHz (two real meetings measured 690.3 and 690.6 MB per hour by
+  file sizes). The microphone's converter (AVAudioConverter, anti-aliased) goes straight to 16 kHz; ScreenCaptureKit
+  is asked for 16 kHz, and a buffer that says another rate is converted rather than misplaced. The 48 kHz path's
+  resampler was plain decimation (every third sample). On 18 synthetic fixtures (3 texts, 3 voices, clean and with
+  -40 dBFS white noise; 1,428 words) the normalised words were identical in both, and so was the WER: 0.0651 in
+  each (stock parakeet-tdt-0.6b-v2 on MLX). `MeetingFormatLiveCheck` (opt in) records a WAV through this path.
 
 Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
 `transcribe_span`), all on the Mac:
@@ -342,8 +351,8 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
   pressed while a span is in the sidecar waits for that span only (0.67 s at most for the 20-minute two-track
   check meeting on MLX; Metal is faster), while the user is still speaking.
 - The sidecar reads only the chunks a span needs (a 2-hour meeting is never in memory), fills a missing stretch
-  with silence, resamples 48 kHz to 16 kHz with the same linear resampler as imported dictation audio
-  (`resample_linear`), and skips the model when no 20 ms frame rises above -50 dBFS RMS (`quiet`: no sentences).
+  with silence, resamples a 48 kHz meeting (before 2026-11-10) to 16 kHz with the same linear resampler as imported
+  dictation audio (`resample_linear`; a 16 kHz one goes in as recorded), and skips the model when no 20 ms frame rises above -50 dBFS RMS (`quiet`: no sentences).
 - Progress: after every span, transcript.partial.json (per track: the track sample transcribed up to, done, and
   the kept sentences in track seconds; `error` after a failure). A quit or crash resumes from it at the next
   launch; a quit while recording leaves an empty one so that meeting is transcribed at the next launch. A failed

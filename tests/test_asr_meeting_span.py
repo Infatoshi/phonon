@@ -64,6 +64,19 @@ def test_read_span_without_a_covering_chunk_fails():
         read_span([], 0, 10)
 
 
+def test_a_16k_track_reaches_the_model_as_recorded(tmp_path):
+    # meetings since 2026-11-10 are recorded at the model's rate: no resampling at all
+    a = _chunk(tmp_path / "0000.wav", range(-5, 5), rate=16_000)
+    b = _chunk(tmp_path / "0001.wav", range(5, 15), rate=16_000)
+    chunks = [{"path": a, "start_sample": 0}, {"path": b, "start_sample": 10}]
+
+    samples, rate = read_span(chunks, 3, 17)
+
+    assert rate == 16_000
+    assert resample_linear(samples, rate, 16_000) is samples
+    assert (samples * 32768).round().tolist() == list(range(-2, 12))
+
+
 def test_resample_linear_takes_48k_to_16k_and_keeps_16k():
     tone = np.sin(np.arange(48_000) / 48_000 * 2 * np.pi * 200).astype(np.float32)
 

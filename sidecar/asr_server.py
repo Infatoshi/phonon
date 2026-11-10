@@ -71,8 +71,8 @@ def read_wav(path: str, sample_rate: int):
 
 def resample_linear(samples, rate: int, sample_rate: int):
     """Linear resample of mono float samples. Dictation records at the model's rate, so this
-    runs for imported audio and for meeting tracks (48 kHz), where exactness matters less than
-    working at all."""
+    runs for imported audio and for meeting tracks recorded before 2026-11-10 (48 kHz; newer ones
+    are 16 kHz and pass through), where exactness matters less than working at all."""
     import numpy as np
 
     if rate == sample_rate or not samples.size:
