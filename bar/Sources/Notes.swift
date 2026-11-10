@@ -14,15 +14,21 @@ struct MeetingNote: Identifiable, Equatable {
     var transcript: MeetingTranscript?
     /// Why the last transcription stopped, from transcript.partial.json.
     var transcriptError: String?
+    /// The cleaned transcript, transcript.cleaned.json (MeetingCleanup.swift).
+    var cleaned: CleanedTranscript?
+    /// Why the last cleanup stopped or was skipped, from transcript.cleaned.partial.json.
+    var cleanupError: String?
 
     init(
         metadata: MeetingMetadata, directory: URL, transcript: MeetingTranscript? = nil,
-        transcriptError: String? = nil
+        transcriptError: String? = nil, cleaned: CleanedTranscript? = nil, cleanupError: String? = nil
     ) {
         self.metadata = metadata
         self.directory = directory
         self.transcript = transcript
         self.transcriptError = transcriptError
+        self.cleaned = cleaned
+        self.cleanupError = cleanupError
     }
 
     var id: String { metadata.id }
@@ -106,7 +112,9 @@ struct MeetingNote: Identifiable, Equatable {
             return MeetingNote(
                 metadata: metadata, directory: folder,
                 transcript: MeetingTranscript.load(from: folder),
-                transcriptError: MeetingTranscriptProgress.load(from: folder)?.error)
+                transcriptError: MeetingTranscriptProgress.load(from: folder)?.error,
+                cleaned: CleanedTranscript.load(from: folder),
+                cleanupError: MeetingCleanupProgress.load(from: folder)?.error)
         }
         .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
     }
@@ -308,7 +316,10 @@ struct NotesView: View {
                 if let note = selected {
                     NoteDetail(
                         note: note, transcript: store.transcriptState(note),
-                        onTranscribe: { store.transcribeMeeting(note) }
+                        cleanup: store.cleanupState(note),
+                        cleanupAvailable: store.meetingCleanupAvailable,
+                        onTranscribe: { store.transcribeMeeting(note) },
+                        onCleanUp: { store.cleanMeeting(note) }
                     )
                     .id(note.id)
                 } else {
@@ -353,9 +364,19 @@ struct NoteListRow: View {
 struct NoteDetail: View {
     let note: MeetingNote
     var transcript: NoteTranscriptState = .notTranscribed
+    var cleanup: NoteCleanupState = .none
+    var cleanupAvailable = false
     var onTranscribe: () -> Void = {}
+    var onCleanUp: () -> Void = {}
     @StateObject private var player = MeetingPlayer()
     @State private var peaks: [Float] = []
+    /// Show the speech model's raw turns instead of the cleaned ones.
+    @State private var showRaw = false
+
+    /// The lines listed (and copied) now.
+    private func rows(_ ready: MeetingTranscript) -> [NoteTranscriptRows.Row] {
+        NoteTranscriptRows.rows(ready, cleanup: cleanup, showRaw: showRaw)
+    }
 
     static func subtitle(_ note: MeetingNote) -> String {
         let when = note.startedAt.map { FeedTime.label($0) } ?? ""
@@ -377,7 +398,8 @@ struct NoteDetail: View {
                     }
                     Spacer()
                     if case .ready(let ready) = transcript, !ready.turns.isEmpty {
-                        CopyIconButton(text: ready.plainText, help: "Copy transcript")
+                        CopyIconButton(
+                            text: NoteTranscriptRows.plainText(rows(ready)), help: "Copy transcript")
                     } else {
                         Button {} label: { Image(systemName: "doc.on.doc") }
                             .buttonStyle(IconButtonStyle())
@@ -461,9 +483,12 @@ struct NoteDetail: View {
             Text("No speech was heard in this meeting.")
                 .foregroundStyle(EmberTheme.mute)
         case .ready(let ready):
-            LazyVStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(ready.turns.enumerated()), id: \.offset) { _, turn in
-                    turnRow(turn)
+            VStack(alignment: .leading, spacing: 12) {
+                cleanupBar
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(rows(ready).enumerated()), id: \.offset) { _, row in
+                        turnRow(row)
+                    }
                 }
             }
         case .transcribing(let progress):
@@ -497,7 +522,64 @@ struct NoteDetail: View {
         }
     }
 
-    private func turnRow(_ turn: MeetingTranscript.Turn) -> some View {
+    /// Above the transcript: whether it is cleaned, the Raw / Cleaned switch, the cleanup's
+    /// progress, or the button that starts one.
+    @ViewBuilder private var cleanupBar: some View {
+        switch cleanup {
+        case .cleaned(let cleaned):
+            HStack(spacing: 10) {
+                Picker("", selection: $showRaw) {
+                    Text("Cleaned").tag(false)
+                    Text("Raw").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Cleaned: fillers and false starts removed on this Mac. Raw: the speech model's words.")
+                Text(Self.cleanupSummary(cleaned))
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(EmberTheme.mute)
+            }
+        case .cleaning(let progress, let paused):
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(Self.cleaningLabel(progress: progress, paused: paused))
+                    .foregroundStyle(EmberTheme.mute)
+            }
+            .help("Cleaned on this Mac in the background; dictation always goes first.")
+        case .failed(let message):
+            HStack(spacing: 12) {
+                if cleanupAvailable {
+                    Button("Clean up", action: onCleanUp)
+                        .buttonStyle(PillButtonStyle(primary: false))
+                        .help("Clean this transcript on this Mac")
+                }
+                Text(message)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(EmberTheme.warm)
+                    .textSelection(.enabled)
+            }
+        case .none:
+            if cleanupAvailable {
+                Button("Clean up", action: onCleanUp)
+                    .buttonStyle(PillButtonStyle(primary: false))
+                    .help("Remove fillers and false starts on this Mac; the raw transcript is kept")
+            }
+        }
+    }
+
+    static func cleanupSummary(_ cleaned: CleanedTranscript) -> String {
+        cleaned.rawChunks == 0
+            ? "Cleaned on this Mac."
+            : "Cleaned on this Mac; \(cleaned.rawChunks) of \(cleaned.chunks) parts kept as heard."
+    }
+
+    static func cleaningLabel(progress: Double?, paused: Bool) -> String {
+        if paused { return "Cleaning up… (paused while you dictate)" }
+        return progress.map { "Cleaning up… \(Int(($0 * 100).rounded()))%" } ?? "Cleaning up… (waiting its turn)"
+    }
+
+    private func turnRow(_ turn: NoteTranscriptRows.Row) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Button {
                 let duration = note.durationSeconds

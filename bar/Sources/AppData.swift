@@ -672,6 +672,12 @@ final class NativeAppStore: ObservableObject {
     @Published var recordingMeetingID: String?
     /// The Notes page's Transcribe button: transcribe the meeting in this folder.
     var onTranscribeMeeting: ((URL) -> Void)?
+    /// Meetings being cleaned, queued or failed this session (`MeetingCleaner`).
+    @Published var meetingCleanup: [String: MeetingCleanupJob] = [:]
+    /// Whether transcripts can be cleaned on this Mac (the meeting adapter installed or published).
+    @Published var meetingCleanupAvailable = false
+    /// The Notes page's Clean up button.
+    var onCleanMeeting: ((URL) -> Void)?
     @Published var engineReady = false
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
@@ -790,6 +796,17 @@ final class NativeAppStore: ObservableObject {
         NoteTranscriptState.resolve(
             transcript: note.transcript, job: meetingTranscription[note.id],
             savedError: note.transcriptError, recording: recordingMeetingID == note.id)
+    }
+
+    func cleanupState(_ note: MeetingNote) -> NoteCleanupState {
+        NoteCleanupState.resolve(
+            transcript: note.transcript, cleaned: note.cleaned, job: meetingCleanup[note.id],
+            savedError: note.cleanupError)
+    }
+
+    /// The Clean up button.
+    func cleanMeeting(_ note: MeetingNote) {
+        onCleanMeeting?(note.directory)
     }
 
     /// The Transcribe button. Never for the meeting being recorded (or still closing its last
