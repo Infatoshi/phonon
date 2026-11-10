@@ -173,13 +173,16 @@ class PhononIME : InputMethodService() {
         main.post { commitResult(text, tUp, source) }
     }
 
-    /** The refiner's text through the shared output stage (crates/phonon-llm linebreak): numbered steps one
-     *  per line, and in formal mode the greeting and sign-off on their own lines. A length-guard fallback is
-     *  the raw transcript and stays as it is, as on the Mac. */
+    /** The refiner's text through the shared output stage, in the writing mode the refiner ran with: the opener
+     *  the refiner dropped back in front (crates/phonon-llm opener), then numbered steps one per line, and in
+     *  formal mode the greeting and sign-off on their own lines (linebreak). A length-guard fallback is the raw
+     *  transcript and stays as it is, as on the Mac and iPhone. */
     private fun refinedText(json: String): String {
         val o = org.json.JSONObject(json)
         val text = o.getString("text")
-        return if (o.optBoolean("guard", false)) text else LineBreaks.apply(text, o.optString("mode", mode))
+        if (o.optBoolean("guard", false)) return text
+        val m = o.optString("mode", mode)
+        return LineBreaks.apply(Opener.restore(o.optString("raw", ""), text, m), m)
     }
 
     private fun commitResult(result: String, tUp: Long, source: String) {
