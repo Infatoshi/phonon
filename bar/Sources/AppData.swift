@@ -8,8 +8,9 @@ import ServiceManagement
 
 struct NativeSettings: Codable, Equatable {
     /// Schema 2 made screen OCR and recording retention opt-in. Schema 1 files
-    /// keep the values their owner already saw in Settings.
-    static let currentSchemaVersion = 2
+    /// keep the values their owner already saw in Settings. Schema 3 turned
+    /// meeting detection on by default (see `meetingCapture`).
+    static let currentSchemaVersion = 3
     /// 0 keeps recordings until they are deleted by hand.
     static let keepRecordingsForever = 0
 
@@ -40,7 +41,8 @@ struct NativeSettings: Codable, Equatable {
     var screenContextDenylist: [String]
     /// Send the text around the cursor to the local correction model.
     var textboxContext: Bool
-    /// Notice calls and offer to record meeting notes (mic + call audio).
+    /// Notice calls and offer to record meeting notes (mic + call audio). On by
+    /// default since schema 3: it only asks, it never records by itself.
     var meetingCapture: Bool
     /// Start recording a detected call without asking. Off by default:
     /// recording other people needs their consent in some places.
@@ -132,7 +134,7 @@ struct NativeSettings: Codable, Equatable {
         stylePreferences: [String: [String]] = [:],
         screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
         textboxContext: Bool = false,
-        meetingCapture: Bool = false,
+        meetingCapture: Bool = true,
         meetingAutoStart: Bool = false,
         checkForUpdates: Bool = true,
         updateAnnounced: String = "",
@@ -220,7 +222,13 @@ struct NativeSettings: Codable, Equatable {
             ?? ContextPolicy.defaultDenylist
         // Off until the user turns it on: it reads what they are typing.
         textboxContext = try values.decodeIfPresent(Bool.self, forKey: .textboxContext) ?? false
-        meetingCapture = try values.decodeIfPresent(Bool.self, forKey: .meetingCapture) ?? false
+        // Every save writes every key, so a stored false before schema 3 is the old
+        // off-by-default, indistinguishable from a choice. Those files turn it on once;
+        // the next save writes schema 3, and from then on a false is the owner's.
+        // Auto-start keeps its stored value: detection always asks first.
+        meetingCapture =
+            storedSchema < 3
+            ? true : (try values.decodeIfPresent(Bool.self, forKey: .meetingCapture) ?? true)
         meetingAutoStart =
             try values.decodeIfPresent(Bool.self, forKey: .meetingAutoStart) ?? false
         checkForUpdates = try values.decodeIfPresent(Bool.self, forKey: .checkForUpdates) ?? true
