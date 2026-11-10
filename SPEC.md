@@ -365,7 +365,8 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
 Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupRuntime.swift; engine `meeting.rs`
 `QuietWatch`), all on the Mac:
 
-- What: the meetings_v2 MB s1 adapter (GGUF LoRA, q8_0, 26,231,840 bytes, sha256 eb04d7f0cd25…) on the shipped
+- What: the meetings_v2 MB s1 adapter (GGUF LoRA, q8_0, 26,231,616 bytes, sha256 3401c8b51232…, published in
+  Infatoshi/phonon-refiner-1.7b at commit 33da4bc; same tensors as the training export) on the shipped
   correction model (Q4_K_S-e4, sha256 0439996bda58…, the pinned refiner revision) removes fillers, stutters and
   false starts and fixes misrecognitions, keeping every speaker line in order. Blind judging preferred it to the
   uncorrected path 66-68% of the time (DEVLOG 2026-11-10 1:15 am). Its TL;DR line failed the attribution bar, so
@@ -414,8 +415,8 @@ Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupR
   downloads/<name>.part, resumed with HTTP Range after an interruption or a quit, moved into place only once the
   hash matches, archives unpacked into a staging folder renamed at the end. The runtime: the GitHub release asset
   llama-b12132-bin-macos-arm64.tar.gz (16,671,755 bytes, sha256 0f7b107b860d…) into runtime/llama-b12132-macos-arm64.
-  The adapter: `phonon-meeting-lora-q8_0.gguf` in Infatoshi/phonon-refiner-1.7b once uploaded (RELEASE: set its URL
-  at that commit in `MeetingCleanupManifest`) into models/meeting-cleanup. The base model is the one dictation
+  The adapter: `phonon-meeting-lora-q8_0.gguf` from Infatoshi/phonon-refiner-1.7b, pinned to commit 33da4bc in
+  `MeetingCleanupManifest`, into models/meeting-cleanup. The base model is the one dictation
   already uses (models/refiner's target, else the pinned Hugging Face snapshot), verified by hash; with any other,
   no cleanup.
 - Notes: the cleaned text by default with a Cleaned / Raw switch (filler-only turns left out of Cleaned), "Cleaned

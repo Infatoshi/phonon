@@ -302,7 +302,11 @@ final class MeetingCleanupTests: XCTestCase {
             XCTAssertEqual(component.asset.sha256.count, 64)
             XCTAssertGreaterThan(component.asset.bytes, 0)
         }
-        XCTAssertNil(MeetingCleanupManifest.adapter.asset.url, "not published yet")
+        // published, and pinned to a commit rather than a branch
+        let adapterURL = try XCTUnwrap(MeetingCleanupManifest.adapter.asset.url).absoluteString
+        XCTAssertTrue(adapterURL.hasPrefix("https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/"))
+        XCTAssertFalse(adapterURL.contains("/resolve/main/"))
+        XCTAssertTrue(adapterURL.hasSuffix("/" + MeetingCleanupManifest.adapter.asset.name))
         let candidates = MeetingCleanupManifest.baseCandidates(support: directory, environment: ["HF_HUB_CACHE": "/hub"])
         XCTAssertEqual(
             candidates.last?.path,

@@ -66,18 +66,19 @@ enum MeetingCleanupManifest {
         unpack: .tarGz(stripTo: "llama-b12132"), sentinel: "llama-server")
 
     /// The meetings_v2 MB s1 adapter (GGUF LoRA, q8_0) for the shipped correction model.
-    /// RELEASE: not published yet. Upload it to Infatoshi/phonon-refiner-1.7b as
-    /// `phonon-meeting-lora-q8_0.gguf` and set `url` to its resolve URL at that commit.
-    /// Until then it is used only when a verified copy is already installed here
-    /// (Application Support/Phonon/models/meeting-cleanup/phonon-meeting-lora-q8_0.gguf).
-    static let adapterPlaceholderURL =
-        "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/<revision>/phonon-meeting-lora-q8_0.gguf"
+    /// Published in Infatoshi/phonon-refiner-1.7b at commit 33da4bc, pinned by revision
+    /// so a later upload cannot change what users fetch. The published file has the same
+    /// 306 tensors as the training export; only its metadata (name, description) differs.
     static let adapter = PinnedComponent(
         dir: "models/meeting-cleanup", label: "meeting cleanup adapter",
         asset: PinnedAsset(
-            name: "phonon-meeting-lora-q8_0.gguf", url: nil,
-            sha256: "eb04d7f0cd25bc45e0e1b4c73447a72b5d388bf1cd82638ff11dab1df6c39596",
-            bytes: 26_231_840),
+            name: "phonon-meeting-lora-q8_0.gguf",
+            url: URL(
+                string:
+                    "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/33da4bcbb0f990f58960e11862a7f9c0f0119564/phonon-meeting-lora-q8_0.gguf"
+            ),
+            sha256: "3401c8b51232e9f7a06e89754df5574d7799ab8110055e39d98a4b5283eee639",
+            bytes: 26_231_616),
         unpack: .none, sentinel: "phonon-meeting-lora-q8_0.gguf")
 
     /// The correction model the adapter was trained on (RLQv4U Q4_K_S-e4): the pinned
