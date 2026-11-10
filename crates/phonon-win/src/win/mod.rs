@@ -221,7 +221,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
         .context("download the speech and correction models")?;
 
     tray::set_status("loading the correction model");
-    let mut engine = Engine::start()?;
+    let mut engine = Engine::start(crate::backends::DEFAULT_MANIFEST)?;
     load::start();
 
     // The same readiness gate macOS applies: prove the real audio path before

@@ -39,12 +39,13 @@ pub struct Engine {
 
 impl Engine {
     /// Locate the recogniser and start the correction server. Both must succeed;
-    /// recognition without correction is not a supported mode.
-    pub fn start() -> Result<Self> {
+    /// recognition without correction is not a supported mode. `backends` is the
+    /// tuned-runtime manifest URL (see `backends::DEFAULT_MANIFEST`).
+    pub fn start(backends: Option<&str>) -> Result<Self> {
         let mut recognizer =
             Recognizer::installed().context("speech recognition is not installed")?;
         recognizer.load_resident();
-        let corrector = Corrector::start().context("correction model did not start")?;
+        let corrector = Corrector::start(backends).context("correction model did not start")?;
         Ok(Self {
             recognizer,
             corrector,

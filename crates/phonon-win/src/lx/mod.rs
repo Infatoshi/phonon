@@ -159,12 +159,11 @@ fn app() -> Result<()> {
     fetch::ensure_all(&mut |p| tray::set_status(&p.line()))
         .context("download the speech and correction models")?;
     tray::set_status("loading the correction model");
-    let engine = Engine::start()?;
+    let mut engine = Engine::start(crate::backends::DEFAULT_MANIFEST)?;
     tray::set_status("running the startup check");
     let wav = paths::data_root().join("startup.wav");
     std::fs::write(&wav, crate::STARTUP_WAV).context("write the startup fixture")?;
-    let check = engine.run(&wav)?;
-    crate::assert_startup(&check)?;
+    let check = crate::startup_check_with_fallback(&mut engine, &wav, false)?;
     eprintln!("phonon: startup check passed: {}", check.polished);
 
     let idle = format!("ready. Hold {name} to dictate");
