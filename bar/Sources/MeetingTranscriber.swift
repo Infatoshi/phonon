@@ -65,18 +65,23 @@ final class MeetingTranscriber {
     }
 
     /// Meetings whose transcription a quit or crash interrupted (a progress file without an
-    /// error and no transcript): picked up again at launch.
+    /// error and no transcript): picked up again at launch. A progress file beside a written
+    /// transcript means the quit came after the transcript and before its hand-off to cleanup
+    /// (`finish` drops the file only after `onFinished`): the hand-off is made now.
     func resumePending(in root: URL, fileManager: FileManager = .default) {
         let folders =
             (try? fileManager.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
         for folder in folders.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let output = outputDirectory(folder)
-            guard let progress = MeetingTranscriptProgress.load(from: output),
-                progress.error == nil,
-                !fileManager.fileExists(
-                    atPath: output.appendingPathComponent(MeetingTranscript.fileName).path)
-            else { continue }
+            guard let progress = MeetingTranscriptProgress.load(from: output) else { continue }
+            let marker = output.appendingPathComponent(MeetingTranscriptProgress.fileName)
+            if fileManager.fileExists(atPath: output.appendingPathComponent(MeetingTranscript.fileName).path) {
+                onFinished?(folder.lastPathComponent)
+                try? fileManager.removeItem(at: marker)
+                continue
+            }
+            guard progress.error == nil else { continue }
             enqueue(directory: folder)
         }
     }
@@ -226,8 +231,6 @@ final class MeetingTranscriber {
         let transcript = TurnMerger.transcript(job.progress, metadata: job.metadata)
         do {
             try transcript.save(to: job.output)
-            try? FileManager.default.removeItem(
-                at: job.output.appendingPathComponent(MeetingTranscriptProgress.fileName))
         } catch {
             fail(job, message: "Could not save the transcript: \(error.localizedDescription)")
             return
@@ -238,7 +241,11 @@ final class MeetingTranscriber {
                 + String(format: "%.1f s", Date().timeIntervalSince(job.started)))
         current = nil
         jobs[job.id] = nil
+        // Hand off (cleanup writes its own progress file) before the marker goes, so a quit in
+        // between still hands it off at the next launch (`resumePending`).
         onFinished?(job.id)
+        try? FileManager.default.removeItem(
+            at: job.output.appendingPathComponent(MeetingTranscriptProgress.fileName))
         startNext()
     }
 }

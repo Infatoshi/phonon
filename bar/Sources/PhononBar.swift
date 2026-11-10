@@ -2356,25 +2356,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetingTranscriber.onJobsChanged = { [weak self] jobs in
             self?.appStore.meetingTranscription = jobs
         }
-        meetingTranscriber.onFinished = { [weak self] id in
-            guard let self else { return }
-            self.appStore.loadMeetings()
-            // then cleaned in the background, on the CPU, dictation first
-            self.meetingCleaner.enqueue(
-                directory: self.appStore.meetingsDirectory.appendingPathComponent(id, isDirectory: true))
-        }
+        appStore.meetingCleanupAvailable = meetingCleaner.isAvailable
+        meetingCleaner.onJobsChanged = { [weak self] jobs in self?.appStore.meetingCleanup = jobs }
+        // A finished transcript is then cleaned in the background, on the CPU, dictation first.
+        MeetingPipeline.connect(
+            transcriber: meetingTranscriber, cleaner: meetingCleaner, meetings: appStore.meetingsDirectory,
+            changed: { [weak self] in self?.appStore.loadMeetings() })
         // From the Notes button and from `meetingRecordingFinished` (a recording that stopped).
         appStore.onTranscribeMeeting = { [weak self] directory in
             self?.meetingTranscriber.enqueue(directory: directory)
         }
-        meetingTranscriber.resumePending(in: appStore.meetingsDirectory)
-        appStore.meetingCleanupAvailable = meetingCleaner.isAvailable
-        meetingCleaner.onJobsChanged = { [weak self] jobs in self?.appStore.meetingCleanup = jobs }
-        meetingCleaner.onFinished = { [weak self] _ in self?.appStore.loadMeetings() }
         appStore.onCleanMeeting = { [weak self] directory in
             self?.meetingCleaner.enqueue(directory: directory)
         }
-        meetingCleaner.resumePending(in: appStore.meetingsDirectory)
+        MeetingPipeline.resume(
+            transcriber: meetingTranscriber, cleaner: meetingCleaner, meetings: appStore.meetingsDirectory)
 
         // A competitor quit with consent leaves Phonon's tap in place; re-install
         // it so it sits at the head of the tap chain (SPEC step 5).

@@ -1016,3 +1016,181 @@ final class PinnedDownloaderTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/wrong").path))
     }
 }
+
+// MARK: - Recording to cleaned transcript with no click (GOAL N5)
+
+final class MeetingPipelineTests: XCTestCase {
+    private var support: URL!
+    private var meetings: URL { support.appendingPathComponent("Meetings", isDirectory: true) }
+
+    override func setUpWithError() throws {
+        support = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phonon-pipeline-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: support)
+    }
+
+    /// A stopped recording: metadata only (the stand-in engine never reads audio), 30 s on each
+    /// track at 1 kHz.
+    private func recorded(_ id: String) throws -> URL {
+        let folder = meetings.appendingPathComponent(id, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var metadata = MeetingMetadata(id: id, startedAt: "2026-11-10T12:00:00Z", startedHostNs: 0)
+        metadata.sampleRate = 1_000
+        let chunks = (0..<6).map {
+            MeetingChunk(index: $0, file: ChunkedWavWriter.fileName($0), startSample: Int64($0) * 5_000, sampleCount: 5_000)
+        }
+        metadata.micChunks = chunks
+        metadata.systemChunks = chunks
+        metadata.endedAt = "2026-11-10T12:00:30Z"
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+        return folder
+    }
+
+    /// The engine's answer to a span: one 60-word sentence per span.
+    private func answer(_ command: [String: Any]) -> [String: Any] {
+        let start = command["start_sample"] as! Int64
+        let words = (0..<60).map { "s\(start)w\($0)" }.joined(separator: " ") + "."
+        return [
+            "type": "meeting_span", "id": command["id"] as! String,
+            "sentences": [["start": 0.5, "end": 20.0, "text": words]], "model": "test-model",
+        ]
+    }
+
+    @MainActor
+    private func waitUntil(_ what: String, _ condition: () -> Bool) async {
+        for _ in 0..<400 where !condition() {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(condition(), what)
+    }
+
+    @MainActor
+    private func cleaner(_ runtime: FakeRuntime) -> MeetingCleaner {
+        MeetingCleaner(
+            environment: .init(
+                available: { true }, physicalMemory: { 32 << 30 }, availableMemory: { 8 << 30 },
+                makeRuntime: { (runtime, "adaptersha") }))
+    }
+
+    @MainActor
+    func testAStoppedRecordingIsTranscribedThenCleanedWithNoClick() async throws {
+        let store = NativeAppStore(supportDirectory: support)
+        let transcriber = MeetingTranscriber()
+        let runtime = FakeRuntime()
+        let cleaner = cleaner(runtime)
+        var sent: [[String: Any]] = []
+        transcriber.send = { sent.append($0) }
+        transcriber.onJobsChanged = { store.meetingTranscription = $0 }
+        cleaner.onJobsChanged = { store.meetingCleanup = $0 }
+        MeetingPipeline.connect(
+            transcriber: transcriber, cleaner: cleaner, meetings: meetings, changed: { store.loadMeetings() })
+        store.onTranscribeMeeting = { transcriber.enqueue(directory: $0) }
+        transcriber.setEngineReady(true)
+        cleaner.setEngineReady(true)
+
+        // a dictation is under way when the call ends: the transcript waits in the engine's
+        // queue (its holds), the cleanup waits here
+        cleaner.setDictationQuiet(false)
+        let folder = try recorded("meeting_1")
+        store.meetingRecordingFinished(directory: folder)
+        XCTAssertEqual(store.transcriptState(store.meetings[0]), .transcribing(progress: 0))
+        XCTAssertEqual(sent.count, 1, "the first span goes to the engine with no click")
+        var answered = 0
+        while answered < sent.count, answered < 10 {
+            transcriber.handle(answer(sent[answered]))
+            answered += 1
+        }
+        XCTAssertEqual(answered, 2, "one span per track")
+        XCTAssertNotNil(MeetingTranscript.load(from: folder))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: folder.appendingPathComponent(MeetingTranscriptProgress.fileName).path))
+        // Notes has the raw transcript now and shows the cleanup waiting for the dictation
+        guard case .ready = store.transcriptState(store.meetings[0]) else {
+            return XCTFail("the transcript is listed")
+        }
+        await waitUntil("queued for cleanup") { store.meetingCleanup["meeting_1"] != nil }
+        XCTAssertTrue(runtime.prompts.isEmpty, "no chunk while the user dictates")
+        if case .cleaning(_, let paused) = store.cleanupState(store.meetings[0]) {
+            XCTAssertTrue(paused || store.meetingCleanup["meeting_1"] == .queued)
+        } else {
+            XCTFail("Notes shows the cleanup")
+        }
+
+        cleaner.setDictationQuiet(true)
+        await waitUntil("cleaned") { CleanedTranscript.load(from: folder) != nil }
+        await waitUntil("Notes reloaded") {
+            if case .cleaned = store.cleanupState(store.meetings[0]) { return true }
+            return false
+        }
+        XCTAssertEqual(runtime.prompts.count, 1)
+        XCTAssertNil(MeetingCleanupProgress.load(from: folder))
+        XCTAssertTrue(transcriber.isIdle)
+        XCTAssertTrue(cleaner.isIdle)
+    }
+
+    @MainActor
+    func testAQuitBetweenTheTranscriptAndItsCleanupIsHandedOffAtTheNextLaunch() async throws {
+        let folder = try recorded("meeting_2")
+        // the transcript was written and the app quit before cleanup took it: its marker is still there
+        MeetingTranscriber.markPending(directory: folder)
+        let transcript = MeetingTranscript(
+            model: "m", createdAt: "",
+            turns: [
+                MeetingTranscript.Turn(
+                    startSeconds: 0, endSeconds: 20, speaker: .me,
+                    text: (0..<60).map { "w\($0)" }.joined(separator: " ") + ".")
+            ])
+        try transcript.save(to: folder)
+        XCTAssertNil(MeetingCleanupProgress.load(from: folder))
+
+        let transcriber = MeetingTranscriber()
+        var sent: [[String: Any]] = []
+        transcriber.send = { sent.append($0) }
+        let runtime = FakeRuntime()
+        let cleaner = cleaner(runtime)
+        var changes = 0
+        MeetingPipeline.connect(transcriber: transcriber, cleaner: cleaner, meetings: meetings, changed: { changes += 1 })
+        MeetingPipeline.resume(transcriber: transcriber, cleaner: cleaner, meetings: meetings)
+        XCTAssertTrue(sent.isEmpty, "never transcribed twice")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: folder.appendingPathComponent(MeetingTranscriptProgress.fileName).path))
+        XCTAssertEqual(cleaner.jobs["meeting_2"], .queued)
+        XCTAssertNotNil(MeetingCleanupProgress.load(from: folder), "a second quit now resumes the cleanup")
+
+        transcriber.setEngineReady(true)
+        cleaner.setEngineReady(true)
+        cleaner.setDictationQuiet(true)
+        await waitUntil("cleaned") { CleanedTranscript.load(from: folder) != nil }
+        XCTAssertEqual(runtime.prompts.count, 1)
+        XCTAssertGreaterThanOrEqual(changes, 2)
+    }
+
+    @MainActor
+    func testAQuitMidTranscriptResumesAndStillGoesOnToCleanup() async throws {
+        let folder = try recorded("meeting_3")
+        MeetingTranscriber.markPending(directory: folder)
+        let transcriber = MeetingTranscriber()
+        var sent: [[String: Any]] = []
+        transcriber.send = { sent.append($0) }
+        let runtime = FakeRuntime()
+        let cleaner = cleaner(runtime)
+        MeetingPipeline.connect(transcriber: transcriber, cleaner: cleaner, meetings: meetings, changed: {})
+        MeetingPipeline.resume(transcriber: transcriber, cleaner: cleaner, meetings: meetings)
+        transcriber.setEngineReady(true)
+        cleaner.setEngineReady(true)
+        cleaner.setDictationQuiet(true)
+        var answered = 0
+        while answered < sent.count, answered < 10 {
+            transcriber.handle(answer(sent[answered]))
+            answered += 1
+        }
+        await waitUntil("cleaned") { CleanedTranscript.load(from: folder) != nil }
+        XCTAssertEqual(runtime.prompts.count, 1)
+    }
+}
