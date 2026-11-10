@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreMedia
 import XCTest
 
@@ -380,7 +381,7 @@ final class MeetingRecordingFilesTests: XCTestCase {
         index.end(reason: "call_ended")
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        XCTAssertEqual(object["sample_rate"] as? Int, 48_000)
+        XCTAssertEqual(object["sample_rate"] as? Int, 16_000)
         XCTAssertEqual(object["chunk_seconds"] as? Int, 5)
         XCTAssertEqual(object["system_source"] as? String, "screencapturekit")
         XCTAssertEqual((object["mic_chunks"] as? [[String: Any]])?.count, 1)
@@ -401,12 +402,68 @@ final class MeetingRecordingFilesTests: XCTestCase {
         let writer = try ChunkedWavWriter(
             directory: directory.appendingPathComponent("mic"),
             onChunkClosed: { closed.append($0) })
-        XCTAssertEqual(writer.samplesPerChunk, 240_000)
-        try writer.append([Float](repeating: 0.1, count: 500_000))
-        XCTAssertEqual(closed.map(\.sampleCount), [240_000, 240_000])
+        XCTAssertEqual(MeetingFormat.sampleRate, 16_000)
+        XCTAssertEqual(writer.samplesPerChunk, 80_000)
+        try writer.append([Float](repeating: 0.1, count: 170_000))
+        XCTAssertEqual(closed.map(\.sampleCount), [80_000, 80_000])
         try writer.finish()
-        XCTAssertEqual(closed.map(\.sampleCount), [240_000, 240_000, 20_000])
-        XCTAssertEqual(closed.map(\.startSample), [0, 240_000, 480_000])
+        XCTAssertEqual(closed.map(\.sampleCount), [80_000, 80_000, 10_000])
+        XCTAssertEqual(closed.map(\.startSample), [0, 80_000, 160_000])
+        let full = try FileManager.default.attributesOfItem(
+            atPath: directory.appendingPathComponent("mic/0000.wav").path)[.size] as? Int
+        XCTAssertEqual(full, 44 + 80_000 * 2)
+    }
+
+    /// GOAL N4, at most 250 MB of disk per hour of meeting: two tracks of 720 chunks an hour,
+    /// plus metadata.json (about 105 KB for a 26-minute meeting at 48 kHz, so well under 1 MB).
+    func testAnHourOfTwoTracksFitsTheDiskBar() {
+        let chunkBytes = 44 + MeetingFormat.sampleRate * MeetingFormat.chunkSeconds * 2
+        let chunksPerHour = 3_600 / MeetingFormat.chunkSeconds
+        let audioBytes = 2 * chunksPerHour * chunkBytes
+        XCTAssertEqual(audioBytes, 230_463_360)
+        XCTAssertLessThanOrEqual(audioBytes + 1_000_000, 250_000_000)
+    }
+
+    /// A 48 kHz capture (the usual built-in and USB microphone, or ScreenCaptureKit if it ever
+    /// ignores the asked-for rate) converted buffer by buffer to the track's 16 kHz: a third of
+    /// the samples, no seams between buffers, speech-band tones kept and content above 8 kHz
+    /// filtered out instead of folded down.
+    func testCaptureAt48kHzIsConvertedTo16kHzWithoutSeamsOrAliasing() throws {
+        let source = try XCTUnwrap(
+            AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false))
+        let target = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: Double(MeetingFormat.sampleRate), channels: 1,
+                interleaved: false))
+        func run(frequency: Double) throws -> [Float] {
+            let converter = try XCTUnwrap(AVAudioConverter(from: source, to: target))
+            var out: [Float] = []
+            for block in 0..<24 {
+                let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: source, frameCapacity: 4_096))
+                buffer.frameLength = 4_096
+                let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+                for n in 0..<4_096 {
+                    let t = Double(block * 4_096 + n) / 48_000
+                    channel[n] = Float(0.5 * sin(2 * .pi * frequency * t))
+                }
+                out += try XCTUnwrap(MeetingRecorder.convert(buffer, with: converter, to: target))
+            }
+            return out
+        }
+        func rms(_ x: ArraySlice<Float>) -> Double {
+            sqrt(x.reduce(0) { $0 + Double($1) * Double($1) } / Double(max(1, x.count)))
+        }
+        let voice = try run(frequency: 1_000)
+        // 24 x 4,096 = 98,304 samples in; the converter holds back at most a few dozen
+        XCTAssertEqual(Double(voice.count), 98_304.0 / 3, accuracy: 64)
+        let steady = voice[2_000..<(voice.count - 2_000)]
+        XCTAssertEqual(rms(steady), 0.5 / 2.0.squareRoot(), accuracy: 0.01)
+        // no seam: sample to sample a 1 kHz tone at 16 kHz moves at most 2 sin(pi/16) x 0.5
+        let jump = zip(steady.dropFirst(), steady).map { abs($0 - $1) }.max() ?? 0
+        XCTAssertLessThan(Double(jump), 2 * sin(Double.pi / 16) * 0.5 + 0.01)
+        // 12 kHz would fold to 4 kHz with plain decimation; it is filtered instead
+        let above = try run(frequency: 12_000)
+        XCTAssertLessThan(rms(above[2_000..<(above.count - 2_000)]), 0.005)
     }
 
     /// Both tracks on one clock: a click captured at the same host time in
@@ -414,15 +471,17 @@ final class MeetingRecordingFilesTests: XCTestCase {
     /// each track is shifted by its start offset, and summing works.
     func testTracksShareOneSampleClockAndSumAligned() throws {
         let origin: UInt64 = 5_000_000_000
-        let metadata = MeetingMetadata(
+        // at 48 kHz (meetings before 2026-11-10): the clock is the same at any rate
+        var metadata = MeetingMetadata(
             id: "meeting_2", startedAt: "2026-10-29T18:00:00Z", startedHostNs: origin,
             appBundleID: nil, appName: nil, windowTitle: nil, conferenceURL: nil, micDevice: nil)
+        metadata.sampleRate = 48_000
         let index = try MeetingIndex(directory: directory, metadata: metadata)
         let mic = try ChunkedWavWriter(
-            directory: directory.appendingPathComponent("mic"), chunkSeconds: 1,
+            directory: directory.appendingPathComponent("mic"), sampleRate: 48_000, chunkSeconds: 1,
             onChunkClosed: { index.chunkClosed($0, track: .mic) })
         let system = try ChunkedWavWriter(
-            directory: directory.appendingPathComponent("system"), chunkSeconds: 1,
+            directory: directory.appendingPathComponent("system"), sampleRate: 48_000, chunkSeconds: 1,
             onChunkClosed: { index.chunkClosed($0, track: .system) })
         let micStart = origin + 10_000_000  // 10 ms after the start: 480 samples
         let systemStart = origin + 250_000_000  // SCK starts later: 12,000 samples
@@ -492,7 +551,7 @@ final class MeetingRecordingFilesTests: XCTestCase {
     func testGapsBecomeSilenceAndCapturedSamplesAreNeverDroppedOrGated() throws {
         var closed = [MeetingChunk]()
         let writer = try ChunkedWavWriter(
-            directory: directory.appendingPathComponent("system"), chunkSeconds: 10,
+            directory: directory.appendingPathComponent("system"), sampleRate: 48_000, chunkSeconds: 10,
             onChunkClosed: { closed.append($0) })
         let t0: UInt64 = 1_000_000_000
         let quiet = [Float](repeating: 0.001, count: 1_000)  // about -60 dBFS
@@ -524,14 +583,14 @@ final class MeetingRecordingFilesTests: XCTestCase {
     /// clock and is recorded; a later stall is padded again.
     func testAnOverLimitJumpReanchorsAndLaterGapsArePadded() throws {
         let origin: UInt64 = 1_000_000_000
-        let index = try MeetingIndex(
-            directory: directory,
-            metadata: MeetingMetadata(
-                id: "m", startedAt: "2026-10-29T18:00:00Z", startedHostNs: origin,
-                appBundleID: nil, appName: nil, windowTitle: nil, conferenceURL: nil,
-                micDevice: nil))
+        var metadata = MeetingMetadata(
+            id: "m", startedAt: "2026-10-29T18:00:00Z", startedHostNs: origin,
+            appBundleID: nil, appName: nil, windowTitle: nil, conferenceURL: nil,
+            micDevice: nil)
+        metadata.sampleRate = 48_000
+        let index = try MeetingIndex(directory: directory, metadata: metadata)
         let writer = try ChunkedWavWriter(
-            directory: directory.appendingPathComponent("system"), chunkSeconds: 10,
+            directory: directory.appendingPathComponent("system"), sampleRate: 48_000, chunkSeconds: 10,
             onChunkClosed: { index.chunkClosed($0, track: .system) })
         let block = [Float](repeating: 0.1, count: 1_000)
         try writer.append(block, hostNs: origin)

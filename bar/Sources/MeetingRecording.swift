@@ -6,7 +6,8 @@ import ScreenCaptureKit
 import os
 
 // Meeting capture: the user's microphone and the system audio, each as its
-// own 48 kHz mono 16-bit track, in closed 5 s WAV chunks under
+// own 16 kHz mono 16-bit track (48 kHz before 2026-11-10; a meeting's
+// metadata.json says which), in closed 5 s WAV chunks under
 // ~/Library/Application Support/Phonon/Meetings/<id>/{mic,system}/NNNN.wav
 // with a metadata.json index rewritten atomically as each chunk closes. A
 // crash loses at most the open chunk, and a rolling transcriber can read
@@ -15,7 +16,7 @@ import os
 // meeting lane measured chunk length to be the end-of-meeting latency lever.
 //
 // The two tracks share one clock, the host clock (ns since boot): sample n
-// of a track was captured at `<track>_first_sample_host_ns + n / 48 kHz`,
+// of a track was captured at `<track>_first_sample_host_ns + n / sample_rate`,
 // and `<track>_start_offset_samples` is that first sample's offset from
 // `started_host_ns`. To sum the tracks sample-aligned, put sample n of each
 // track at timeline sample `<track>_start_offset_samples + n`. A track that
@@ -33,7 +34,10 @@ import os
 // Recording permission Phonon already asks for, so there is no new prompt.
 
 enum MeetingFormat {
-    static let sampleRate = 48_000
+    /// What the speech model consumes (Parakeet, 16 kHz) and what the call-echo gate analyses
+    /// (16 kHz, 220 Hz to 4 kHz). Two tracks cost 230.4 MB per hour (GOAL N4: at most 250 MB);
+    /// at 48 kHz they cost 691 MB, and the sidecar threw two thirds of it away before the model.
+    static let sampleRate = 16_000
     static let chunkSeconds = 5
 }
 
@@ -699,7 +703,9 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         var raised: NSError?
         let installed = PhononCatchException({
             input.installTap(onBus: 0, bufferSize: 4_096, format: format) { [weak self] buffer, when in
-                guard let self, let samples = self.convert(buffer, with: converter) else { return }
+                guard let self, let samples = Self.convert(buffer, with: converter, to: self.target) else {
+                    return
+                }
                 let hostNs = HostClock.plausible(
                     when.isHostTimeValid ? HostClock.nanoseconds(machTicks: when.hostTime) : nil,
                     now: HostClock.now())
@@ -732,9 +738,11 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         engine.stop()
     }
 
-    private func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter)
-        -> [Float]?
-    {
+    /// One captured buffer at the track's rate (mono float32). `converter` keeps its state from
+    /// buffer to buffer, so a stream converted buffer by buffer has no seams.
+    static func convert(
+        _ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to target: AVAudioFormat
+    ) -> [Float]? {
         let ratio = target.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 32)
         guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else {
@@ -780,13 +788,49 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
-        guard type == .audio, let samples = Self.floatSamples(sampleBuffer) else { return }
+        guard type == .audio, let captured = Self.floatSamples(sampleBuffer) else { return }
         // ScreenCaptureKit stamps buffers on the host time clock.
         let hostNs = HostClock.plausible(
             HostClock.nanoseconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
             now: HostClock.now())
-        // Already on `queue`.
+        // Already on `queue`. The stream is asked for the track's rate; should it deliver
+        // another, convert rather than write samples the track clock would misplace.
+        let rate = Self.sampleRate(sampleBuffer) ?? target.sampleRate
+        guard let samples = systemSamples(captured, rate: rate) else { return }
         try? system.append(samples, hostNs: hostNs)
+    }
+
+    /// On `queue`: the converter for system audio delivered at a rate other than the track's.
+    private var systemConverter: (rate: Double, converter: AVAudioConverter)?
+
+    private func systemSamples(_ captured: [Float], rate: Double) -> [Float]? {
+        if abs(rate - target.sampleRate) < 0.5 || captured.isEmpty { return captured }
+        if systemConverter?.rate != rate {
+            guard
+                let format = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
+                let converter = AVAudioConverter(from: format, to: target)
+            else { return nil }
+            NSLog("phonon meeting: system audio arrives at \(Int(rate)) Hz; converting")
+            systemConverter = (rate, converter)
+        }
+        guard let converter = systemConverter?.converter,
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: converter.inputFormat, frameCapacity: AVAudioFrameCount(captured.count)),
+            let channel = buffer.floatChannelData?[0]
+        else { return nil }
+        buffer.frameLength = AVAudioFrameCount(captured.count)
+        captured.withUnsafeBufferPointer { channel.update(from: $0.baseAddress!, count: captured.count) }
+        return Self.convert(buffer, with: converter, to: target)
+    }
+
+    /// The sample rate a ScreenCaptureKit audio buffer says it holds.
+    static func sampleRate(_ sampleBuffer: CMSampleBuffer) -> Double? {
+        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+            let basic = CMAudioFormatDescriptionGetStreamBasicDescription(description)
+        else { return nil }
+        let rate = basic.pointee.mSampleRate
+        return rate > 0 ? rate : nil
     }
 
     /// Mono float samples from a ScreenCaptureKit audio buffer (deinterleaved
