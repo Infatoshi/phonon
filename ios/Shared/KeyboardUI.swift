@@ -31,7 +31,20 @@ final class KeyboardModel: ObservableObject {
     @Published var latched = false
     /// Bumped by the host when the text around the cursor changes (re-evaluates auto-capitalisation).
     @Published var contextVersion = 0
+    /// False while the keyboard is off screen; the idle fluid stops redrawing.
+    @Published var visible = true
+    /// Low Power Mode: the idle fluid holds still.
+    @Published var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     weak var host: KeyboardHost?
+    private var powerObserver: NSObjectProtocol?
+
+    init() {
+        powerObserver = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in self?.lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled }
+    }
+
+    deinit { if let powerObserver { NotificationCenter.default.removeObserver(powerObserver) } }
 
     func push(level: CGFloat) {
         levels.removeFirst()
@@ -98,38 +111,35 @@ struct KeyboardView: View {
 
     private var off: Bool { model.phase == .needsSession || model.phase == .needsAccess }
 
-    /// The bar is a dark track holding the Mac's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2x:
-    /// the same black capsule whose ember centre lights with your voice, swells while listening and breathes while
-    /// writing. A short hint sits beside it, since a phone has no shortcut key to explain the gesture.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// At rest the bar is a grey, softly blurred fluid that drifts inside the capsule (no label). Pressed, it becomes
+    /// the Mac's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2.6x: the black capsule whose ember
+    /// centre lights and swells with your voice, then breathes while the text is written. Only the off states (no
+    /// Full Access, app not running) keep a short label over the fluid, since they need an instruction.
     private var talkBar: some View {
-        let listening = model.phase == .listening
-        let pillMode: MacPill.Mode = listening ? .listening : (model.phase == .working ? .working : .idle)
+        let active = model.phase == .listening || model.phase == .working
+        let pillMode: MacPill.Mode = model.phase == .listening ? .listening : .working
         return ZStack {
-            Capsule()
-                .fill(Color.black)
-                .overlay(Capsule().strokeBorder(off ? Ember.line : Color(hex: 0x2A1A12), lineWidth: 1))
-            if off {
-                HStack(spacing: 8) {
-                    Image(systemName: "mic.fill").font(.system(size: 14, weight: .semibold))
-                    Text(barLabel).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                }
-                .foregroundStyle(Ember.soft)
-                .padding(.horizontal, 16)
+            if active {
+                MacPill(mode: pillMode, level: voiceLevel, scale: 2.6)
+                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
             } else {
-                HStack(spacing: 10) {
-                    MacPill(mode: pillMode, level: voiceLevel, scale: 2)
-                        .frame(width: 160, height: 34)
-                    Spacer(minLength: 4)
-                    Text(hint)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(listening ? Ember.soft : Ember.mute)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-                .padding(.leading, 10)
-                .padding(.trailing, 16)
+                IdleFluid(animate: model.visible && !model.lowPower && !reduceMotion, dim: off)
+                    .overlay {
+                        if off {
+                            Text(barLabel)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Ember.soft)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                                .padding(.horizontal, 16)
+                        }
+                    }
+                    .transition(.opacity)
             }
         }
+        .animation(.easeOut(duration: 0.18), value: active)
         .frame(maxWidth: .infinity)
         .frame(height: 42)
         .contentShape(Capsule())
@@ -170,7 +180,8 @@ struct KeyboardView: View {
                     }
                 }
         )
-        .accessibilityLabel(listening ? "Finish dictation" : "Dictate")
+        .accessibilityLabel(model.phase == .listening ? "Finish dictation" : (off ? barLabel : "Dictate"))
+        .accessibilityHint(hint)
         .accessibilityAddTraits(.isButton)
     }
 
@@ -461,6 +472,50 @@ struct MacPill: View {
         case .listening: return CGSize(width: 66 + 14 * energy, height: 13 + 3 * energy)
         case .working: return CGSize(width: 38 + 10 * energy, height: 10 + 3 * energy)
         }
+    }
+}
+
+/// The talk bar at rest: grey light drifting slowly inside a dark capsule, like smoke under frosted glass. Each blob
+/// is a radial gradient (soft by construction, so no blur pass or offscreen texture), redrawn at most 20 times a
+/// second and only while `animate` (keyboard on screen, no Reduce Motion, no Low Power Mode); otherwise it holds
+/// one still frame.
+struct IdleFluid: View {
+    let animate: Bool
+    var dim = false
+
+    /// x centre (fraction of width), drift amplitudes, angular speeds (rad/s, periods 7 to 15 s), phase, radius
+    /// (fraction of height), brightness.
+    private struct Blob { let x, ax, ay, sx, sy, phase, r, white: Double }
+    private static let blobs: [Blob] = [
+        Blob(x: 0.22, ax: 0.14, ay: 0.30, sx: 0.47, sy: 0.71, phase: 0.0, r: 1.25, white: 0.20),
+        Blob(x: 0.55, ax: 0.18, ay: 0.35, sx: 0.41, sy: 0.53, phase: 2.1, r: 1.45, white: 0.15),
+        Blob(x: 0.82, ax: 0.12, ay: 0.28, sx: 0.67, sy: 0.43, phase: 4.2, r: 1.10, white: 0.18),
+        Blob(x: 0.40, ax: 0.22, ay: 0.40, sx: 0.83, sy: 0.61, phase: 1.3, r: 0.80, white: 0.10),
+    ]
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !animate)) { context in
+            let t = animate ? context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600) : 0
+            Canvas { g, size in
+                g.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(hex: 0x1D1D1F)))
+                let scale = dim ? 0.6 : 1
+                for b in Self.blobs {
+                    let c = CGPoint(x: size.width * (b.x + b.ax * sin(t * b.sx + b.phase)),
+                                    y: size.height * (0.5 + b.ay * cos(t * b.sy + b.phase)))
+                    let r = size.height * b.r
+                    // stretched sideways so the blobs read as a flowing band, not spots
+                    var blob = g
+                    blob.translateBy(x: c.x, y: c.y)
+                    blob.scaleBy(x: 2.2, y: 1)
+                    blob.fill(Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)),
+                              with: .radialGradient(Gradient(colors: [Color.white.opacity(b.white * scale),
+                                                                      Color.white.opacity(0)]),
+                                                    center: .zero, startRadius: 0, endRadius: r))
+                }
+            }
+        }
+        .clipShape(Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
     }
 }
 
