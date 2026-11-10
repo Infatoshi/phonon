@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use phonon_hotkey::Action;
 
 use crate::fetch;
+use crate::history;
 use crate::manifest;
 use crate::paths;
 use crate::pipeline::Engine;
@@ -109,6 +110,7 @@ fn app() -> Result<()> {
     let (events, inbox) = channel::<Event>();
     let (menu_tx, menu_rx) = channel::<tray::Command>();
     tray::create(menu_tx);
+    refresh_history();
     {
         let events = events.clone();
         std::thread::spawn(move || {
@@ -204,6 +206,12 @@ fn app() -> Result<()> {
             Event::Key(Action::Start) if recording.is_none() => recording = begin(),
             Event::Key(Action::Stop) => finish(&engine, recording.take(), &idle),
             Event::Key(_) => {}
+            Event::Menu(tray::Command::ToggleHistory) => toggle_history(),
+            // The recorder is still writing the active recording's file; leave it.
+            Event::Menu(tray::Command::ClearHistory) => {
+                clear_history(recording.as_ref().map(|r| r.path()))
+            }
+            Event::Menu(tray::Command::CopyRecent(index)) => copy_recent(index),
         }
     }
     Ok(())
@@ -257,8 +265,13 @@ fn begin() -> Option<capture::Recording> {
 fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
     let Some(recording) = recording else { return };
     let key_up = std::time::Instant::now();
+    let seconds = recording.seconds();
+    // The recorder writes this file as it records, so a long dictation survives
+    // a crash; with local history off it is deleted once the text is in.
+    let wav = recording.path().to_path_buf();
     tray::set_status("transcribing");
-    match recording.finish().and_then(|wav| engine.dictate(&wav)) {
+    let outcome = recording.finish().and_then(|wav| engine.dictate(&wav));
+    match &outcome {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {
@@ -287,5 +300,72 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
             true,
         ),
     }
+    if history::enabled() {
+        let (raw, final_text) = match &outcome {
+            Ok(result) => (result.raw.as_str(), result.polished.trim()),
+            Err(_) => ("", ""),
+        };
+        let entry = history::Entry::new(history::now_ms(), seconds, raw, final_text, &wav);
+        if let Err(error) = history::append(&entry) {
+            eprintln!("phonon: could not save the dictation to history: {error:#}");
+        }
+        refresh_history();
+    } else if !history::keep_wav(false, outcome.is_ok(), seconds) {
+        history::remove_if_present(&wav);
+    }
     tray::set_status(idle);
+}
+
+/// Show the history switch and the recent list as they are on disk.
+fn refresh_history() {
+    tray::set_history(history::enabled(), history::recent_now());
+}
+
+fn toggle_history() {
+    let on = !history::enabled();
+    match history::set_enabled_in(&paths::data_root(), on) {
+        Ok(()) => {
+            eprintln!("phonon: local history {}", if on { "on" } else { "off" });
+            refresh_history();
+        }
+        Err(error) => tray::notify(
+            "Phonon could not change Keep history",
+            &format!("{error:#}"),
+            true,
+        ),
+    }
+}
+
+/// No confirmation dialog: a tray menu has nowhere to put one, and the item
+/// says what it does. `active` is a recording in progress, which stays.
+fn clear_history(active: Option<&std::path::Path>) {
+    match history::clear(active) {
+        Ok(removed) => {
+            eprintln!("phonon: history cleared ({removed} recordings removed)");
+            refresh_history();
+            tray::notify(
+                "History cleared",
+                &format!(
+                    "Removed the dictation history and {removed} recording{}.",
+                    if removed == 1 { "" } else { "s" }
+                ),
+                false,
+            );
+        }
+        Err(error) => tray::notify(
+            "Phonon could not clear history",
+            &format!("{error:#}"),
+            true,
+        ),
+    }
+}
+
+fn copy_recent(index: usize) {
+    let Some(text) = tray::recent_text(index) else {
+        return;
+    };
+    match inject::copy(&text) {
+        Ok(()) => tray::notify("Copied to the clipboard", "Paste it with Ctrl+V.", false),
+        Err(error) => tray::notify("Phonon could not copy that", &format!("{error:#}"), true),
+    }
 }

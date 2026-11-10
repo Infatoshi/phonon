@@ -89,6 +89,11 @@ fn paste_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Leave `text` on the clipboard, for the user to paste (the tray's recent list).
+pub fn copy(text: &str) -> Result<()> {
+    set_clipboard_text(text).context("write the clipboard")
+}
+
 /// Open the clipboard, retrying briefly: another process may hold it.
 fn open_clipboard() -> Result<()> {
     for _ in 0..20 {

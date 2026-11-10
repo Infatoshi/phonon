@@ -46,6 +46,10 @@ const WM_COPILOT: u32 = WM_APP + 3;
 const ID_TOGGLE: usize = 1;
 const ID_OPEN_FOLDER: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_HISTORY: usize = 4;
+const ID_CLEAR_HISTORY: usize = 5;
+/// "Recent dictations" submenu items: ID_RECENT + index into the recent list.
+const ID_RECENT: usize = 300;
 /// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
 const ID_KEY: usize = 100;
 
@@ -60,6 +64,30 @@ pub enum Command {
     Quit,
     /// The dictation key changed (menu pick or Copilot-key fallback).
     KeyChanged,
+    /// Turn local history on or off.
+    ToggleHistory,
+    /// Delete the history log and the kept recordings.
+    ClearHistory,
+    /// Copy this entry of the recent list (see `recent_text`) to the clipboard.
+    CopyRecent(usize),
+}
+
+/// Local history as the menu shows it; the worker thread owns the files and
+/// refreshes this with `set_history`, so opening the menu reads no file.
+static HISTORY_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RECENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Show history as on or off, with these recent dictations (newest first).
+pub fn set_history(on: bool, recent: Vec<String>) {
+    HISTORY_ON.store(on, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut list) = RECENT.lock() {
+        *list = recent;
+    }
+}
+
+/// The full text behind "Recent dictations" item `index`, as the menu listed it.
+pub fn recent_text(index: usize) -> Option<String> {
+    RECENT.lock().ok()?.get(index).cloned()
 }
 
 static TRAY: OnceLock<Mutex<TrayHandle>> = OnceLock::new();
@@ -365,6 +393,52 @@ fn send(command: Command) {
     }
 }
 
+/// A menu label shows `&` as an underline marker; `&&` is a literal one.
+fn menu_text(text: &str) -> String {
+    text.replace('&', "&&")
+}
+
+/// "Keep history", "Recent dictations" and "Clear history". AppendMenuW copies
+/// each label, so the buffers may go when this returns.
+fn append_history_items(menu: HMENU) {
+    let on = HISTORY_ON.load(std::sync::atomic::Ordering::Relaxed);
+    let recent: Vec<Vec<u16>> = RECENT
+        .lock()
+        .map(|list| {
+            list.iter()
+                .map(|text| wide(&menu_text(&crate::history::label(text))))
+                .collect()
+        })
+        .unwrap_or_default();
+    let keep = wide("Keep history");
+    let recent_title = wide("Recent dictations");
+    let empty = wide(if on {
+        "Nothing yet"
+    } else {
+        "Turn on Keep history to list them"
+    });
+    let clear = wide("Clear history");
+    unsafe {
+        let submenu: HMENU = CreatePopupMenu();
+        if recent.is_empty() {
+            AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, empty.as_ptr());
+        }
+        for (index, label) in recent.iter().enumerate() {
+            AppendMenuW(submenu, MF_STRING, ID_RECENT + index, label.as_ptr());
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        let checked = if on { MF_CHECKED } else { 0 };
+        AppendMenuW(menu, MF_STRING | checked, ID_HISTORY, keep.as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_POPUP,
+            submenu as usize,
+            recent_title.as_ptr(),
+        );
+        AppendMenuW(menu, MF_STRING, ID_CLEAR_HISTORY, clear.as_ptr());
+    }
+}
+
 fn show_menu(hwnd: HWND) {
     let menu: HMENU = unsafe { CreatePopupMenu() };
     if menu.is_null() {
@@ -401,6 +475,7 @@ fn show_menu(hwnd: HWND) {
             keys_title.as_ptr(),
         );
         AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, folder.as_ptr());
+        append_history_items(menu);
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, ID_QUIT, quit.as_ptr());
 
@@ -440,6 +515,11 @@ unsafe extern "system" fn window_proc(
                 ID_TOGGLE => send(Command::Toggle),
                 ID_OPEN_FOLDER => send(Command::OpenFolder),
                 ID_QUIT => send(Command::Quit),
+                ID_HISTORY => send(Command::ToggleHistory),
+                ID_CLEAR_HISTORY => send(Command::ClearHistory),
+                id if (ID_RECENT..ID_RECENT + crate::history::RECENT).contains(&id) => {
+                    send(Command::CopyRecent(id - ID_RECENT))
+                }
                 id if (ID_KEY..ID_KEY + super::hook::CHOICES.len()).contains(&id) => {
                     pick_key(id - ID_KEY)
                 }
