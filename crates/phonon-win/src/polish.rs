@@ -380,6 +380,12 @@ impl Server {
             // 16-token prefill 480 vs 548 t/s (about 4 ms per dictation), 64-token
             // prefill 1072 vs 704 t/s.
             .arg("--no-repack")
+            // No host-memory prompt cache (default up to 8 GiB): one client and one
+            // prompt prefix, which the slot's own KV cache already reuses. The server's
+            // private memory grew 125 -> 174 MB over ten dictations without this
+            // (Ubuntu QA VM, 2026-11-10).
+            .arg("--cache-ram")
+            .arg("0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         match gpu {
@@ -400,13 +406,16 @@ impl Server {
             let path = logs.join(format!("llama-server-{port}.log"));
             let log = std::fs::File::create(&path).context("create the correction server log")?;
             command.stdout(Stdio::null()).stderr(log);
-            // SIGTERM the server when Phonon dies, however it dies: a `pkill phonon`
+            // Kill the server when Phonon dies, however it dies: a `pkill phonon`
             // left the old server running with 2 GB (QA VM, 2026-11-07). The signal
-            // follows the spawning thread, which is the main thread here.
+            // follows the spawning thread, which is the main thread here. SIGKILL, not
+            // SIGTERM: llama-server's own SIGTERM shutdown can hang, and one did after a
+            // `pkill phonon` (main thread inside the handler, SIGTERM blocked, 1.1 GB
+            // left for 13 minutes; QA VM, 2026-11-10). The server keeps no state to save.
             use std::os::unix::process::CommandExt;
             unsafe {
                 command.pre_exec(|| {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
