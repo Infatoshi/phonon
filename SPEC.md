@@ -303,7 +303,14 @@ which carry no buttons. The prompt needs, in order:
 ## Meeting notes (macOS)
 
 Recording (bar/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
-asks "take notes?" (or starts by itself with auto-start). Meetings/<id>/ holds metadata.json plus 5 s 48 kHz mono
+asks "take notes?" (or starts by itself with auto-start). Detection (`meeting_capture`) is on by default since
+2026-11-09 (owner's decision; settings schema 3); auto-start (`meeting_auto_start`) stays off, so nothing records
+without a click. Every settings save writes every key, so a stored `false` in a schema 1 or 2 file is the old
+default and cannot be told from a choice: those files read as on once, and the next save writes schema 3, after
+which a `false` is the owner's and stays off. When the migration is what turns detection on (a schema 1 or 2 file
+without `meeting_capture: true`), `meeting_auto_start` is set to false with it, so someone who once enabled
+auto-start and then switched detection off is asked before any recording; they can turn auto-start back on. A file
+that already had detection on keeps its auto-start choice. Meetings/<id>/ holds metadata.json plus 5 s 48 kHz mono
 16-bit WAV chunks of two tracks on one host clock: mic/ (the user) and system/ (the call, ScreenCaptureKit). Each
 track's `<track>_start_offset_samples` places its sample 0 on the shared timeline; Notes shifts both so the
 earlier track starts at 0.
