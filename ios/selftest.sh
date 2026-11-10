@@ -1,12 +1,12 @@
 #!/bin/bash
 # Run the refiner self-test on the connected iPhone (the app's --selftest) and print Documents/selftest.jsonl.
-# usage: ./selftest.sh [threads]
+# usage: ./selftest.sh [threads] [flags...]   flags: --pool 0 (per-token threads), --stock 1 (stock ggml QoS and chunks)
 set -uo pipefail
 DEVICE=${PHONON_IOS_DEVICE:?set PHONON_IOS_DEVICE to the iPhone UDID}
 OUT=${TMPDIR:-/tmp}/phonon_selftest.jsonl
 STAMP=$(date +%s)
 xcrun devicectl device process launch --terminate-existing --device "$DEVICE" sh.phonon.ios --selftest \
-  --threads "${1:-4}" --stamp "$STAMP" > /dev/null
+  --threads "${1:-4}" --stamp "$STAMP" "${@:2}" > /dev/null
 for _ in $(seq 1 30); do
   sleep 5
   rm -f "$OUT"

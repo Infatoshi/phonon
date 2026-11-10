@@ -66,4 +66,28 @@ final class SelftestTests: XCTestCase {
             try? lines.write(to: dir.appendingPathComponent("selftest.jsonl"), atomically: true, encoding: .utf8)
         }
     }
+
+    /// The persistent pool with the patched worker QoS and repack chunking must give token-identical greedy output
+    /// to stock ggml (per-graph threads, stock chunking), at 2, 4 and 5 threads.
+    func testPersistentPoolTokenIdentical() throws {
+        let bundle = Bundle(for: SelftestTests.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "refiner", withExtension: "gguf"), "refiner.gguf not in the test bundle")
+        func run(threads: Int32, pool: Bool, stock: Bool) throws -> [String] {
+            Refiner.setStock(stock)
+            defer { Refiner.setStock(false) }
+            let r = try XCTUnwrap(Refiner(path: url.path, threads: threads, persistentPool: pool))
+            XCTAssertEqual(r.persistentPool, pool)
+            return Session.selftestCases.flatMap { mode, raw in
+                (0..<2).map { _ in
+                    let o = r.refine(raw, mode: mode)
+                    return "\(o.genTokens) \(String(o.tokenHash, radix: 16)) \(o.text)"
+                }
+            }
+        }
+        let stock = try run(threads: 4, pool: false, stock: true)
+        for t: Int32 in [4, 5, 2] {
+            XCTAssertEqual(try run(threads: t, pool: true, stock: false), stock, "pool, \(t) threads")
+        }
+        print("IDENTITY " + stock.map { $0.split(separator: " ").prefix(2).joined(separator: " ") }.joined(separator: ", "))
+    }
 }

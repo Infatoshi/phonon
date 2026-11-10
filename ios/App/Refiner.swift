@@ -23,15 +23,29 @@ final class Refiner: @unchecked Sendable {
         let prefillMs: Int
         let decodeMs: Int
         let guardFired: Bool
+        /// FNV-1a over the generated token ids: equal hashes = token-identical output across thread configurations
+        let tokenHash: UInt64
     }
 
     private let model: OpaquePointer
     private let ctx: OpaquePointer
     private let vocab: OpaquePointer
     private let sampler: UnsafeMutablePointer<llama_sampler>
+    /// The persistent worker pool (nil = ggml's per-graph pool, the pre-2026-11-10 path). Without it ggml starts and
+    /// joins threads - 1 pthreads for every graph, i.e. every decoded token. The pool is created on the calling
+    /// thread, and the patched ggml (ios/llama-b12132-phonon.patch) gives its workers that thread's QoS class, so
+    /// create the Refiner on the queue that will call refine(). It is paused (workers asleep on a condition
+    /// variable) after every refine, so it costs nothing between dictations.
+    private let pool: ggml_threadpool_t?
     let threads: Int32
 
-    init?(path: String, threads: Int32 = 4) {
+    /// Stock ggml behaviour for A/B runs (selftest --stock 1): workers at QOS_CLASS_DEFAULT and the stock repack
+    /// chunking. Process-wide; set before the Refiner is created.
+    static func setStock(_ stock: Bool) {
+        ggml_cpu_phonon_set(stock ? 0 : 1, stock ? 0 : 64)
+    }
+
+    init?(path: String, threads: Int32 = 4, persistentPool: Bool = true) {
         llama_backend_init()
         var mp = llama_model_default_params()
         mp.n_gpu_layers = 0
@@ -46,8 +60,16 @@ final class Refiner: @unchecked Sendable {
             llama_model_free(m)
             return nil
         }
+        var tp: ggml_threadpool_t? = nil
+        if persistentPool && threads > 1 {
+            var tpp = ggml_threadpool_params_default(threads)
+            tpp.paused = true
+            tp = ggml_threadpool_new(&tpp)
+            if let tp { llama_attach_threadpool(c, tp, tp) }
+        }
         model = m
         ctx = c
+        pool = tp
         vocab = llama_model_get_vocab(m)
         sampler = llama_sampler_init_greedy()
         self.threads = threads
@@ -56,8 +78,11 @@ final class Refiner: @unchecked Sendable {
     deinit {
         llama_sampler_free(sampler)
         llama_free(ctx)
+        if let pool { ggml_threadpool_free(pool) }
         llama_model_free(model)
     }
+
+    var persistentPool: Bool { pool != nil }
 
     private func tokenize(_ s: String) -> [llama_token] {
         let n = Int32(s.utf8.count)
@@ -126,14 +151,17 @@ final class Refiner: @unchecked Sendable {
         let t1 = Date()
         var out: [UInt8] = []
         var gen = 0
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         while ok && gen < cap {
             var tok = llama_sampler_sample(sampler, ctx, -1)
             if llama_vocab_is_eog(vocab, tok) { break }
             out += piece(tok)
             gen += 1
+            hash = (hash ^ UInt64(UInt32(bitPattern: tok))) &* 0x100_0000_01b3
             ok = llama_decode(ctx, llama_batch_get_one(&tok, 1)) == 0
         }
         let t2 = Date()
+        if let pool { ggml_threadpool_pause(pool) }  // workers sleep until the next dictation
         var text = String(decoding: out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         // the length guard: a runaway or a failed decode falls back to the raw transcript
         let rawWords = raw.split(separator: " ").count
@@ -144,6 +172,6 @@ final class Refiner: @unchecked Sendable {
         if fired { text = raw } else { text = LineBreaks.apply(Opener.restore(raw: raw, refined: text, mode: mode), mode: mode) }
         return Output(text: text, promptTokens: tokens.count, genTokens: gen,
                       prefillMs: Int(t1.timeIntervalSince(t0) * 1000), decodeMs: Int(t2.timeIntervalSince(t1) * 1000),
-                      guardFired: fired)
+                      guardFired: fired, tokenHash: hash)
     }
 }
