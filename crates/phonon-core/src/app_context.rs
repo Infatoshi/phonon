@@ -278,6 +278,63 @@ const DOCS_BUNDLES: &[&str] = &[
     "abnerworks.Typora",
 ];
 
+// Android package names, for dictations that arrive over the WebSocket API
+// (`remote.rs`): a phone names its target app by package. Same six categories.
+const ANDROID_WORK_CHAT: &[&str] = &[
+    "com.Slack",
+    "com.microsoft.teams",
+    "com.google.android.apps.dynamite",
+];
+const ANDROID_CHAT: &[&str] = &[
+    "com.discord",
+    "com.whatsapp",
+    "com.whatsapp.w4b",
+    "org.telegram.messenger",
+    "org.thoughtcrime.securesms",
+    "com.facebook.orca",
+    "com.google.android.apps.messaging",
+    "com.samsung.android.messaging",
+    "com.tencent.mm",
+    "jp.naver.line.android",
+    "com.twitter.android",
+    "com.linkedin.android",
+    "com.reddit.frontpage",
+];
+const ANDROID_EMAIL: &[&str] = &[
+    "com.google.android.gm",
+    "com.microsoft.office.outlook",
+    "com.fsck.k9",
+    "net.thunderbird.android",
+    "ch.protonmail.android",
+    "com.yahoo.mobile.client.android.mail",
+    "com.readdle.spark",
+    "com.fastmail.app",
+    "com.samsung.android.email.provider",
+];
+const ANDROID_AI: &[&str] = &[
+    "com.openai.chatgpt",
+    "com.anthropic.claude",
+    "com.google.android.apps.bard",
+    "ai.perplexity.app.android",
+    "com.deepseek.chat",
+    "ai.x.grok",
+    "com.microsoft.copilot",
+];
+const ANDROID_CODE: &[&str] = &[
+    "com.termux",
+    "org.connectbot",
+    "com.sonelli.juicessh",
+    "com.github.android",
+];
+const ANDROID_DOCS: &[&str] = &[
+    "com.google.android.apps.docs.editors.docs",
+    "com.google.android.keep",
+    "com.microsoft.office.word",
+    "com.microsoft.office.onenote",
+    "com.evernote",
+    "com.samsung.android.app.notes",
+];
+
 /// The category of a dictation target. A known host wins; a browser on an
 /// unknown site is `Other`, never the browser's own category.
 pub fn categorize(bundle_id: &str, url_host: Option<&str>) -> AppCategory {
@@ -315,6 +372,19 @@ pub fn categorize(bundle_id: &str, url_host: Option<&str>) -> AppCategory {
             .iter()
             .any(|pattern| bundle_matches(bundle_id, pattern))
         {
+            return category;
+        }
+    }
+    let android_table: [(&[&str], AppCategory); 6] = [
+        (ANDROID_AI, AppCategory::AiPrompt),
+        (ANDROID_EMAIL, AppCategory::Email),
+        (ANDROID_WORK_CHAT, AppCategory::WorkChat),
+        (ANDROID_CHAT, AppCategory::Chat),
+        (ANDROID_CODE, AppCategory::Code),
+        (ANDROID_DOCS, AppCategory::Docs),
+    ];
+    for (packages, category) in android_table {
+        if packages.contains(&bundle_id) {
             return category;
         }
     }
@@ -778,6 +848,23 @@ mod tests {
         assert_eq!(categorize("com.openai.chat", None), AppCategory::AiPrompt);
         assert_eq!(categorize("md.obsidian", None), AppCategory::Docs);
         assert_eq!(categorize("com.apple.finder", None), AppCategory::Other);
+        // Android packages (dictations over the WebSocket API)
+        assert_eq!(categorize("com.Slack", None), AppCategory::WorkChat);
+        assert_eq!(categorize("com.whatsapp", None), AppCategory::Chat);
+        assert_eq!(
+            categorize("com.google.android.gm", None),
+            AppCategory::Email
+        );
+        assert_eq!(categorize("com.termux", None), AppCategory::Code);
+        assert_eq!(
+            categorize("com.anthropic.claude", None),
+            AppCategory::AiPrompt
+        );
+        assert_eq!(
+            categorize("com.google.android.keep", None),
+            AppCategory::Docs
+        );
+        assert_eq!(categorize("com.android.settings", None), AppCategory::Other);
     }
 
     #[test]

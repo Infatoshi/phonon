@@ -6,11 +6,21 @@
     <!-- the refiner waits for an unmetered network: ConnectivityManager's capabilities need this (a normal,
          install-time permission) -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <application android:label="@string/app_name" android:extractNativeLibs="true">
+    <!-- usesCleartextTraffic: the Mac's WebSocket API is plain ws:// on the local network or a tailnet
+         (docs/websocket-api.md); every download stays on https. -->
+    <application android:label="@string/app_name" android:extractNativeLibs="true"
+        android:usesCleartextTraffic="true">
         <activity android:name=".TestActivity" android:exported="true" android:windowSoftInputMode="stateAlwaysVisible">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- The Mac's pairing QR code opened from any camera app: fills the fields, the user saves -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="phonon" android:host="pair" />
             </intent-filter>
         </activity>
         <service android:name=".PhononIME" android:exported="true"
@@ -19,6 +29,14 @@
                 <action android:name="android.view.InputMethod" />
             </intent-filter>
             <meta-data android:name="android.view.im" android:resource="@xml/method" />
+        </service>
+        <!-- Voice input for another keyboard's mic key (FUTO Keyboard, AOSP-based keyboards): see VoiceIME -->
+        <service android:name=".VoiceIME" android:exported="true" android:label="@string/voice_ime_name"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data android:name="android.view.im" android:resource="@xml/voice_method" />
         </service>
     </application>
 </manifest>

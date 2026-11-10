@@ -152,6 +152,14 @@ cargo install --path crates/phonon-cli --force --root ~/.local
 phonon bar --rebuild   # once: builds and signs the app from this checkout
 ```
 
+## Dictating from another device
+
+With Settings › Advanced › WebSocket API on, a phone or any other device on your network or
+tailnet can dictate through the Mac: it streams its audio and names the app it types into, and
+gets the corrected text back. The protocol is in
+[docs/websocket-api.md](docs/websocket-api.md). The Android app's "Phonon voice" input method
+is one client: turn off FUTO Keyboard's built-in voice input and its mic key opens it.
+
 ## Commands
 
 ```bash

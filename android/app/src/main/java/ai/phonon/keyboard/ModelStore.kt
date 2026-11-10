@@ -206,15 +206,17 @@ class NetworkGate(@Volatile private var unmetered: Boolean = false, @Volatile pr
  * and a download paused by the network turning metered resumes from its part once the gate opens again.
  */
 fun ModelStore.ensureWhenAllowed(files: List<ModelFile>, gate: NetworkGate, onWaiting: () -> Unit,
-                                 onAllowed: () -> Unit = {}, progress: (Long, Long) -> Unit = { _, _ -> }) {
+                                 onAllowed: () -> Unit = {}, progress: (Long, Long) -> Unit = { _, _ -> },
+                                 stop: () -> Boolean = { false }) {
     while (true) {
+        if (stop()) throw InterruptedException("stopped")
         if (!allowed(files, gate)) {
             onWaiting()
             gate.awaitAllowed()
             onAllowed()
         }
         try {
-            ensure(files, allowed = gate::allowed, progress = progress)
+            ensure(files, allowed = { !stop() && gate.allowed() }, progress = progress)
             return
         } catch (_: ModelStore.Paused) {
         }
@@ -223,3 +225,14 @@ fun ModelStore.ensureWhenAllowed(files: List<ModelFile>, gate: NetworkGate, onWa
 
 /** Nothing left to transfer (every file ready or its part complete: hashing and the rename are local) needs no network. */
 private fun ModelStore.allowed(files: List<ModelFile>, gate: NetworkGate) = gate.allowed() || remaining(files) == 0L
+
+/** A size for people: "850 MB", "1.6 GB", in the decimal units Android's storage settings use. */
+fun formatSize(bytes: Long): String {
+    val mb = bytes / 1_000_000.0
+    return when {
+        mb >= 1000 -> String.format(java.util.Locale.US, "%.1f GB", mb / 1000)
+        mb >= 10 -> "${mb.toLong()} MB"
+        mb >= 0.1 -> String.format(java.util.Locale.US, "%.1f MB", mb)
+        else -> "${bytes / 1000} KB"
+    }
+}

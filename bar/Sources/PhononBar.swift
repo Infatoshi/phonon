@@ -2723,6 +2723,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func startEngine() {
+        // The WebSocket API's token used to live in the Keychain; with the API on and no token
+        // in settings.json the engine would not listen, so make one (phones pair again).
+        if appStore.settings.websocketAPI && appStore.settings.websocketAPIToken.count < 16 {
+            appStore.updateSettings { WebSocketAPI.turnOn(&$0) }
+        }
         engine.onEvent = { [weak self] ev in
             Task { @MainActor in self?.handleEngine(ev) }
         }
@@ -2741,6 +2746,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard !terminating else { return }
         enginesReady = false
         appStore.engineReady = false
+        appStore.websocketAPIStatus = nil
+        appStore.websocketLive = false
         appStore.engineMessage = "Engine restarting"
         streamActive = false
         hideLiveText()
@@ -2944,6 +2951,21 @@ final class AppController: NSObject, NSApplicationDelegate {
                     complete: ev["complete"] as? Bool ?? true)
             } else if kind == "edit" {
                 editLearning.handleEngineResult(ev)
+            }
+        case "status":
+            switch ev["kind"] as? String {
+            case "websocket_api":
+                appStore.websocketAPIStatus = ev
+            case "websocket_dictation":
+                if ev["state"] as? String == "started" {
+                    appStore.websocketLive = true
+                } else {
+                    appStore.recordWebSocketDictation(
+                        words: ev["words"] as? Int ?? 0,
+                        audioMilliseconds: (ev["audio_ms"] as? NSNumber)?.uint64Value ?? 0)
+                }
+            default:
+                break
             }
         case "error":
             let msg = ev["msg"] as? String ?? "error"

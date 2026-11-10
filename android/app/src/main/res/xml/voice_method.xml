@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- VoiceIME: one auxiliary "voice" subtype, the shape keyboards look for when they hand their mic key to a voice
+     input method (InputMethodManager.getShortcutInputMethodsAndSubtypes, FUTO Keyboard's system voice input).
+     Auxiliary: never offered as a keyboard of its own. -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="ai.phonon.keyboard.TestActivity">
+    <subtype
+        android:label="@string/voice_subtype"
+        android:imeSubtypeLocale=""
+        android:imeSubtypeMode="voice"
+        android:isAuxiliary="true"
+        android:overridesImplicitlyEnabledSubtype="true" />
+</input-method>

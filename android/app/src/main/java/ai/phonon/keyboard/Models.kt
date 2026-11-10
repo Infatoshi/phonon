@@ -120,8 +120,56 @@ object ModelFetch {
         for (l in listeners) l(s)
     }
 
+    private const val LOCAL_KEY = "local_models"
+    /** The user turned the on-device models off: the download stops and nothing is fetched. */
+    @Volatile private var stopRequested = false
+
+    /** Setting "Fall back to the on-device model" (default on). Off: no on-device models are kept or fetched. */
+    fun localEnabled(ctx: Context): Boolean =
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(LOCAL_KEY, true)
+
+    /** Turn the on-device models on again and fetch them. */
+    fun enableLocal(ctx: Context) {
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(LOCAL_KEY, true).apply()
+        synchronized(this) {
+            stopRequested = false
+            if (!state.done) publish(State())
+        }
+        start(ctx)
+    }
+
+    /**
+     * Turn the on-device models off: stop a download in progress and delete every model file this app holds
+     * (downloaded and sideloaded). Blocking (it waits for the download thread): call it off the main thread.
+     * Engines already loaded keep their memory until the process ends. Returns the bytes freed.
+     */
+    fun disableLocal(ctx: Context): Long {
+        val app = ctx.applicationContext
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(LOCAL_KEY, false).commit()
+        val running = synchronized(this) {
+            stopRequested = true
+            worker
+        }
+        running?.interrupt()
+        running?.join(15_000)
+        val targets = listOfNotNull(File(app.filesDir, "models"),
+            app.getExternalFilesDir(null)?.let { File(it, "parakeet") },
+            app.getExternalFilesDir(null)?.let { File(it, "refiner.gguf") })
+        val freed = targets.sumOf { t -> t.walkBottomUp().filter { it.isFile }.sumOf { it.length() } }
+        targets.forEach { it.deleteRecursively() }
+        Log.i(TAG, "MODELS local_off freed_mb=${freed shr 20}")
+        synchronized(this) { publish(State(message = OFF_MESSAGE)) }
+        return freed
+    }
+
+    const val OFF_MESSAGE = "on-device models are off (Phonon voice settings)"
+
     /** Start (or restart after a failure) the download; a running one is left alone. */
     @Synchronized fun start(ctx: Context) {
+        if (!localEnabled(ctx)) {
+            if (state.message != OFF_MESSAGE) publish(State(message = OFF_MESSAGE))
+            return
+        }
         if (worker?.isAlive == true || state.done) return
         val app = ctx.applicationContext
         if (state.error != null) publish(state.copy(error = null, message = "retrying the download..."))
@@ -153,7 +201,7 @@ object ModelFetch {
                     publish(state.copy(message = "downloading $label $pct% (${done shr 20} of ${total shr 20} MB)"))
                 }
             } }
-            store.ensure(Models.ASR, progress = report("speech model"))
+            store.ensure(Models.ASR, allowed = { !stopRequested }, progress = report("speech model"))
             val asrDir = File(store.root, "parakeet").path
             Log.i(TAG, "MODELS asr_ready ms=${SystemClock.elapsedRealtime() - t0}")
             publish(state.copy(asrDir = asrDir, message = "speech model ready"))
@@ -167,13 +215,17 @@ object ModelFetch {
                         message = "text model waits for Wi-Fi; tap here to download it on mobile data (988 MB)"))
                 }, onAllowed = {
                     publish(state.copy(waitingForWifi = false, message = "downloading text model..."))
-                }, progress = textReport)
+                }, progress = textReport, stop = { stopRequested })
                 Log.i(TAG, "MODELS refiner_ready ms=${SystemClock.elapsedRealtime() - t0}")
                 publish(state.copy(refinerPath = store.file(Models.REFINER).path, message = "models ready", done = true))
             } else {
                 publish(state.copy(refinerSkipped = true, message = "models ready", done = true))
             }
         } catch (e: Exception) {
+            if (stopRequested) {  // the user turned the models off: disableLocal says so
+                Log.i(TAG, "MODELS stopped")
+                return
+            }
             Log.e(TAG, "MODELS failed: ${e.message}")
             publish(state.copy(message = "download failed: ${e.message} (open the keyboard again to retry)", error = e.message,
                 waitingForWifi = false))

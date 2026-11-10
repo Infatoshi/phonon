@@ -15,6 +15,8 @@
 //!   {"cmd":"byok","base_url":"https://…/v1","model":"…","api_key":"…","timeout_ms":6000}
 //!   — the user's own OpenAI-compatible endpoint refines instead of the local refiner,
 //!   which stays the fallback; without base_url/model it is off. Memory only.
+//!   {"cmd":"websocket_api","token":"…"}  — a token for the WebSocket API that overrides
+//!   settings.json `websocket_api_token` for this run (`remote.rs`). Memory only.
 //!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
 //!   {"cmd":"shutdown"}
@@ -27,6 +29,10 @@
 //!   {"type":"result","kind":"edit","id":"...","outcome":"correction","suggestions":[...],"recorded":false}
 //!   {"type":"result","kind":"draft","id":"...","text":"...","source":"...","complete":true}  — live
 //!   text (settings.json `live_text`): the open stream's corrected text so far, display only
+//!   {"type":"status","kind":"websocket_api","listening":true,"address":"0.0.0.0:8377","msg":""}
+//!   — the WebSocket API started, stopped or could not start (`msg` says why)
+//!   {"type":"status","kind":"websocket_dictation","state":"started|ended","words":42,"audio_ms":9800}
+//!   — a WebSocket client's dictation started or ended (`words` and `audio_ms` on `ended`)
 //!   {"type":"error","id":"...","msg":"..."}
 
 pub mod app_context;
@@ -34,6 +40,8 @@ pub mod data;
 pub mod edits;
 pub mod pairs;
 mod paths;
+pub mod remote;
+pub mod ws;
 
 use anyhow::{bail, Context, Result};
 pub use paths::project_root;
@@ -1452,6 +1460,9 @@ pub fn run_engine_serve() -> Result<()> {
     // result out, polish command in, polish result out). A wake-up is an empty line.
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
     eng.set_waker(cmd_tx.clone());
+    // The WebSocket API (settings.json `websocket_api`, off by default): another device
+    // dictates through these engines. Its requests arrive on the same wake-ups.
+    let mut remote = remote::Remote::new(cmd_tx.clone());
     thread::spawn(move || {
         let stdin = std::io::stdin();
         let mut lock = stdin.lock();
@@ -1477,7 +1488,19 @@ pub fn run_engine_serve() -> Result<()> {
     });
 
     loop {
+        remote.tick(&mut eng);
+        if let Some(status) = remote.take_status() {
+            emit(&status);
+        }
+        for event in remote.take_dictation_events() {
+            emit(&event);
+        }
         for ev in eng.poll() {
+            // A WebSocket client's results go to that client, never to the bar.
+            if remote.take_event(&mut eng, &ev) {
+                continue;
+            }
+            remote.note_bar_event(&ev);
             emit_engine_event(&ev);
         }
         match cmd_rx.recv_timeout(Duration::from_millis(250)) {
@@ -1499,6 +1522,7 @@ pub fn run_engine_serve() -> Result<()> {
                     }
                 };
                 let cmd = v.get("cmd").and_then(|x| x.as_str()).unwrap_or("");
+                remote.note_bar_command(&v);
                 match cmd {
                     "status" => {
                         emit(&json!({
@@ -1574,6 +1598,9 @@ pub fn run_engine_serve() -> Result<()> {
                         let on = endpoint.is_some();
                         eng.set_byok(endpoint);
                         emit(&json!({"type":"status","kind":"byok","on":on}));
+                    }
+                    "websocket_api" => {
+                        remote.set_token(v.get("token").and_then(|x| x.as_str()));
                     }
                     "prewarm" => {
                         if let Err(e) = eng.prewarm_polish() {

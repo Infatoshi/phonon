@@ -79,6 +79,14 @@ struct NativeSettings: Codable, Equatable {
     var byokEnabled: Bool
     var byokBaseURL: String
     var byokModel: String
+    /// The WebSocket API: another device (a phone keyboard) dictates through this Mac's
+    /// engine. Off by default. The engine reads these keys from settings.json and follows a
+    /// change without a restart. The token is kept here rather than in the Keychain: an app
+    /// built and signed on this Mac would otherwise ask for the login password at every
+    /// launch after each rebuild.
+    var websocketAPI: Bool
+    var websocketAPIPort: Int
+    var websocketAPIToken: String
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -113,6 +121,9 @@ struct NativeSettings: Codable, Equatable {
         case byokEnabled = "byok_enabled"
         case byokBaseURL = "byok_base_url"
         case byokModel = "byok_model"
+        case websocketAPI = "websocket_api"
+        case websocketAPIPort = "websocket_api_port"
+        case websocketAPIToken = "websocket_api_token"
     }
 
     init(
@@ -147,7 +158,10 @@ struct NativeSettings: Codable, Equatable {
         writingModesByApp: [String: String] = [:],
         byokEnabled: Bool = false,
         byokBaseURL: String = "",
-        byokModel: String = ""
+        byokModel: String = "",
+        websocketAPI: Bool = false,
+        websocketAPIPort: Int = WebSocketAPI.defaultPort,
+        websocketAPIToken: String = ""
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -181,6 +195,9 @@ struct NativeSettings: Codable, Equatable {
         self.byokEnabled = byokEnabled
         self.byokBaseURL = byokBaseURL
         self.byokModel = byokModel
+        self.websocketAPI = websocketAPI
+        self.websocketAPIPort = websocketAPIPort
+        self.websocketAPIToken = websocketAPIToken
     }
 
     init(from decoder: Decoder) throws {
@@ -250,6 +267,171 @@ struct NativeSettings: Codable, Equatable {
         byokEnabled = (try? values.decodeIfPresent(Bool.self, forKey: .byokEnabled)) ?? false
         byokBaseURL = ((try? values.decodeIfPresent(String.self, forKey: .byokBaseURL)) ?? nil) ?? ""
         byokModel = ((try? values.decodeIfPresent(String.self, forKey: .byokModel)) ?? nil) ?? ""
+        websocketAPI = (try? values.decodeIfPresent(Bool.self, forKey: .websocketAPI)) ?? false
+        // A port the engine could not listen on reads as the default.
+        websocketAPIPort =
+            ((try? values.decodeIfPresent(Int.self, forKey: .websocketAPIPort)) ?? nil)
+            .flatMap { WebSocketAPI.validPort($0) ? $0 : nil } ?? WebSocketAPI.defaultPort
+        websocketAPIToken =
+            ((try? values.decodeIfPresent(String.self, forKey: .websocketAPIToken)) ?? nil) ?? ""
+    }
+}
+
+/// One dictation another device made over the WebSocket API.
+struct WebSocketDictation: Equatable {
+    let end: Date
+    let words: Int
+    /// Length of its audio; 0 when unknown.
+    let audioSeconds: Double
+}
+
+/// Home's graph of WebSocket dictation: words per minute for each of the last 60 minutes.
+enum WebSocketActivity {
+    static let minutes = 60
+    /// How long a dictation is kept for the graph.
+    static let keep: TimeInterval = 61 * 60
+
+    /// Words in each of the last [minutes] clock minutes, oldest first, the current (partial)
+    /// minute last. A dictation's words are spread evenly over the minutes its audio spanned,
+    /// so a three-minute dictation shows as three minutes of speech, not one spike.
+    static func perMinute(_ dictations: [WebSocketDictation], now: Date) -> [Double] {
+        var buckets = [Double](repeating: 0, count: minutes)
+        let current = floor(now.timeIntervalSince1970 / 60)
+        let first = current - Double(minutes - 1)  // the oldest minute shown
+        func add(_ words: Double, minute: Double) {
+            let index = Int(minute - first)
+            if index >= 0 && index < minutes { buckets[index] += words }
+        }
+        for dictation in dictations where dictation.words > 0 {
+            let end = dictation.end.timeIntervalSince1970
+            let duration = max(dictation.audioSeconds, 0)
+            guard duration > 0 else {
+                add(Double(dictation.words), minute: floor(end / 60))
+                continue
+            }
+            let start = end - duration
+            var minute = floor(start / 60)
+            while minute * 60 < end {
+                let overlap = min(end, (minute + 1) * 60) - max(start, minute * 60)
+                if overlap > 0 { add(Double(dictation.words) * overlap / duration, minute: minute) }
+                minute += 1
+            }
+        }
+        return buckets
+    }
+
+    /// Words over the last [minutes] minutes, and the speaking rate across those dictations
+    /// (words per minute of audio; nil when no audio length is known).
+    static func summary(_ dictations: [WebSocketDictation], now: Date) -> (words: Int, rate: Int?) {
+        let recent = dictations.filter {
+            now.timeIntervalSince($0.end) < Double(minutes) * 60 && $0.words > 0
+        }
+        let words = recent.reduce(0) { $0 + $1.words }
+        let timed = recent.filter { $0.audioSeconds > 0 }
+        let seconds = timed.reduce(0) { $0 + $1.audioSeconds }
+        guard seconds > 0 else { return (words, nil) }
+        let timedWords = timed.reduce(0) { $0 + $1.words }
+        return (words, Int((Double(timedWords) * 60 / seconds).rounded()))
+    }
+
+    /// The graph's top: the busiest minute rounded up to a multiple of 20, at least 40.
+    static func scale(_ perMinute: [Double]) -> Double {
+        let peak = perMinute.max() ?? 0
+        return max(40, (peak / 20).rounded(.up) * 20)
+    }
+}
+
+/// The WebSocket API (engine `remote.rs`): its port, its token and this Mac's addresses.
+enum WebSocketAPI {
+    static let defaultPort = 8377
+    /// Letters and digits that are not mistaken for one another when typed on a phone.
+    static let tokenAlphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
+    static let tokenLength = 24
+
+    static func validPort(_ port: Int) -> Bool { (1...65_535).contains(port) }
+
+    /// 24 characters from a 31-character alphabet: about 119 bits.
+    static func newToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return String(
+            (0..<tokenLength).map { _ in tokenAlphabet.randomElement(using: &generator)! })
+    }
+
+    /// The switch turned on: the token stays as it is, or is made now if there is none.
+    static func turnOn(_ settings: inout NativeSettings) {
+        settings.websocketAPI = true
+        if settings.websocketAPIToken.count < 16 { settings.websocketAPIToken = newToken() }
+    }
+
+    /// This Mac's IPv4 addresses a phone could reach: the local network's and a tailnet's
+    /// (100.64.0.0/10), never loopback or link-local.
+    static func reachableAddresses() -> [String] {
+        var first: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&first) == 0, let first else { return [] }
+        defer { freeifaddrs(first) }
+        var addresses: [String] = []
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = pointer.pointee
+            let flags = Int32(interface.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0,
+                let address = interface.ifa_addr, address.pointee.sa_family == UInt8(AF_INET)
+            else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard
+                getnameinfo(
+                    address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                    nil, 0, NI_NUMERICHOST) == 0
+            else { continue }
+            let text = String(cString: host)
+            if !text.hasPrefix("169.254."), !addresses.contains(text) { addresses.append(text) }
+        }
+        return addresses
+    }
+
+    /// What the pairing QR code holds: `phonon://pair?url=ws://…&token=…`. The Android app's
+    /// "Scan pairing code" (and any camera app, through its link) fills its fields from it.
+    static func pairingURI(address: String, port: Int, token: String) -> String {
+        var components = URLComponents()
+        components.scheme = "phonon"
+        components.host = "pair"
+        components.queryItems = [
+            URLQueryItem(name: "url", value: "ws://\(address):\(port)"),
+            URLQueryItem(name: "token", value: token),
+        ]
+        // URLComponents leaves ":" and "/" as they are in a query; encode them so every
+        // scanner hands the value over intact.
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: ":/?&=+")
+        let query = (components.queryItems ?? []).map { item in
+            let value = item.value?.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+            return "\(item.name)=\(value)"
+        }.joined(separator: "&")
+        return "phonon://pair?\(query)"
+    }
+
+    /// The address to pair with when the user has not picked one: a tailnet address
+    /// (100.64.0.0/10) first, then a home network's, then whatever comes first.
+    static func preferredAddress(_ addresses: [String]) -> String? {
+        func tailnet(_ address: String) -> Bool {
+            let parts = address.split(separator: ".").compactMap { Int($0) }
+            return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
+        }
+        return addresses.first(where: tailnet)
+            ?? addresses.first(where: { $0.hasPrefix("192.168.") })
+            ?? addresses.first
+    }
+
+    /// What Settings shows under the switch: where it listens, or why it does not.
+    static func statusLine(engineStatus: [String: Any]?, engineReady: Bool) -> String {
+        guard engineReady else { return "Starts when the models are loaded." }
+        guard let engineStatus else { return "Starting…" }
+        if engineStatus["listening"] as? Bool == true {
+            let address = engineStatus["address"] as? String ?? ""
+            let port = address.split(separator: ":").last.map(String.init) ?? ""
+            return port.isEmpty ? "Listening." : "Listening on port \(port)."
+        }
+        let reason = engineStatus["msg"] as? String ?? ""
+        return reason.isEmpty ? "Not listening." : "Not listening: \(reason)."
     }
 }
 
@@ -656,6 +838,44 @@ final class NativeAppStore: ObservableObject {
     /// Recorded meetings under Meetings/, newest first.
     @Published private(set) var meetings: [MeetingNote] = []
     @Published var engineReady = false
+    /// The engine's last word on the WebSocket API (`status`, kind `websocket_api`).
+    @Published var websocketAPIStatus: [String: Any]?
+    /// Dictations other devices made over the WebSocket API, newest last: the engine's
+    /// `websocket_dictation` events, seeded from local history at launch.
+    @Published private(set) var websocketDictations: [WebSocketDictation] = []
+    /// A WebSocket client is dictating right now.
+    @Published var websocketLive = false
+    private var websocketSeeded = false
+
+    /// A client's dictation ended (the engine's `websocket_dictation` event, state `ended`).
+    func recordWebSocketDictation(words: Int, audioMilliseconds: UInt64, at end: Date = Date()) {
+        websocketLive = false
+        guard words > 0 else { return }
+        var list = websocketDictations.filter { end.timeIntervalSince($0.end) < WebSocketActivity.keep }
+        list.append(
+            WebSocketDictation(
+                end: end, words: words, audioSeconds: Double(audioMilliseconds) / 1_000))
+        websocketDictations = list
+    }
+
+    /// The last hour's WebSocket dictations from local history, once per launch, so the
+    /// graph does not start empty after a restart.
+    private func seedWebSocketDictations() {
+        guard !websocketSeeded else { return }
+        websocketSeeded = true
+        let now = Date()
+        let seeded = history.compactMap { item -> WebSocketDictation? in
+            guard item.metadata.source == "websocket",
+                now.timeIntervalSince(item.date) < WebSocketActivity.keep
+            else { return nil }
+            let words = item.displayText.split(whereSeparator: { $0.isWhitespace }).count
+            guard words > 0 else { return nil }
+            return WebSocketDictation(
+                end: item.date, words: words,
+                audioSeconds: Double(item.metadata.audioDurationMs ?? 0) / 1_000)
+        }
+        websocketDictations = (seeded + websocketDictations).sorted { $0.end < $1.end }
+    }
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
     @Published var availableMicrophones: [String] = []
@@ -716,6 +936,7 @@ final class NativeAppStore: ObservableObject {
         loadSettings()
         loadDictionary()
         loadHistory()
+        seedWebSocketDictations()
         loadMacros()
         loadMeetings()
         refreshAvailableMicrophones()

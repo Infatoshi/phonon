@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CoreImage.CIFilterBuiltins
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -574,6 +575,11 @@ struct HomeView: View {
                     "Words dictated divided by speaking time, over every dictation kept in "
                         + "local history.")
 
+                if store.settings.websocketAPI {
+                    WebSocketActivityCard(store: store)
+                        .padding(.bottom, 22)
+                }
+
                 if recent.isEmpty {
                     Text("Your dictations show up here.")
                         .foregroundStyle(EmberTheme.mute)
@@ -610,6 +616,175 @@ struct HomeView: View {
             .padding(.bottom, 24)
         }
         .scrollIndicators(.never)
+    }
+}
+
+/// Home, with the WebSocket API on: what other devices dictated through this Mac in the
+/// last hour, one pixel column per minute, and a green dot while one is dictating.
+struct WebSocketActivityCard: View {
+    @ObservedObject var store: NativeAppStore
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            let values = WebSocketActivity.perMinute(store.websocketDictations, now: context.date)
+            let summary = WebSocketActivity.summary(store.websocketDictations, now: context.date)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("Other devices").font(.system(size: 13, weight: .semibold))
+                    if store.websocketLive {
+                        LiveDot()
+                            .help("A device is dictating through this Mac")
+                            .transition(.opacity)
+                    }
+                    Spacer()
+                    Text(summaryText(summary))
+                        .font(.mono(12))
+                        .foregroundStyle(EmberTheme.mute)
+                }
+                .animation(Motion.quick, value: store.websocketLive)
+                PixelGraph(
+                    values: values, scale: WebSocketActivity.scale(values), now: context.date,
+                    live: store.websocketLive)
+                HStack {
+                    Text("60 min ago")
+                    Spacer()
+                    Text("words per minute over the WebSocket API")
+                    Spacer()
+                    Text("now")
+                }
+                .font(.mono(10.5))
+                .foregroundStyle(EmberTheme.dim)
+            }
+            .padding(14)
+            .background(EmberTheme.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(EmberTheme.panelBorder, lineWidth: 1))
+        }
+    }
+
+    private func summaryText(_ summary: (words: Int, rate: Int?)) -> String {
+        guard summary.words > 0 else { return "no dictation in the last hour" }
+        let words = summary.words == 1 ? "1 word" : "\(summary.words) words"
+        guard let rate = summary.rate else { return "\(words) in the last hour" }
+        return "\(words) · \(rate) wpm speaking"
+    }
+}
+
+/// A green dot that breathes.
+struct LiveDot: View {
+    @State private var on = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(LiveDot.green.opacity(0.35))
+                .frame(width: 14, height: 14)
+                .scaleEffect(on ? 1.25 : 0.5)
+                .opacity(on ? 0 : 0.9)
+            Circle()
+                .fill(LiveDot.green)
+                .frame(width: 7, height: 7)
+                .shadow(color: LiveDot.green.opacity(0.8), radius: on ? 4 : 1)
+        }
+        .frame(width: 14, height: 14)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true }
+        }
+        .accessibilityLabel("Live")
+    }
+
+    static let green = Color(hex: 0x3DDC84)
+}
+
+/// Columns of square pixels, one per value, lit from the bottom like a meter: dim ember
+/// low, bright at the top. Hovering a column shows its minute and value.
+struct PixelGraph: View {
+    let values: [Double]
+    let scale: Double
+    let now: Date
+    var live = false
+    static let rows = 10
+    @State private var hovered: Int?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let columns = max(values.count, 1)
+            let gap: CGFloat = 2
+            let cell = max(2, min(
+                (geometry.size.width - gap * CGFloat(columns - 1)) / CGFloat(columns),
+                (geometry.size.height - gap * CGFloat(Self.rows - 1)) / CGFloat(Self.rows)))
+            let width = cell * CGFloat(columns) + gap * CGFloat(columns - 1)
+            ZStack(alignment: .topLeading) {
+                Canvas { context, _ in
+                    for (column, value) in values.enumerated() {
+                        let lit = value <= 0
+                            ? 0 : max(1, Int((value / scale * Double(Self.rows)).rounded(.up)))
+                        for row in 0..<Self.rows {
+                            let x = CGFloat(column) * (cell + gap)
+                            let y = CGFloat(Self.rows - 1 - row) * (cell + gap)
+                            let rect = CGRect(x: x, y: y, width: cell, height: cell)
+                            let color: Color
+                            if row < lit {
+                                let step = min(
+                                    EmberTheme.ramp.count - 1,
+                                    1 + row * (EmberTheme.ramp.count - 1) / Self.rows)
+                                color = hovered == column ? EmberTheme.selectedInk : EmberTheme.ramp[step]
+                            } else if live && column == values.count - 1 && row == 0 {
+                                color = LiveDot.green.opacity(0.7)
+                            } else {
+                                color = Color(hex: 0x1B1612)
+                            }
+                            context.fill(
+                                Path(roundedRect: rect, cornerRadius: min(1.5, cell / 4)),
+                                with: .color(color))
+                        }
+                    }
+                }
+                .frame(width: width, height: geometry.size.height)
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        let column = Int(point.x / (cell + gap))
+                        hovered = (0..<values.count).contains(column) ? column : nil
+                    case .ended:
+                        hovered = nil
+                    }
+                }
+                if let hovered {
+                    Text(label(hovered))
+                        .font(.mono(11))
+                        .foregroundStyle(EmberTheme.ink)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 5))
+                        .fixedSize()
+                        .offset(
+                            x: min(max(0, CGFloat(hovered) * (cell + gap) - 40), max(0, width - 130)),
+                            y: -26)
+                        .allowsHitTesting(false)
+                }
+                Text("\(Int(scale))")
+                    .font(.mono(9.5))
+                    .foregroundStyle(EmberTheme.dim)
+                    .offset(x: width + 6, y: -2)
+            }
+        }
+        .frame(height: 74)
+        .padding(.trailing, 22)
+        .accessibilityElement()
+        .accessibilityLabel("Words per minute over the WebSocket API, last 60 minutes")
+        .accessibilityValue("\(Int(values.reduce(0, +).rounded())) words")
+    }
+
+    private func label(_ column: Int) -> String {
+        let minutesAgo = values.count - 1 - column
+        let minute = Date(
+            timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 60) - Double(minutesAgo)) * 60)
+        let time = minute.formatted(date: .omitted, time: .shortened)
+        let words = Int(values[column].rounded())
+        return "\(time) · \(words) word\(words == 1 ? "" : "s")"
     }
 }
 
@@ -1313,6 +1488,9 @@ struct SettingsView: View {
             AdvancedBlock("Your own model endpoint") {
                 OwnEndpointEditor(store: store, onChanged: onSettingsChanged)
             }
+            AdvancedBlock("WebSocket API") {
+                WebSocketAPIEditor(store: store, onChanged: onSettingsChanged)
+            }
             AdvancedBlock("Microphone priority") {
                 MicrophonePriorityCard(store: store, onSettingsChanged: onSettingsChanged)
             }
@@ -1754,6 +1932,189 @@ struct OwnEndpointEditor: View {
             key = ""
         }
         onChanged()
+    }
+}
+
+/// Settings > Advanced > WebSocket API. Off by default. Turning it on makes the token
+/// (Keychain only) and has the engine listen; the rows below say what a client needs.
+struct WebSocketAPIEditor: View {
+    @ObservedObject var store: NativeAppStore
+    let onChanged: () -> Void
+    @State private var port = ""
+    @State private var addresses: [String] = []
+    @State private var loaded = false
+    /// The address the pairing code carries (a per-Mac convenience, not a setting).
+    @AppStorage("websocketPairAddress") private var pairAddress = ""
+
+    private var token: String? {
+        let token = store.settings.websocketAPIToken
+        return token.isEmpty ? nil : token
+    }
+
+    /// The ticked address: the user's pick while this Mac still has it, else the preferred one.
+    private var selectedAddress: String? {
+        addresses.contains(pairAddress) ? pairAddress : WebSocketAPI.preferredAddress(addresses)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Let other devices dictate through this Mac")
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { store.settings.websocketAPI },
+                    set: { on in
+                        store.updateSettings {
+                            if on { WebSocketAPI.turnOn(&$0) } else { $0.websocketAPI = false }
+                        }
+                        addresses = WebSocketAPI.reachableAddresses()
+                        onChanged()
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(EmberSwitchStyle())
+            }
+            Text(
+                "A device on your network or tailnet, such as a phone keyboard, sends its "
+                    + "audio and the app it types into, and gets the corrected text back. "
+                    + "Anyone with the token can use it. The connection is not encrypted, so "
+                    + "use it on a network you trust or over a tailnet."
+            )
+            .font(.system(size: 12))
+            .foregroundStyle(EmberTheme.mute)
+            .fixedSize(horizontal: false, vertical: true)
+            if store.settings.websocketAPI {
+                Text(
+                    WebSocketAPI.statusLine(
+                        engineStatus: store.websocketAPIStatus, engineReady: store.engineReady)
+                )
+                .font(.system(size: 12))
+                .foregroundStyle(
+                    store.websocketAPIStatus?["listening"] as? Bool == false
+                        ? EmberTheme.warm : EmberTheme.mute)
+                HStack(alignment: .top, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(addresses, id: \.self) { address in
+                            addressRow(address)
+                        }
+                        if let token {
+                            HStack(spacing: 8) {
+                                copyRow("Token", token)
+                                Button("New token") {
+                                    store.updateSettings { $0.websocketAPIToken = WebSocketAPI.newToken() }
+                                    onChanged()
+                                }
+                                .buttonStyle(PillButtonStyle())
+                                .help("Devices using the old token are disconnected")
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if let token, let address = selectedAddress {
+                        PairingCode(
+                            uri: WebSocketAPI.pairingURI(
+                                address: address, port: store.settings.websocketAPIPort,
+                                token: token),
+                            caption: "Scan with Phonon voice")
+                    }
+                }
+                HStack(spacing: 8) {
+                    Text("Port").foregroundStyle(EmberTheme.mute)
+                    TextField("\(WebSocketAPI.defaultPort)", text: $port)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        .onSubmit(savePort)
+                    Button("Save", action: savePort).buttonStyle(PillButtonStyle())
+                }
+                .font(.system(size: 12))
+            }
+        }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            port = String(store.settings.websocketAPIPort)
+            if store.settings.websocketAPI { addresses = WebSocketAPI.reachableAddresses() }
+        }
+    }
+
+    /// An address of this Mac: ticked when it is the one the pairing code carries; clicking
+    /// it ticks it.
+    private func addressRow(_ address: String) -> some View {
+        let url = "ws://\(address):\(store.settings.websocketAPIPort)"
+        let selected = address == selectedAddress
+        return HStack(spacing: 8) {
+            Button {
+                pairAddress = address
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? EmberTheme.ember : EmberTheme.dim)
+                        .frame(width: 14)
+                    Text("Address").foregroundStyle(EmberTheme.mute)
+                    Text(url).font(.mono(12)).foregroundStyle(selected ? EmberTheme.ink : EmberTheme.soft)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(selected ? "The pairing code points here" : "Put this address in the pairing code")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            CopyIconButton(text: url, help: "Copy the address")
+        }
+        .font(.system(size: 12))
+    }
+
+    private func copyRow(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).foregroundStyle(EmberTheme.mute)
+            Text(value).font(.mono(12)).textSelection(.enabled)
+            CopyIconButton(text: value, help: "Copy the \(label.lowercased())")
+        }
+        .font(.system(size: 12))
+    }
+
+    private func savePort() {
+        guard let number = Int(port.trimmingCharacters(in: .whitespaces)),
+            WebSocketAPI.validPort(number)
+        else {
+            port = String(store.settings.websocketAPIPort)
+            return
+        }
+        store.updateSettings { $0.websocketAPIPort = number }
+        onChanged()
+    }
+}
+
+/// A QR code for `uri`, drawn crisp at any size, with a caption under it.
+struct PairingCode: View {
+    let uri: String
+    let caption: String
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if let image = Self.image(for: uri) {
+                Image(nsImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 148, height: 148)
+                    .padding(8)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityLabel("Pairing QR code")
+            }
+            Text(caption)
+                .font(.system(size: 11))
+                .foregroundStyle(EmberTheme.mute)
+        }
+    }
+
+    /// One pixel per module, black on white; SwiftUI scales it without smoothing.
+    static func image(for text: String) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(text.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage,
+            let cgImage = CIContext().createCGImage(output, from: output.extent)
+        else { return nil }
+        return NSImage(cgImage: cgImage, size: output.extent.size)
     }
 }
 
