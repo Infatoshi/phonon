@@ -225,12 +225,15 @@ struct NativeSettings: Codable, Equatable {
         // Every save writes every key, so a stored false before schema 3 is the old
         // off-by-default, indistinguishable from a choice. Those files turn it on once;
         // the next save writes schema 3, and from then on a false is the owner's.
-        // Auto-start keeps its stored value: detection always asks first.
-        meetingCapture =
-            storedSchema < 3
-            ? true : (try values.decodeIfPresent(Bool.self, forKey: .meetingCapture) ?? true)
-        meetingAutoStart =
+        // When the migration is what turns detection on, auto-start goes off with it: an
+        // owner who once enabled auto-start and then switched detection off must not start
+        // recording calls unprompted after the upgrade (they can turn it back on).
+        let storedCapture = try values.decodeIfPresent(Bool.self, forKey: .meetingCapture)
+        let storedAutoStart =
             try values.decodeIfPresent(Bool.self, forKey: .meetingAutoStart) ?? false
+        let forcedOn = storedSchema < 3 && storedCapture != true
+        meetingCapture = storedSchema < 3 ? true : (storedCapture ?? true)
+        meetingAutoStart = forcedOn ? false : storedAutoStart
         checkForUpdates = try values.decodeIfPresent(Bool.self, forKey: .checkForUpdates) ?? true
         updateAnnounced =
             try values.decodeIfPresent(String.self, forKey: .updateAnnounced) ?? ""
