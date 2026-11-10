@@ -446,4 +446,148 @@ final class MeetingTranscriptTests: XCTestCase {
         XCTAssertNotNil(MeetingTranscriptProgress.load(from: elsewhere.appendingPathComponent("meeting_5")))
         XCTAssertNil(MeetingTranscriptProgress.load(from: folder))
     }
+
+    // MARK: Dictations during the call (GOAL N9)
+
+    private func word(_ start: Double, _ text: String) -> TimedWord {
+        TimedWord(start: start, end: start + 0.4, text: text)
+    }
+
+    func testDictatedWordsLeaveTheSentenceAndTheRestStays() {
+        let mixed = TimedSentence(
+            start: 8, end: 12.4, text: "so we ship. Remind me Friday",
+            words: [word(8, "so"), word(8.5, "we"), word(9, "ship."), word(11, "Remind"), word(11.5, "me"), word(12, "Friday")])
+        let untouched = TimedSentence(
+            start: 20, end: 21.4, text: "Sounds good.", words: [word(20, "Sounds"), word(21, "good.")])
+        let noTimes = TimedSentence(start: 30.5, end: 31.5, text: "Dear team,")
+        let (kept, removed) = DictationFilter.remove(
+            [mixed, untouched, noTimes], windows: [10.8...12.5, 30...32])
+        XCTAssertEqual(removed, 3 + 2)
+        XCTAssertEqual(kept.map(\.text), ["so we ship.", "Sounds good."])
+        XCTAssertEqual(kept[0].start, 8)
+        XCTAssertEqual(kept[0].end, 9.4)
+        XCTAssertEqual(kept[1], untouched, "a sentence no dictation touches keeps its text exactly")
+        // the pad: a word whose middle is 0.2 s before the key went down goes too
+        XCTAssertEqual(DictationFilter.remove([mixed], windows: [11.4...12.5]).removedWords, 3)
+        XCTAssertEqual(DictationFilter.remove([mixed], windows: []).kept, [mixed])
+    }
+
+    func testDictationHostTimesLandOnTheMicTrackAcrossAReanchor() {
+        var metadata = MeetingMetadata(id: "m", startedAt: "", startedHostNs: 1_000_000_000)
+        metadata.sampleRate = 16_000
+        metadata.micChunks = [
+            MeetingChunk(index: 0, file: "0000.wav", startSample: 0, sampleCount: 80_000, startHostNs: 2_000_000_000),
+            MeetingChunk(index: 1, file: "0001.wav", startSample: 80_000, sampleCount: 80_000, startHostNs: 7_000_000_000),
+            // the clock re-anchored: this chunk's first sample was captured 60 s later than the count says
+            MeetingChunk(
+                index: 2, file: "0002.wav", startSample: 160_000, sampleCount: 80_000, startHostNs: 72_000_000_000),
+        ]
+        XCTAssertEqual(metadata.micSeconds(hostNs: 3_500_000_000)!, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(metadata.micSeconds(hostNs: 8_000_000_000)!, 6, accuracy: 1e-9)
+        XCTAssertEqual(metadata.micSeconds(hostNs: 73_000_000_000)!, 11, accuracy: 1e-9)
+        XCTAssertEqual(metadata.micSeconds(hostNs: 1_500_000_000)!, -0.5, accuracy: 1e-9, "before the track")
+        metadata.dictations = [MeetingDictation(startHostNs: 3_000_000_000, endHostNs: 4_000_000_000)]
+        XCTAssertEqual(metadata.dictationWindows(), [1...2])
+        XCTAssertNil(MeetingMetadata(id: "e", startedAt: "", startedHostNs: 0).micSeconds(hostNs: 5))
+    }
+
+    func testTheIndexRecordsDictationTimesOnly() throws {
+        let index = try MeetingIndex(
+            directory: directory, metadata: MeetingMetadata(id: "m", startedAt: "", startedHostNs: 0))
+        index.dictation(MeetingDictation(startHostNs: 10, endHostNs: 20))
+        index.dictation(MeetingDictation(startHostNs: 30, endHostNs: 45))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("metadata.json")))
+                as? [String: Any])
+        XCTAssertEqual(
+            object["dictations"] as? [[String: Int]],
+            [["start_host_ns": 10, "end_host_ns": 20], ["start_host_ns": 30, "end_host_ns": 45]])
+    }
+
+    /// The N9 count at the logic level: a 5-minute call with 20 dictations of 3 s each. The
+    /// stand-in engine "hears" a word every 0.5 s on both tracks, named by its second and by
+    /// whether the user was dictating then; sentences of 8 words run across dictation edges.
+    @MainActor
+    func testTwentyDictationsDuringACallAreAllLeftOutOfTheMeTrack() throws {
+        let base: UInt64 = 50_000_000_000
+        let folder = directory.appendingPathComponent("Meetings/meeting_n9", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var metadata = MeetingMetadata(id: "meeting_n9", startedAt: "2026-11-10T12:00:00Z", startedHostNs: base)
+        metadata.sampleRate = 1_000
+        metadata.micChunks = chunks(60).map {
+            var chunk = $0
+            chunk.startHostNs = base + UInt64(chunk.startSample) * 1_000_000
+            return chunk
+        }
+        metadata.systemChunks = metadata.micChunks
+        metadata.micStartOffsetSamples = 0
+        metadata.systemStartOffsetSamples = 0
+        let windows: [ClosedRange<Double>] = (0..<20).map { (index: Int) -> ClosedRange<Double> in
+            let start = Double(10 + 14 * index)
+            return start...(start + 3)
+        }
+        metadata.dictations = windows.map { (window: ClosedRange<Double>) -> MeetingDictation in
+            let startNs: UInt64 = base + UInt64(window.lowerBound * 1e9)
+            let endNs: UInt64 = base + UInt64(window.upperBound * 1e9)
+            return MeetingDictation(startHostNs: startNs, endHostNs: endNs)
+        }
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+
+        func dictated(_ middle: Double) -> Int? {
+            windows.firstIndex { $0.contains(middle) }
+        }
+        func answer(_ command: [String: Any]) -> [String: Any] {
+            let id = command["id"] as! String
+            let isMic = id.contains(":mic:")
+            let start = Double(command["start_sample"] as! Int64) / 1_000
+            let end = Double(command["end_sample"] as! Int64) / 1_000
+            var words: [[String: Any]] = []
+            var at = (start * 2).rounded(.up) / 2
+            while at + 0.4 <= end {
+                let middle = at + 0.2
+                let name =
+                    !isMic ? "c\(Int(at * 10))" : dictated(middle).map { "d\($0)x\(Int(at * 10))" } ?? "m\(Int(at * 10))"
+                words.append(["start": at - start, "end": at - start + 0.4, "text": name])
+                at += 0.5
+            }
+            let sentences = stride(from: 0, to: words.count, by: 8).map { from -> [String: Any] in
+                let group = Array(words[from..<min(words.count, from + 8)])
+                return [
+                    "start": group.first!["start"]!, "end": group.last!["end"]!,
+                    "text": group.map { $0["text"] as! String }.joined(separator: " "), "words": group,
+                ]
+            }
+            return ["type": "meeting_span", "id": id, "sentences": sentences, "model": "test-model"]
+        }
+
+        var sent: [[String: Any]] = []
+        let transcriber = MeetingTranscriber()
+        transcriber.send = { sent.append($0) }
+        var finished = false
+        transcriber.onFinished = { _ in finished = true }
+        transcriber.setEngineReady(true)
+        transcriber.enqueue(directory: folder)
+        var answered = 0
+        while answered < sent.count, answered < 50 {
+            transcriber.handle(answer(sent[answered]))
+            answered += 1
+        }
+        XCTAssertTrue(finished)
+        let transcript = try XCTUnwrap(MeetingTranscript.load(from: folder))
+        let me = transcript.turns.filter { $0.speaker == .me }.flatMap { $0.text.split(separator: " ").map(String.init) }
+        let call = transcript.turns.filter { $0.speaker == .call }.flatMap { $0.text.split(separator: " ").map(String.init) }
+        let removed = (0..<20).filter { index in !me.contains { $0.hasPrefix("d\(index)x") } }
+        XCTAssertEqual(removed.count, 20, "every dictation is out of the \"me\" track")
+        // what the user said to the call stays, except a word touching a dictation's edge
+        let meetingWords = Set((0..<600).map { Double($0) / 2 }.filter { dictated($0 + 0.2) == nil }.map { "m\(Int($0 * 10))" })
+        let lost = meetingWords.subtracting(me)
+        XCTAssertLessThanOrEqual(lost.count, 20, "at most one call word per dictation, at its end")
+        XCTAssertTrue(lost.allSatisfy { name in
+            let middle = Double(name.dropFirst())! / 10 + 0.2
+            return windows.contains { abs(middle - $0.lowerBound) <= 0.25 || abs(middle - $0.upperBound) <= 0.25 }
+        })
+        // the call's side is never filtered, even while the user dictates
+        XCTAssertTrue(Set((0..<600).map { "c\($0 * 5)" }).isSubset(of: Set(call)))
+        print("N9 logic check: \(removed.count) of 20 dictations removed, \(lost.count) of the user's call words lost at dictation edges")
+    }
 }

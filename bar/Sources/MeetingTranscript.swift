@@ -80,9 +80,72 @@ struct TimedSentence: Codable, Equatable {
     var start: Double
     var end: Double
     var text: String
+    /// The sentence's words with their times, when the sidecar sent them; only used to take
+    /// dictations out, never saved.
+    var words: [TimedWord]?
+
+    init(start: Double, end: Double, text: String, words: [TimedWord]? = nil) {
+        self.start = start
+        self.end = end
+        self.text = text
+        self.words = words
+    }
+
+    enum CodingKeys: String, CodingKey { case start, end, text }
 
     func shifted(by seconds: Double) -> TimedSentence {
-        TimedSentence(start: start + seconds, end: end + seconds, text: text)
+        TimedSentence(
+            start: start + seconds, end: end + seconds, text: text,
+            words: words?.map { TimedWord(start: $0.start + seconds, end: $0.end + seconds, text: $0.text) })
+    }
+}
+
+struct TimedWord: Equatable {
+    var start: Double
+    var end: Double
+    var text: String
+}
+
+/// Dictations made to Phonon during the call are taken out of the "me" track (GOAL N9): the
+/// user spoke them to a text field, not to the call. A word goes when its middle falls within
+/// a dictation's capture, widened by `padSeconds` on each side (the key is pressed a moment
+/// before speaking and released a moment after); a sentence with no word times goes when its
+/// middle does. A sentence that loses some words keeps the rest, in order.
+enum DictationFilter {
+    static let padSeconds = 0.25
+
+    static func remove(
+        _ sentences: [TimedSentence], windows: [ClosedRange<Double>]
+    ) -> (kept: [TimedSentence], removedWords: Int) {
+        guard !windows.isEmpty else { return (sentences, 0) }
+        let padded = windows.map { ($0.lowerBound - padSeconds)...($0.upperBound + padSeconds) }
+        func inside(_ start: Double, _ end: Double) -> Bool {
+            let middle = (start + end) / 2
+            return padded.contains { $0.contains(middle) }
+        }
+        var kept: [TimedSentence] = []
+        var removed = 0
+        for sentence in sentences {
+            guard let words = sentence.words, !words.isEmpty else {
+                if inside(sentence.start, sentence.end) {
+                    removed += sentence.text.split(whereSeparator: \.isWhitespace).count
+                } else {
+                    kept.append(sentence)
+                }
+                continue
+            }
+            let left = words.filter { !inside($0.start, $0.end) }
+            removed += words.count - left.count
+            if left.count == words.count {
+                kept.append(sentence)
+            } else if let first = left.first, let last = left.last {
+                kept.append(
+                    TimedSentence(
+                        start: first.start, end: last.end, text: left.map(\.text).joined(separator: " "),
+                        words: left))
+            }
+        }
+        return (kept, removed)
     }
 }
 

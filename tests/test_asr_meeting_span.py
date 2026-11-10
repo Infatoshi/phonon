@@ -117,6 +117,32 @@ def test_sentences_of_keeps_times_and_drops_empty_sentences():
     assert sentences_of(types.SimpleNamespace(text="no sentences")) == []
 
 
+def test_sentences_carry_their_words_grouped_from_tokens():
+    def token(text, start, duration):
+        return types.SimpleNamespace(text=text, start=start, end=start + duration)
+
+    sentence = types.SimpleNamespace(
+        text=" Send the inv oice.",
+        start=1.0,
+        end=2.2,
+        tokens=[
+            token(" Send", 1.0, 0.3),
+            token(" the", 1.32, 0.1),
+            token(" inv", 1.5, 0.2),
+            token("oice", 1.7, 0.3),
+            token(".", 2.0, 0.2),
+        ],
+    )
+
+    [row] = sentences_of(types.SimpleNamespace(sentences=[sentence]))
+
+    assert row["words"] == [
+        {"start": 1.0, "end": 1.3, "text": "Send"},
+        {"start": 1.32, "end": 1.42, "text": "the"},
+        {"start": 1.5, "end": 2.2, "text": "invoice."},
+    ]
+
+
 def test_model_label_never_carries_a_local_path(tmp_path):
     hub = "mlx-community/parakeet-tdt-0.6b-v2"
     assert model_label(hub) == hub

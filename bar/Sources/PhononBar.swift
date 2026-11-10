@@ -3297,6 +3297,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         do {
             try recorder.start()
+            meetings.dictationStarted()
             updateMicrophoneStatus()
             e2eTrace?.recordingStartedNs = DispatchTime.now().uptimeNanoseconds
         } catch {
@@ -3360,6 +3361,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
+        meetings.dictationEnded()
         e2eTrace?.captureEndedNs = DispatchTime.now().uptimeNanoseconds
         let (captured, rate) = recorder.takeSamples()
         let id = activeId ?? "p\(pass)"
@@ -3455,6 +3457,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             engine.send(["cmd": "dictation_end", "id": activeId ?? "p\(pass)"])
         }
         recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
+        meetings.dictationEnded()
         _ = recorder.takeSamples()
         e2eTrace = nil
         hidePill()

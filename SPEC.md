@@ -360,8 +360,17 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
 - Output: transcript.json `{"schema_version":1,"model","created_at","turns":[{"start_seconds","end_seconds",
   "speaker":"me"|"call","text"}]}`. Sentences of both tracks go onto the shared timeline by their offsets, in time
   order; consecutive sentences of one speaker make one turn. Raw Parakeet text (the dictionary's in-decode boosting
-  applies on Metal), no correction model (the cleaned copy is a separate file, below). Everyone on the call is "call": no diarization yet. Words the user
-  dictated to Phonon during the call are not taken out yet, and on speakers the call can leak into "me".
+  applies on Metal), no correction model (the cleaned copy is a separate file, below). Everyone on the call is "call": no diarization yet. On speakers
+  the call can leak into "me".
+- Dictations during the call (GOAL N9) are left out of "me": the bar records each dictation's capture, from the mic
+  starting to the capture ending (committed, discarded or cut by the meeting's stop), as host times in
+  metadata.json `dictations: [{"start_host_ns","end_host_ns"}]` (times only). The sidecar sends each sentence's
+  words with their times (`words: [{"start","end","text"}]`, tokens grouped at word starts), and the transcriber
+  drops a mic word whose middle falls within a dictation widened by 0.25 s each side (a sentence without word times
+  goes by its middle); the rest of a sentence stays. Host times map to the mic track through the chunk holding
+  them, so a clock re-anchor is followed. The call track is never filtered. Logic check: a 5-minute call with 20
+  dictations of 3 s, a word every 0.5 s, sentences across the edges: 20 of 20 left out, and one of the user's
+  own words lost at the end of each (continuous speech right after the key comes up).
 - Notes: under the player, the transcript as a list (time, You / Call, text), each turn's text selectable, its
   time a button that seeks the player there; the header's copy button copies the whole transcript as
   "m:ss You: text" paragraphs. While it runs, "Transcribing… N%" (by track samples done) or "waiting for the speech

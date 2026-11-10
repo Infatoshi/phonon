@@ -145,9 +145,34 @@ def read_span(chunks: list, start_sample: int, end_sample: int):
     return out, rate
 
 
+def words_of(sentence) -> list:
+    """A sentence's words as [{"start","end","text"}]: its tokens grouped at each token that
+    starts with a space (a word start in Parakeet's vocabulary). Empty when it has no tokens."""
+    words = []
+    for token in getattr(sentence, "tokens", None) or []:
+        text = getattr(token, "text", "") or ""
+        start = float(getattr(token, "start", 0.0))
+        end = float(getattr(token, "end", start))
+        if not words or text.startswith(" "):
+            words.append({"start": start, "end": end, "text": text})
+        else:
+            words[-1]["end"] = end
+            words[-1]["text"] += text
+    out = []
+    for word in words:
+        text = word["text"].strip()
+        if text:
+            start = round(word["start"], 3)
+            out.append(
+                {"start": start, "end": max(start, round(word["end"], 3)), "text": text}
+            )
+    return out
+
+
 def sentences_of(result) -> list:
-    """The sentences of an AlignedResult as [{"start","end","text"}] in seconds from the
-    start of the audio it was given; empty sentences are dropped."""
+    """The sentences of an AlignedResult as [{"start","end","text","words"}] in seconds from
+    the start of the audio it was given; empty sentences are dropped. `words` lets the bar take
+    a dictation made during a meeting out of the "me" track."""
     out = []
     for sentence in getattr(result, "sentences", None) or []:
         text = (getattr(sentence, "text", "") or "").strip()
@@ -155,9 +180,11 @@ def sentences_of(result) -> list:
             continue
         start = float(getattr(sentence, "start", 0.0))
         end = float(getattr(sentence, "end", start))
-        out.append(
-            {"start": round(start, 3), "end": round(max(start, end), 3), "text": text}
-        )
+        row = {"start": round(start, 3), "end": round(max(start, end), 3), "text": text}
+        words = words_of(sentence)
+        if words:
+            row["words"] = words
+        out.append(row)
     return out
 
 

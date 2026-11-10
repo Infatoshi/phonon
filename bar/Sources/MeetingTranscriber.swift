@@ -31,6 +31,7 @@ final class MeetingTranscriber {
         var inFlight: (id: String, span: MeetingSpan)?
         let started = Date()
         var spans = 0
+        var dictatedWordsRemoved = 0
     }
 
     var isIdle: Bool { current == nil && waiting.isEmpty }
@@ -189,10 +190,17 @@ final class MeetingTranscriber {
             return
         }
         let sentences = Self.sentences(ev["sentences"])
-        let (kept, cursor) = MeetingSpanPlanner.advance(
+        let (planned, cursor) = MeetingSpanPlanner.advance(
             inFlight.span, sentences: sentences, rate: job.metadata.sampleRate)
         let track = inFlight.span.track
-        job.progress[track].sentences += kept
+        var kept = planned
+        if track == .mic {
+            let filtered = DictationFilter.remove(kept, windows: job.metadata.dictationWindows())
+            kept = filtered.kept
+            job.dictatedWordsRemoved += filtered.removedWords
+        }
+        // word times are only for that; the progress file keeps sentences
+        job.progress[track].sentences += kept.map { TimedSentence(start: $0.start, end: $0.end, text: $0.text) }
         job.progress[track].cursor = cursor
         if let model = ev["model"] as? String, !model.isEmpty { job.progress.model = model }
         job.spans += 1
@@ -213,7 +221,13 @@ final class MeetingTranscriber {
                 let start = (row["start"] as? NSNumber)?.doubleValue
             else { return nil }
             let end = (row["end"] as? NSNumber)?.doubleValue ?? start
-            return TimedSentence(start: start, end: max(start, end), text: text)
+            let words = (row["words"] as? [[String: Any]])?.compactMap { word -> TimedWord? in
+                guard let text = word["text"] as? String, let start = (word["start"] as? NSNumber)?.doubleValue
+                else { return nil }
+                let end = (word["end"] as? NSNumber)?.doubleValue ?? start
+                return TimedWord(start: start, end: max(start, end), text: text)
+            }
+            return TimedSentence(start: start, end: max(start, end), text: text, words: words)
         }
     }
 
@@ -237,7 +251,8 @@ final class MeetingTranscriber {
         }
         NSLog(
             "phonon meeting transcript: \(job.id) done: \(transcript.turns.count) turns, "
-                + "\(transcript.wordCount) words, \(job.spans) spans in "
+                + "\(transcript.wordCount) words, \(job.dictatedWordsRemoved) dictated words left out "
+                + "(\(job.metadata.dictations?.count ?? 0) dictations), \(job.spans) spans in "
                 + String(format: "%.1f s", Date().timeIntervalSince(job.started)))
         current = nil
         jobs[job.id] = nil
