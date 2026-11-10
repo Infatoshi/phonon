@@ -467,8 +467,9 @@ final class MeetingTranscriptTests: XCTestCase {
         XCTAssertEqual(kept[0].start, 8)
         XCTAssertEqual(kept[0].end, 9.4)
         XCTAssertEqual(kept[1], untouched, "a sentence no dictation touches keeps its text exactly")
-        // the pad: a word whose middle is 0.2 s before the key went down goes too
-        XCTAssertEqual(DictationFilter.remove([mixed], windows: [11.4...12.5]).removedWords, 3)
+        // the margin: a word whose middle is 0.08 s before the key went down goes too, 0.2 s stays
+        XCTAssertEqual(DictationFilter.remove([mixed], windows: [11.28...12.5]).removedWords, 3)
+        XCTAssertEqual(DictationFilter.remove([mixed], windows: [11.4...12.5]).removedWords, 2)
         XCTAssertEqual(DictationFilter.remove([mixed], windows: []).kept, [mixed])
     }
 
@@ -489,6 +490,25 @@ final class MeetingTranscriptTests: XCTestCase {
         metadata.dictations = [MeetingDictation(startHostNs: 3_000_000_000, endHostNs: 4_000_000_000)]
         XCTAssertEqual(metadata.dictationWindows(), [1...2])
         XCTAssertNil(MeetingMetadata(id: "e", startedAt: "", startedHostNs: 0).micSeconds(hostNs: 5))
+    }
+
+    /// A re-anchor inside a chunk (the stamps jumped mid-chunk): samples from it on follow its
+    /// host time, not the chunk's start.
+    func testADictationAfterAMidChunkReanchorLandsWhereItWasRecorded() {
+        var metadata = MeetingMetadata(id: "m", startedAt: "", startedHostNs: 1_000_000_000)
+        metadata.sampleRate = 16_000
+        let jump = MeetingDiscontinuity(sample: 40_000, hostNs: 62_500_000_000, jumpNs: 60_000_000_000)
+        // track sample 0 captured at host 0
+        var chunk = MeetingChunk(index: 0, file: "0000.wav", startSample: 0, sampleCount: 80_000, startHostNs: 0)
+        chunk.discontinuities = [jump]
+        metadata.micChunks = [chunk]
+        metadata.micDiscontinuities = [jump]
+        // before the jump: by the chunk start
+        XCTAssertEqual(metadata.micSeconds(hostNs: 1_000_000_000)!, 1, accuracy: 1e-9)
+        // sample 40,000 (2.5 s) was captured at 62.5 s; 1 s after that is track second 3.5
+        XCTAssertEqual(metadata.micSeconds(hostNs: 63_500_000_000)!, 3.5, accuracy: 1e-9)
+        metadata.dictations = [MeetingDictation(startHostNs: 63_000_000_000, endHostNs: 64_000_000_000)]
+        XCTAssertEqual(metadata.dictationWindows(), [3...4])
     }
 
     func testTheIndexRecordsDictationTimesOnly() throws {
@@ -581,13 +601,59 @@ final class MeetingTranscriptTests: XCTestCase {
         // what the user said to the call stays, except a word touching a dictation's edge
         let meetingWords = Set((0..<600).map { Double($0) / 2 }.filter { dictated($0 + 0.2) == nil }.map { "m\(Int($0 * 10))" })
         let lost = meetingWords.subtracting(me)
-        XCTAssertLessThanOrEqual(lost.count, 20, "at most one call word per dictation, at its end")
-        XCTAssertTrue(lost.allSatisfy { name in
-            let middle = Double(name.dropFirst())! / 10 + 0.2
-            return windows.contains { abs(middle - $0.lowerBound) <= 0.25 || abs(middle - $0.upperBound) <= 0.25 }
-        })
+        XCTAssertEqual(lost.count, 0, "the user's next word after the key comes up stays")
         // the call's side is never filtered, even while the user dictates
         XCTAssertTrue(Set((0..<600).map { "c\($0 * 5)" }).isSubset(of: Set(call)))
         print("N9 logic check: \(removed.count) of 20 dictations removed, \(lost.count) of the user's call words lost at dictation edges")
+    }
+
+    /// The margin, measured on the same 5-minute fixture: 20 dictations of 3 s, a word every
+    /// 0.5 s (0.4 s long) right up to each edge, so the user's next word starts the moment the
+    /// key comes up (the hardest case). `jitter` moves every word time by up to 80 ms, one
+    /// Parakeet frame, by a fixed pattern. Returns dictations wholly removed and own words lost.
+    static func marginRun(
+        lead: Double, trail: Double, rule: DictationFilter.Rule, jitter: Bool
+    ) -> (removed: Int, lost: Int) {
+        let windows: [ClosedRange<Double>] = (0..<20).map { (index: Int) -> ClosedRange<Double> in
+            let start = Double(10 + 14 * index)
+            return start...(start + 3)
+        }
+        let shifts: [Double] = [0, 0.08, -0.08, 0.04, -0.04]
+        var words: [(TimedWord, dictation: Int?)] = []
+        for (index, at) in stride(from: 0.0, to: 300, by: 0.5).enumerated() {
+            let shift = jitter ? shifts[index % shifts.count] : 0
+            let owner = windows.firstIndex { $0.contains(at + 0.2) }
+            words.append((TimedWord(start: at + shift, end: at + 0.4 + shift, text: "w\(index)"), owner))
+        }
+        let sentences = stride(from: 0, to: words.count, by: 8).map { from -> TimedSentence in
+            let group = words[from..<min(words.count, from + 8)].map(\.0)
+            return TimedSentence(
+                start: group[0].start, end: group.last!.end, text: group.map(\.text).joined(separator: " "),
+                words: group)
+        }
+        let kept = Set(
+            DictationFilter.remove(sentences, windows: windows, lead: lead, trail: trail, rule: rule).kept
+                .flatMap { $0.words ?? [] }.map(\.text))
+        let removed = (0..<20).filter { d in !words.contains { $0.dictation == d && kept.contains($0.0.text) } }.count
+        let lost = words.filter { $0.dictation == nil && !kept.contains($0.0.text) }.count
+        return (removed, lost)
+    }
+
+    func testTheDictationMarginSweep() {
+        var rows: [String] = []
+        for rule in [DictationFilter.Rule.middle, .start] {
+            for (lead, trail) in [(0.25, 0.25), (0.25, 0.15), (0.25, 0.1), (0.25, 0.05), (0.25, 0.0), (0.1, 0.1)] {
+                let exact = Self.marginRun(lead: lead, trail: trail, rule: rule, jitter: false)
+                let jittered = Self.marginRun(lead: lead, trail: trail, rule: rule, jitter: true)
+                rows.append(
+                    "\(rule) lead \(lead) trail \(trail): removed \(exact.removed)/\(jittered.removed), "
+                        + "own words lost \(exact.lost)/\(jittered.lost)")
+            }
+        }
+        print("N9 margin sweep (exact times / 80 ms jitter):\n" + rows.joined(separator: "\n"))
+        let chosen = Self.marginRun(
+            lead: DictationFilter.leadSeconds, trail: DictationFilter.trailSeconds, rule: .middle, jitter: true)
+        XCTAssertEqual(chosen.removed, 20)
+        XCTAssertEqual(chosen.lost, 0, "the user's next word after the key comes up stays")
     }
 }

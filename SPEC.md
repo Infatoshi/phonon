@@ -366,11 +366,13 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
   starting to the capture ending (committed, discarded or cut by the meeting's stop), as host times in
   metadata.json `dictations: [{"start_host_ns","end_host_ns"}]` (times only). The sidecar sends each sentence's
   words with their times (`words: [{"start","end","text"}]`, tokens grouped at word starts), and the transcriber
-  drops a mic word whose middle falls within a dictation widened by 0.25 s each side (a sentence without word times
-  goes by its middle); the rest of a sentence stays. Host times map to the mic track through the chunk holding
-  them, so a clock re-anchor is followed. The call track is never filtered. Logic check: a 5-minute call with 20
-  dictations of 3 s, a word every 0.5 s, sentences across the edges: 20 of 20 left out, and one of the user's
-  own words lost at the end of each (continuous speech right after the key comes up).
+  drops a mic word whose middle falls within a dictation widened by 0.1 s each side (a sentence without word times
+  goes by its middle); the rest of a sentence stays. Host times map to the mic track through the last anchor before
+  them (a chunk's first sample or a clock re-anchor, including one inside a chunk). The call track is never
+  filtered. Logic check: a 5-minute call with 20 dictations of 3 s, a word every 0.5 s right up to each edge,
+  sentences across the edges: 20 of 20 left out and none of the user's own words, with exact word times and with
+  times off by up to 80 ms. A 0.25 s margin lost the user's first word after each key release (20); judging by word
+  start instead of middle lost 12 to 20 of them at every margin tried.
 - Notes: under the player, the transcript as a list (time, You / Call, text), each turn's text selectable, its
   time a button that seeks the player there; the header's copy button copies the whole transcript as
   "m:ss You: text" paragraphs. While it runs, "Transcribing… N%" (by track samples done) or "waiting for the speech

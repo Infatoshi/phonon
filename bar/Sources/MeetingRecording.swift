@@ -267,18 +267,22 @@ struct MeetingMetadata: Codable, Equatable {
     /// taken out of the "me" transcript.
     var dictations: [MeetingDictation]?
 
-    /// Host time as seconds on the mic track (from its sample 0), by the chunk that holds it
-    /// so clock re-anchors are followed; nil before any timed chunk.
+    /// Host time as seconds on the mic track (from its sample 0), by the last anchor at or
+    /// before it: a chunk's first sample or a clock re-anchor inside a chunk (from it on, the
+    /// track follows the re-anchor's host time). Nil before any timed chunk.
     func micSeconds(hostNs: UInt64) -> Double? {
         let rate = Double(max(1, sampleRate))
-        let timed = micChunks.filter { $0.startHostNs != nil }.sorted { $0.startSample < $1.startSample }
-        guard let chunk = timed.last(where: { $0.startHostNs! <= hostNs }) ?? timed.first,
-            let startNs = chunk.startHostNs
-        else {
+        var anchors: [(sample: Int64, hostNs: UInt64)] = micChunks.compactMap { chunk in
+            chunk.startHostNs.map { (chunk.startSample, $0) }
+        }
+        let jumps = (micDiscontinuities ?? []) + micChunks.flatMap { $0.discontinuities ?? [] }
+        anchors += jumps.map { ($0.sample, $0.hostNs) }
+        anchors.sort { $0.sample < $1.sample }
+        guard let anchor = anchors.last(where: { $0.hostNs <= hostNs }) ?? anchors.first else {
             guard let first = micFirstSampleHostNs else { return nil }
             return (Double(hostNs) - Double(first)) / 1e9
         }
-        return Double(chunk.startSample) / rate + (Double(hostNs) - Double(startNs)) / 1e9
+        return Double(anchor.sample) / rate + (Double(hostNs) - Double(anchor.hostNs)) / 1e9
     }
 
     /// The dictations as stretches of mic-track seconds.

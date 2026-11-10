@@ -108,20 +108,28 @@ struct TimedWord: Equatable {
 
 /// Dictations made to Phonon during the call are taken out of the "me" track (GOAL N9): the
 /// user spoke them to a text field, not to the call. A word goes when its middle falls within
-/// a dictation's capture, widened by `padSeconds` on each side (the key is pressed a moment
-/// before speaking and released a moment after); a sentence with no word times goes when its
+/// a dictation's capture, widened by `leadSeconds` before and `trailSeconds` after (word times
+/// are off by up to a frame); a sentence with no word times goes when its
 /// middle does. A sentence that loses some words keeps the rest, in order.
 enum DictationFilter {
-    static let padSeconds = 0.25
+    /// Widening before the capture starts and after it ends: about one Parakeet frame (80 ms)
+    /// of timing error. `testTheDictationMarginSweep`: with 0.1 s each side and word times off
+    /// by up to 80 ms, 20 of 20 dictations go and none of the user's own words; 0.25 s cost a
+    /// word at each edge.
+    static let leadSeconds = 0.1
+    static let trailSeconds = 0.1
+
+    enum Rule { case middle, start }
 
     static func remove(
-        _ sentences: [TimedSentence], windows: [ClosedRange<Double>]
+        _ sentences: [TimedSentence], windows: [ClosedRange<Double>], lead: Double = leadSeconds,
+        trail: Double = trailSeconds, rule: Rule = .middle
     ) -> (kept: [TimedSentence], removedWords: Int) {
         guard !windows.isEmpty else { return (sentences, 0) }
-        let padded = windows.map { ($0.lowerBound - padSeconds)...($0.upperBound + padSeconds) }
+        let padded = windows.map { ($0.lowerBound - lead)...($0.upperBound + trail) }
         func inside(_ start: Double, _ end: Double) -> Bool {
-            let middle = (start + end) / 2
-            return padded.contains { $0.contains(middle) }
+            let at = rule == .middle ? (start + end) / 2 : start
+            return padded.contains { $0.contains(at) }
         }
         var kept: [TimedSentence] = []
         var removed = 0
