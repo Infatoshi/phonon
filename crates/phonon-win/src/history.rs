@@ -188,6 +188,31 @@ pub fn recent_now() -> Vec<String> {
     }
 }
 
+/// The recent list exactly as one opened menu listed it. A click resolves its
+/// item against this copy, not against the live list, so a dictation or a
+/// history toggle that refreshes the list while the menu is open cannot make
+/// the click copy a different text than the label the user picked.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Shown(Vec<String>);
+
+impl Shown {
+    pub const EMPTY: Shown = Shown(Vec::new());
+
+    pub fn of(recent: &[String]) -> Self {
+        Shown(recent.to_vec())
+    }
+
+    /// The menu labels, in item order.
+    pub fn labels(&self) -> Vec<String> {
+        self.0.iter().map(|text| label(text)).collect()
+    }
+
+    /// The full text behind item `index` of this menu.
+    pub fn text(&self, index: usize) -> Option<String> {
+        self.0.get(index).cloned()
+    }
+}
+
 /// A one-line menu label: whitespace runs become one space, and text over
 /// `LABEL_CHARS` characters is cut on a character boundary with an ellipsis.
 pub fn label(text: &str) -> String {
@@ -381,6 +406,29 @@ mod tests {
         );
         assert!(recent(&[entry(1, "", None)]).is_empty());
         assert_eq!(recent(&entries[..2]), vec!["Text 2.", "Text 1."]);
+    }
+
+    /// Bugbot on #68: a click sends an item index; when the live list was
+    /// refreshed after the menu opened (a new dictation, or history turned
+    /// off), the index must still name the text whose label was shown.
+    #[test]
+    fn a_click_copies_the_text_its_menu_showed() {
+        let mut live = vec!["Older note.".to_string(), "Oldest note.".to_string()];
+        let shown = Shown::of(&live);
+        assert_eq!(shown.labels(), vec!["Older note.", "Oldest note."]);
+        // a dictation lands while the menu is open: the live list shifts by one
+        live.insert(0, "A brand new dictation.".to_string());
+        assert_eq!(shown.text(0).as_deref(), Some("Older note."));
+        assert_eq!(shown.text(1).as_deref(), Some("Oldest note."));
+        // history turned off while the menu is open: the live list empties
+        live.clear();
+        assert_eq!(shown.text(1).as_deref(), Some("Oldest note."));
+        assert_eq!(shown.text(2), None);
+        // labels and texts line up item for item, including a long text cut for its label
+        let long = "word ".repeat(40).trim().to_string();
+        let shown = Shown::of(std::slice::from_ref(&long));
+        assert_eq!(shown.labels(), vec![label(&long)]);
+        assert_eq!(shown.text(0), Some(long));
     }
 
     #[test]

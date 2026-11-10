@@ -315,7 +315,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
             Event::Menu(tray::Command::ToggleHistory) => toggle_history(),
             // A recording in progress is still in memory, so everything on disk can go.
             Event::Menu(tray::Command::ClearHistory) => clear_history(),
-            Event::Menu(tray::Command::CopyRecent(index)) => copy_recent(index),
+            Event::Menu(tray::Command::CopyRecent(text)) => copy_recent(text),
         }
     }
     Ok(())
@@ -498,10 +498,7 @@ fn clear_history() {
     }
 }
 
-fn copy_recent(index: usize) {
-    let Some(text) = tray::recent_text(index) else {
-        return;
-    };
+fn copy_recent(text: String) {
     match inject::copy(&text) {
         Ok(()) => tray::notify("Copied to the clipboard", "Paste it with Ctrl+V.", false),
         Err(error) => tray::notify("Phonon could not copy that", &format!("{error:#}"), true),

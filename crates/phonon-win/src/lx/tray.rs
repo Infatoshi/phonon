@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 
 use ksni::blocking::{Handle, TrayMethods};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Command {
     Toggle,
     OpenFolder,
@@ -18,8 +18,8 @@ pub enum Command {
     ToggleHistory,
     /// Delete the history log and the kept recordings.
     ClearHistory,
-    /// Copy this entry of the recent list (see `recent_text`) to the clipboard.
-    CopyRecent(usize),
+    /// Copy this text, the full text of the "Recent dictations" item clicked, to the clipboard.
+    CopyRecent(String),
 }
 
 struct PhononTray {
@@ -35,16 +35,20 @@ impl PhononTray {
     /// "Keep history", "Recent dictations" and "Clear history".
     fn history_items(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
-        let mut recent: Vec<ksni::MenuItem<Self>> = self
-            .recent
-            .iter()
+        // Each item carries the text it shows, so a refresh of `recent` after the
+        // menu was sent to the panel cannot change what a click copies.
+        let shown = crate::history::Shown::of(&self.recent);
+        let mut recent: Vec<ksni::MenuItem<Self>> = shown
+            .labels()
+            .into_iter()
             .enumerate()
-            .map(|(index, text)| {
+            .filter_map(|(index, label)| Some((label, shown.text(index)?)))
+            .map(|(label, text)| {
                 StandardItem {
                     // an underscore marks the access key; a doubled one is a literal underscore
-                    label: crate::history::label(text).replace('_', "__"),
+                    label: label.replace('_', "__"),
                     activate: Box::new(move |t: &mut Self| {
-                        let _ = t.commands.send(Command::CopyRecent(index));
+                        let _ = t.commands.send(Command::CopyRecent(text.clone()));
                     }),
                     ..Default::default()
                 }
@@ -127,7 +131,7 @@ impl ksni::Tray for PhononTray {
             StandardItem {
                 label: label.into(),
                 activate: Box::new(move |t: &mut Self| {
-                    let _ = t.commands.send(command);
+                    let _ = t.commands.send(command.clone());
                 }),
                 ..Default::default()
             }
@@ -222,11 +226,8 @@ pub fn set_status(text: &str) {
     }
 }
 
-static RECENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
 /// Show history as on or off, with these recent dictations (newest first).
 pub fn set_history(on: bool, recent: Vec<String>) {
-    *RECENT.lock().unwrap() = recent.clone();
     if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
         if let Some(handle) = guard.as_ref() {
             handle.update(move |t| {
@@ -235,11 +236,6 @@ pub fn set_history(on: bool, recent: Vec<String>) {
             });
         }
     }
-}
-
-/// The full text behind "Recent dictations" item `index`, as the menu listed it.
-pub fn recent_text(index: usize) -> Option<String> {
-    RECENT.lock().unwrap().get(index).cloned()
 }
 
 pub fn status() -> String {

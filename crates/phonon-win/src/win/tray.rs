@@ -54,7 +54,7 @@ const ID_RECENT: usize = 300;
 const ID_KEY: usize = 100;
 
 /// What the user picked from the menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Start or stop dictation without touching the keyboard.
     Toggle,
@@ -68,8 +68,8 @@ pub enum Command {
     ToggleHistory,
     /// Delete the history log and the kept recordings.
     ClearHistory,
-    /// Copy this entry of the recent list (see `recent_text`) to the clipboard.
-    CopyRecent(usize),
+    /// Copy this text, the full text of the "Recent dictations" item clicked, to the clipboard.
+    CopyRecent(String),
 }
 
 /// Local history as the menu shows it; the worker thread owns the files and
@@ -85,10 +85,9 @@ pub fn set_history(on: bool, recent: Vec<String>) {
     }
 }
 
-/// The full text behind "Recent dictations" item `index`, as the menu listed it.
-pub fn recent_text(index: usize) -> Option<String> {
-    RECENT.lock().ok()?.get(index).cloned()
-}
+/// The recent list as the open (or last opened) menu listed it: a click on item
+/// `ID_RECENT + i` copies item `i` of this, never of the live `RECENT`.
+static SHOWN: Mutex<crate::history::Shown> = Mutex::new(crate::history::Shown::EMPTY);
 
 static TRAY: OnceLock<Mutex<TrayHandle>> = OnceLock::new();
 static COMMANDS: OnceLock<Mutex<Sender<Command>>> = OnceLock::new();
@@ -402,14 +401,18 @@ fn menu_text(text: &str) -> String {
 /// each label, so the buffers may go when this returns.
 fn append_history_items(menu: HMENU) {
     let on = HISTORY_ON.load(std::sync::atomic::Ordering::Relaxed);
-    let recent: Vec<Vec<u16>> = RECENT
+    let shown = RECENT
         .lock()
-        .map(|list| {
-            list.iter()
-                .map(|text| wide(&menu_text(&crate::history::label(text))))
-                .collect()
-        })
+        .map(|list| crate::history::Shown::of(&list))
         .unwrap_or_default();
+    let recent: Vec<Vec<u16>> = shown
+        .labels()
+        .iter()
+        .map(|label| wide(&menu_text(label)))
+        .collect();
+    if let Ok(mut slot) = SHOWN.lock() {
+        *slot = shown;
+    }
     let keep = wide("Keep history");
     let recent_title = wide("Recent dictations");
     let empty = wide(if on {
@@ -518,7 +521,10 @@ unsafe extern "system" fn window_proc(
                 ID_HISTORY => send(Command::ToggleHistory),
                 ID_CLEAR_HISTORY => send(Command::ClearHistory),
                 id if (ID_RECENT..ID_RECENT + crate::history::RECENT).contains(&id) => {
-                    send(Command::CopyRecent(id - ID_RECENT))
+                    let text = SHOWN.lock().ok().and_then(|s| s.text(id - ID_RECENT));
+                    if let Some(text) = text {
+                        send(Command::CopyRecent(text))
+                    }
                 }
                 id if (ID_KEY..ID_KEY + super::hook::CHOICES.len()).contains(&id) => {
                     pick_key(id - ID_KEY)
