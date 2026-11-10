@@ -41,11 +41,28 @@ impl Engine {
     /// Locate the recogniser and start the correction server. Both must succeed;
     /// recognition without correction is not a supported mode. `backends` is the
     /// tuned-runtime manifest URL (see `backends::DEFAULT_MANIFEST`).
+    ///
+    /// The two load side by side: the speech model becomes resident on its own
+    /// thread while this one starts the correction server. Cold, with real-time
+    /// virus scanning on and every vCPU busy (W11, Windows 11 VM, 2026-11-10), the
+    /// speech model took 77 to 212 s and the server 120 to 131 s one after the
+    /// other. The server stays on this thread: on Linux its parent-death signal
+    /// fires when the thread that spawned it ends, not the process.
     pub fn start(backends: Option<&str>) -> Result<Self> {
         let mut recognizer =
             Recognizer::installed().context("speech recognition is not installed")?;
-        recognizer.load_resident();
-        let corrector = Corrector::start(backends).context("correction model did not start")?;
+        let loading = std::thread::Builder::new()
+            .name("speech-model-load".into())
+            .spawn(move || {
+                recognizer.load_resident();
+                recognizer
+            })
+            .context("start the speech model thread")?;
+        let corrector = Corrector::start(backends);
+        let recognizer = loading
+            .join()
+            .map_err(|_| anyhow::anyhow!("the speech model thread panicked"))?;
+        let corrector = corrector.context("correction model did not start")?;
         Ok(Self {
             recognizer,
             corrector,
