@@ -57,7 +57,7 @@ impl Engine {
         self.corrector.device()
     }
 
-    /// Whether the next correction goes to the one-thread server (saturated CPU).
+    /// Whether the next correction goes to the fallback server (saturated CPU).
     pub fn lean(&self) -> bool {
         self.corrector.lean()
     }
