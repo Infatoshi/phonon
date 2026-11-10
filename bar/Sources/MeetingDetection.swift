@@ -58,6 +58,15 @@ enum MeetingDetector {
         return true
     }
 
+    /// Conference hosts that are also chat sites with voice notes: like a chat app, a tab on one
+    /// counts only while the browser also plays (the far side).
+    static let chatHosts = ["slack.com", "discord.com", "teams.microsoft.com", "teams.live.com"]
+
+    static func isChatHost(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return chatHosts.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
     /// Processes that capture or play audio for an app, by the app they belong to (after Wispr
     /// Flow 1.6's `meeting-service-names`): Chromium browsers and Electron apps (Slack, Discord)
     /// capture in a `.helper` process, Safari in WebKit's GPU process, FaceTime in
@@ -139,7 +148,8 @@ enum MeetingDetector {
             return .meeting(app: chat.name, bundleID: front)
         }
         if let url = evidence.frontmostURL, isConferenceURL(url),
-            let front = evidence.frontmostBundleID, owners.contains(owner(of: front))
+            let front = evidence.frontmostBundleID, owners.contains(owner(of: front)),
+            !isChatHost(url) || holds(evidence.audioOutputs, app: front)
         {
             return .meeting(app: ContextPolicy.host(of: url) ?? "browser", bundleID: front)
         }

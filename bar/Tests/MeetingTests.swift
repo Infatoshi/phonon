@@ -101,6 +101,29 @@ final class MeetingDetectorTests: XCTestCase {
             .none, "a browser using the mic elsewhere is not a meeting")
     }
 
+    /// Bugbot on #63: with helpers mapped to their browser, a voice note recorded in a chat site
+    /// (Discord /channels/, Teams web, a Slack huddle page) held the mic without a call. Like the
+    /// chat apps, those hosts count only while the browser also plays the far side.
+    func testAVoiceNoteOnAChatSiteIsNotACall() {
+        let helper = "com.google.Chrome.helper"
+        let chrome = "com.google.Chrome"
+        for url in [
+            "https://discord.com/channels/1/2", "https://teams.live.com/v2/", "https://teams.microsoft.com/v2/",
+            "https://app.slack.com/huddle/T1/C1",
+        ] {
+            XCTAssertEqual(
+                MeetingDetector.evaluate(evidence(holders: [helper], front: chrome, url: url)), .none, url)
+            XCTAssertEqual(
+                MeetingDetector.evaluate(
+                    evidence(holders: [helper], front: chrome, url: url, outputs: ["com.google.Chrome.helper"])),
+                .meeting(app: ContextPolicy.host(of: URL(string: url)!) ?? "browser", bundleID: chrome), url)
+        }
+        // a site that is only for calls needs no far side (alone in the room before others join)
+        XCTAssertEqual(
+            MeetingDetector.evaluate(evidence(holders: [helper], front: chrome, url: "https://meet.google.com/a-b-c")),
+            .meeting(app: "meet.google.com", bundleID: chrome))
+    }
+
     /// 2026-10-29: the user expected a Discord call to be offered. The private
     /// list stops reading, not asking: the call is offered and nothing about
     /// its window is recorded.
@@ -112,7 +135,8 @@ final class MeetingDetectorTests: XCTestCase {
         let chrome = "com.google.Chrome"
         XCTAssertEqual(
             MeetingDetector.evaluate(
-                evidence(holders: [chrome], front: chrome, url: "https://discord.com/channels/1/2")),
+                evidence(
+                    holders: [chrome], front: chrome, url: "https://discord.com/channels/1/2", outputs: [chrome])),
             .meeting(app: "discord.com", bundleID: chrome))
         var titleReads = 0
         let info = MeetingWindowInfo.read(

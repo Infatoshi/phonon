@@ -338,7 +338,9 @@ plays; Phonon left out), the frontmost app and, for a browser that is not privat
   Which of these processes captures during a call has not been observed on any Mac.
 - A call app (Zoom, Teams, Webex, FaceTime, RingCentral, Around) capturing is a call. A browser in front capturing
   on a conference page is a call. A chat app (Slack, Discord, WhatsApp, Telegram) is a call only while it is in
-  front, captures, and also plays audio (the far side): a voice message or clip only captures.
+  front, captures, and also plays audio (the far side): a voice message or clip only captures. The same holds for
+  a browser on a chat site's call page (slack.com, discord.com, teams.microsoft.com, teams.live.com): it also has
+  to play; a site only for calls (Meet, Zoom web) does not.
 - `MeetingDetectionHarnessTests` scripts 30 calls (Zoom, Meet in Chrome, Safari and Arc, Zoom web, Teams app and
   web, FaceTime, Slack huddles in the app and three browsers) and an 8.2-hour day of 134 ordinary uses
   (dictation in Phonon, Wispr Flow and Apple Dictation, voice messages, clips, Voice Memos, video, ChatGPT voice,
