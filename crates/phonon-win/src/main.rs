@@ -18,6 +18,7 @@ mod backends;
 mod fetch;
 mod http;
 mod manifest;
+mod mode;
 mod paths;
 mod pipeline;
 mod polish;

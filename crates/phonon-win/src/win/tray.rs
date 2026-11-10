@@ -48,6 +48,8 @@ const ID_OPEN_FOLDER: usize = 2;
 const ID_QUIT: usize = 3;
 /// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
 const ID_KEY: usize = 100;
+/// "Writing mode" submenu items: ID_MODE + index into `polish::MODES`.
+const ID_MODE: usize = 200;
 
 /// What the user picked from the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +291,24 @@ fn pick_key(index: usize) {
     }
 }
 
+fn pick_mode(index: usize) {
+    let Some(mode) = crate::mode::names().nth(index) else {
+        return;
+    };
+    match crate::mode::choose(mode) {
+        Ok(()) => notify(
+            &format!("Writing mode: {}", crate::mode::label(mode)),
+            "Applies from the next dictation.",
+            false,
+        ),
+        Err(error) => notify(
+            "Phonon could not change the writing mode",
+            &format!("{error:#}"),
+            true,
+        ),
+    }
+}
+
 fn hwnd() -> Option<HWND> {
     TRAY.get()
         .and_then(|tray| tray.lock().ok())
@@ -381,10 +401,20 @@ fn show_menu(hwnd: HWND) {
         .iter()
         .map(|(_, code)| wide(super::hook::key_label(*code)))
         .collect();
+    let mode = crate::mode::current();
+    let modes_title = wide(&format!("Writing mode: {}", crate::mode::label(mode)));
+    let modes: HMENU = unsafe { CreatePopupMenu() };
+    let mode_labels: Vec<(&str, Vec<u16>)> = crate::mode::names()
+        .map(|name| (name, wide(&crate::mode::menu_label(name))))
+        .collect();
     unsafe {
         for (index, ((_, code), label)) in super::hook::CHOICES.iter().zip(&labels).enumerate() {
             let checked = if *code == current { MF_CHECKED } else { 0 };
             AppendMenuW(keys, MF_STRING | checked, ID_KEY + index, label.as_ptr());
+        }
+        for (index, (name, label)) in mode_labels.iter().enumerate() {
+            let checked = if *name == mode { MF_CHECKED } else { 0 };
+            AppendMenuW(modes, MF_STRING | checked, ID_MODE + index, label.as_ptr());
         }
         AppendMenuW(
             menu,
@@ -399,6 +429,12 @@ fn show_menu(hwnd: HWND) {
             MF_STRING | MF_POPUP,
             keys as usize,
             keys_title.as_ptr(),
+        );
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_POPUP,
+            modes as usize,
+            modes_title.as_ptr(),
         );
         AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, folder.as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
@@ -442,6 +478,9 @@ unsafe extern "system" fn window_proc(
                 ID_QUIT => send(Command::Quit),
                 id if (ID_KEY..ID_KEY + super::hook::CHOICES.len()).contains(&id) => {
                     pick_key(id - ID_KEY)
+                }
+                id if (ID_MODE..ID_MODE + crate::polish::MODES.len()).contains(&id) => {
+                    pick_mode(id - ID_MODE)
                 }
                 _ => {}
             }

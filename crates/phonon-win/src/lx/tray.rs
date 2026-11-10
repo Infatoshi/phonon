@@ -19,7 +19,24 @@ pub enum Command {
 struct PhononTray {
     status: String,
     recording: bool,
+    /// The writing mode the menu shows checked; the file in the data folder is
+    /// what dictations read.
+    mode: &'static str,
     commands: Sender<Command>,
+}
+
+impl PhononTray {
+    /// Save a pick from the "Writing mode" submenu. A small file write, so it
+    /// happens right here in the menu callback and the next dictation sees it.
+    fn pick_mode(&mut self, index: usize) {
+        let Some(mode) = crate::mode::names().nth(index) else {
+            return;
+        };
+        match crate::mode::choose(mode) {
+            Ok(()) => self.mode = mode,
+            Err(error) => eprintln!("phonon: could not change the writing mode: {error:#}"),
+        }
+    }
 }
 
 impl ksni::Tray for PhononTray {
@@ -48,7 +65,7 @@ impl ksni::Tray for PhononTray {
         let _ = self.commands.send(Command::Toggle);
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::StandardItem;
+        use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
         let item = |label: &str, command: Command| {
             StandardItem {
                 label: label.into(),
@@ -76,6 +93,24 @@ impl ksni::Tray for PhononTray {
                 },
                 Command::Toggle,
             ),
+            SubMenu {
+                label: format!("Writing mode: {}", crate::mode::label(self.mode)),
+                submenu: vec![RadioGroup {
+                    selected: crate::mode::names()
+                        .position(|name| name == self.mode)
+                        .unwrap_or(0),
+                    select: Box::new(|t: &mut Self, index| t.pick_mode(index)),
+                    options: crate::mode::names()
+                        .map(|name| RadioItem {
+                            label: crate::mode::menu_label(name),
+                            ..Default::default()
+                        })
+                        .collect(),
+                }
+                .into()],
+                ..Default::default()
+            }
+            .into(),
             item("Open Phonon folder", Command::OpenFolder),
             item("Quit Phonon", Command::Quit),
         ]
@@ -116,6 +151,7 @@ pub fn create(commands: Sender<Command>) {
     let tray = PhononTray {
         status: "starting".into(),
         recording: false,
+        mode: crate::mode::current(),
         commands,
     };
     // At login Phonon can start before the shell's tray host (Ubuntu's AppIndicator extension) is up;

@@ -41,7 +41,9 @@ pub const MODES: [(&str, &str); 4] = [
     ),
 ];
 
-/// The mode Windows and Linux use: nothing tells them yet which app has focus.
+/// The mode a dictation uses until the user picks another from the tray
+/// (`crate::mode`), and the one the startup check, the warm-up and the speed probe
+/// always use. Nothing tells Windows and Linux yet which app has focus.
 pub const DEFAULT_MODE: &str = "minimal";
 
 /// The model may take this long to load before the server is called dead.

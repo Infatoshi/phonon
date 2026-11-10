@@ -98,11 +98,12 @@ impl Engine {
             .ok_or_else(|| anyhow::anyhow!("the speech model is not resident"))?
             .context("transcribe the recording")?;
         let asr_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(self.correct_or_raw(transcript.text, asr_ms))
+        Ok(self.correct_or_raw(transcript.text, asr_ms, crate::mode::current()))
     }
 
-    /// Run a dictation's wave file through both stages; like `run`, except that a
-    /// correction that fails leaves the raw transcript.
+    /// Run a dictation's wave file through both stages in the writing mode picked
+    /// from the tray; like `run`, except that a correction that fails leaves the raw
+    /// transcript.
     pub fn dictate(&self, wav: &Path) -> Result<PassResult> {
         let started = Instant::now();
         let transcript = self
@@ -110,15 +111,18 @@ impl Engine {
             .transcribe(wav)
             .with_context(|| format!("transcribe {}", wav.display()))?;
         let asr_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(self.correct_or_raw(transcript.text, asr_ms))
+        Ok(self.correct_or_raw(transcript.text, asr_ms, crate::mode::current()))
     }
 
-    /// The corrected text, or the raw transcript when correction fails: a dictation
-    /// the user spoke is inserted either way, never dropped (the correction server
-    /// rejected a 900 s transcript with HTTP 400 before sentence groups, 2026-11-08).
-    fn correct_or_raw(&self, raw: String, asr_ms: f64) -> PassResult {
+    /// The corrected text in `mode`, or the raw transcript when correction fails: a
+    /// dictation the user spoke is inserted either way, never dropped (the correction
+    /// server rejected a 900 s transcript with HTTP 400 before sentence groups,
+    /// 2026-11-08).
+    fn correct_or_raw(&self, raw: String, asr_ms: f64, mode: &str) -> PassResult {
+        // the mode's name only, never the text
+        eprintln!("phonon: correcting in writing mode {mode}");
         let started = Instant::now();
-        let polished = match self.corrector.correct(&raw) {
+        let polished = match self.corrector.correct_in(&raw, mode) {
             Ok(polished) => polished,
             Err(error) => {
                 eprintln!("phonon: correction failed, inserting the raw transcript: {error:#}");
@@ -133,7 +137,8 @@ impl Engine {
         }
     }
 
-    /// Run one wave file through both stages.
+    /// Run one wave file through both stages in the default mode (minimal), whatever
+    /// the tray says: the startup check compares against a fixed answer.
     pub fn run(&self, wav: &Path) -> Result<PassResult> {
         let started = Instant::now();
         let transcript = self

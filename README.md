@@ -80,6 +80,9 @@ a Copilot key instead of Right Ctrl, Phonon switches to Right Alt (Ctrl+Space
 where Right Alt types characters) the first time that key is pressed.
 `PHONON_WIN_HOTKEY` overrides the menu and takes `rightctrl`, `leftctrl`, `rightalt`, `rightshift`,
 `capslock`, or `f13`.
+**Writing mode** in the tray menu (Windows and Linux) picks how the refiner rewrites every
+dictation: Minimal (the default, only cleans up), Casual, Formal or Prompt. It applies from
+the next dictation and is saved as `writing_mode.txt` in the data folder.
 
 ```
 phonon-win.exe info      # what first run downloads, and what is installed
