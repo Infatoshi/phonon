@@ -300,6 +300,54 @@ which carry no buttons. The prompt needs, in order:
 - Not done: separating the speaker from other voices in the room. macOS voice processing (echo cancellation of the
   Mac's own output) is the next step if ducking is not enough.
 
+## Meeting notes (macOS)
+
+Recording (bar/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
+asks "take notes?" (or starts by itself with auto-start). Meetings/<id>/ holds metadata.json plus 5 s 48 kHz mono
+16-bit WAV chunks of two tracks on one host clock: mic/ (the user) and system/ (the call, ScreenCaptureKit). Each
+track's `<track>_start_offset_samples` places its sample 0 on the shared timeline; Notes shifts both so the
+earlier track starts at 0.
+
+Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
+`transcribe_span`), all on the Mac:
+
+- When a recording stops, its meeting is queued for transcription. Notes has a Transcribe button for a meeting
+  without a transcript (one recorded before transcripts existed, or one whose last try failed, with the error shown).
+  Meetings are transcribed one at a time.
+- Each track is cut into spans of about 60 s (never over 75 s: Metal Parakeet answers windows up to 82 s, and a
+  longer one would load the MLX copy of the model). A remainder up to 75 s stays one span; a gap in the chunks ends
+  a span. A span that is not the last of its run gives back its last sentence when that sentence ends within 1 s
+  of the cut (and starts 5 s or more in): the next span starts 0.15 s before it, so a sentence is never split.
+- The bar sends one span at a time, `{"cmd":"meeting_span","id","chunks":[{"path","start_sample"}],
+  "start_sample","end_sample"}`, and waits for `{"type":"meeting_span","id","sentences":[{"start","end","text"}],
+  "quiet","audio_seconds","seconds","model"}` (or `"error"`). Its own event type: never read as a dictation's.
+- Dictation goes first. There is one resident speech model; the engine queues spans and hands the ASR sidecar at
+  most one, only when both stacks are ready, no stream is open, no dictation transcript or correction is owed, no
+  key is held (`prewarm` / `stream_start` until `stream_finish` / `stream_stop` / `transcribe`), and the last of
+  these was 1 s ago or more. A dictation that never reports its end stops holding spans back after 120 s. A key
+  pressed while a span is in the sidecar waits for that span only (0.67 s at most for the 20-minute two-track
+  check meeting on MLX; Metal is faster), while the user is still speaking.
+- The sidecar reads only the chunks a span needs (a 2-hour meeting is never in memory), fills a missing stretch
+  with silence, resamples 48 kHz to 16 kHz with the same linear resampler as imported dictation audio
+  (`resample_linear`), and skips the model when no 20 ms frame rises above -50 dBFS RMS (`quiet`: no sentences).
+- Progress: after every span, transcript.partial.json (per track: the track sample transcribed up to, done, and
+  the kept sentences in track seconds; `error` after a failure). A quit or crash resumes from it at the next
+  launch; a quit while recording leaves an empty one so that meeting is transcribed at the next launch. A failed
+  meeting waits for the button, which resumes from the saved cursor. An engine restart re-sends the span in flight.
+- Output: transcript.json `{"schema_version":1,"model","created_at","turns":[{"start_seconds","end_seconds",
+  "speaker":"me"|"call","text"}]}`. Sentences of both tracks go onto the shared timeline by their offsets, in time
+  order; consecutive sentences of one speaker make one turn. Raw Parakeet text (the dictionary's in-decode boosting
+  applies on Metal), no correction model. Everyone on the call is "call": no diarization yet. Words the user
+  dictated to Phonon during the call are not taken out yet, and on speakers the call can leak into "me".
+- Notes: under the player, the transcript as a list (time, You / Call, text), each turn's text selectable, its
+  time a button that seeks the player there; the header's copy button copies the whole transcript as
+  "m:ss You: text" paragraphs. While it runs, "Transcribing… N%" (by track samples done) or "waiting for the speech
+  model"; while recording, a note that the transcript comes at the end.
+- Logs carry meeting ids, counts and timings only, never the text.
+- Check (20-minute Zoom call, two tracks, MLX sidecar outside the app, 2026-11-09): 42 spans, 92 turns, 3,323
+  words in 17.7 s after the model loaded (17.5 s of it in the model); Parakeet's own 120 s / 15 s long-form
+  chunking of each whole track gives 3,335 words. `MeetingTranscriptLiveCheck` (opt in by environment) reruns it.
+
 ## Competing dictation apps
 
 Two apps holding fn taps means both record and both insert. Phonon detects
@@ -568,8 +616,8 @@ model's vocabulary, case variants, bonus 4 to start and to continue a term, budg
 to `pa serve` as a dictionary request, which swaps it in place between windows (room for about 11k
 terms). The greedy TDT decode follows the trie: a bonus may push it onto a term, a walk commits
 only on a complete term at a word boundary and otherwise rolls back, and a committed boosted term
-takes the dictionary's spelling. Windows answered on the MLX fallback are not boosted. Meetings are
-not transcribed in the app.
+takes the dictionary's spelling. Windows answered on the MLX fallback are not boosted. Meeting spans
+(see "Meeting notes") go through the same decode, so they are boosted too.
 
 Measured (owner dictations, public refiner, 2026-11-02, 733-entry dictionary, 604 terms boosted):
 real_580 WER after the refiner -0.0011 [-0.0019, -0.0003], sep -0.0011 [-0.0020, -0.0005];

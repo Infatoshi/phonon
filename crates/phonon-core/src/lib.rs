@@ -17,9 +17,13 @@
 //!   which stays the fallback; without base_url/model it is off. Memory only.
 //!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
+//!   {"cmd":"meeting_span","id":"...","chunks":[{"path":"...","start_sample":0}],"start_sample":0,"end_sample":0}
+//!   — one span of a recorded meeting's track, run when no dictation is under way (meeting.rs)
 //!   {"cmd":"shutdown"}
 //!
 //! Events (stdout):
+//!   {"type":"meeting_span","id":"...","sentences":[{"start":0.5,"end":1.2,"text":"..."}],"quiet":false,
+//!    "audio_seconds":60,"seconds":0.4,"model":"..."}  — or {"type":"meeting_span","id":"...","error":"..."}
 //!   {"type":"stream","name":"asr|llm","state":"loading|ready|error","pct":0.5,"msg":"...","load_ms":123}
 //!   {"type":"ready","stream_refine":true}  — all required streams ready; streaming refine on
 //!   (the bar then sends the last partial chunk at key up and {"cmd":"screen_context"})
@@ -32,6 +36,7 @@
 pub mod app_context;
 pub mod data;
 pub mod edits;
+pub mod meeting;
 pub mod pairs;
 mod paths;
 
@@ -94,6 +99,12 @@ pub enum EngineEvent {
         source: String,
         complete: bool,
     },
+    /// A meeting span answered: the sidecar's reply (`sentences`, `quiet`, `audio_seconds`,
+    /// `seconds`, `model`), or `{"error": msg}`. Never a dictation error.
+    MeetingSpan {
+        id: String,
+        body: serde_json::Value,
+    },
     Error {
         id: Option<String>,
         msg: String,
@@ -154,6 +165,10 @@ pub struct Engine {
     /// `live_text` as of its `stream_start` (re-read only when the file changed), so a
     /// flipped setting applies from the next dictation without an engine restart.
     live_text_stream: Option<String>,
+    /// Dictation as the meeting queue sees it, and the meeting spans waiting for the speech
+    /// model (`meeting.rs`): one at a time, never while a dictation is under way.
+    dictation: meeting::DictationActivity,
+    meeting_spans: meeting::MeetingSpans,
 }
 
 /// Words a recognizer must produce for a clip the energy gate called silent to go out anyway.
@@ -334,6 +349,8 @@ impl Engine {
             stream_bundle: None,
             stream_commit_category: (None, None),
             live_text_stream: None,
+            dictation: meeting::DictationActivity::default(),
+            meeting_spans: meeting::MeetingSpans::default(),
         })
     }
 
@@ -380,12 +397,23 @@ impl Engine {
                         });
                     }
                 }
+                AsrEvent::Span { id, body } => {
+                    if self.meeting_spans.finish(id.as_deref()) {
+                        out.push(EngineEvent::MeetingSpan {
+                            id: id.unwrap_or_default(),
+                            body,
+                        });
+                    }
+                }
                 AsrEvent::Result {
                     id,
                     text,
                     seconds,
                     partial,
                 } => {
+                    if let Some(request_id) = id.as_deref().filter(|_| !partial) {
+                        self.dictation.asr_done(request_id, Instant::now());
+                    }
                     if id.as_deref() == Some(STARTUP_ASR_BATCH_ID) {
                         if asr_smoke_passed(&text) {
                             self.startup_asr_text = Some(text.clone());
@@ -473,6 +501,21 @@ impl Engine {
                     }
                 }
                 AsrEvent::Error { id, msg } => {
+                    if self.meeting_spans.finish(id.as_deref()) {
+                        // the id only: the message goes to the bar, which shows it on Notes
+                        eprintln!(
+                            "phonon engine: meeting span {} failed",
+                            id.as_deref().unwrap_or("?")
+                        );
+                        out.push(EngineEvent::MeetingSpan {
+                            id: id.unwrap_or_default(),
+                            body: json!({"error": msg}),
+                        });
+                        continue;
+                    }
+                    if let Some(request_id) = id.as_deref() {
+                        self.dictation.asr_done(request_id, Instant::now());
+                    }
                     if let Some(request_id) =
                         id.as_deref().filter(|i| self.finishing.contains_key(*i))
                     {
@@ -647,6 +690,7 @@ impl Engine {
                                     });
                                 }
                             }
+                            self.dictation.touch(Instant::now());
                             out.push(EngineEvent::PolishResult {
                                 id,
                                 text: corrected.text,
@@ -774,7 +818,43 @@ impl Engine {
                 stream_refine: self.stream_refine,
             });
         }
+        out.extend(self.pump_meeting_spans());
         out
+    }
+
+    /// `{"cmd":"meeting_span"}`: queue one span of a meeting track for the speech model.
+    pub fn queue_meeting_span(&mut self, request: meeting::SpanRequest) -> Vec<EngineEvent> {
+        self.meeting_spans.push(request);
+        self.pump_meeting_spans()
+    }
+
+    /// Hand the sidecar the next meeting span when the model is free: both stacks ready, no
+    /// meeting span in it, and no dictation under way (no stream, no transcript or correction
+    /// owed, no key held, none in the last `meeting::QUIET_AFTER_DICTATION`).
+    fn pump_meeting_spans(&mut self) -> Vec<EngineEvent> {
+        let idle = self.stacks_ready()
+            && self.segment_streams.is_empty()
+            && self.finishing.is_empty()
+            && self.polish_requests.is_empty()
+            && self.dictation.quiet(Instant::now());
+        let Some(request) = self.meeting_spans.next(idle) else {
+            return Vec::new();
+        };
+        match self.asr.transcribe_span(
+            &request.id,
+            &request.chunks,
+            request.start_sample,
+            request.end_sample,
+        ) {
+            Ok(()) => Vec::new(),
+            Err(error) => {
+                self.meeting_spans.finish(Some(&request.id));
+                vec![EngineEvent::MeetingSpan {
+                    id: request.id,
+                    body: json!({"error": format!("send span: {error:#}")}),
+                }]
+            }
+        }
     }
 
     pub fn transcribe(&mut self, path: &Path, id: Option<&str>) -> Result<()> {
@@ -788,6 +868,7 @@ impl Engine {
         source: &str,
     ) -> Result<()> {
         if let Some(id) = id.filter(|id| !id.starts_with("__phonon_")) {
+            self.dictation.key_up(Instant::now());
             let metadata = data::register_recording(path, source)?;
             self.recording_ids
                 .insert(id.to_string(), metadata.id.clone());
@@ -820,6 +901,11 @@ impl Engine {
                 );
             }
         }
+        // Asked of the sidecar from here on (a stream finished at key up already was, above):
+        // meeting spans wait for its answer.
+        if let Some(request_id) = id.filter(|id| !id.starts_with("__phonon_")) {
+            self.dictation.asr_sent(request_id, Instant::now());
+        }
         if let Some(stream_id) = id.filter(|id| self.segment_streams.contains_key(*id)) {
             // The closed segments are transcribed already; only the open one is left.
             self.segment_streams.remove(stream_id);
@@ -833,6 +919,7 @@ impl Engine {
     /// WAV follows (corpus entry, speech gate) and releases the result. For any other
     /// stream this is `stream_stop`.
     pub fn stream_finish(&mut self, id: Option<&str>) -> Result<()> {
+        self.dictation.key_up(Instant::now());
         let Some(stream_id) = id.filter(|id| self.segment_streams.contains_key(*id)) else {
             return self.asr.stream_stop(id);
         };
@@ -909,6 +996,7 @@ impl Engine {
         id: Option<&str>,
         app: Option<&serde_json::Value>,
     ) -> Result<()> {
+        self.dictation.key_down(Instant::now());
         if let (true, Some(stream_id)) = (self.stream_refine && self.llm_ready, id) {
             self.segment_streams.clear();
             self.segment_streams
@@ -1034,6 +1122,7 @@ impl Engine {
     }
 
     pub fn stream_stop(&mut self, id: Option<&str>) -> Result<()> {
+        self.dictation.key_up(Instant::now());
         self.asr.stream_stop(id)
     }
 
@@ -1155,6 +1244,7 @@ impl Engine {
     /// Dictation started. Best effort: a sidecar that is not ready simply
     /// misses the hint.
     pub fn prewarm_polish(&mut self) -> Result<()> {
+        self.dictation.key_down(Instant::now());
         match self.polisher.as_mut() {
             Some(polisher) if self.llm_ready => polisher.prewarm(),
             _ => Ok(()),
@@ -1569,6 +1659,20 @@ pub fn run_engine_serve() -> Result<()> {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
                         }
                     }
+                    "meeting_span" => match meeting::SpanRequest::from_command(&v) {
+                        Ok(request) => {
+                            for ev in eng.queue_meeting_span(request) {
+                                emit_engine_event(&ev);
+                            }
+                        }
+                        Err(msg) => {
+                            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                            emit_engine_event(&EngineEvent::MeetingSpan {
+                                id: id.to_string(),
+                                body: json!({ "error": msg }),
+                            });
+                        }
+                    },
                     "byok" => {
                         let endpoint = phonon_llm::byok::Endpoint::from_command(&v);
                         let on = endpoint.is_some();
@@ -1694,6 +1798,7 @@ fn emit_engine_event(ev: &EngineEvent) {
             "app_category": app_category,
         })),
         EngineEvent::DraftResult { .. } => emit(&draft_json(ev).unwrap_or_default()),
+        EngineEvent::MeetingSpan { .. } => emit(&meeting_span_json(ev).unwrap_or_default()),
         EngineEvent::Error { id, msg } => emit(&json!({
             "type": "error",
             "id": id,
@@ -1723,6 +1828,21 @@ fn draft_json(ev: &EngineEvent) -> Option<serde_json::Value> {
     }))
 }
 
+/// `{"type":"meeting_span","id":..,"sentences":[..],..}` (or `"error"`) for a meeting span;
+/// None for any other event. A type of its own, so the bar never reads it as a dictation's.
+fn meeting_span_json(ev: &EngineEvent) -> Option<serde_json::Value> {
+    let EngineEvent::MeetingSpan { id, body } = ev else {
+        return None;
+    };
+    let mut out = match body {
+        serde_json::Value::Object(map) => serde_json::Value::Object(map.clone()),
+        _ => json!({}),
+    };
+    out["type"] = json!("meeting_span");
+    out["id"] = json!(id);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1735,6 +1855,34 @@ mod tests {
     use crate::data::{DictionaryEntry, DictionaryFile};
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn a_meeting_span_goes_out_under_its_own_type() {
+        use super::meeting_span_json;
+        let answered = EngineEvent::MeetingSpan {
+            id: "m1:mic:0".into(),
+            body: json!({"type":"span","id":"m1:mic:0","sentences":[{"start":0.5,"end":1.0,"text":"Hi."}],
+                         "quiet":false,"seconds":0.2}),
+        };
+        let out = meeting_span_json(&answered).unwrap();
+        assert_eq!(out["type"], "meeting_span");
+        assert_eq!(out["id"], "m1:mic:0");
+        assert_eq!(out["sentences"][0]["end"], 1.0);
+        let failed = EngineEvent::MeetingSpan {
+            id: "m1:call:3".into(),
+            body: json!({"error": "transcribe span failed"}),
+        };
+        let out = meeting_span_json(&failed).unwrap();
+        assert_eq!(
+            (out["type"].as_str(), out["error"].as_str()),
+            (Some("meeting_span"), Some("transcribe span failed"))
+        );
+        let other = EngineEvent::Error {
+            id: None,
+            msg: "x".into(),
+        };
+        assert!(meeting_span_json(&other).is_none());
+    }
 
     /// Issue #24: the endpoint's text wins only when it arrives in time and passes
     /// the guard; an error, a timeout, a hung server or a runaway reply all fall back

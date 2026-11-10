@@ -655,6 +655,12 @@ final class NativeAppStore: ObservableObject {
     @Published private(set) var macros: [PhononMacro] = []
     /// Recorded meetings under Meetings/, newest first.
     @Published private(set) var meetings: [MeetingNote] = []
+    /// Meetings being transcribed, queued or failed this session (`MeetingTranscriber`).
+    @Published var meetingTranscription: [String: MeetingTranscriptionJob] = [:]
+    /// The meeting being recorded now, if any.
+    @Published var recordingMeetingID: String?
+    /// The Notes page's Transcribe button: transcribe the meeting in this folder.
+    var onTranscribeMeeting: ((URL) -> Void)?
     @Published var engineReady = false
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
@@ -762,9 +768,21 @@ final class NativeAppStore: ObservableObject {
     // MARK: Meetings
 
     func loadMeetings() {
-        meetings = MeetingNote.loadAll(
-            from: supportDirectory.appendingPathComponent("Meetings", isDirectory: true),
-            fileManager: fileManager)
+        meetings = MeetingNote.loadAll(from: meetingsDirectory, fileManager: fileManager)
+    }
+
+    var meetingsDirectory: URL {
+        supportDirectory.appendingPathComponent("Meetings", isDirectory: true)
+    }
+
+    func transcriptState(_ note: MeetingNote) -> NoteTranscriptState {
+        NoteTranscriptState.resolve(
+            transcript: note.transcript, job: meetingTranscription[note.id],
+            savedError: note.transcriptError, recording: recordingMeetingID == note.id)
+    }
+
+    func transcribeMeeting(_ note: MeetingNote) {
+        onTranscribeMeeting?(note.directory)
     }
 
     // MARK: Dictionary chips

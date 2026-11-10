@@ -13,6 +13,8 @@ final class MeetingController {
     private var prompts = MeetingPromptPolicy()
     private var endPolicy: MeetingEndPolicy?
     private var recorder: MeetingRecorder?
+    /// The folder of the meeting being recorded.
+    private var recordingDirectory: URL?
     private var recordingApp: String?
     /// The process whose microphone use defines the call being recorded.
     private var recordingBundleID: String?
@@ -27,6 +29,8 @@ final class MeetingController {
     var onRecordingChanged: ((String?) -> Void)?
     /// Tells the capsule: recording light, stop button, pointer.
     var onFlowChanged: ((MeetingFlow) -> Void)?
+    /// A recording stopped and its files are closed: the meeting's folder, to transcribe.
+    var onRecordingSaved: ((URL) -> Void)?
 
     init(store: NativeAppStore) {
         self.store = store
@@ -176,6 +180,8 @@ final class MeetingController {
         do {
             let recorder = try MeetingRecorder(directory: directory, metadata: metadata)
             self.recorder = recorder
+            recordingDirectory = directory
+            store.recordingMeetingID = metadata.id
             recordingApp = meeting
             recordingBundleID = bundleID
             endPolicy = MeetingEndPolicy(now: Self.now())
@@ -208,6 +214,9 @@ final class MeetingController {
     func stop(reason: String) {
         guard let recorder else { return }
         self.recorder = nil
+        let directory = recordingDirectory
+        recordingDirectory = nil
+        store.recordingMeetingID = nil
         endPolicy = nil
         recordingApp = nil
         recordingBundleID = nil
@@ -217,15 +226,22 @@ final class MeetingController {
         if byUser {
             popup.saved(onExpire: { [weak self] in self?.flow.expire() })
         }
-        Task { await recorder.stop(reason: reason) }
+        Task { [weak self] in
+            await recorder.stop(reason: reason)
+            // The chunks are closed and metadata.json final: transcribe it now.
+            if let directory { self?.onRecordingSaved?(directory) }
+        }
     }
 
-    /// On quit: close the open chunks synchronously so they stay readable.
+    /// On quit: close the open chunks synchronously so they stay readable, and mark the
+    /// meeting for transcription at the next launch.
     func stopNow(reason: String) {
         timer?.invalidate()
         timer = nil
         guard let recorder else { return }
         self.recorder = nil
         recorder.closeFiles(reason: reason)
+        if let recordingDirectory { MeetingTranscriber.markPending(directory: recordingDirectory) }
+        recordingDirectory = nil
     }
 }
