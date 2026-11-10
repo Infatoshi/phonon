@@ -2355,9 +2355,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             self?.appStore.meetingTranscription = jobs
         }
         meetingTranscriber.onFinished = { [weak self] _ in self?.appStore.loadMeetings() }
-        meetings.onRecordingSaved = { [weak self] directory in
-            self?.meetingTranscriber.enqueue(directory: directory)
-        }
+        // From the Notes button and from `meetingRecordingFinished` (a recording that stopped).
         appStore.onTranscribeMeeting = { [weak self] directory in
             self?.meetingTranscriber.enqueue(directory: directory)
         }
@@ -3287,6 +3285,13 @@ final class AppController: NSObject, NSApplicationDelegate {
             e2eTrace?.recordingStartedNs = DispatchTime.now().uptimeNanoseconds
         } catch {
             isRecording = false
+            // The engine heard `prewarm` and maybe `stream_start`: end both there.
+            if streamActive {
+                engine.send(["cmd": "stream_stop", "id": activeId ?? "p\(pass)"])
+                streamActive = false
+            } else {
+                engine.send(["cmd": "dictation_end", "id": activeId ?? "p\(pass)"])
+            }
             ducker.stop()
             hidePill()
             NSLog("mic: \(error.localizedDescription)")
@@ -3358,6 +3363,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                     NSLog(
                         "phonon: empty/short capture (\(captured.count) frames @ \(rate) Hz) — pass \(id)"
                     )
+                    // No WAV, so no transcribe: tell the engine the dictation is over.
+                    self.engine.send(["cmd": "dictation_end", "id": id])
                     // Stay visible briefly so it doesn't feel broken, then hide.
                     self.processing = false
                     self.hideAfter(0.25)
@@ -3426,10 +3433,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             // next stream_start replaces it.
             engine.send(["cmd": "stream_stop", "id": activeId ?? "p\(pass)"])
             streamActive = false
-        } else if enginesReady {
+        } else {
             // No stream to stop, but the engine heard the key go down (`prewarm`): tell it the
             // dictation is over, so meeting transcription does not wait for it.
-            engine.send(["cmd": "stream_stop", "id": activeId ?? "p\(pass)"])
+            engine.send(["cmd": "dictation_end", "id": activeId ?? "p\(pass)"])
         }
         recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
         _ = recorder.takeSamples()

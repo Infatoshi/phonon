@@ -19,6 +19,8 @@
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
 //!   {"cmd":"meeting_span","id":"...","chunks":[{"path":"...","start_sample":0}],"start_sample":0,"end_sample":0}
 //!   — one span of a recorded meeting's track, run when no dictation is under way (meeting.rs)
+//!   {"cmd":"dictation_end","id":"..."}  — a dictation ended with no WAV or stream to finish
+//!   (discarded, too short, the mic failed): releases the hold `prewarm` / `stream_start` took
 //!   {"cmd":"shutdown"}
 //!
 //! Events (stdout):
@@ -832,11 +834,16 @@ impl Engine {
     /// meeting span in it, and no dictation under way (no stream, no transcript or correction
     /// owed, no key held, none in the last `meeting::QUIET_AFTER_DICTATION`).
     fn pump_meeting_spans(&mut self) -> Vec<EngineEvent> {
-        let idle = self.stacks_ready()
-            && self.segment_streams.is_empty()
-            && self.finishing.is_empty()
-            && self.polish_requests.is_empty()
-            && self.dictation.quiet(Instant::now());
+        // Engine state that means a dictation is under way, as holds that go stale (meeting.rs):
+        // a stream the bar abandoned or a result that never came cannot pin the queue for good.
+        let now = Instant::now();
+        self.dictation
+            .mirror("stream", !self.segment_streams.is_empty(), now);
+        self.dictation
+            .mirror("finishing", !self.finishing.is_empty(), now);
+        self.dictation
+            .mirror("polish", !self.polish_requests.is_empty(), now);
+        let idle = self.stacks_ready() && self.dictation.quiet(now);
         let Some(request) = self.meeting_spans.next(idle) else {
             return Vec::new();
         };
@@ -1243,6 +1250,13 @@ impl Engine {
 
     /// Dictation started. Best effort: a sidecar that is not ready simply
     /// misses the hint.
+    /// `{"cmd":"dictation_end"}`: the bar ended a dictation without a WAV or a stream to finish
+    /// (a discarded or too-short one, a microphone that failed to start). Releases the key hold
+    /// that `prewarm` / `stream_start` took; nothing reaches the sidecars.
+    pub fn dictation_end(&mut self) {
+        self.dictation.key_up(Instant::now());
+    }
+
     pub fn prewarm_polish(&mut self) -> Result<()> {
         self.dictation.key_down(Instant::now());
         match self.polisher.as_mut() {
@@ -1659,6 +1673,7 @@ pub fn run_engine_serve() -> Result<()> {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
                         }
                     }
+                    "dictation_end" => eng.dictation_end(),
                     "meeting_span" => match meeting::SpanRequest::from_command(&v) {
                         Ok(request) => {
                             for ev in eng.queue_meeting_span(request) {

@@ -4,69 +4,97 @@
 //! sends them one at a time as `{"cmd":"meeting_span"}`. The engine holds them here and hands
 //! the ASR sidecar at most one, and only while no dictation is under way: a key held down, a
 //! stream open, a transcript or a correction still owed, or the last of these under
-//! `QUIET_AFTER_DICTATION` ago. A dictation that starts while a span is in the sidecar waits for
+//! `QUIET_AFTER_DICTATION` ago. Each of these is a hold that goes stale after
+//! `DICTATION_STALE_AFTER`, so a dictation end the engine never hears about delays meeting
+//! work instead of stopping it. A dictation that starts while a span is in the sidecar waits for
 //! that span alone (well under a second for a minute of audio on Metal Parakeet); the next one
 //! waits for the dictation to finish.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// How long after the last dictation event a meeting span may start: dictations come in runs.
 pub const QUIET_AFTER_DICTATION: Duration = Duration::from_millis(1_000);
 
-/// A dictation that never reports its end (a lost key up, a result that never came) stops
-/// holding meeting work back after this long.
+/// Every hold stops holding meeting work back this long after it began, released or not: a
+/// dictation whose end never reaches the engine (a lost key up, a stream the bar abandoned, a
+/// result that never came) delays meeting transcripts, never stops them.
 pub const DICTATION_STALE_AFTER: Duration = Duration::from_secs(120);
 
-/// What the engine knows of dictation, for deciding when a meeting span may run.
+const KEY: &str = "key";
+
+/// What the engine knows of dictation, for deciding when a meeting span may run: named holds,
+/// each with the time it began, and the time of the last dictation event.
 #[derive(Debug, Default)]
 pub struct DictationActivity {
-    held_since: Option<Instant>,
-    asr_pending: HashSet<String>,
+    holds: HashMap<String, Instant>,
     last: Option<Instant>,
 }
 
 impl DictationActivity {
-    /// Key down (`prewarm`, `stream_start`).
-    pub fn key_down(&mut self, now: Instant) {
-        self.held_since = Some(now);
+    fn hold(&mut self, name: String, now: Instant) {
+        // a new hold restarts its clock, so one leaked earlier never shortens a real one
+        self.holds.insert(name, now);
         self.last = Some(now);
     }
 
-    /// Key up (`stream_finish`, `stream_stop`, the bar's `transcribe`).
+    fn release(&mut self, name: &str, now: Instant) {
+        if self.holds.remove(name).is_some() {
+            self.last = Some(now);
+        }
+    }
+
+    /// Key down (`prewarm`, `stream_start`).
+    pub fn key_down(&mut self, now: Instant) {
+        self.hold(KEY.into(), now);
+    }
+
+    /// Key up (`stream_finish`, `stream_stop`, `dictation_end`, the bar's `transcribe`).
     pub fn key_up(&mut self, now: Instant) {
-        self.held_since = None;
+        self.release(KEY, now);
         self.last = Some(now);
     }
 
     /// A dictation transcript was asked of the sidecar.
     pub fn asr_sent(&mut self, id: &str, now: Instant) {
-        self.asr_pending.insert(id.to_string());
-        self.last = Some(now);
+        self.hold(format!("asr:{id}"), now);
     }
 
     /// The transcript (or an error) for `id` came back.
     pub fn asr_done(&mut self, id: &str, now: Instant) {
-        if self.asr_pending.remove(id) {
-            self.last = Some(now);
+        self.release(&format!("asr:{id}"), now);
+    }
+
+    /// Mirror a piece of engine state (`stream`: a segment stream open, `finishing`, `polish`:
+    /// corrections owed) as a hold. A hold already in place keeps the time it began, so state
+    /// that never clears goes stale like any other hold.
+    pub fn mirror(&mut self, name: &str, held: bool, now: Instant) {
+        match (held, self.holds.contains_key(name)) {
+            (true, false) => self.hold(name.to_string(), now),
+            (false, true) => self.release(name, now),
+            _ => {}
         }
     }
 
-    /// Any other dictation event (a correction asked for or delivered).
+    /// Any other dictation event (a correction delivered).
     pub fn touch(&mut self, now: Instant) {
         self.last = Some(now);
     }
 
-    /// No dictation is under way and none ended in the last `QUIET_AFTER_DICTATION`.
+    /// Holds still in force (under `DICTATION_STALE_AFTER` old).
+    pub fn live_holds(&self, now: Instant) -> usize {
+        self.holds
+            .values()
+            .filter(|since| now.saturating_duration_since(**since) < DICTATION_STALE_AFTER)
+            .count()
+    }
+
+    /// No hold in force, and no dictation event in the last `QUIET_AFTER_DICTATION`.
     pub fn quiet(&self, now: Instant) -> bool {
         let since_last = self
             .last
             .map_or(Duration::MAX, |last| now.saturating_duration_since(last));
-        let held = self
-            .held_since
-            .is_some_and(|since| now.saturating_duration_since(since) < DICTATION_STALE_AFTER);
-        let owed = !self.asr_pending.is_empty() && since_last < DICTATION_STALE_AFTER;
-        !held && !owed && since_last >= QUIET_AFTER_DICTATION
+        self.live_holds(now) == 0 && since_last >= QUIET_AFTER_DICTATION
     }
 }
 
@@ -204,6 +232,58 @@ mod tests {
         owed.asr_sent("lost", t0);
         assert!(!owed.quiet(t0 + Duration::from_secs(60)));
         assert!(owed.quiet(t0 + DICTATION_STALE_AFTER));
+    }
+
+    #[test]
+    fn a_segment_stream_never_closed_goes_stale_however_often_it_is_seen() {
+        // stream_start, then the bar abandons the dictation: no stream_finish or stream_stop
+        // ever comes, and the engine's segment_streams keeps the entry (mirrored every pump)
+        let t0 = Instant::now();
+        let mut activity = DictationActivity::default();
+        activity.key_down(t0);
+        let mut at = t0;
+        while at < t0 + DICTATION_STALE_AFTER {
+            activity.mirror("stream", true, at);
+            assert!(!activity.quiet(at));
+            at += Duration::from_millis(250);
+        }
+        activity.mirror("stream", true, at);
+        assert!(activity.quiet(at), "both holds are stale by now");
+        assert_eq!(activity.live_holds(at), 0);
+    }
+
+    #[test]
+    fn owed_corrections_and_a_finishing_stream_hold_until_they_clear_or_go_stale() {
+        let t0 = Instant::now();
+        let mut activity = DictationActivity::default();
+        activity.mirror("polish", true, t0);
+        activity.mirror("finishing", true, t0 + Duration::from_secs(1));
+        assert!(!activity.quiet(t0 + Duration::from_secs(10)));
+        activity.mirror("polish", false, t0 + Duration::from_secs(10));
+        assert_eq!(activity.live_holds(t0 + Duration::from_secs(10)), 1);
+        activity.mirror("finishing", false, t0 + Duration::from_secs(11));
+        // released: the quiet window runs from the release
+        assert!(!activity.quiet(t0 + Duration::from_millis(11_500)));
+        assert!(activity.quiet(t0 + Duration::from_secs(12)));
+        // a correction stuck for good stops blocking after the stale limit
+        let mut stuck = DictationActivity::default();
+        stuck.mirror("polish", true, t0);
+        stuck.mirror("polish", true, t0 + Duration::from_secs(100));
+        assert!(!stuck.quiet(t0 + Duration::from_secs(119)));
+        assert!(stuck.quiet(t0 + DICTATION_STALE_AFTER));
+    }
+
+    #[test]
+    fn a_key_down_after_a_leaked_one_holds_for_its_full_time() {
+        let t0 = Instant::now();
+        let mut activity = DictationActivity::default();
+        activity.key_down(t0); // never released (a tap the bar dropped)
+        let later = t0 + Duration::from_secs(300);
+        assert!(activity.quiet(later));
+        activity.key_down(later);
+        assert!(!activity.quiet(later + Duration::from_secs(60)));
+        activity.key_up(later + Duration::from_secs(61));
+        assert!(activity.quiet(later + Duration::from_secs(62)));
     }
 
     #[test]

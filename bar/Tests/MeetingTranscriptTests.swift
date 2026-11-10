@@ -379,6 +379,61 @@ final class MeetingTranscriptTests: XCTestCase {
     }
 
     @MainActor
+    func testAStoppedRecordingIsQueuedAndListedOnlyOnceItsFilesAreClosed() throws {
+        let store = NativeAppStore(supportDirectory: directory)
+        XCTAssertTrue(store.meetings.isEmpty)
+        var queued: [String] = []
+        store.onTranscribeMeeting = { queued.append($0.lastPathComponent) }
+        let folder = try writeMeeting("meeting_6")
+        // recording (or still closing its last chunks): no transcription from the button
+        store.recordingMeetingID = "meeting_6"
+        let note = MeetingNote(metadata: MeetingMetadata(id: "meeting_6", startedAt: "", startedHostNs: 0), directory: folder)
+        XCTAssertEqual(store.transcriptState(note), .recording)
+        store.transcribeMeeting(note)
+        XCTAssertTrue(queued.isEmpty)
+
+        // the recorder's stop finished: queued, listed, no longer "recording"
+        store.meetingRecordingFinished(directory: folder)
+        XCTAssertEqual(queued, ["meeting_6"])
+        XCTAssertNil(store.recordingMeetingID)
+        XCTAssertEqual(store.meetings.map(\.id), ["meeting_6"])
+        store.meetingTranscription["meeting_6"] = .queued
+        XCTAssertEqual(store.transcriptState(store.meetings[0]), .transcribing(progress: nil))
+
+        // an older recording finishing its stop never clears a newer one
+        store.recordingMeetingID = "meeting_7"
+        store.meetingRecordingFinished(directory: folder)
+        XCTAssertEqual(store.recordingMeetingID, "meeting_7")
+        store.transcribeMeeting(store.meetings[0])
+        XCTAssertEqual(queued, ["meeting_6", "meeting_6", "meeting_6"])
+    }
+
+    @MainActor
+    func testTheStopMarkerIsResumedAndGoesOnlyWithTheTranscript() throws {
+        let folder = try writeMeeting("meeting_8")
+        let marker = folder.appendingPathComponent(MeetingTranscriptProgress.fileName)
+        // written at stop, before the files close; the app quits before anything is queued
+        MeetingTranscriber.markPending(directory: folder)
+        var sent: [[String: Any]] = []
+        let transcriber = MeetingTranscriber()
+        transcriber.send = { sent.append($0) }
+        transcriber.setEngineReady(true)
+        transcriber.resumePending(in: directory.appendingPathComponent("Meetings"))
+        XCTAssertEqual(sent.first?["start_sample"] as? Int64, 0)
+        var finished = false
+        transcriber.onFinished = { _ in finished = true }
+        while let command = sent.last, !finished, sent.count < 20 {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "kept while it runs")
+            let before = sent.count
+            transcriber.handle(answer(command))
+            if sent.count == before { break }
+        }
+        XCTAssertTrue(finished)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertNotNil(MeetingTranscript.load(from: folder))
+    }
+
+    @MainActor
     func testOutputCanGoElsewhereThanTheMeetingFolder() throws {
         let folder = try writeMeeting("meeting_5")
         let elsewhere = directory.appendingPathComponent("out", isDirectory: true)

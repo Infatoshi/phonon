@@ -29,8 +29,6 @@ final class MeetingController {
     var onRecordingChanged: ((String?) -> Void)?
     /// Tells the capsule: recording light, stop button, pointer.
     var onFlowChanged: ((MeetingFlow) -> Void)?
-    /// A recording stopped and its files are closed: the meeting's folder, to transcribe.
-    var onRecordingSaved: ((URL) -> Void)?
 
     init(store: NativeAppStore) {
         self.store = store
@@ -216,7 +214,11 @@ final class MeetingController {
         self.recorder = nil
         let directory = recordingDirectory
         recordingDirectory = nil
-        store.recordingMeetingID = nil
+        // Before any async work: a quit while the files close still leaves the meeting marked
+        // for transcription at the next launch (the marker goes when transcript.json is written).
+        if let directory { MeetingTranscriber.markPending(directory: directory) }
+        // `store.recordingMeetingID` stays set until the files are closed (no Transcribe button
+        // against metadata still missing its last chunks).
         endPolicy = nil
         recordingApp = nil
         recordingBundleID = nil
@@ -226,10 +228,11 @@ final class MeetingController {
         if byUser {
             popup.saved(onExpire: { [weak self] in self?.flow.expire() })
         }
-        Task { [weak self] in
+        let store = store
+        Task {
             await recorder.stop(reason: reason)
-            // The chunks are closed and metadata.json final: transcribe it now.
-            if let directory { self?.onRecordingSaved?(directory) }
+            // The chunks are closed and metadata.json final: queue it and show it on Notes.
+            if let directory { store.meetingRecordingFinished(directory: directory) }
         }
     }
 

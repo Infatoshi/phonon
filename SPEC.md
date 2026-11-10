@@ -311,7 +311,11 @@ earlier track starts at 0.
 Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
 `transcribe_span`), all on the Mac:
 
-- When a recording stops, its meeting is queued for transcription. Notes has a Transcribe button for a meeting
+- When a recording stops, an empty transcript.partial.json is written at once (so a quit from then on still
+  transcribes it at the next launch; it goes only when transcript.json is written). Once the recorder has closed
+  its last chunks and metadata.json is final, the meeting stops counting as recording, is queued, and the Notes list
+  reloads so an open page shows it transcribing. Until then Notes shows it as recording, with no Transcribe button.
+  Notes has a Transcribe button for a meeting
   without a transcript (one recorded before transcripts existed, or one whose last try failed, with the error shown).
   Meetings are transcribed one at a time.
 - Each track is cut into spans of about 60 s (never over 75 s: Metal Parakeet answers windows up to 82 s, and a
@@ -323,8 +327,11 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
   "quiet","audio_seconds","seconds","model"}` (or `"error"`). Its own event type: never read as a dictation's.
 - Dictation goes first. There is one resident speech model; the engine queues spans and hands the ASR sidecar at
   most one, only when both stacks are ready, no stream is open, no dictation transcript or correction is owed, no
-  key is held (`prewarm` / `stream_start` until `stream_finish` / `stream_stop` / `transcribe`), and the last of
-  these was 1 s ago or more. A dictation that never reports its end stops holding spans back after 120 s. A key
+  key is held (`prewarm` / `stream_start` until `stream_finish` / `stream_stop` / `transcribe`, or
+  `dictation_end` for a dictation that ends without a WAV: discarded, under 80 ms, or a microphone that failed to
+  start), and the last of these was 1 s ago or more. Each of these is a hold with its own start time, and every hold
+  stops counting 120 s after it began, so an end the engine never hears about (an abandoned stream, a result that
+  never came) delays meeting transcripts instead of stopping them. A key
   pressed while a span is in the sidecar waits for that span only (0.67 s at most for the 20-minute two-track
   check meeting on MLX; Metal is faster), while the user is still speaking.
 - The sidecar reads only the chunks a span needs (a 2-hour meeting is never in memory), fills a missing stretch
