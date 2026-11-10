@@ -437,13 +437,16 @@ impl Server {
             let path = logs.join(format!("llama-server-{port}.log"));
             let log = std::fs::File::create(&path).context("create the correction server log")?;
             command.stdout(Stdio::null()).stderr(log);
-            // SIGTERM the server when Phonon dies, however it dies: a `pkill phonon`
+            // Kill the server when Phonon dies, however it dies: a `pkill phonon`
             // left the old server running with 2 GB (QA VM, 2026-11-07). The signal
-            // follows the spawning thread, which is the main thread here.
+            // follows the spawning thread, which is the main thread here. SIGKILL, not
+            // SIGTERM: llama-server's own SIGTERM shutdown can hang, and one did after a
+            // `pkill phonon` (main thread inside the handler, SIGTERM blocked, 1.1 GB
+            // left for 13 minutes; QA VM, 2026-11-10). The server keeps no state to save.
             use std::os::unix::process::CommandExt;
             unsafe {
                 command.pre_exec(|| {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
