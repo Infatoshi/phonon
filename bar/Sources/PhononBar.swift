@@ -2280,6 +2280,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         send: { [weak self] command in self?.engine.send(command) })
     private lazy var meetings = MeetingController(store: appStore)
     private let meetingTranscriber = MeetingTranscriber()
+    private lazy var meetingCleaner = MeetingCleaner.live(
+        support: PhononDataPaths.supportDirectory())
     private lazy var newMicrophones = NewMicrophoneController(store: appStore)
     private var meetingMenuItem: NSMenuItem?
     private lazy var updates = UpdateController(store: appStore)
@@ -2354,12 +2356,25 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetingTranscriber.onJobsChanged = { [weak self] jobs in
             self?.appStore.meetingTranscription = jobs
         }
-        meetingTranscriber.onFinished = { [weak self] _ in self?.appStore.loadMeetings() }
+        meetingTranscriber.onFinished = { [weak self] id in
+            guard let self else { return }
+            self.appStore.loadMeetings()
+            // then cleaned in the background, on the CPU, dictation first
+            self.meetingCleaner.enqueue(
+                directory: self.appStore.meetingsDirectory.appendingPathComponent(id, isDirectory: true))
+        }
         // From the Notes button and from `meetingRecordingFinished` (a recording that stopped).
         appStore.onTranscribeMeeting = { [weak self] directory in
             self?.meetingTranscriber.enqueue(directory: directory)
         }
         meetingTranscriber.resumePending(in: appStore.meetingsDirectory)
+        appStore.meetingCleanupAvailable = meetingCleaner.isAvailable
+        meetingCleaner.onJobsChanged = { [weak self] jobs in self?.appStore.meetingCleanup = jobs }
+        meetingCleaner.onFinished = { [weak self] _ in self?.appStore.loadMeetings() }
+        appStore.onCleanMeeting = { [weak self] directory in
+            self?.meetingCleaner.enqueue(directory: directory)
+        }
+        meetingCleaner.resumePending(in: appStore.meetingsDirectory)
 
         // A competitor quit with consent leaves Phonon's tap in place; re-install
         // it so it sits at the head of the tap chain (SPEC step 5).
@@ -2754,6 +2769,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         guard !terminating else { return }
         enginesReady = false
         meetingTranscriber.setEngineReady(false)
+        meetingCleaner.setEngineReady(false)
         appStore.engineReady = false
         appStore.engineMessage = "Engine restarting"
         streamActive = false
@@ -2807,6 +2823,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 self?.modelStartupWindow?.orderOut(nil)
             }
             meetingTranscriber.setEngineReady(true)
+            meetingCleaner.setEngineReady(true)
             if isRecording && state.streamingPreviewEnabled && !streamActive {
                 startAsrStream()
             }
@@ -2962,6 +2979,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         case "meeting_span":
             meetingTranscriber.handle(ev)
+        case "dictation":
+            // the engine's meeting holds: meeting cleanup pauses while a dictation runs
+            meetingCleaner.setDictationQuiet(ev["quiet"] as? Bool ?? false)
         case "error":
             let msg = ev["msg"] as? String ?? "error"
             appStore.lastError = msg
@@ -4105,6 +4125,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         stopScreenSwitchWatch()
         editLearning.interrupt(reason: .appTermination)
         meetings.stopNow(reason: "app_quit")
+        meetingCleaner.shutdown()
         engine.shutdown()
         NSApp.terminate(nil)
     }
@@ -4116,6 +4137,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         screenContextTask?.cancel()
         stopScreenSwitchWatch()
         meetings.stopNow(reason: "app_quit")
+        meetingCleaner.shutdown()
         engine.shutdown()
         recorder.stop(writeFile: false)
         removeEventTap()

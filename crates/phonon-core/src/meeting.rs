@@ -98,6 +98,26 @@ impl DictationActivity {
     }
 }
 
+/// Tells the bar when dictation starts and stops holding meeting work back, for work the
+/// engine does not run itself: the bar's meeting cleanup pauses its CPU process while a
+/// dictation is under way (`{"type":"dictation","quiet":..}`). `update` returns the new
+/// state only when it changed, and the first state ever seen, so the bar knows it from
+/// the engine's first poll.
+#[derive(Debug, Default)]
+pub struct QuietWatch {
+    last: Option<bool>,
+}
+
+impl QuietWatch {
+    pub fn update(&mut self, quiet: bool) -> Option<bool> {
+        if self.last == Some(quiet) {
+            return None;
+        }
+        self.last = Some(quiet);
+        Some(quiet)
+    }
+}
+
 /// One span as the bar sent it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpanRequest {
@@ -292,6 +312,36 @@ mod tests {
         let mut activity = DictationActivity::default();
         activity.asr_done("meeting", t0);
         assert!(activity.quiet(t0));
+    }
+
+    #[test]
+    fn the_quiet_watch_reports_the_first_state_and_then_only_changes() {
+        let t0 = Instant::now();
+        let mut activity = DictationActivity::default();
+        let mut watch = QuietWatch::default();
+        assert_eq!(watch.update(activity.quiet(t0)), Some(true), "first poll");
+        assert_eq!(watch.update(activity.quiet(t0)), None);
+        activity.key_down(t0);
+        assert_eq!(
+            watch.update(activity.quiet(t0)),
+            Some(false),
+            "key down pauses"
+        );
+        assert_eq!(
+            watch.update(activity.quiet(t0 + Duration::from_secs(5))),
+            None
+        );
+        activity.key_up(t0 + Duration::from_secs(6));
+        // still held back for the quiet window after the key comes up
+        assert_eq!(
+            watch.update(activity.quiet(t0 + Duration::from_millis(6_500))),
+            None
+        );
+        assert_eq!(
+            watch.update(activity.quiet(t0 + Duration::from_secs(7))),
+            Some(true),
+            "a second after the last dictation event"
+        );
     }
 
     #[test]

@@ -26,6 +26,8 @@
 //! Events (stdout):
 //!   {"type":"meeting_span","id":"...","sentences":[{"start":0.5,"end":1.2,"text":"..."}],"quiet":false,
 //!    "audio_seconds":60,"seconds":0.4,"model":"..."}  — or {"type":"meeting_span","id":"...","error":"..."}
+//!   {"type":"dictation","quiet":true}  — dictation stopped (true) or started (false) holding
+//!   meeting work back (meeting.rs holds); sent at the first poll and on every change
 //!   {"type":"stream","name":"asr|llm","state":"loading|ready|error","pct":0.5,"msg":"...","load_ms":123}
 //!   {"type":"ready","stream_refine":true}  — all required streams ready; streaming refine on
 //!   (the bar then sends the last partial chunk at key up and {"cmd":"screen_context"})
@@ -107,6 +109,11 @@ pub enum EngineEvent {
         id: String,
         body: serde_json::Value,
     },
+    /// Dictation started or stopped holding meeting work back (`meeting::QuietWatch`):
+    /// `{"type":"dictation","quiet":..}`. The bar pauses its meeting cleanup while not quiet.
+    DictationQuiet {
+        quiet: bool,
+    },
     Error {
         id: Option<String>,
         msg: String,
@@ -171,6 +178,8 @@ pub struct Engine {
     /// model (`meeting.rs`): one at a time, never while a dictation is under way.
     dictation: meeting::DictationActivity,
     meeting_spans: meeting::MeetingSpans,
+    /// Last dictation state sent to the bar (`{"type":"dictation","quiet":..}`).
+    dictation_quiet: meeting::QuietWatch,
 }
 
 /// Words a recognizer must produce for a clip the energy gate called silent to go out anyway.
@@ -353,6 +362,7 @@ impl Engine {
             live_text_stream: None,
             dictation: meeting::DictationActivity::default(),
             meeting_spans: meeting::MeetingSpans::default(),
+            dictation_quiet: meeting::QuietWatch::default(),
         })
     }
 
@@ -821,6 +831,13 @@ impl Engine {
             });
         }
         out.extend(self.pump_meeting_spans());
+        // After the pump, which mirrors the engine's dictation state into the holds.
+        if let Some(quiet) = self
+            .dictation_quiet
+            .update(self.dictation.quiet(Instant::now()))
+        {
+            out.push(EngineEvent::DictationQuiet { quiet });
+        }
         out
     }
 
@@ -1814,6 +1831,10 @@ fn emit_engine_event(ev: &EngineEvent) {
         })),
         EngineEvent::DraftResult { .. } => emit(&draft_json(ev).unwrap_or_default()),
         EngineEvent::MeetingSpan { .. } => emit(&meeting_span_json(ev).unwrap_or_default()),
+        EngineEvent::DictationQuiet { quiet } => emit(&json!({
+            "type": "dictation",
+            "quiet": quiet,
+        })),
         EngineEvent::Error { id, msg } => emit(&json!({
             "type": "error",
             "id": id,
