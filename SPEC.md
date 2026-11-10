@@ -402,6 +402,9 @@ Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupR
 - Dictation first: the engine sends `{"type":"dictation","quiet":..}` at its first poll and whenever its meeting
   holds (above) start or stop holding meeting work back. While not quiet, or while the engine is down, the
   cleanup process is stopped with SIGSTOP (a chunk in flight just waits) and no chunk starts; SIGCONT when quiet.
+  Its timeouts (120 s to answer /health after launch, 600 s per chunk) count running time only, so a pause of any
+  length, during the model load or mid-chunk, is a wait: never a failed start, a timed-out chunk or a re-sent one.
+  A pause asked for before launch starts the process stopped.
 - Memory: the process maps the 988 MB model a second time (clean file pages the system can drop) and holds about
   0.6 GB of its own (peak footprint 0.58 GB, peak resident 1.6 GB, 16 chunks on an M4 Max). Repacked weights would
   be 12% faster but hold 1.45 GB. On a 16 GB Mac that is roughly the dictation stack plus 0.6-1.6 GB more while a

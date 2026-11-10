@@ -342,6 +342,47 @@ final class PinnedDownloader: NSObject, URLSessionDataDelegate, @unchecked Senda
     }
 }
 
+/// Running time: wall time minus the time spent paused. `mark()` then `active(since:)` gives
+/// the running seconds of one operation, however many pauses fell inside it.
+struct ActiveClock {
+    let now: () -> Date
+    private var pausedTotal: TimeInterval = 0
+    private var pausedSince: Date?
+
+    init(now: @escaping () -> Date) { self.now = now }
+
+    struct Mark {
+        var at: Date
+        var pausedTotal: TimeInterval
+    }
+
+    private func pausedSoFar(_ at: Date) -> TimeInterval {
+        pausedTotal + (pausedSince.map { max(0, at.timeIntervalSince($0)) } ?? 0)
+    }
+
+    func mark() -> Mark {
+        let at = now()
+        return Mark(at: at, pausedTotal: pausedSoFar(at))
+    }
+
+    func active(since mark: Mark) -> TimeInterval {
+        let at = now()
+        return max(0, at.timeIntervalSince(mark.at) - (pausedSoFar(at) - mark.pausedTotal))
+    }
+
+    var isPaused: Bool { pausedSince != nil }
+
+    mutating func pause() {
+        if pausedSince == nil { pausedSince = now() }
+    }
+
+    mutating func resume() {
+        guard let since = pausedSince else { return }
+        pausedTotal += max(0, now().timeIntervalSince(since))
+        pausedSince = nil
+    }
+}
+
 /// llama-server as the runtime.
 @MainActor
 final class LlamaServerRuntime: MeetingCleanupRuntime {
@@ -357,12 +398,14 @@ final class LlamaServerRuntime: MeetingCleanupRuntime {
 
     enum Failure: LocalizedError {
         case startTimeout
+        case requestTimeout
         case exited(Int32)
         case badReply
 
         var errorDescription: String? {
             switch self {
             case .startTimeout: return "The cleanup runtime did not start."
+            case .requestTimeout: return "The cleanup runtime did not answer."
             case .exited(let status): return "The cleanup runtime stopped (status \(status))."
             case .badReply: return "The cleanup runtime gave an unreadable answer."
             }
@@ -370,11 +413,31 @@ final class LlamaServerRuntime: MeetingCleanupRuntime {
     }
 
     let setup: Setup
+    /// Running (not paused) seconds the server may take to answer /health after launch, and to
+    /// answer one chunk. Time spent stopped for a dictation never counts against either.
+    let startBudget: TimeInterval
+    let requestBudget: TimeInterval
     private var process: Process?
     private var port = 0
+    /// Whether the process should be stopped; kept even before it launches.
     private var paused = false
+    private var clock: ActiveClock
+    /// Stand-ins for the HTTP calls (tests): /health on a port, and one chat request.
+    private let probe: ((Int) async -> Bool)?
+    private let send: (@Sendable (URLRequest) async throws -> Data)?
 
-    init(setup: Setup) { self.setup = setup }
+    init(
+        setup: Setup, startBudget: TimeInterval = 120, requestBudget: TimeInterval = 600,
+        now: @escaping () -> Date = Date.init, probe: ((Int) async -> Bool)? = nil,
+        send: (@Sendable (URLRequest) async throws -> Data)? = nil
+    ) {
+        self.setup = setup
+        self.startBudget = startBudget
+        self.requestBudget = requestBudget
+        self.clock = ActiveClock(now: now)
+        self.probe = probe
+        self.send = send
+    }
 
     var label: String { "llama.cpp \(MeetingCleanupManifest.llamaBuild) CPU" }
 
@@ -413,23 +476,32 @@ final class LlamaServerRuntime: MeetingCleanupRuntime {
         // on an M4 Max (3.3 against 99 tokens/s, `taskpolicy -b`, 2026-11-10)
         try process.run()
         self.process = process
+        // a pause asked for before the launch holds from the first instruction
+        if paused { kill(process.processIdentifier, SIGSTOP) }
         try? FileManager.default.createDirectory(
             at: setup.pidFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? "\(process.processIdentifier)".write(to: setup.pidFile, atomically: true, encoding: .utf8)
-        let deadline = Date().addingTimeInterval(120)
-        while Date() < deadline {
+        // The model loads while running only: a dictation that stops the process mid-load
+        // stops this clock too, so a long pause is a wait, never a start failure.
+        let started = clock.mark()
+        while clock.active(since: started) < startBudget {
+            if Task.isCancelled {
+                stop()
+                throw CancellationError()
+            }
             guard process.isRunning else {
                 self.stop()
                 throw Failure.exited(process.terminationStatus)
             }
-            if await healthy() { return }
-            try await Task.sleep(nanoseconds: 250_000_000)
+            if !paused, await healthy(), !paused { return }
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         stop()
         throw Failure.startTimeout
     }
 
     private func healthy() async -> Bool {
+        if let probe { return await probe(port) }
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 2
@@ -442,15 +514,30 @@ final class LlamaServerRuntime: MeetingCleanupRuntime {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // a dictation pauses the process mid-answer; the request waits for it
-        request.timeoutInterval = 900
+        // A dictation stops the process mid-answer and the request just waits: no wall-clock
+        // timeout on it (a day, in effect); the budget below counts running time only.
+        request.timeoutInterval = 86_400
         let body: [String: Any] = [
             "messages": [["role": "system", "content": system], ["role": "user", "content": user]],
             "temperature": 0, "max_tokens": maxTokens, "cache_prompt": false,
             "chat_template_kwargs": ["enable_thinking": false],
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let send = self.send ?? { request in try await URLSession.shared.data(for: request).0 }
+        let started = clock.mark()
+        let data = try await withThrowingTaskGroup(of: Data?.self) { group -> Data in
+            group.addTask { try await send(request) }
+            group.addTask { @MainActor [weak self] in
+                // the watchdog: running time only
+                while let self, self.clock.active(since: started) < self.requestBudget {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next(), let data = first else { throw Failure.requestTimeout }
+            return data
+        }
         guard
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let choices = object["choices"] as? [[String: Any]],
@@ -461,8 +548,10 @@ final class LlamaServerRuntime: MeetingCleanupRuntime {
     }
 
     func setPaused(_ paused: Bool) {
-        guard let process, process.isRunning, paused != self.paused else { return }
+        guard paused != self.paused else { return }
         self.paused = paused
+        if paused { clock.pause() } else { clock.resume() }
+        guard let process, process.isRunning else { return }
         kill(process.processIdentifier, paused ? SIGSTOP : SIGCONT)
     }
 
@@ -471,8 +560,8 @@ final class LlamaServerRuntime: MeetingCleanupRuntime {
             if paused { kill(process.processIdentifier, SIGCONT) }
             process.terminate()
         }
+        // `paused` stays as asked: a restart during a dictation launches stopped
         process = nil
-        paused = false
         try? FileManager.default.removeItem(at: setup.pidFile)
     }
 

@@ -358,8 +358,15 @@ private final class FakeRuntime: MeetingCleanupRuntime {
             failNext -= 1
             throw URLError(.networkConnectionLost)
         }
-        return answer(user)
+        let reply = answer(user)
+        // like a stopped process: an answer in flight comes back only once it runs again
+        while freezeWhilePaused && paused {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        return reply
     }
+
+    var freezeWhilePaused = false
 
     func setPaused(_ paused: Bool) {
         self.paused = paused
@@ -479,6 +486,38 @@ final class MeetingCleanerTests: XCTestCase {
         cleaner.setDictationQuiet(true)
         XCTAssertFalse(runtime.paused)
         await waitUntil("done") { CleanedTranscript.load(from: folder) != nil }
+    }
+
+    @MainActor
+    func testAChunkInFlightWhenADictationStartsIsCountedOnceWhenItResumes() async throws {
+        let (folder, transcript) = try meeting("meeting_12", turns: 12)
+        let chunks = MeetingCleanupChunker.chunks(transcript.turns)
+        let runtime = FakeRuntime()
+        runtime.freezeWhilePaused = true
+        let cleaner = cleaner(runtime)
+        let normal = runtime.answer
+        var pausedOnce = false
+        runtime.answer = { prompt in
+            if !pausedOnce && prompt == chunks[1].prompt {
+                pausedOnce = true
+                cleaner.setDictationQuiet(false)  // the key goes down mid-chunk
+            }
+            return normal(prompt)
+        }
+        cleaner.setEngineReady(true)
+        cleaner.setDictationQuiet(true)
+        cleaner.enqueue(directory: folder)
+        await waitUntil("paused mid-chunk") { runtime.paused }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(MeetingCleanupProgress.load(from: folder)?.results.count, 1, "chunk 1 is still in flight")
+        if case .running(_, let paused) = cleaner.jobs["meeting_12"] { XCTAssertTrue(paused) } else { XCTFail("running") }
+        cleaner.setDictationQuiet(true)
+        await waitUntil("done") { CleanedTranscript.load(from: folder) != nil }
+        XCTAssertEqual(runtime.prompts, chunks.map(\.prompt), "each chunk asked once: no retry after the pause")
+        XCTAssertEqual(runtime.started, 1)
+        let cleaned = try XCTUnwrap(CleanedTranscript.load(from: folder))
+        XCTAssertEqual(cleaned.rawChunks, 0)
+        XCTAssertEqual(cleaned.chunks, chunks.count)
     }
 
     @MainActor
@@ -629,6 +668,185 @@ final class MeetingCleanerTests: XCTestCase {
         let progress = try XCTUnwrap(MeetingCleanupProgress.load(from: folder))
         XCTAssertNil(progress.error)
         XCTAssertNil(CleanedTranscript.load(from: folder))
+    }
+}
+
+// MARK: - Runtime timeouts count running time only
+
+/// A flag shared with `@Sendable` stand-ins.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    private var count = 0
+    var isSet: Bool { lock.withLock { value } }
+    var calls: Int { lock.withLock { count } }
+    func set() { lock.withLock { value = true } }
+    func call() { lock.withLock { count += 1 } }
+}
+
+final class LlamaServerRuntimeTests: XCTestCase {
+    private var root: URL!
+
+    override func setUpWithError() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phonon-runtime-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    /// A stand-in server: a real process (so SIGSTOP / SIGCONT really happen) that only sleeps.
+    @MainActor
+    private func runtime(
+        startBudget: TimeInterval = 0.5, requestBudget: TimeInterval = 0.5, ready: Flag,
+        send: (@Sendable (URLRequest) async throws -> Data)? = nil
+    ) throws -> LlamaServerRuntime {
+        let script = root.appendingPathComponent("llama-server")
+        try "#!/bin/sh\nexec sleep 30\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let setup = LlamaServerRuntime.Setup(
+            server: script, model: root.appendingPathComponent("m.gguf"), adapter: root.appendingPathComponent("a.gguf"),
+            adapterSHA256: "ab", threads: 1, pidFile: root.appendingPathComponent("rt.pid"))
+        return LlamaServerRuntime(
+            setup: setup, startBudget: startBudget, requestBudget: requestBudget,
+            probe: { _ in ready.isSet }, send: send)
+    }
+
+    private func state(_ pidFile: URL) -> String {
+        guard let pid = try? String(contentsOf: pidFile, encoding: .utf8) else { return "" }
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "stat=", "-p", pid.trimmingCharacters(in: .whitespacesAndNewlines)]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        try? ps.run()
+        ps.waitUntilExit()
+        return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @MainActor
+    func testAStartPausedLongerThanItsBudgetWaitsInsteadOfFailing() async throws {
+        let ready = Flag()
+        let runtime = try runtime(ready: ready)
+        defer { runtime.stop() }
+        var outcome: Result<Void, Error>?
+        Task { @MainActor in
+            do { try await runtime.start(); outcome = .success(()) } catch { outcome = .failure(error) }
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)  // 0.2 s of the 0.5 s budget runs
+        runtime.setPaused(true)  // a dictation while the model loads
+        XCTAssertTrue(state(runtime.setup.pidFile).hasPrefix("T"), "the process is stopped")
+        try await Task.sleep(nanoseconds: 1_500_000_000)  // 3x the budget, paused
+        XCTAssertNil(outcome, "a paused start is not a timeout")
+        runtime.setPaused(false)
+        ready.set()  // the model finishes loading once it runs again
+        for _ in 0..<100 where outcome == nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        guard case .success = outcome else { return XCTFail("started: \(String(describing: outcome))") }
+    }
+
+    @MainActor
+    func testAPauseAskedBeforeLaunchHoldsTheStartToo() async throws {
+        let ready = Flag()
+        ready.set()  // would answer at once if it ran
+        let runtime = try runtime(ready: ready)
+        defer { runtime.stop() }
+        runtime.setPaused(true)
+        var outcome: Result<Void, Error>?
+        Task { @MainActor in
+            do { try await runtime.start(); outcome = .success(()) } catch { outcome = .failure(error) }
+        }
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertNil(outcome, "no health check while stopped, and no timeout")
+        XCTAssertTrue(state(runtime.setup.pidFile).hasPrefix("T"), "launched stopped")
+        runtime.setPaused(false)
+        for _ in 0..<100 where outcome == nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        guard case .success = outcome else { return XCTFail("started: \(String(describing: outcome))") }
+    }
+
+    @MainActor
+    func testAStartThatNeverAnswersWhileRunningTimesOut() async throws {
+        let runtime = try runtime(ready: Flag())
+        let began = Date()
+        do {
+            try await runtime.start()
+            XCTFail("timeout")
+        } catch LlamaServerRuntime.Failure.startTimeout {}
+        XCTAssertLessThan(Date().timeIntervalSince(began), 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtime.setup.pidFile.path), "stopped")
+    }
+
+    private static let reply = Data(#"{"choices":[{"message":{"content":"Speaker 1: Hi."}}]}"#.utf8)
+
+    @MainActor
+    func testAChunkInFlightWhenStoppedIsNeitherTimedOutNorSentTwice() async throws {
+        let ready = Flag()
+        ready.set()
+        let answered = Flag()
+        let runtime = try runtime(ready: ready) { _ in
+            answered.call()
+            // the stopped server answers only after it runs again
+            while !answered.isSet { try await Task.sleep(nanoseconds: 10_000_000) }
+            return Self.reply
+        }
+        defer { runtime.stop() }
+        try await runtime.start()
+        var outcome: Result<String, Error>?
+        Task { @MainActor in
+            do {
+                outcome = .success(try await runtime.complete(system: "s", user: "u", maxTokens: 8))
+            } catch { outcome = .failure(error) }
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        runtime.setPaused(true)
+        try await Task.sleep(nanoseconds: 1_500_000_000)  // 3x the request budget, paused
+        XCTAssertNil(outcome, "a paused chunk is not a timeout")
+        runtime.setPaused(false)
+        answered.set()
+        for _ in 0..<100 where outcome == nil { try await Task.sleep(nanoseconds: 10_000_000) }
+        guard case .success(let text) = outcome else { return XCTFail("answered: \(String(describing: outcome))") }
+        XCTAssertEqual(text, "Speaker 1: Hi.")
+        XCTAssertEqual(answered.calls, 1, "one request, not re-sent")
+    }
+
+    @MainActor
+    func testAChunkThatNeverAnswersWhileRunningTimesOut() async throws {
+        let ready = Flag()
+        ready.set()
+        let runtime = try runtime(ready: ready) { _ in
+            try await Task.sleep(nanoseconds: 30_000_000_000)
+            return Self.reply
+        }
+        defer { runtime.stop() }
+        try await runtime.start()
+        let began = Date()
+        do {
+            _ = try await runtime.complete(system: "s", user: "u", maxTokens: 8)
+            XCTFail("timeout")
+        } catch LlamaServerRuntime.Failure.requestTimeout {}
+        XCTAssertLessThan(Date().timeIntervalSince(began), 2)
+    }
+
+    func testTheActiveClockLeavesOutPausedTime() {
+        var now = Date(timeIntervalSince1970: 0)
+        var clock = ActiveClock(now: { now })
+        let mark = clock.mark()
+        now += 2
+        clock.pause()
+        now += 100
+        XCTAssertEqual(clock.active(since: mark), 2, accuracy: 1e-9, "paused now")
+        clock.resume()
+        now += 3
+        XCTAssertEqual(clock.active(since: mark), 5, accuracy: 1e-9)
+        clock.pause()
+        let inside = clock.mark()  // an operation that starts while paused
+        now += 50
+        clock.resume()
+        now += 1
+        XCTAssertEqual(clock.active(since: inside), 1, accuracy: 1e-9)
+        XCTAssertEqual(clock.active(since: mark), 6, accuracy: 1e-9)
     }
 }
 
