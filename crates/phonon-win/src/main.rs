@@ -23,6 +23,7 @@ mod mode;
 mod paths;
 mod pipeline;
 mod polish;
+mod single;
 mod smoke;
 
 #[cfg(target_os = "linux")]
@@ -99,7 +100,13 @@ fn main() -> Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::CudaDevices => backends::print_cuda_devices(),
         Command::SignBackends { key, manifest } => sign_backends(&key, &manifest),
-        Command::Run => run(),
+        Command::Run => {
+            let Some(_guard) = single::claim(&paths::data_root())? else {
+                eprintln!("phonon: Phonon is already running; this copy exits");
+                return Ok(());
+            };
+            run()
+        }
         Command::Fetch => fetch_all(),
         Command::Setup => setup(),
         Command::Info => {
