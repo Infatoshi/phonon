@@ -12,6 +12,11 @@
 //! - While latched, the next press stops the capture. Its release does nothing.
 //!
 //! There is no double-tap: one tap starts, the next tap stops.
+//!
+//! A latched capture also stops by itself ([`autostop`]): discarded when nothing was said
+//! for 8 s, committed after 60 s of silence that follows speech.
+
+pub mod autostop;
 
 /// What the caller must do after a key event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

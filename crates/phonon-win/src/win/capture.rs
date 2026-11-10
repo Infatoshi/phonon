@@ -7,10 +7,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use phonon_hotkey::autostop::{AutoStop, Decision};
 
 /// Single-channel samples collected so far.
 struct Buffer {
@@ -24,6 +26,8 @@ pub struct Recording {
     buffer: Arc<Mutex<Buffer>>,
     sample_rate: u32,
     device_name: String,
+    started: Instant,
+    auto: AutoStop,
 }
 
 /// Mix interleaved frames down to one channel.
@@ -91,6 +95,8 @@ pub fn start() -> Result<Recording> {
         buffer,
         sample_rate,
         device_name,
+        started: Instant::now(),
+        auto: AutoStop::new(sample_rate),
     })
 }
 
@@ -113,6 +119,28 @@ impl Recording {
             samples,
             sample_rate: self.sample_rate,
         })
+    }
+
+    /// Whether a latched recording should stop by itself now (`phonon_hotkey::autostop`).
+    /// Feeds the meter the samples captured since the last call. The clock is wall time
+    /// since the microphone started, so a device that delivers nothing is still discarded.
+    pub fn auto_stop(&mut self, latched: bool) -> Decision {
+        let fresh = self
+            .buffer
+            .lock()
+            .map(|buffer| {
+                let from = self.auto.fed().min(buffer.samples.len());
+                buffer.samples[from..].to_vec()
+            })
+            .unwrap_or_default();
+        self.auto.feed(&fresh);
+        self.auto
+            .decision(latched, self.started.elapsed().as_secs_f64())
+    }
+
+    /// Release the microphone and drop what was captured: no file, no text.
+    pub fn discard(self) {
+        drop(self.stream);
     }
 
     /// Seconds captured so far.

@@ -17,6 +17,7 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use phonon_hotkey::autostop::{self, Decision};
 use phonon_hotkey::Action;
 
 use crate::fetch;
@@ -260,10 +261,33 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
         let event = match inbox.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => {
-                match &recording {
-                    Some(active) => {
-                        tray::set_status(&format!("recording {:.1} s", active.seconds()))
-                    }
+                match &mut recording {
+                    Some(active) => match active.auto_stop(hook::latched()) {
+                        Decision::KeepRecording => {
+                            tray::set_status(&format!("recording {:.1} s", active.seconds()))
+                        }
+                        // The key is up (it latched), so the next press must start, not
+                        // stop; then the same stop the next tap would make.
+                        Decision::Commit => {
+                            eprintln!(
+                                "phonon: latched dictation silent for {} s after speech; stopping",
+                                autostop::SILENCE_AFTER_SPEECH_SECONDS
+                            );
+                            hook::reset_latch();
+                            finish(&engine, recording.take());
+                        }
+                        Decision::Discard => {
+                            eprintln!(
+                                "phonon: latched dictation heard no speech in {} s; discarding",
+                                autostop::NO_SPEECH_SECONDS
+                            );
+                            hook::reset_latch();
+                            if let Some(active) = recording.take() {
+                                active.discard();
+                            }
+                            tray::set_status(&idle_text());
+                        }
+                    },
                     // Start the one-thread corrector as soon as the CPU saturates,
                     // in the background, rather than at the next key-down.
                     None => engine.warm(load::busy()),

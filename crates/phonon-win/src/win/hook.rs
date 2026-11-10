@@ -233,6 +233,14 @@ pub fn reset_latch() {
     }
 }
 
+/// Whether a tap has latched the recording on, so it may stop by itself. A held key is not.
+pub fn latched() -> bool {
+    STATE
+        .get()
+        .and_then(|state| state.lock().ok().map(|state| state.latch.latched()))
+        .unwrap_or(false)
+}
+
 fn accept_injected() -> bool {
     static ACCEPT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ACCEPT.get_or_init(|| std::env::var_os("PHONON_WIN_ACCEPT_INJECTED").is_some_and(|v| v == "1"))
