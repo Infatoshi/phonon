@@ -444,6 +444,11 @@ impl Server {
         }
         #[cfg(target_os = "linux")]
         let log_path = {
+            // No host-memory prompt cache (default up to 8 GiB): one client and one
+            // prompt prefix, which the slot's own KV cache already reuses. The server's
+            // private memory grew 125 -> 174 MB over ten dictations without this
+            // (Ubuntu QA VM, 2026-11-10). Linux only: Windows keeps its server as it was.
+            command.arg("--cache-ram").arg("0");
             // A pipe that nobody drains fills during model loading on Linux.
             // Keep diagnostics on disk so startup and later requests cannot block.
             let logs = crate::paths::data_root().join("logs");
