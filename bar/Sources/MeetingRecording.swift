@@ -260,6 +260,52 @@ struct MeetingMetadata: Codable, Equatable {
         case systemDiscontinuities = "system_discontinuities"
         case endedAt = "ended_at"
         case endReason = "end_reason"
+        case dictations
+    }
+
+    /// Dictations made to Phonon while this meeting recorded (GOAL N9): their words are
+    /// taken out of the "me" transcript.
+    var dictations: [MeetingDictation]?
+
+    /// Host time as seconds on the mic track (from its sample 0), by the last anchor at or
+    /// before it: a chunk's first sample or a clock re-anchor inside a chunk (from it on, the
+    /// track follows the re-anchor's host time). Nil before any timed chunk.
+    func micSeconds(hostNs: UInt64) -> Double? {
+        let rate = Double(max(1, sampleRate))
+        var anchors: [(sample: Int64, hostNs: UInt64)] = micChunks.compactMap { chunk in
+            chunk.startHostNs.map { (chunk.startSample, $0) }
+        }
+        let jumps = (micDiscontinuities ?? []) + micChunks.flatMap { $0.discontinuities ?? [] }
+        anchors += jumps.map { ($0.sample, $0.hostNs) }
+        anchors.sort { $0.sample < $1.sample }
+        guard let anchor = anchors.last(where: { $0.hostNs <= hostNs }) ?? anchors.first else {
+            guard let first = micFirstSampleHostNs else { return nil }
+            return (Double(hostNs) - Double(first)) / 1e9
+        }
+        return Double(anchor.sample) / rate + (Double(hostNs) - Double(anchor.hostNs)) / 1e9
+    }
+
+    /// The dictations as stretches of mic-track seconds.
+    func dictationWindows() -> [ClosedRange<Double>] {
+        (dictations ?? []).compactMap { dictation in
+            guard dictation.endHostNs >= dictation.startHostNs,
+                let start = micSeconds(hostNs: dictation.startHostNs),
+                let end = micSeconds(hostNs: dictation.endHostNs)
+            else { return nil }
+            return start...max(start, end)
+        }
+    }
+}
+
+/// One dictation during a meeting, on the host clock: from the start of its capture to the
+/// end of it.
+struct MeetingDictation: Codable, Equatable {
+    var startHostNs: UInt64
+    var endHostNs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case startHostNs = "start_host_ns"
+        case endHostNs = "end_host_ns"
     }
 }
 
@@ -467,6 +513,14 @@ final class MeetingIndex {
         try? save()
     }
 
+    /// A dictation made while recording (times only, never its text).
+    func dictation(_ dictation: MeetingDictation) {
+        lock.withLock {
+            metadata.dictations = (metadata.dictations ?? []) + [dictation]
+        }
+        try? save()
+    }
+
     /// The call window's title and conference URL, read after recording
     /// started.
     func setWindowInfo(title: String?, conferenceURL: String?) {
@@ -619,6 +673,10 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
 
     func setWindowInfo(title: String?, conferenceURL: String?) {
         index.setWindowInfo(title: title, conferenceURL: conferenceURL)
+    }
+
+    func noteDictation(_ dictation: MeetingDictation) {
+        index.dictation(dictation)
     }
 
     /// System audio stopped by itself (a display change, a capture error):

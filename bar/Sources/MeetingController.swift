@@ -36,6 +36,22 @@ final class MeetingController {
 
     var isRecording: Bool { recorder != nil }
 
+    /// Host time a dictation's capture started, while one is under way.
+    private var dictationStartNs: UInt64?
+
+    /// A dictation's capture started (host clock, ns since boot). Its stretch of the mic track
+    /// is left out of the meeting's "me" transcript (GOAL N9).
+    func dictationStarted(atNs ns: UInt64 = HostClock.now()) {
+        dictationStartNs = ns
+    }
+
+    /// The capture ended (committed, discarded or failed to start).
+    func dictationEnded(atNs ns: UInt64 = HostClock.now()) {
+        guard let start = dictationStartNs else { return }
+        dictationStartNs = nil
+        recorder?.noteDictation(MeetingDictation(startHostNs: start, endHostNs: max(start, ns)))
+    }
+
     /// Start or stop watching to match the setting.
     func refresh() {
         if store.settings.meetingCapture {
@@ -212,6 +228,11 @@ final class MeetingController {
 
     func stop(reason: String) {
         guard let recorder else { return }
+        // A dictation still under way is cut at the stop, so it is in the final metadata.
+        if let start = dictationStartNs {
+            recorder.noteDictation(MeetingDictation(startHostNs: start, endHostNs: max(start, HostClock.now())))
+            dictationStartNs = HostClock.now()
+        }
         self.recorder = nil
         let directory = recordingDirectory
         recordingDirectory = nil
@@ -244,6 +265,9 @@ final class MeetingController {
         timer = nil
         guard let recorder else { return }
         self.recorder = nil
+        if let start = dictationStartNs {
+            recorder.noteDictation(MeetingDictation(startHostNs: start, endHostNs: max(start, HostClock.now())))
+        }
         recorder.closeFiles(reason: reason)
         if let recordingDirectory { MeetingTranscriber.markPending(directory: recordingDirectory) }
         recordingDirectory = nil
