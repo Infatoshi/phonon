@@ -62,6 +62,12 @@ impl Engine {
         self.corrector.lean()
     }
 
+    /// Start the saturated-CPU fallback corrector now (see `Corrector::start_lean`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn start_lean(&self) {
+        self.corrector.start_lean();
+    }
+
     /// Call while idle with the machine's busy fraction (see `Corrector::warm`).
     pub fn warm(&self, busy: Option<f64>) {
         self.corrector.warm(busy);

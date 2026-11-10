@@ -246,6 +246,9 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
             return Err(error);
         }
     }
+    // On the CPU, the fallback corrector for a saturated machine starts now, not
+    // at the first busy moment, so the first dictation under load does not wait.
+    engine.start_lean();
 
     let (name, _) = hook::current_key();
     tray::set_status(&idle_text());

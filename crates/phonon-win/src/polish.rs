@@ -135,6 +135,9 @@ pub enum Device {
 /// (DEVLOG 2026-11-07 9:50 pm and 10:30 pm).
 pub const SATURATED: f64 = 0.85;
 
+/// Threads of the fallback corrector used while the CPU is saturated.
+const LEAN_THREADS: usize = 1;
+
 /// The `VulkanN` device to offload to: the first one `llama-server --list-devices`
 /// prints ("  Vulkan0: NVIDIA GeForce RTX 3090 (24322 MiB, 23554 MiB free)").
 /// llama.cpp leaves integrated GPUs out of that list when a discrete one exists
@@ -737,6 +740,22 @@ impl Corrector {
         if !busy.is_some_and(|busy| busy >= SATURATED) {
             return false;
         }
+        self.spawn_lean()
+    }
+
+    /// Start the fallback corrector now, whatever the load (Windows, CPU only):
+    /// on a machine that is already saturated when the user first dictates, the
+    /// first-busy-moment start in `warm` left that dictation waiting for it
+    /// (W2, Windows 11 VM, 2026-11-10: ready 8.1 s and 25.4 s after the load began).
+    pub fn start_lean(&self) {
+        if self.device == Device::Cpu && cfg!(windows) {
+            self.spawn_lean();
+        }
+    }
+
+    /// Start the fallback server in the background unless it already started.
+    /// Returns whether a saturated dictation can use it.
+    fn spawn_lean(&self) -> bool {
         let Ok(mut lean) = self.lean.lock() else {
             return false;
         };
@@ -749,16 +768,18 @@ impl Corrector {
             );
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let next = match Server::spawn(&server, &model, 1, None, &[]) {
+                let next = match Server::spawn(&server, &model, LEAN_THREADS, None, &[]) {
                     Ok(server) => {
                         eprintln!(
-                            "phonon: one-thread corrector ready in {} ms",
+                            "phonon: {LEAN_THREADS}-thread corrector ready in {} ms",
                             started.elapsed().as_millis()
                         );
                         Lean::Ready(server)
                     }
                     Err(error) => {
-                        eprintln!("phonon: one-thread corrector did not start: {error:#}");
+                        eprintln!(
+                            "phonon: {LEAN_THREADS}-thread corrector did not start: {error:#}"
+                        );
                         Lean::Failed
                     }
                 };
