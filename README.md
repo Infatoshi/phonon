@@ -108,7 +108,8 @@ dictation key from the kernel, which works under Wayland where apps get no globa
 with a virtual Control-V, putting your clipboard back afterwards. Terminals paste with Control-Shift-V, so in a
 terminal the text stays on the clipboard. Phonon does nothing while the screen is locked.
 
-First run downloads the same 1.6 GB as Windows, into `~/.local/share/phonon`. Hold **Right Ctrl** to dictate;
+First run downloads the same 1.6 GB as Windows, into `~/.local/share/phonon`. As on Windows, correction runs
+on an NVIDIA, AMD or Intel GPU through Vulkan when it decodes fast enough, otherwise on the CPU. Hold **Right Ctrl** to dictate;
 `PHONON_HOTKEY` takes the Windows key names. Without the package, `phonon setup` prints the one-time rule to
 install.
 

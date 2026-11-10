@@ -112,16 +112,18 @@ pub const SHERPA_RUNTIME: Component = Component {
     sentinel: "bin/sherpa-onnx-offline",
 };
 
-/// The pinned Ubuntu CPU release is a tar.gz, not a zip.
+/// The pinned Ubuntu Vulkan release (a tar.gz): every CPU backend of the CPU release plus
+/// libggml-vulkan.so, loaded at run time. Without a Vulkan driver (libvulkan.so.1 and an ICD)
+/// that library does not load and the server runs on the CPU exactly as the CPU release did.
 #[cfg(target_os = "linux")]
 pub const LLAMA_RUNTIME: Component = Component {
-    dir: "runtime/llama-b12132-linux-x64",
+    dir: "runtime/llama-b12132-linux-vulkan-x64",
     label: "correction runtime",
     assets: &[Asset {
-        name: "llama-ubuntu-x64.tar.gz",
-        url: "https://github.com/ggml-org/llama.cpp/releases/download/b12132/llama-b12132-bin-ubuntu-x64.tar.gz",
-        sha256: "8741ab42ede58f3bc3a20f523c50fff8cf6e750373021b0627603f378f2cd78e",
-        bytes: 23_083_703,
+        name: "llama-ubuntu-vulkan-x64.tar.gz",
+        url: "https://github.com/ggml-org/llama.cpp/releases/download/b12132/llama-b12132-bin-ubuntu-vulkan-x64.tar.gz",
+        sha256: "ff02b3e3535b0b195d846846ff8a88175bf938a5c0415fb562a7587004756109",
+        bytes: 35_887_664,
     }],
     unpack: Unpack::Archive { strip_to: "llama-b12132" },
     sentinel: "llama-server",
@@ -196,7 +198,10 @@ pub const ALL: &[Component] = &[SHERPA_RUNTIME, LLAMA_RUNTIME, ASR_MODEL, POLISH
 #[cfg(windows)]
 pub const SUPERSEDED: &[&str] = &["runtime/llama-b12132", "models/parakeet-tdt-0.6b-v2-int8"];
 #[cfg(not(windows))]
-pub const SUPERSEDED: &[&str] = &["models/parakeet-tdt-0.6b-v2-int8"];
+pub const SUPERSEDED: &[&str] = &[
+    "runtime/llama-b12132-linux-x64",
+    "models/parakeet-tdt-0.6b-v2-int8",
+];
 
 /// Total first-run download in bytes.
 pub fn total_bytes() -> u64 {

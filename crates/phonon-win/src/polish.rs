@@ -192,14 +192,50 @@ fn lean_threads(logical_cpus: usize) -> usize {
     LEAN_THREADS.min(thread_count(logical_cpus))
 }
 
-/// PCI vendor ids of GPU makers that ship a Vulkan driver on Windows: NVIDIA,
-/// AMD, Intel. A machine with none of them (a VM's virtual adapter, Microsoft
-/// Basic Display) has no device `--list-devices` could offer, and the listing is
-/// not free: cold, with real-time scanning on and every vCPU busy, it hit its
-/// 20 s timeout (W11, Windows 11 VM, 2026-11-10). Integrated GPUs keep the
+/// PCI vendor ids of GPU makers that ship a Vulkan driver on Windows and Linux:
+/// NVIDIA, AMD, Intel. A machine with none of them (a VM's virtual adapter,
+/// Microsoft Basic Display) has no device `--list-devices` could offer, and the
+/// listing is not free: cold, with real-time scanning on and every vCPU busy, it
+/// hit its 20 s timeout (W11, Windows 11 VM, 2026-11-10). Integrated GPUs keep the
 /// listing: registry memory sizes cannot tell them from discrete ones (DEVLOG
 /// 2026-11-07), and `MIN_GPU_DECODE` still decides.
 const GPU_VENDORS: &[&str] = &["VEN_10DE", "VEN_1002", "VEN_8086"];
+
+/// Whether any DRM card under `drm` (Linux: /sys/class/drm) is from a GPU vendor:
+/// `card0/device/vendor` holds the PCI vendor id as "0x10de". Connector entries
+/// (`card0-HDMI-A-1`) and render nodes carry no vendor file of their own or
+/// repeat their card's; an unreadable or missing directory means no GPU.
+#[cfg(any(target_os = "linux", test))]
+fn linux_gpu_vendor_in(drm: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(drm) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_name().to_string_lossy().starts_with("card")
+            && std::fs::read_to_string(entry.path().join("device").join("vendor")).is_ok_and(
+                |vendor| {
+                    let vendor = vendor.trim().to_ascii_lowercase();
+                    vendor.strip_prefix("0x").is_some_and(|hex| {
+                        GPU_VENDORS
+                            .iter()
+                            .any(|known| known[4..].eq_ignore_ascii_case(hex))
+                    })
+                },
+            )
+    })
+}
+
+/// Whether this machine has an NVIDIA, AMD or Intel display adapter, the only
+/// ones worth asking llama.cpp to list Vulkan devices for.
+#[cfg(windows)]
+fn gpu_vendor_present() -> bool {
+    any_gpu_vendor(&display_adapter_ids())
+}
+
+#[cfg(target_os = "linux")]
+fn gpu_vendor_present() -> bool {
+    linux_gpu_vendor_in(Path::new("/sys/class/drm"))
+}
 
 /// Whether any display adapter id ("PCI\VEN_10DE&DEV_2204&...") is from a GPU vendor.
 #[cfg(any(windows, test))]
@@ -870,8 +906,8 @@ impl Corrector {
     /// `fetch::ensure_all`.
     ///
     /// The fallback order: a tuned GPU runtime from the backend manifest at
-    /// `backends` (when given and this machine has a build), then (Windows) any
-    /// Vulkan GPU, then the CPU. Each GPU path has to list its device, start, and
+    /// `backends` (when given and this machine has a build), then any Vulkan GPU
+    /// (Windows and Linux), then the CPU. Each GPU path has to list its device, start, and
     /// decode at `MIN_GPU_DECODE` or faster before it is used.
     pub fn start(backends: Option<&str>) -> Result<Self> {
         let (server, model) = runtime_files()?;
@@ -921,10 +957,9 @@ impl Corrector {
                 Err(error) => eprintln!("phonon: tuned GPU runtime unavailable ({error:#})"),
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
-            let adapters = display_adapter_ids();
-            if any_gpu_vendor(&adapters) {
+            if gpu_vendor_present() {
                 let vulkan = Target {
                     kind: "Vulkan",
                     env: Vec::new(),
@@ -1160,6 +1195,43 @@ mod tests {
         assert!(!any_gpu_vendor(&ids(&[
             "PCI\\VEN_1AF4&DEV_1050&SUBSYS_VEN_10DE"
         ])));
+    }
+
+    #[test]
+    fn linux_lists_vulkan_only_with_a_gpu_vendors_card() {
+        let root = std::env::temp_dir().join(format!("phonon-win-drm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let card = |name: &str, vendor: &str| {
+            let device = root.join(name).join("device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::fs::write(device.join("vendor"), vendor).unwrap();
+        };
+        // no /sys/class/drm at all (a container), then an empty one
+        assert!(!linux_gpu_vendor_in(&root));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!linux_gpu_vendor_in(&root));
+        // a QEMU VM (virtio-gpu), a Hyper-V VM, a connector without a vendor file
+        card("card0", "0x1af4\n");
+        card("card1", "0x1414\n");
+        std::fs::create_dir_all(root.join("card0-Virtual-1")).unwrap();
+        assert!(!linux_gpu_vendor_in(&root));
+        // a render node is not a card, whatever its vendor
+        card("renderD128", "0x10de\n");
+        assert!(!linux_gpu_vendor_in(&root));
+        // a vendor id must be the whole value, not a prefix of it
+        card("card2", "0x10de0\n");
+        assert!(!linux_gpu_vendor_in(&root));
+        for (name, vendor) in [
+            ("card3", "0x10de\n"),
+            ("card4", "0x1002"),
+            ("card5", "0X8086\n"),
+        ] {
+            card(name, vendor);
+            assert!(linux_gpu_vendor_in(&root), "{vendor:?}");
+            std::fs::remove_dir_all(root.join(name)).unwrap();
+        }
+        assert!(!linux_gpu_vendor_in(&root));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -155,7 +155,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PHONON_WIN_HOME }}/runtime
-          key: phonon-linux-x64-runtime-sherpa1.13.6-llama-b12132
+          key: phonon-linux-x64-runtime-sherpa1.13.6-llama-b12132-vulkan
 
       - name: download and verify the runtimes and weights
         run: nice -n 10 target/release/phonon-win fetch
