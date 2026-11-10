@@ -107,8 +107,41 @@ final class MeetingCleanupTests: XCTestCase {
                 XCTAssertTrue(item.output.contains("TL;DR:"), "the answer had one to strip: \(item.id)")
             case .rejected(let reason):
                 XCTAssertEqual(reason, item.verdict, item.id)
+            case .mixed:
+                XCTFail("one answer is never mixed: \(item.id)")
             }
         }
+    }
+
+    /// N13: a kept line must not be glued onto an earlier filler line of the same speaker. The
+    /// answer below dropped "Right." and kept every word; the greedy walk matched Speaker 2's
+    /// line to "Right." and then called the real line lost.
+    func testAKeptLineIsNotGluedOntoAnEarlierFillerLineOfTheSameSpeaker() {
+        let input = chunk(
+            "Speaker 1: We should ship on Friday because the build is green and QA signed off.\n"
+                + "Speaker 2: Right.\n"
+                + "Speaker 2: I agree, Friday works for the whole team and for the release notes.")
+        let output =
+            "Speaker 1: We should ship on Friday because the build is green and QA signed off.\n"
+            + "Speaker 2: I agree, Friday works for the whole team and for the release notes.\nTL;DR: ship Friday."
+        guard case .cleaned(let lines) = MeetingCleanupValidator.check(input, output: output) else {
+            return XCTFail("a correct answer is accepted")
+        }
+        XCTAssertNil(lines[1], "the filler line is the one dropped")
+        XCTAssertEqual(lines[2], "I agree, Friday works for the whole team and for the release notes.")
+        // still rejected: a real line dropped, and lines out of order
+        let lost = "Speaker 1: We should ship on Friday because the build is green and QA signed off.\nSpeaker 2: Right."
+        XCTAssertEqual(MeetingCleanupValidator.check(input, output: lost), .rejected("speaker line lost"))
+        let swapped =
+            "Speaker 2: I agree, Friday works for the whole team and for the release notes.\n"
+            + "Speaker 1: We should ship on Friday because the build is green and QA signed off."
+        XCTAssertEqual(MeetingCleanupValidator.check(input, output: swapped), .rejected("speaker order"))
+        // of two same-label lines the answer line goes to the one it shares its words with
+        let twice = chunk("Speaker 1: Okay.\nSpeaker 1: Okay so the budget is fine for the next quarter.")
+        guard case .cleaned(let picked) = MeetingCleanupValidator.check(
+            twice, output: "Speaker 1: The budget is fine for the next quarter.")
+        else { return XCTFail("accepted") }
+        XCTAssertEqual(picked, [nil, "The budget is fine for the next quarter."])
     }
 
     func testTheTLDRIsStrippedAndFillerOnlyLinesMayBeDropped() {
@@ -589,9 +622,11 @@ final class MeetingCleanerTests: XCTestCase {
         let chunks = MeetingCleanupChunker.chunks(transcript.turns)
         let runtime = FakeRuntime()
         let normal = runtime.answer
+        let halves = try XCTUnwrap(MeetingCleanupChunker.halves(chunks[0]))
+        let firstChunk = [chunks[0].prompt, halves.0.prompt, halves.1.prompt]
         runtime.answer = { prompt in
-            // the first chunk's answer loses a speaker line
-            prompt == chunks[0].prompt ? String(prompt.split(separator: "\n").first!) : normal(prompt)
+            // the first chunk's answer loses a speaker line, and so does each half's
+            firstChunk.contains(prompt) ? String(prompt.split(separator: "\n").first!) + "\nSpeaker 9: x" : normal(prompt)
         }
         runtime.failNext = 0
         let cleaner = cleaner(runtime)
@@ -601,6 +636,7 @@ final class MeetingCleanerTests: XCTestCase {
         await waitUntil("finished") { CleanedTranscript.load(from: folder) != nil }
         var cleaned = try XCTUnwrap(CleanedTranscript.load(from: folder))
         XCTAssertEqual(cleaned.rawChunks, 1)
+        XCTAssertEqual(runtime.prompts.count, chunks.count + 2, "the rejected chunk is asked again as two halves")
         let firstTurns = Set(chunks[0].lines.map(\.turn))
         for (index, turn) in cleaned.turns.enumerated() where firstTurns.contains(index) && chunks.count > 1 {
             if turn.source == .raw { XCTAssertEqual(turn.text, transcript.turns[index].text) }
@@ -616,6 +652,64 @@ final class MeetingCleanerTests: XCTestCase {
         cleaned = try XCTUnwrap(CleanedTranscript.load(from: folder))
         XCTAssertEqual(cleaned.rawChunks, 1)
         XCTAssertEqual(runtime.started, 3, "the first start and one restart per failure")
+    }
+
+    /// N13 second pass: a rejected chunk asked again as two halves, each checked by the same
+    /// validator. Both pass: the chunk is cleaned. One fails: only its lines stay raw.
+    @MainActor
+    func testARejectedChunkIsAskedAgainAsTwoHalves() async throws {
+        let (folder, transcript) = try meeting("meeting_halves", turns: 8)
+        let chunks = MeetingCleanupChunker.chunks(transcript.turns)
+        let halves = try XCTUnwrap(MeetingCleanupChunker.halves(chunks[0]))
+        XCTAssertEqual(halves.0.lines + halves.1.lines, chunks[0].lines, "whole lines, none lost or repeated")
+        XCTAssertLessThanOrEqual(abs(halves.0.wordCount - halves.1.wordCount), chunks[0].lines.map(\.wordCount).max()!)
+        XCTAssertNil(MeetingCleanupChunker.halves(CleanupChunk(index: 0, lines: [chunks[0].lines[0]])))
+
+        let runtime = FakeRuntime()
+        let normal = runtime.answer
+        func lose(_ prompt: String) -> String { String(prompt.split(separator: "\n").first!) + "\nSpeaker 9: x" }
+        runtime.answer = { prompt in prompt == chunks[0].prompt ? lose(prompt) : normal(prompt) }
+        let cleaner = cleaner(runtime)
+        cleaner.setEngineReady(true)
+        cleaner.setDictationQuiet(true)
+        cleaner.enqueue(directory: folder)
+        await waitUntil("finished") { CleanedTranscript.load(from: folder) != nil }
+        var cleaned = try XCTUnwrap(CleanedTranscript.load(from: folder))
+        XCTAssertEqual(cleaned.rawChunks, 0, "both halves passed")
+        XCTAssertEqual(Array(runtime.prompts.prefix(3)), [chunks[0].prompt, halves.0.prompt, halves.1.prompt])
+        let firstTurns = Set(chunks[0].lines.map(\.turn))
+        for index in firstTurns { XCTAssertEqual(cleaned.turns[index].source, .cleaned) }
+
+        // the second half fails again: the first half is cleaned, the second keeps its raw lines
+        try FileManager.default.removeItem(at: folder.appendingPathComponent(CleanedTranscript.fileName))
+        runtime.prompts = []
+        runtime.answer = { prompt in
+            prompt == chunks[0].prompt || prompt == halves.1.prompt ? lose(prompt) : normal(prompt)
+        }
+        cleaner.enqueue(directory: folder)
+        await waitUntil("finished again") { CleanedTranscript.load(from: folder) != nil }
+        cleaned = try XCTUnwrap(CleanedTranscript.load(from: folder))
+        XCTAssertEqual(cleaned.rawChunks, 1, "a chunk with any raw line counts as kept raw")
+        for line in halves.0.lines where !halves.1.lines.contains(where: { $0.turn == line.turn }) {
+            XCTAssertEqual(cleaned.turns[line.turn].source, .cleaned)
+        }
+        for line in halves.1.lines where !halves.0.lines.contains(where: { $0.turn == line.turn }) {
+            XCTAssertEqual(cleaned.turns[line.turn].source, .raw)
+            XCTAssertEqual(cleaned.turns[line.turn].text, transcript.turns[line.turn].text)
+        }
+
+        // the combination by itself
+        let a = CleanupOutcome.cleaned(halves.0.lines.map { Optional("c " + $0.text) })
+        let b = CleanupOutcome.rejected("speaker order")
+        guard case .mixed(let lines, let raw, let why) = CleanupOutcome.combine(a, b, halves: halves, original: "x")
+        else { return XCTFail("mixed") }
+        XCTAssertEqual(raw, Array(halves.0.lines.count..<chunks[0].lines.count))
+        XCTAssertEqual(lines.count, chunks[0].lines.count)
+        XCTAssertEqual(why, "speaker order")
+        XCTAssertEqual(CleanupOutcome.combine(b, b, halves: halves, original: "speaker line lost"), .rejected("speaker line lost"))
+        let result = CleanupChunkResult(chunk: 0, outcome: .mixed(lines, raw: raw, reason: why), retried: "x")
+        XCTAssertTrue(result.keptRaw)
+        XCTAssertFalse(CleanupChunkResult(chunk: 0, outcome: a, retried: "x").keptRaw)
     }
 
     @MainActor
