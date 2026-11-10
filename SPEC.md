@@ -371,7 +371,11 @@ Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupR
   false starts and fixes misrecognitions, keeping every speaker line in order. Blind judging preferred it to the
   uncorrected path 66-68% of the time (DEVLOG 2026-11-10 1:15 am). Its TL;DR line failed the attribution bar, so
   it is always dropped and never shown.
-- When: after transcript.json is written, in the background; Notes has a Clean up button for a transcript without
+- When: after transcript.json is written, in the background, with no click (MeetingPipeline.swift joins the two
+  queues). The transcriber hands the meeting to the cleaner (which writes its own progress file) before it drops
+  transcript.partial.json, so a quit between the two is handed off at the next launch: a partial file beside a
+  finished transcript.json means exactly that. Notes shows the raw transcript as soon as it is written, with
+  "Cleaning up… N%" above it. Notes has a Clean up button for a transcript without
   a cleanup (one from before cleanup existed, or one whose last try stopped). Only when the adapter is installed or
   downloadable; until it is published, only a verified copy under models/meeting-cleanup/ enables it. One meeting
   at a time.
