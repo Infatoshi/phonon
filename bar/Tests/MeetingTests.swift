@@ -20,11 +20,11 @@ final class MeetingDetectorTests: XCTestCase {
 
     private func evidence(
         holders: [String], front: String? = nil, url: String? = nil,
-        denylist: [String] = ContextPolicy.defaultDenylist
+        denylist: [String] = ContextPolicy.defaultDenylist, outputs: [String] = []
     ) -> MeetingDetector.Evidence {
         MeetingDetector.Evidence(
             microphoneHolders: holders, frontmostBundleID: front,
-            frontmostURL: url.flatMap(URL.init(string:)), denylist: denylist)
+            frontmostURL: url.flatMap(URL.init(string:)), denylist: denylist, audioOutputs: outputs)
     }
 
     func testACallAppHoldingTheMicIsAMeeting() {
@@ -34,13 +34,50 @@ final class MeetingDetectorTests: XCTestCase {
         XCTAssertEqual(MeetingDetector.evaluate(evidence(holders: [])), .none, "Zoom open, no call")
     }
 
-    func testAChatAppCountsOnlyWhenFrontAndHoldingTheMic() {
+    func testAChatAppCountsOnlyWhenFrontHoldingTheMicAndPlayingTheFarSide() {
         let slack = "com.tinyspeck.slackmacgap"
         XCTAssertEqual(
-            MeetingDetector.evaluate(evidence(holders: [slack], front: slack)),
+            MeetingDetector.evaluate(evidence(holders: [slack], front: slack, outputs: [slack])),
             .meeting(app: "Slack", bundleID: slack))
         XCTAssertEqual(
-            MeetingDetector.evaluate(evidence(holders: [slack], front: "com.apple.Notes")), .none)
+            MeetingDetector.evaluate(evidence(holders: [slack], front: "com.apple.Notes", outputs: [slack])), .none)
+        // a voice message or clip only captures: no prompt
+        XCTAssertEqual(MeetingDetector.evaluate(evidence(holders: [slack], front: slack)), .none)
+        // a huddle runs in Slack's helper; the recording follows Slack itself
+        let helper = "com.tinyspeck.slackmacgap.helper"
+        XCTAssertEqual(
+            MeetingDetector.evaluate(evidence(holders: [helper], front: slack, outputs: [helper])),
+            .meeting(app: "Slack", bundleID: slack))
+        XCTAssertTrue(MeetingDetector.stillInCall(recordingBundleID: slack, holders: [helper]))
+    }
+
+    /// Wispr Flow 1.6's process table: the process holding the mic is often not the app.
+    func testHelperProcessesCountAsTheirApp() {
+        XCTAssertEqual(MeetingDetector.owner(of: "com.google.Chrome.helper"), "com.google.chrome")
+        XCTAssertEqual(MeetingDetector.owner(of: "company.thebrowser.browser.helper"), "company.thebrowser.browser")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.hnc.Discord.helper.renderer"), "com.hnc.discord")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.apple.WebKit.GPU"), "com.apple.safari")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.apple.avconferenced"), "com.apple.facetime")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.microsoft.teams2.modulehost"), "com.microsoft.teams2")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.example.helperapp"), "com.example.helperapp", "a word, not a helper")
+        XCTAssertEqual(
+            MeetingDetector.evaluate(evidence(holders: ["com.apple.avconferenced"])),
+            .meeting(app: "FaceTime", bundleID: "com.apple.FaceTime"))
+        XCTAssertEqual(
+            MeetingDetector.evaluate(evidence(holders: ["com.microsoft.teams2.modulehost"])),
+            .meeting(app: "Microsoft Teams", bundleID: "com.microsoft.teams2"))
+        let arc = "company.thebrowser.Browser"
+        XCTAssertTrue(
+            MeetingDetector.shouldReadTabURL(
+                holders: ["company.thebrowser.browser.helper"], frontmostBundleID: arc,
+                denylist: ContextPolicy.defaultDenylist))
+        XCTAssertEqual(
+            MeetingDetector.evaluate(
+                evidence(holders: ["company.thebrowser.browser.helper"], front: arc, url: "https://meet.google.com/a-b-c")),
+            .meeting(app: "meet.google.com", bundleID: arc))
+        XCTAssertTrue(
+            MeetingDetector.stillInCall(recordingBundleID: "com.apple.Safari", holders: ["com.apple.WebKit.GPU"]))
+        XCTAssertFalse(MeetingDetector.stillInCall(recordingBundleID: "com.apple.Safari", holders: ["us.zoom.xos"]))
     }
 
     func testABrowserTabOnAConferenceSiteHoldingTheMicIsAMeeting() {
@@ -60,7 +97,8 @@ final class MeetingDetectorTests: XCTestCase {
     /// its window is recorded.
     func testPrivateCallAppsAreOfferedButNeverRead() {
         XCTAssertEqual(
-            MeetingDetector.evaluate(evidence(holders: ["com.hnc.Discord"], front: "com.hnc.Discord")),
+            MeetingDetector.evaluate(
+                evidence(holders: ["com.hnc.Discord"], front: "com.hnc.Discord", outputs: ["com.hnc.Discord"])),
             .meeting(app: "Discord", bundleID: "com.hnc.Discord"))
         let chrome = "com.google.Chrome"
         XCTAssertEqual(

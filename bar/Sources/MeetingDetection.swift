@@ -58,6 +58,35 @@ enum MeetingDetector {
         return true
     }
 
+    /// Processes that capture or play audio for an app, by the app they belong to (after Wispr
+    /// Flow 1.6's `meeting-service-names`): Chromium browsers and Electron apps (Slack, Discord)
+    /// capture in a `.helper` process, Safari in WebKit's GPU process, FaceTime in
+    /// avconferenced and Teams 2 in its module host. Without this the detector compared the
+    /// helper with the app and missed every browser call, FaceTime and Slack huddles.
+    static let processOwners = [
+        "com.apple.webkit.gpu": "com.apple.safari",
+        "com.apple.avconferenced": "com.apple.facetime",
+        "com.microsoft.teams2.modulehost": "com.microsoft.teams2",
+    ]
+
+    /// The app a capturing or playing process belongs to, lowercased: bundle ids are compared
+    /// without case (Wispr's table is lowercase; Arc's app is company.thebrowser.Browser and its
+    /// helper company.thebrowser.browser.helper).
+    static func owner(of bundleID: String) -> String {
+        let id = bundleID.lowercased()
+        if let owner = processOwners[id] { return owner }
+        if let range = id.range(of: ".helper"), range.lowerBound > id.startIndex,
+            range.upperBound == id.endIndex || id[range.upperBound] == "." || id[range.upperBound] == " "
+        {
+            return String(id[..<range.lowerBound])
+        }
+        return id
+    }
+
+    private static func lookup(_ table: [String: String], _ owner: String) -> (bundleID: String, name: String)? {
+        table.first { $0.key.lowercased() == owner }.map { ($0.key, $0.value) }
+    }
+
     struct Evidence {
         /// Bundle ids of the processes that hold the microphone, Phonon
         /// excluded.
@@ -69,6 +98,10 @@ enum MeetingDetector {
         /// (the user asked for Discord calls), but nothing is read from it:
         /// no tab URL, no window title, no page in the metadata.
         var denylist: [String]
+        /// Bundle ids of the processes playing audio, Phonon excluded. A chat app counts as in
+        /// a call only while it also plays (the far side): recording a voice message only
+        /// captures.
+        var audioOutputs: [String] = []
     }
 
     /// `app` is what the prompt names; `bundleID` is the process that holds
@@ -80,19 +113,28 @@ enum MeetingDetector {
 
     /// Only bundle ids and the tab URL of a non-private browser feed this, so
     /// a private call app can be offered without reading anything from it.
+    /// Whether `app` (or a process of it) is among `processes`.
+    static func holds(_ processes: [String], app: String) -> Bool {
+        let owner = owner(of: app)
+        return processes.contains { Self.owner(of: $0) == owner }
+    }
+
     static func evaluate(_ evidence: Evidence) -> Verdict {
         let holders = evidence.microphoneHolders
         guard !holders.isEmpty else { return .none }
-        if let call = holders.first(where: { callApps[$0] != nil }), let name = callApps[call] {
-            return .meeting(app: name, bundleID: call)
+        let owners = holders.map(owner(of:))
+        // `bundleID` is the app's own id (its pid and name are looked up by it), not its helper's
+        for owner in owners {
+            if let call = lookup(callApps, owner) { return .meeting(app: call.name, bundleID: call.bundleID) }
         }
-        if let front = evidence.frontmostBundleID, holders.contains(front),
-            let chat = chatAppsWithCalls[front]
+        if let front = evidence.frontmostBundleID, owners.contains(owner(of: front)),
+            let chat = lookup(chatAppsWithCalls, owner(of: front)),
+            holds(evidence.audioOutputs, app: front)
         {
-            return .meeting(app: chat, bundleID: front)
+            return .meeting(app: chat.name, bundleID: front)
         }
         if let url = evidence.frontmostURL, isConferenceURL(url),
-            let front = evidence.frontmostBundleID, holders.contains(front)
+            let front = evidence.frontmostBundleID, owners.contains(owner(of: front))
         {
             return .meeting(app: ContextPolicy.host(of: url) ?? "browser", bundleID: front)
         }
@@ -105,7 +147,7 @@ enum MeetingDetector {
     static func shouldReadTabURL(
         holders: [String], frontmostBundleID: String?, denylist: [String]
     ) -> Bool {
-        guard let front = frontmostBundleID, holders.contains(front),
+        guard let front = frontmostBundleID, holds(holders, app: front),
             ContextPolicy.isBrowser(front),
             !ContextPolicy.isDenied(bundleID: front, host: nil, denylist: denylist)
         else { return false }
@@ -144,7 +186,7 @@ enum MeetingDetector {
     /// Once recording, the call is still on while the process that held the
     /// microphone still holds it, wherever the user's focus has gone.
     static func stillInCall(recordingBundleID: String, holders: [String]) -> Bool {
-        holders.contains(recordingBundleID)
+        holds(holders, app: recordingBundleID)
     }
 }
 
@@ -208,6 +250,26 @@ struct MeetingPromptPolicy {
 /// is in use" means someone else is using it.
 enum MicrophoneHolders {
     static func bundleIDs(excludingPID ownPID: pid_t = getpid()) -> [String] {
+        snapshot(excludingPID: ownPID).input
+    }
+
+    /// Bundle ids of the processes capturing audio (`input`) and playing it (`output`).
+    static func snapshot(excludingPID ownPID: pid_t = getpid()) -> (input: [String], output: [String]) {
+        var input: [String] = []
+        var output: [String] = []
+        for object in processObjects() {
+            let capturing = isRunning(object, kAudioProcessPropertyIsRunningInput)
+            let playing = isRunning(object, kAudioProcessPropertyIsRunningOutput)
+            guard capturing || playing, let pid = processID(object), pid != ownPID,
+                let id = bundleID(object) ?? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+            else { continue }
+            if capturing { input.append(id) }
+            if playing { output.append(id) }
+        }
+        return (input, output)
+    }
+
+    private static func processObjects() -> [AudioObjectID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -224,18 +286,12 @@ enum MicrophoneHolders {
                 AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &objects)
                 == noErr
         else { return [] }
-        return objects.compactMap { object in
-            guard isRunningInput(object), let pid = processID(object), pid != ownPID else {
-                return nil
-            }
-            return bundleID(object) ?? NSRunningApplication(processIdentifier: pid)?
-                .bundleIdentifier
-        }
+        return objects
     }
 
-    private static func isRunningInput(_ object: AudioObjectID) -> Bool {
+    private static func isRunning(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> Bool {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyIsRunningInput,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
         var running: UInt32 = 0

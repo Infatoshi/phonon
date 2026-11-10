@@ -6,7 +6,7 @@ import Foundation
 /// the user also turned on auto-start.
 @MainActor
 final class MeetingController {
-    static let detectionInterval: TimeInterval = 4
+    nonisolated static let detectionInterval: TimeInterval = 4
 
     private let store: NativeAppStore
     private var timer: Timer?
@@ -59,7 +59,8 @@ final class MeetingController {
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         Task { [weak self] in
             let evidence = await Task.detached(priority: .utility) {
-                let holders = MicrophoneHolders.bundleIDs()
+                let audio = MicrophoneHolders.snapshot()
+                let holders = audio.input
                 // The frontmost tab's URL is read only when the frontmost app
                 // is a browser, not private, and itself holds the microphone.
                 // Only the focused element's ancestors are walked, to the
@@ -72,7 +73,7 @@ final class MeetingController {
                 }
                 return MeetingDetector.Evidence(
                     microphoneHolders: holders, frontmostBundleID: bundleID, frontmostURL: url,
-                    denylist: denylist)
+                    denylist: denylist, audioOutputs: audio.output)
             }.value
             guard let self else { return }
             self.checking = false

@@ -324,6 +324,24 @@ earlier track starts at 0.
   -40 dBFS white noise; 1,428 words) the normalised words were identical in both, and so was the WER: 0.0651 in
   each (stock parakeet-tdt-0.6b-v2 on MLX). `MeetingFormatLiveCheck` (opt in) records a WAV through this path.
 
+Detection (bar/Sources/MeetingDetection.swift), every 4 s, from CoreAudio's process list (who captures, who
+plays; Phonon left out), the frontmost app and, for a browser that is not private and itself captures, its tab:
+- A capturing process counts as the app it belongs to, compared without case (Wispr Flow 1.6's table): a
+  `.helper` process is its app (Chrome, Edge, Brave, Arc, Slack, Discord), com.apple.WebKit.GPU is Safari,
+  com.apple.avconferenced is FaceTime, Teams 2's module host is Teams. The verdict names the app itself, and a
+  recording follows any process of it.
+- A call app (Zoom, Teams, Webex, FaceTime, RingCentral, Around) capturing is a call. A browser in front capturing
+  on a conference page is a call. A chat app (Slack, Discord, WhatsApp, Telegram) is a call only while it is in
+  front, captures, and also plays audio (the far side): a voice message or clip only captures.
+- `MeetingDetectionHarnessTests` scripts 30 calls (Zoom, Meet in Chrome, Safari and Arc, Zoom web, Teams app and
+  web, FaceTime, Slack huddles in the app and three browsers) and an 8.2-hour day of 134 ordinary uses
+  (dictation in Phonon, Wispr Flow and Apple Dictation, voice messages, clips, Voice Memos, video, ChatGPT voice,
+  voice search, Loom). Logic level, 2026-11-10: 30 of 30 calls asked within 10 s at every poll phase (3 s at
+  most), all recorded to the end, 0 false prompts; before this, 7 of 30 and 18 false prompts (voice messages).
+  Known limits: a browser call whose tab leaves the front within 2 s of the mic coming on is missed at half the
+  poll phases, and a call app's own microphone test is offered. Which process captures for each app comes from
+  Wispr's table, not from this Mac: a live call per app remains the owner's check.
+
 Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
 `transcribe_span`), all on the Mac:
 
