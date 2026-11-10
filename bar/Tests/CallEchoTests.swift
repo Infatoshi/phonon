@@ -254,13 +254,13 @@ final class CallEchoTests: XCTestCase {
     {
         let start: UInt64 = 5_000_000_000
         if let call {
-            reference.begin()
+            let token = reference.begin()
             let buffer = rate / 100
             var i = 0
             while i < call.count {
                 let piece = Array(call[i..<min(call.count, i + buffer)])
                 let host = start + UInt64(i) * 1_000_000_000 / UInt64(rate)
-                reference.append(piece, rate: Double(rate), hostNs: host)
+                reference.append(piece, rate: Double(rate), hostNs: host, token: token)
                 i += buffer
             }
         }
@@ -317,7 +317,7 @@ final class CallEchoTests: XCTestCase {
         XCTAssertEqual(Self.gatedDictation(mic: mic, call: nil).gated, mic)
         // A meeting that has no call audio yet: a gate, but every block left alone.
         let empty = CallReference()
-        empty.begin()
+        _ = empty.begin()
         let gate = DictationEchoGate.make(reference: empty, sourceRate: 48_000)
         XCTAssertNotNil(gate)
         gate?.noteStart(hostNs: 1_000_000_000)
@@ -329,8 +329,8 @@ final class CallEchoTests: XCTestCase {
         XCTAssertEqual(used?.mutedSamples, 0)
         // A dictation with no host time for its audio cannot be aligned.
         let reference = CallReference()
-        reference.begin()
-        reference.append(Self.call, rate: 48_000, hostNs: 1_000_000_000)
+        let token = reference.begin()
+        reference.append(Self.call, rate: 48_000, hostNs: 1_000_000_000, token: token)
         let unstamped = DictationEchoGate(reference: reference, sourceRate: 48_000)
         unstamped.noteStart(hostNs: nil)
         XCTAssertNil(unstamped.gains(for: Array(mic[0..<19_200])))
@@ -339,11 +339,12 @@ final class CallEchoTests: XCTestCase {
     func testCallReferenceKeepsHostTimeAcrossGapsAndJumps() {
         let reference = CallReference()
         XCTAssertNil(reference.window(startHostNs: 0, count: 10))
-        reference.begin()
+        let token = reference.begin()
         let second: UInt64 = 1_000_000_000
-        reference.append([Float](repeating: 0.5, count: 48_000), rate: 48_000, hostNs: 10 * second)
+        reference.append([Float](repeating: 0.5, count: 48_000), rate: 48_000, hostNs: 10 * second, token: token)
         // A 0.5 s gap is silence.
-        reference.append([Float](repeating: 0.25, count: 48_000), rate: 48_000, hostNs: 11 * second + second / 2)
+        reference.append(
+            [Float](repeating: 0.25, count: 48_000), rate: 48_000, hostNs: 11 * second + second / 2, token: token)
         let window = reference.window(startHostNs: Int64(10 * second), count: 40_000)
         XCTAssertEqual(window?[100], 0.5)
         XCTAssertEqual(window?[20_000], 0)
@@ -354,11 +355,171 @@ final class CallEchoTests: XCTestCase {
         XCTAssertEqual(early?[16_100], 0.5)
         XCTAssertNil(reference.window(startHostNs: Int64(20 * second), count: 100))
         // A buffer stamped earlier than where the history ends starts it over.
-        reference.append([Float](repeating: 0.75, count: 4_800), rate: 48_000, hostNs: 3 * second)
+        reference.append([Float](repeating: 0.75, count: 4_800), rate: 48_000, hostNs: 3 * second, token: token)
         XCTAssertEqual(reference.window(startHostNs: Int64(3 * second), count: 10)?[5], 0.75)
-        reference.end()
+        reference.end(token)
         XCTAssertFalse(reference.isActive)
         XCTAssertNil(reference.window(startHostNs: Int64(3 * second), count: 10))
+    }
+
+    /// Meeting A's stop awaits ScreenCaptureKit while meeting B starts: A's late buffers and its
+    /// late `end` must not touch B's reference.
+    func testAnOldMeetingCannotClearOrFeedTheNextOnesReference() {
+        let reference = CallReference()
+        let second: UInt64 = 1_000_000_000
+        let a = reference.begin()
+        reference.append([Float](repeating: 0.5, count: 4_800), rate: 48_000, hostNs: 10 * second, token: a)
+        XCTAssertEqual(reference.window(startHostNs: Int64(10 * second), count: 10)?[5], 0.5)
+        // B begins before A's stop has finished: A's history is gone.
+        let b = reference.begin()
+        XCTAssertNotEqual(a, b)
+        XCTAssertNil(reference.window(startHostNs: Int64(10 * second), count: 10))
+        reference.append([Float](repeating: 0.25, count: 48_000), rate: 48_000, hostNs: 20 * second, token: b)
+        // A's stale system buffer arrives, then A's stop ends "its" reference.
+        reference.append([Float](repeating: 0.9, count: 48_000), rate: 48_000, hostNs: 20 * second, token: a)
+        reference.end(a)
+        XCTAssertTrue(reference.isActive, "B is still recording")
+        let window = reference.window(startHostNs: Int64(20 * second), count: 16_000)
+        XCTAssertEqual(window?[100], 0.25)
+        XCTAssertEqual(window?[15_000], 0.25, "A's late buffer did not write into B's history")
+        // B's own end does end it, and nothing feeds it after.
+        reference.end(b)
+        XCTAssertFalse(reference.isActive)
+        reference.append([Float](repeating: 0.25, count: 4_800), rate: 48_000, hostNs: 30 * second, token: b)
+        XCTAssertNil(reference.window(startHostNs: Int64(30 * second), count: 10))
+        // A gate made for a dictation after B ended is not made at all.
+        XCTAssertNil(DictationEchoGate.make(reference: reference, sourceRate: 48_000))
+    }
+
+    func testStreamingResamplerKeepsTimeAcrossOddBlocks() {
+        for rate in [48_000.0, 44_100.0, 16_000.0] {
+            var resampler = StreamingResampler(rate: rate)
+            let total = Int(rate * 60)  // 60 s
+            let sizes = [1, 2, 1_021, 997, 4_097, 19_456, 512, 3, 7_777]
+            var pushed = 0
+            var produced = 0
+            var k = 0
+            // a ramp: sample value = its source index / rate, so output n should read n / 16 kHz
+            while pushed < total {
+                let n = min(sizes[k % sizes.count], total - pushed)
+                let block = (pushed..<(pushed + n)).map { Float(Double($0) / rate) }
+                let out = resampler.push(block)
+                for (j, value) in out.enumerated() where (produced + j) % 50_000 == 0 {
+                    let expected = StreamingResampler.seconds(ofOutput: produced + j)
+                    XCTAssertEqual(Double(value), expected, accuracy: 2.0 / 48_000 + 1e-3 * expected / 100, "\(rate)")
+                }
+                produced += out.count
+                pushed += n
+                k += 1
+            }
+            XCTAssertEqual(Double(produced), Double(total) * 16_000 / rate, accuracy: 2, "\(rate)")
+        }
+    }
+
+    /// Several minutes of a dictation in odd-sized blocks, then the call: the gate still finds
+    /// the true delay to within 2 ms (blocks resampled alone used to lose 1-2 samples each and
+    /// slide the looked-up call audio off the mic by tens of ms per minute).
+    func testDictationGateStaysAlignedAfterMinutesOfOddBlocks() {
+        let rate = Self.rate
+        let start: UInt64 = 7_000_000_000
+        let reference = CallReference()
+        let gate = DictationEchoGate(reference: reference, sourceRate: Double(rate))
+        gate.noteStart(hostNs: start)
+        // 240 s of quiet room in blocks of the sizes the tap and the stream cut (no meeting
+        // audio yet, so each block is only resampled and timed).
+        let sizes = [19_456, 20_480, 19_457, 1_021, 4_097]
+        var fed = 0
+        var k = 0
+        let quietSeconds = 240
+        while fed < quietSeconds * rate {
+            let n = min(sizes[k % sizes.count], quietSeconds * rate - fed)
+            XCTAssertNil(gate.gains(for: [Float](repeating: 0, count: n)))
+            fed += n
+            k += 1
+        }
+        // The meeting's call starts now; it leaks into the mic 37 ms later.
+        let token = reference.begin()
+        let call = Array(Self.call[0..<(3 * rate)])
+        let leak = Self.leak(call, delaySeconds: 0.037, gainDB: -12)
+        let callHost = start + UInt64(fed) * 1_000_000_000 / UInt64(rate)
+        var i = 0
+        while i < call.count {
+            let piece = Array(call[i..<min(call.count, i + 480)])
+            reference.append(
+                piece, rate: Double(rate), hostNs: callHost + UInt64(i) * 1_000_000_000 / UInt64(rate), token: token)
+            i += 480
+        }
+        i = 0
+        while i < leak.count {
+            let n = min(sizes[k % sizes.count], leak.count - i)
+            _ = gate.gains(for: Array(leak[i..<(i + n)]))
+            i += n
+            k += 1
+        }
+        let found = gate.alignment.map { $0.delayFrames * CallEchoGate.hop + $0.shift } ?? -1_000
+        XCTAssertEqual(Double(found) / 16.0, 37, accuracy: 2, "delay found in ms")
+        // and the history's start time still matches the source sample count
+        let expectedHost = Int64(start) + Int64((Double(fed + leak.count) / Double(rate) - DictationEchoGate.historySeconds) * 1e9)
+        XCTAssertEqual(Double(gate.historyHostNs ?? 0), Double(expectedHost), accuracy: 2e6)
+    }
+
+    @MainActor
+    func testMicSpanAnalysisRunsOffTheMainThreadAndAStaleResultIsDropped() throws {
+        let mic = Self.add(Self.owner, Self.leak(Self.call, delaySeconds: 0.04, gainDB: -10))
+        let (folder, metadata) = try Self.meeting(mic: mic, system: Self.call)
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phonon-echo-out-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: out)
+        }
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+
+        // Held analyses, run by hand.
+        var sent: [[String: Any]] = []
+        var held: [(() -> [Range<Int64>], ([Range<Int64>]) -> Void)] = []
+        let transcriber = MeetingTranscriber()
+        transcriber.outputDirectory = { out.appendingPathComponent($0.lastPathComponent) }
+        transcriber.send = { sent.append($0) }
+        transcriber.runAnalysis = { held.append(($0, $1)) }
+        transcriber.enqueue(directory: folder)
+        transcriber.setEngineReady(true)
+        XCTAssertTrue(sent.isEmpty, "the mic span waits for its analysis")
+        XCTAssertEqual(held.count, 1)
+        // The engine restarts while the analysis runs: the span is planned again.
+        transcriber.setEngineReady(false)
+        transcriber.setEngineReady(true)
+        XCTAssertEqual(held.count, 2)
+        held[0].1(held[0].0())
+        XCTAssertTrue(sent.isEmpty, "a result for the older plan is dropped")
+        held[1].1(held[1].0())
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(sent[0]["start_sample"] as? Int64, 0)
+        let silence = try XCTUnwrap(sent[0]["silence"] as? [[Int64]])
+        XCTAssertFalse(silence.isEmpty)
+
+        // The default runner: the analysis is off the main thread, the send back on it.
+        var sentByDefault: [[String: Any]] = []
+        var analysedOnMain: Bool?
+        let real = MeetingTranscriber()
+        real.outputDirectory = { out.appendingPathComponent("again-\($0.lastPathComponent)") }
+        real.echoSilence = { span, metadata, directory in
+            analysedOnMain = Thread.isMainThread
+            return MeetingEchoPlanner.silence(span: span, metadata: metadata, directory: directory)
+        }
+        real.send = {
+            XCTAssertTrue(Thread.isMainThread)
+            sentByDefault.append($0)
+        }
+        real.enqueue(directory: folder)
+        real.setEngineReady(true)
+        let deadline = Date().addingTimeInterval(30)
+        while sentByDefault.isEmpty, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(analysedOnMain, false)
+        XCTAssertEqual(sentByDefault.count, 1)
+        XCTAssertNotNil(sentByDefault.first?["silence"])
     }
 
     func testGainsRampAtEdgesAndRangesScale() {

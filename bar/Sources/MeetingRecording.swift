@@ -574,6 +574,8 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         var lifecycle = RecorderLifecycle()
         var stream: SCStream?
         var systemRestarts = RestartBudget(limit: 3)
+        /// This recorder's hold on the call reference; nil before start and after stop.
+        var referenceToken: CallReference.Token?
     }
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
     private let target = AVAudioFormat(
@@ -594,13 +596,20 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     func start() async throws {
-        guard state.withLock({ $0.lifecycle.beginStart() }) else { return }
-        // The call audio is the reference that keeps it out of a dictation made meanwhile.
-        callReference.begin()
+        // The call audio is the reference that keeps it out of a dictation made meanwhile. Taken
+        // with the lifecycle under one lock, so a stop always finds the token it must release.
+        let reference = callReference
+        guard
+            state.withLock({ current -> Bool in
+                guard current.lifecycle.beginStart() else { return false }
+                current.referenceToken = reference.begin()
+                return true
+            })
+        else { return }
         do {
             try control.sync { try startMicrophone() }
         } catch {
-            callReference.end()
+            releaseReference()
             throw error
         }
         guard state.withLock({ $0.lifecycle.mayContinue }) else {
@@ -673,8 +682,17 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         }
     }
 
+    /// Ends this recorder's hold on the call reference. A newer meeting's is left alone.
+    private func releaseReference() {
+        let token = state.withLock { current -> CallReference.Token? in
+            defer { current.referenceToken = nil }
+            return current.referenceToken
+        }
+        if let token { callReference.end(token) }
+    }
+
     private func finishFiles(reason: String) {
-        callReference.end()
+        releaseReference()
         control.sync { stopMicrophone() }
         queue.sync {
             try? mic.finish()
@@ -797,7 +815,9 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
             now: HostClock.now())
         // Already on `queue`.
         try? system.append(samples, hostNs: hostNs)
-        callReference.append(samples, rate: Double(MeetingFormat.sampleRate), hostNs: hostNs)
+        if let token = state.withLock({ $0.referenceToken }) {
+            callReference.append(samples, rate: Double(MeetingFormat.sampleRate), hostNs: hostNs, token: token)
+        }
     }
 
     /// Mono float samples from a ScreenCaptureKit audio buffer (deinterleaved

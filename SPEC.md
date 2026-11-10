@@ -372,10 +372,16 @@ on the same host clock, so it is the reference (bar/Sources/CallEcho.swift, `Cal
 - Meeting transcript: for each mic span the bar reads both tracks' chunks (shared timeline by the start offsets) and
   sends the silenced ranges with the span, `"silence":[[start,end]]` in track samples; the engine passes them to the
   sidecar's `transcribe_span`, which zeroes them before the quiet check (a span that is all echo is `quiet`). System
-  spans, unknown offsets and any clock re-anchor (discontinuities) send none.
+  spans, unknown offsets, missing chunk files and any clock re-anchor (discontinuities) send none, at once. The
+  analysis of a span that can be gated runs off the main thread (~35 ms per 60 s span in a release build) and the
+  span goes out when it is back; a result for a span planned again meanwhile (engine restart) is dropped.
 - Dictation while a meeting records: the meeting recorder feeds its system audio into `CallReference` (the last
   30 s at 16 kHz on the host clock), and the dictation recorder gates each 0.4 s block before it is streamed and
-  kept for the WAV, placing it by the tap's host time. The delay found once is kept for the rest of the dictation.
+  kept for the WAV, placing it by the tap's host time. Each `begin` hands the recorder a token; `append` and `end`
+  with an older one (a stop still awaiting ScreenCaptureKit when the next meeting began, a late buffer) are
+  ignored. Both sides resample to 16 kHz with `StreamingResampler`, which carries what a block leaves over into
+  the next, so 16 kHz sample n is always source time n / 16 kHz (resampling each block alone lost 1-2 samples per
+  block: ~30 ms of drift after 4 minutes). The delay found once is kept for the rest of the dictation.
   The first ~1 s of call audio in a dictation trains the gate and passes as is. With no meeting recording there is
   no gate and dictation is byte-for-byte unchanged; no reference, no host time, or no delay found: unchanged.
 - Measured (2026-11-09). The one real recording (20-minute Zoom call, USB desk mic) was on headphones: no
@@ -389,6 +395,9 @@ on the same host clock, so it is the reference (bar/Sources/CallEcho.swift, `Cal
   23.7 / 28.7 dB at -30 / -20 / -10 / 0 dB (a weak leak under the mic's own room noise is left), the owner alone
   unchanged, the owner's energy while both talk -0.02 to -0.19 dB, with 6-12% of the 10 ms frames where the owner
   is louder than the leak silenced.
+- Not to ship before a real speakers recording passes the gate in PR #51's body (leak present, delay found in at
+  least 80% of call spans, at least 20 dB suppression where the call plays alone, owner within 1 dB, duplicated
+  "You" words at most 5%, no call words in in-call dictations).
 - Not covered: people in the room (a voice enrolment / speaker check would add that, and would also catch what
   the gate leaves in double talk), a call on another device, and an acoustic path that changes mid-span. Not yet
   validated on a real call played through the speakers.

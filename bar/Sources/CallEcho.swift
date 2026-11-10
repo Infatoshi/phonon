@@ -396,6 +396,74 @@ enum CallEchoGate {
     }
 }
 
+/// Mono audio at `rate` to 16 kHz block by block, carrying what a block leaves over into the
+/// next, so output sample n always stands for source time n / 16 kHz from the first sample
+/// pushed: no sample is lost or repeated at block edges, and time never drifts. 48 kHz takes
+/// the 3-sample average (as `CallEchoGate.to16k`), 16 kHz passes through, others interpolate.
+struct StreamingResampler {
+    let rate: Double
+    private let step: Double
+    private var pending: [Float] = []
+    /// Absolute source index of `pending[0]`.
+    private var base = 0
+    /// Source samples pushed so far, and 16 kHz samples given back.
+    private(set) var consumed = 0
+    private(set) var produced = 0
+
+    init(rate: Double) {
+        self.rate = rate
+        step = rate / Double(CallEchoGate.rate)
+    }
+
+    private var isBox: Bool { abs(rate - 48_000) < 0.5 }
+    private var isPass: Bool { abs(rate - Double(CallEchoGate.rate)) < 0.5 }
+
+    /// Seconds of source pushed but not yet given back.
+    var pendingSeconds: Double {
+        rate > 0 ? max(0, Double(consumed) - Double(produced) * (isPass ? 1 : step)) / rate : 0
+    }
+
+    /// 16 kHz time (seconds from the first pushed sample) of output sample `n`.
+    static func seconds(ofOutput n: Int) -> Double { Double(n) / Double(CallEchoGate.rate) }
+
+    mutating func push(_ input: [Float]) -> [Float] {
+        guard rate > 0, !input.isEmpty else { return [] }
+        if isPass {
+            consumed += input.count
+            produced += input.count
+            return input
+        }
+        pending.append(contentsOf: input)
+        consumed += input.count
+        var out: [Float] = []
+        if isBox {
+            out.reserveCapacity(consumed / 3 - produced + 1)
+            while 3 * (produced + 1) <= consumed {
+                let i = 3 * produced - base
+                out.append((pending[i] + pending[i + 1] + pending[i + 2]) / 3)
+                produced += 1
+            }
+            let keepFrom = 3 * produced - base
+            pending.removeFirst(min(pending.count, keepFrom))
+            base += keepFrom
+        } else {
+            while true {
+                let position = Double(produced) * step
+                let i0 = Int(position)
+                guard i0 + 1 < consumed else { break }
+                let fraction = Float(position - Double(i0))
+                out.append(pending[i0 - base] * (1 - fraction) + pending[i0 + 1 - base] * fraction)
+                produced += 1
+            }
+            // never past the last sample: the next output may still interpolate from it
+            let keepFrom = min(pending.count, max(0, Int(Double(produced) * step) - base))
+            pending.removeFirst(keepFrom)
+            base += keepFrom
+        }
+        return out
+    }
+}
+
 /// The call audio of the meeting being recorded, as a short 16 kHz history on the host clock,
 /// for a dictation made during the meeting. Written by the meeting recorder's system track, read
 /// by the dictation recorder; inactive (and empty) when no meeting records.
@@ -406,11 +474,19 @@ final class CallReference: @unchecked Sendable {
     /// started over if earlier.
     static let jumpNanoseconds: Int64 = 20_000_000
 
+    /// Which recorder owns the reference: `begin` hands out a new one, and `append` / `end`
+    /// with any other (a recorder whose stop was still awaiting ScreenCaptureKit when the next
+    /// meeting began, or a late system buffer of it) are ignored.
+    struct Token: Equatable, Sendable {
+        fileprivate let generation: UInt64
+    }
+
     private let lock = NSLock()
+    private var generation: UInt64 = 0
     private var active = false
     private var buffer: [Float] = []
     private var startHostNs: Int64 = 0
-    private var carry: [Float] = []
+    private var resampler: StreamingResampler?
 
     var isActive: Bool {
         lock.lock()
@@ -418,20 +494,26 @@ final class CallReference: @unchecked Sendable {
         return active
     }
 
-    func begin() {
+    /// A new meeting's call audio starts; what an earlier one left is dropped.
+    @discardableResult
+    func begin() -> Token {
         lock.lock()
+        defer { lock.unlock() }
+        generation &+= 1
         active = true
         buffer = []
-        carry = []
-        lock.unlock()
+        resampler = nil
+        return Token(generation: generation)
     }
 
-    func end() {
+    /// The meeting that got `token` stopped. A stale token changes nothing.
+    func end(_ token: Token) {
         lock.lock()
+        defer { lock.unlock() }
+        guard token.generation == generation else { return }
         active = false
         buffer = []
-        carry = []
-        lock.unlock()
+        resampler = nil
     }
 
     private static func ns(samples: Int) -> Int64 { Int64(samples) * 1_000_000_000 / Int64(CallEchoGate.rate) }
@@ -439,38 +521,38 @@ final class CallReference: @unchecked Sendable {
         Int((Double(ns) * Double(CallEchoGate.rate) / 1e9).rounded())
     }
 
-    /// Call audio at `rate` whose first sample was captured at `hostNs`.
-    func append(_ samples: [Float], rate: Double, hostNs: UInt64?) {
+    /// Call audio at `rate` whose first sample was captured at `hostNs`, from the recorder that
+    /// got `token`.
+    func append(_ samples: [Float], rate: Double, hostNs: UInt64?, token: Token) {
         lock.lock()
         defer { lock.unlock() }
-        guard active, !samples.isEmpty else { return }
+        guard active, token.generation == generation, !samples.isEmpty else { return }
+        // The resampler carries the samples a buffer leaves over into the next one, so the
+        // 16 kHz history keeps the source's length; it restarts with every re-anchor.
+        let expected =
+            startHostNs + Self.ns(samples: buffer.count)
+            + Int64(((resampler?.pendingSeconds ?? 0) * 1e9).rounded())
         if let hostNs {
             let host = Int64(clamping: hostNs)
-            if buffer.isEmpty {
+            if buffer.isEmpty && resampler == nil {
                 startHostNs = host
-                carry = []
+                resampler = StreamingResampler(rate: rate)
             } else {
-                let delta = host - (startHostNs + Self.ns(samples: buffer.count))
+                let delta = host - expected
                 if delta > Self.jumpNanoseconds, Double(delta) < Self.keepSeconds * 1e9 {
                     buffer.append(contentsOf: [Float](repeating: 0, count: Self.samples(ns: delta)))
-                    carry = []
+                    resampler = StreamingResampler(rate: rate)
                 } else if delta < -Self.jumpNanoseconds || Double(delta) >= Self.keepSeconds * 1e9 {
                     buffer = []
-                    carry = []
                     startHostNs = host
+                    resampler = StreamingResampler(rate: rate)
                 }
             }
-        } else if buffer.isEmpty {
+        } else if buffer.isEmpty && resampler == nil {
             return  // nothing to anchor it to
         }
-        var input = samples
-        if abs(rate - 48_000) < 0.5 {
-            input = carry + samples
-            let usable = input.count / 3 * 3
-            carry = Array(input[usable...])
-            input = Array(input[..<usable])
-        }
-        buffer.append(contentsOf: CallEchoGate.to16k(input, rate: rate))
+        if resampler?.rate != rate { resampler = StreamingResampler(rate: rate) }
+        buffer.append(contentsOf: resampler!.push(samples))
         let keep = Int(Self.keepSeconds) * CallEchoGate.rate
         if buffer.count > keep {
             let drop = buffer.count - keep
@@ -504,9 +586,14 @@ final class DictationEchoGate {
     let reference: CallReference
     let sourceRate: Double
     private var firstHostNs: Int64?
+    /// Carries leftover source samples across blocks: history sample n is dictation time
+    /// n / 16 kHz exactly, however the blocks are cut.
+    private var resampler: StreamingResampler
     private var history: [Float] = []
     /// Dictation samples (16 kHz) before `history[0]`.
     private var historyStart = 0
+    /// Source samples of the blocks gated so far.
+    private var sourceSamples = 0
     private(set) var mutedSamples = 0
     private(set) var alignment: CallEchoGate.Alignment?
 
@@ -518,6 +605,12 @@ final class DictationEchoGate {
     init(reference: CallReference, sourceRate: Double) {
         self.reference = reference
         self.sourceRate = sourceRate
+        resampler = StreamingResampler(rate: sourceRate)
+    }
+
+    /// Host time of history sample 0 (for checks).
+    var historyHostNs: Int64? {
+        firstHostNs.map { $0 + Int64((StreamingResampler.seconds(ofOutput: historyStart) * 1e9).rounded()) }
     }
 
     /// The host time of the dictation's first sample (later calls are ignored).
@@ -528,7 +621,9 @@ final class DictationEchoGate {
 
     /// Gains for the next block of the dictation (at `sourceRate`), nil to leave it as it is.
     func gains(for block: [Float]) -> [Float]? {
-        let block16 = CallEchoGate.to16k(block, rate: sourceRate)
+        let blockSourceStart = sourceSamples
+        sourceSamples += block.count
+        let block16 = resampler.push(block)
         history.append(contentsOf: block16)
         let keep = Int(Self.historySeconds) * CallEchoGate.rate
         if history.count > keep {
@@ -536,9 +631,7 @@ final class DictationEchoGate {
             history.removeFirst(drop)
             historyStart += drop
         }
-        guard let firstHostNs, !block16.isEmpty else { return nil }
-        let historyHostNs =
-            firstHostNs + Int64(historyStart) * 1_000_000_000 / Int64(CallEchoGate.rate)
+        guard let historyHostNs, !block16.isEmpty else { return nil }
         let lookback = CallEchoGate.lookbackSamples
         guard
             let ref = reference.window(
@@ -550,17 +643,19 @@ final class DictationEchoGate {
         let analysis = CallEchoGate.analyze(mic: history, reference: ref, known: alignment)
         if alignment == nil { alignment = analysis.alignment }
         guard analysis.delayFrames != nil, analysis.mutedFrames > 0 else { return nil }
-        let blockStart = history.count - block16.count
+        // Silenced 16 kHz ranges of the history, as source samples of this block: both through
+        // the dictation's own time (16 kHz sample n is source sample n * rate / 16 kHz).
+        let factor = sourceRate / Double(CallEchoGate.rate)
         let ranges = CallEchoGate.mutedRanges(analysis, count: history.count).compactMap {
             range -> Range<Int>? in
-            let lower = max(range.lowerBound, blockStart) - blockStart
-            let upper = range.upperBound - blockStart
-            return upper > lower ? lower..<upper : nil
+            let lower = Int((Double(historyStart + range.lowerBound) * factor).rounded()) - blockSourceStart
+            let upper = Int((Double(historyStart + range.upperBound) * factor).rounded()) - blockSourceStart
+            let clipped = max(0, lower)..<min(block.count, max(0, upper))
+            return clipped.isEmpty ? nil : clipped
         }
         guard !ranges.isEmpty else { return nil }
-        let scaled = CallEchoGate.scale(ranges, to: sourceRate, limit: block.count)
-        mutedSamples += scaled.reduce(0) { $0 + $1.count }
-        return CallEchoGate.gains(count: block.count, silenced: scaled, rate: sourceRate)
+        mutedSamples += ranges.reduce(0) { $0 + $1.count }
+        return CallEchoGate.gains(count: block.count, silenced: ranges, rate: sourceRate)
     }
 }
 
@@ -568,13 +663,24 @@ final class DictationEchoGate {
 /// is the reference. Empty (open) for system spans, unknown offsets, a re-anchored clock, or
 /// chunks that cannot be read.
 enum MeetingEchoPlanner {
-    static func silence(span: MeetingSpan, metadata: MeetingMetadata, directory: URL) -> [Range<Int64>] {
+    /// Cheap: could `silence` find anything for this span (a mic span, known offsets, no clock
+    /// re-anchor, and both tracks' chunk files there)?
+    static func canGate(span: MeetingSpan, metadata: MeetingMetadata, directory: URL) -> Bool {
         guard span.track == .mic, span.endSample > span.startSample,
-            let micOffset = metadata.micStartOffsetSamples,
-            let systemOffset = metadata.systemStartOffsetSamples,
+            metadata.micStartOffsetSamples != nil, metadata.systemStartOffsetSamples != nil,
             (metadata.micDiscontinuities ?? []).isEmpty,
             (metadata.systemDiscontinuities ?? []).isEmpty,
-            !metadata.systemChunks.isEmpty
+            let micChunk = span.chunks.first, let systemChunk = metadata.systemChunks.first
+        else { return false }
+        let files = FileManager.default
+        return files.fileExists(atPath: directory.appendingPathComponent("mic/\(micChunk.file)").path)
+            && files.fileExists(atPath: directory.appendingPathComponent("system/\(systemChunk.file)").path)
+    }
+
+    static func silence(span: MeetingSpan, metadata: MeetingMetadata, directory: URL) -> [Range<Int64>] {
+        guard canGate(span: span, metadata: metadata, directory: directory),
+            let micOffset = metadata.micStartOffsetSamples,
+            let systemOffset = metadata.systemStartOffsetSamples
         else { return [] }
         let rate = Double(max(1, metadata.sampleRate))
         let lookback = Int64((Double(CallEchoGate.lookbackSamples) * rate / Double(CallEchoGate.rate)).rounded())
