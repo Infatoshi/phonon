@@ -6,6 +6,7 @@ import pytest
 
 from sidecar.asr_server import (
     QUIET_RMS,
+    apply_silence,
     is_quiet,
     model_label,
     read_span,
@@ -57,6 +58,29 @@ def test_read_span_fills_a_gap_and_a_short_last_chunk_with_silence(tmp_path):
         0,
         0,
     ]
+
+
+def test_apply_silence_zeroes_track_ranges_inside_the_span(tmp_path):
+    a = _chunk(tmp_path / "0000.wav", range(1, 21))
+    samples, _ = read_span([{"path": a, "start_sample": 0}], 5, 15)
+
+    # one range inside, one running past the span's end, one before it, junk ignored
+    apply_silence(samples, [[7, 9], [13, 40], [0, 3], ["x"], [5]], 5)
+
+    assert (samples * 32768).round().tolist() == [6, 7, 0, 0, 10, 11, 12, 13, 0, 0]
+
+
+def test_apply_silence_without_ranges_leaves_the_span_alone():
+    samples = np.arange(1, 6, dtype=np.float32)
+    for silence in (None, [], [[3, 3]], [[9, 2]]):
+        assert apply_silence(samples.copy(), silence, 0).tolist() == [1, 2, 3, 4, 5]
+
+
+def test_a_fully_silenced_span_is_quiet():
+    rate = 48_000
+    loud = np.full(rate, 0.3, dtype=np.float32)
+    assert not is_quiet(loud, rate)
+    assert is_quiet(apply_silence(loud, [[100, 100 + rate]], 100), rate)
 
 
 def test_read_span_without_a_covering_chunk_fails():

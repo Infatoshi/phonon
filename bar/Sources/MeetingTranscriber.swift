@@ -14,6 +14,11 @@ final class MeetingTranscriber {
     var onFinished: ((String) -> Void)?
     /// Where a meeting's transcript files go: its own folder (a check can point elsewhere).
     var outputDirectory: (URL) -> URL = { $0 }
+    /// The stretches of a mic span the call's echo explains, silenced before the model hears
+    /// them, so "You" holds only the owner (SPEC "Only your voice"). Empty leaves the span as is.
+    var echoSilence: (MeetingSpan, MeetingMetadata, URL) -> [Range<Int64>] = {
+        MeetingEchoPlanner.silence(span: $0, metadata: $1, directory: $2)
+    }
 
     private(set) var jobs: [String: MeetingTranscriptionJob] = [:] {
         didSet { if jobs != oldValue { onJobsChanged?(jobs) } }
@@ -155,7 +160,7 @@ final class MeetingTranscriber {
                 current = job
                 jobs[job.id] = .running(Self.fraction(job.progress, metadata: job.metadata))
                 let folder = job.directory.appendingPathComponent(track.rawValue, isDirectory: true)
-                send?([
+                var command: [String: Any] = [
                     "cmd": "meeting_span", "id": spanID,
                     "chunks": span.chunks.map {
                         [
@@ -164,7 +169,15 @@ final class MeetingTranscriber {
                         ] as [String: Any]
                     },
                     "start_sample": span.startSample, "end_sample": span.endSample,
-                ])
+                ]
+                let silence = echoSilence(span, job.metadata, job.directory)
+                if !silence.isEmpty {
+                    command["silence"] = silence.map { [$0.lowerBound, $0.upperBound] }
+                    let seconds = Double(silence.reduce(0) { $0 + $1.count }) / Double(max(1, job.metadata.sampleRate))
+                    NSLog("phonon meeting transcript: \(job.id) span \(span.startSample): "
+                        + String(format: "%.1f s of call echo silenced on the mic", seconds))
+                }
+                send?(command)
                 return
             }
             job.progress[track].done = true

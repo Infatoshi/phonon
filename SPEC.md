@@ -345,7 +345,8 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
   "speaker":"me"|"call","text"}]}`. Sentences of both tracks go onto the shared timeline by their offsets, in time
   order; consecutive sentences of one speaker make one turn. Raw Parakeet text (the dictionary's in-decode boosting
   applies on Metal), no correction model. Everyone on the call is "call": no diarization yet. Words the user
-  dictated to Phonon during the call are not taken out yet, and on speakers the call can leak into "me".
+  dictated to Phonon during the call are not taken out yet. On speakers the call leaking into "me" is gated (Only
+  your voice, below).
 - Notes: under the player, the transcript as a list (time, You / Call, text), each turn's text selectable, its
   time a button that seeks the player there; the header's copy button copies the whole transcript as
   "m:ss You: text" paragraphs. While it runs, "Transcribing… N%" (by track samples done) or "waiting for the speech
@@ -354,6 +355,43 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
 - Check (20-minute Zoom call, two tracks, MLX sidecar outside the app, 2026-11-09): 42 spans, 92 turns, 3,323
   words in 17.7 s after the model loaded (17.5 s of it in the model); Parakeet's own 120 s / 15 s long-form
   chunking of each whole track gives 3,335 words. `MeetingTranscriptLiveCheck` (opt in by environment) reruns it.
+
+### Only your voice (call echo gate)
+
+A call played through the speakers reaches the mic, so a dictation during the call could take in other people's
+words and "You" turns could repeat "Call" turns. The system track is a clean copy of everything that is not the owner,
+on the same host clock, so it is the reference (bar/Sources/CallEcho.swift, `CallEchoGate`; no model, no download):
+
+- At 16 kHz, 32 ms Hann frames every 10 ms, 220 Hz-4 kHz. The delay at which the mic follows the reference is
+  searched from 100 ms early to 500 ms late, each frame scaled to unit energy so a loud owner over a quiet echo does
+  not hide it, then refined to 2 ms. The reference must explain at least 20% of the mic's energy where the call
+  plays, over at least 1 s of call audio, and 4x the median over all delays; otherwise nothing changes (fails open).
+- At that delay the echo path is estimated per bin (the owner's speech is uncorrelated with the call, so it does not
+  bias it). A frame whose predicted echo is 60% of its energy or more is silenced, unless within 20 ms of a frame
+  where the owner clearly talks (predicted echo under 30%). 5 ms ramps at the edges.
+- Meeting transcript: for each mic span the bar reads both tracks' chunks (shared timeline by the start offsets) and
+  sends the silenced ranges with the span, `"silence":[[start,end]]` in track samples; the engine passes them to the
+  sidecar's `transcribe_span`, which zeroes them before the quiet check (a span that is all echo is `quiet`). System
+  spans, unknown offsets and any clock re-anchor (discontinuities) send none.
+- Dictation while a meeting records: the meeting recorder feeds its system audio into `CallReference` (the last
+  30 s at 16 kHz on the host clock), and the dictation recorder gates each 0.4 s block before it is streamed and
+  kept for the WAV, placing it by the tap's host time. The delay found once is kept for the rest of the dictation.
+  The first ~1 s of call audio in a dictation trains the gate and passes as is. With no meeting recording there is
+  no gate and dictation is byte-for-byte unchanged; no reference, no host time, or no delay found: unchanged.
+- Measured (2026-11-09). The one real recording (20-minute Zoom call, USB desk mic) was on headphones: no
+  leakage (GCC-PHAT peak 0.012 vs 0.011 for unrelated blocks, coherence at the null in every frame class), and the
+  gate silences 0 s of it (0 of 20 spans; 33 ms per 60 s span in a release build). Synthetic mixes
+  (`CallEchoTests`: owner + a delayed 12-250 ms, low-passed copy of the call at -30 to +6 dB): the call is suppressed
+  40-49 dB where it plays alone and the owner alone is unchanged (0.00 dB); while both talk, owner frames dropped 0%
+  at -30 to -18 dB, 0.5-0.9% at -12 dB, 5-6% at -6 dB, 15-19% at 0 dB and 35-41% at +6 dB (echo louder than the
+  owner). The real recording's own system track leaked into its real mic in memory (40 ms, low-passed;
+  `CallEchoLiveCheck` with `PHONON_ECHO_CHECK_INJECT_DB`): leak suppressed where the call plays alone 6.7 / 14.4 /
+  23.7 / 28.7 dB at -30 / -20 / -10 / 0 dB (a weak leak under the mic's own room noise is left), the owner alone
+  unchanged, the owner's energy while both talk -0.02 to -0.19 dB, with 6-12% of the 10 ms frames where the owner
+  is louder than the leak silenced.
+- Not covered: people in the room (a voice enrolment / speaker check would add that, and would also catch what
+  the gate leaves in double talk), a call on another device, and an acoustic path that changes mid-span. Not yet
+  validated on a real call played through the speakers.
 
 ## Competing dictation apps
 

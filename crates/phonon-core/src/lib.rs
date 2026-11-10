@@ -17,7 +17,8 @@
 //!   which stays the fallback; without base_url/model it is off. Memory only.
 //!   {"cmd":"edit_observed","id":"...","pasted":"...","edited":"...","end_reason":"...","record":false}
 //!   {"cmd":"edit_decision","id":"...","index":0,"decision":"approved|rejected|undone"}
-//!   {"cmd":"meeting_span","id":"...","chunks":[{"path":"...","start_sample":0}],"start_sample":0,"end_sample":0}
+//!   {"cmd":"meeting_span","id":"...","chunks":[{"path":"...","start_sample":0}],"start_sample":0,"end_sample":0,
+//!    "silence":[[0,0]]}  — silence optional: track samples to silence (the call's echo on the mic)
 //!   — one span of a recorded meeting's track, run when no dictation is under way (meeting.rs)
 //!   {"cmd":"dictation_end","id":"..."}  — a dictation ended with no WAV or stream to finish
 //!   (discarded, too short, the mic failed): releases the hold `prewarm` / `stream_start` took
@@ -852,6 +853,7 @@ impl Engine {
             &request.chunks,
             request.start_sample,
             request.end_sample,
+            &request.silence,
         ) {
             Ok(()) => Vec::new(),
             Err(error) => {

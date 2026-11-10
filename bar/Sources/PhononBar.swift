@@ -1411,6 +1411,11 @@ final class MicRecorder {
     private var capturedFrames = 0
     private var streamSamples: [Float] = []
     private var captureEnabled = false
+    /// Only while a meeting records: keeps the call played through the speakers out of this
+    /// dictation (SPEC "Only your voice"). Nil otherwise, and the audio is untouched.
+    private var echoGate: DictationEchoGate?
+    /// `samples` before this index have been through `echoGate`.
+    private var gatedCount = 0
     private var configuredDeviceID: AudioDeviceID?
     private(set) var wavPath: String?
     private(set) var selectedDeviceName = "Resolving…"
@@ -1471,8 +1476,10 @@ final class MicRecorder {
     private func installCaptureTap(on input: AVAudioInputNode, format: AVAudioFormat) throws {
         var raised: NSError?
         let installed = PhononCatchException({
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-                self?.ingest(buffer)
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, when in
+                self?.ingest(
+                    buffer,
+                    hostNs: when.isHostTimeValid ? HostClock.nanoseconds(machTicks: when.hostTime) : nil)
             }
         }, &raised)
         guard installed else {
@@ -1541,8 +1548,24 @@ final class MicRecorder {
         peakRms = 0
         capturedFrames = 0
         streamSamples.removeAll(keepingCapacity: true)
+        echoGate = DictationEchoGate.make(sourceRate: hwSampleRate)
+        gatedCount = 0
         captureEnabled = true
         lock.unlock()
+    }
+
+    /// Lock held. Runs the samples not yet gated through `echoGate` (in place, in `samples` and in
+    /// the matching tail of `streamSamples`). Without a gate it only moves the mark.
+    private func gatePendingSamples() {
+        defer { gatedCount = samples.count }
+        guard let gate = echoGate, gatedCount < samples.count else { return }
+        let block = Array(samples[gatedCount...])
+        guard let gains = gate.gains(for: block), gains.count == block.count else { return }
+        for i in 0..<block.count { samples[gatedCount + i] *= gains[i] }
+        let tail = min(block.count, streamSamples.count)
+        let streamStart = streamSamples.count - tail
+        let blockStart = block.count - tail
+        for i in 0..<tail { streamSamples[streamStart + i] *= gains[blockStart + i] }
     }
 
     /// Below this RMS (-90 dBFS) the input is digital silence: a muted, disconnected or
@@ -1666,7 +1689,7 @@ final class MicRecorder {
         return true
     }
 
-    private func ingest(_ buffer: AVAudioPCMBuffer) {
+    private func ingest(_ buffer: AVAudioPCMBuffer, hostNs: UInt64? = nil) {
         lock.lock()
         let shouldCapture = captureEnabled
         lock.unlock()
@@ -1699,21 +1722,28 @@ final class MicRecorder {
         capturedFrames += frames
         let amp = meter
         let shouldPublishAmplitude = meterFrame.isMultiple(of: 2)
+        if let echoGate, samples.isEmpty {
+            // The host time of this dictation's first sample places it against the call audio.
+            echoGate.noteStart(hostNs: HostClock.plausible(hostNs, now: HostClock.now()))
+        }
         streamSamples.append(contentsOf: chunk)
+        samples.append(contentsOf: chunk)
         var streamPCM: Data?
         if streamSamples.count >= Int(hwSampleRate * 0.4) {
+            gatePendingSamples()
             let mono16k = Self.resample(streamSamples, from: hwSampleRate, to: 16_000)
             streamPCM = Self.pcm16Data(mono16k)
             streamSamples.removeAll(keepingCapacity: true)
         }
 
-        samples.append(contentsOf: chunk)
         // 20 minutes (230 MB at 48 kHz, held only while recording). The old 120 s kept just
         // the tail of longer dictations, so their corpus audio no longer matched the
         // transcript (26 of 1,203 entries by 2026-11-04).
         let maxSamples = Int(hwSampleRate * 1200)
         if samples.count > maxSamples {
-            samples.removeFirst(samples.count - maxSamples)
+            let drop = samples.count - maxSamples
+            samples.removeFirst(drop)
+            gatedCount = max(0, gatedCount - drop)
         }
         lock.unlock()
 
@@ -1733,6 +1763,7 @@ final class MicRecorder {
     /// ends where the recording ends.
     func drainStreamPCM16() -> Data? {
         lock.lock()
+        gatePendingSamples()
         let pending = streamSamples
         let rate = hwSampleRate
         streamSamples.removeAll(keepingCapacity: true)
@@ -1761,6 +1792,15 @@ final class MicRecorder {
 
     func takeSamples() -> (samples: [Float], sampleRate: Double) {
         lock.lock()
+        gatePendingSamples()
+        if let echoGate, echoGate.mutedSamples > 0 {
+            NSLog(
+                "phonon mic: "
+                    + String(format: "%.1f s", Double(echoGate.mutedSamples) / max(1, hwSampleRate))
+                    + " of call echo silenced in this dictation")
+        }
+        echoGate = nil
+        gatedCount = 0
         let captured = samples
         let rate = hwSampleRate
         samples.removeAll(keepingCapacity: true)

@@ -579,6 +579,8 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
     private let target = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: Double(MeetingFormat.sampleRate),
         channels: 1, interleaved: false)!
+    /// Fed the system track while recording (see `CallEcho.swift`).
+    private let callReference = CallReference.shared
 
     init(directory: URL, metadata: MeetingMetadata) throws {
         let index = try MeetingIndex(directory: directory, metadata: metadata)
@@ -593,7 +595,14 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
 
     func start() async throws {
         guard state.withLock({ $0.lifecycle.beginStart() }) else { return }
-        try control.sync { try startMicrophone() }
+        // The call audio is the reference that keeps it out of a dictation made meanwhile.
+        callReference.begin()
+        do {
+            try control.sync { try startMicrophone() }
+        } catch {
+            callReference.end()
+            throw error
+        }
         guard state.withLock({ $0.lifecycle.mayContinue }) else {
             // Stopped while the mic was starting; stop() already closed it,
             // but the engine may have come up after that.
@@ -665,6 +674,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     private func finishFiles(reason: String) {
+        callReference.end()
         control.sync { stopMicrophone() }
         queue.sync {
             try? mic.finish()
@@ -787,6 +797,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
             now: HostClock.now())
         // Already on `queue`.
         try? system.append(samples, hostNs: hostNs)
+        callReference.append(samples, rate: Double(MeetingFormat.sampleRate), hostNs: hostNs)
     }
 
     /// Mono float samples from a ScreenCaptureKit audio buffer (deinterleaved
