@@ -181,6 +181,7 @@ mod resident {
                 .trim()
                 .to_string();
             unsafe { phonon_asr_free(text) };
+            release_freed_memory();
             Ok(out)
         }
 
@@ -206,7 +207,18 @@ mod resident {
                 .trim()
                 .to_string();
             unsafe { phonon_asr_free(text) };
+            release_freed_memory();
             Ok(out)
+        }
+    }
+
+    /// Give the pages a pass freed back to the system. With the arena off, ONNX Runtime frees a pass's
+    /// activations, but glibc keeps the freed heap: after one 68 s dictation Phonon stayed at 0.90-1.05 GB
+    /// RSS instead of 0.71 GB (Ubuntu QA VM, 2026-11-10). A few ms, once per pass.
+    fn release_freed_memory() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0);
         }
     }
 }
