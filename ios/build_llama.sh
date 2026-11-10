@@ -18,6 +18,9 @@ fi
 cd "$WORK"
 git checkout --quiet -- . && git clean -fdq -e 'build-*'
 git apply "$HERE/llama-b12132-phonon.patch"
+# experiment branch ios-head-timing only: LFM3 accepts an untied output.weight with fewer rows than n_vocab and pads
+# the logits back to n_vocab (timing of a shortlist head; outputs differ from the full head)
+git apply "$HERE/llama-b12132-headtiming.patch"
 ./build-xcframework.sh ios-device ios-sim > "$HERE/build-llama.log" 2>&1 || { tail -30 "$HERE/build-llama.log"; exit 1; }
 rm -rf "$HERE/Frameworks/llama.xcframework"
 mkdir -p "$HERE/Frameworks"
