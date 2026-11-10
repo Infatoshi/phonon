@@ -14,6 +14,28 @@ final class MeetingTranscriber {
     var onFinished: ((String) -> Void)?
     /// Where a meeting's transcript files go: its own folder (a check can point elsewhere).
     var outputDirectory: (URL) -> URL = { $0 }
+    /// The stretches of a mic span the call's echo explains, silenced before the model hears
+    /// them, so "You" holds only the owner (SPEC "Only your voice"). Empty leaves the span as is.
+    var echoSilence: (MeetingSpan, MeetingMetadata, URL) -> [Range<Int64>] = {
+        MeetingEchoPlanner.silence(span: $0, metadata: $1, directory: $2)
+    }
+    /// Whether a span can be gated at all (cheap: metadata and two file checks). Spans that
+    /// cannot go out at once, as before.
+    var echoEligible: (MeetingSpan, MeetingMetadata, URL) -> Bool = {
+        MeetingEchoPlanner.canGate(span: $0, metadata: $1, directory: $2)
+    }
+    /// Runs the echo analysis (reading a minute of both tracks, ~30 ms in a release build) off
+    /// the main thread and hands its result back on the main thread.
+    var runAnalysis: (@escaping () -> [Range<Int64>], @escaping ([Range<Int64>]) -> Void) -> Void = {
+        work, done in
+        DispatchQueue.global(qos: .utility).async {
+            let result = work()
+            DispatchQueue.main.async { done(result) }
+        }
+    }
+    /// Bumped for every analysis started: a result for an older one (the engine went away and
+    /// the span was planned again) is dropped.
+    private var analysisToken = 0
 
     private(set) var jobs: [String: MeetingTranscriptionJob] = [:] {
         didSet { if jobs != oldValue { onJobsChanged?(jobs) } }
@@ -155,7 +177,7 @@ final class MeetingTranscriber {
                 current = job
                 jobs[job.id] = .running(Self.fraction(job.progress, metadata: job.metadata))
                 let folder = job.directory.appendingPathComponent(track.rawValue, isDirectory: true)
-                send?([
+                var command: [String: Any] = [
                     "cmd": "meeting_span", "id": spanID,
                     "chunks": span.chunks.map {
                         [
@@ -164,7 +186,34 @@ final class MeetingTranscriber {
                         ] as [String: Any]
                     },
                     "start_sample": span.startSample, "end_sample": span.endSample,
-                ])
+                ]
+                let metadata = job.metadata
+                let directory = job.directory
+                guard echoEligible(span, metadata, directory) else {
+                    send?(command)
+                    return
+                }
+                analysisToken += 1
+                let token = analysisToken
+                let jobID = job.id
+                let silenceOf = echoSilence
+                runAnalysis({ silenceOf(span, metadata, directory) }) { [weak self] silence in
+                    MainActor.assumeIsolated {
+                        guard let self, token == self.analysisToken, self.engineReady,
+                            let current = self.current, current.id == jobID,
+                            current.inFlight?.id == spanID
+                        else { return }
+                        if !silence.isEmpty {
+                            command["silence"] = silence.map { [$0.lowerBound, $0.upperBound] }
+                            let seconds =
+                                Double(silence.reduce(0) { $0 + $1.count }) / Double(max(1, metadata.sampleRate))
+                            NSLog(
+                                "phonon meeting transcript: \(jobID) span \(span.startSample): "
+                                    + String(format: "%.1f s of call echo silenced on the mic", seconds))
+                        }
+                        self.send?(command)
+                    }
+                }
                 return
             }
             job.progress[track].done = true

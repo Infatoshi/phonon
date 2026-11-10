@@ -317,13 +317,15 @@ impl AsrSidecar {
     }
 
     /// One bounded span of one meeting track: `chunks` ([{"path","start_sample"}]) cover
-    /// track samples [start_sample, end_sample); the reply is AsrEvent::Span.
+    /// track samples [start_sample, end_sample); `silence` ([[start, end]] track samples) is
+    /// silenced before the model hears it. The reply is AsrEvent::Span.
     pub fn transcribe_span(
         &mut self,
         id: &str,
         chunks: &serde_json::Value,
         start_sample: i64,
         end_sample: i64,
+        silence: &serde_json::Value,
     ) -> Result<()> {
         self.send(json!({
             "cmd": "transcribe_span",
@@ -331,6 +333,7 @@ impl AsrSidecar {
             "chunks": chunks,
             "start_sample": start_sample,
             "end_sample": end_sample,
+            "silence": silence,
         }))
     }
 

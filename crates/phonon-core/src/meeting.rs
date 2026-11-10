@@ -105,10 +105,15 @@ pub struct SpanRequest {
     pub chunks: serde_json::Value,
     pub start_sample: i64,
     pub end_sample: i64,
+    /// Track sample ranges `[[start, end], ...]` the sidecar silences before transcribing: the
+    /// stretches of a mic span the call's echo explains (bar `MeetingEchoPlanner`). Passed on
+    /// as given; an empty array when absent.
+    pub silence: serde_json::Value,
 }
 
 impl SpanRequest {
-    /// `{"cmd":"meeting_span","id":..,"chunks":[{"path","start_sample"}],"start_sample":..,"end_sample":..}`
+    /// `{"cmd":"meeting_span","id":..,"chunks":[{"path","start_sample"}],"start_sample":..,"end_sample":..,
+    /// "silence":[[start,end]]}` (`silence` optional)
     pub fn from_command(v: &serde_json::Value) -> Result<Self, String> {
         let id = v
             .get("id")
@@ -124,11 +129,17 @@ impl SpanRequest {
         if end <= start {
             return Err("meeting_span is empty".into());
         }
+        let silence = v
+            .get("silence")
+            .filter(|s| s.is_array())
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
         Ok(Self {
             id: id.to_string(),
             chunks: chunks.clone(),
             start_sample: start,
             end_sample: end,
+            silence,
         })
     }
 }
@@ -189,6 +200,7 @@ mod tests {
             chunks: json!([{"path": "/m/mic/0000.wav", "start_sample": 0}]),
             start_sample: 0,
             end_sample: 48_000,
+            silence: json!([]),
         }
     }
 
@@ -328,6 +340,19 @@ mod tests {
                         "start_sample":10,"end_sample":20});
         let request = SpanRequest::from_command(&ok).unwrap();
         assert_eq!((request.start_sample, request.end_sample), (10, 20));
+        assert_eq!(
+            request.silence,
+            json!([]),
+            "no silence when the bar sends none"
+        );
+        let gated = json!({"cmd":"meeting_span","id":"m1:mic:0","chunks":[{"path":"/x.wav","start_sample":0}],
+                           "start_sample":10,"end_sample":20,"silence":[[12,15],[17,19]]});
+        assert_eq!(
+            SpanRequest::from_command(&gated).unwrap().silence,
+            json!([[12, 15], [17, 19]])
+        );
+        let odd = json!({"id":"a","chunks":[{"path":"/x.wav"}],"start_sample":0,"end_sample":5,"silence":"x"});
+        assert_eq!(SpanRequest::from_command(&odd).unwrap().silence, json!([]));
         for bad in [
             json!({"chunks":[{"path":"/x.wav"}],"start_sample":0,"end_sample":5}),
             json!({"id":"a","chunks":[],"start_sample":0,"end_sample":5}),

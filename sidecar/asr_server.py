@@ -145,6 +145,23 @@ def read_span(chunks: list, start_sample: int, end_sample: int):
     return out, rate
 
 
+def apply_silence(samples, silence, start_sample: int):
+    """Zero the track sample ranges `silence` ([[start, end], ...], end exclusive) in a span's
+    `samples` that begin at track sample `start_sample`. The bar sends these for a mic span: the
+    stretches where the call played through the speakers explains what the mic heard. Ranges
+    outside the span are clipped; anything malformed is ignored (the span is left as it was)."""
+    for item in silence or []:
+        try:
+            lo, hi = int(item[0]), int(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        lo = max(0, lo - start_sample)
+        hi = min(samples.size, hi - start_sample)
+        if hi > lo:
+            samples[lo:hi] = 0.0
+    return samples
+
+
 def sentences_of(result) -> list:
     """The sentences of an AlignedResult as [{"start","end","text"}] in seconds from the
     start of the audio it was given; empty sentences are dropped."""
@@ -695,6 +712,7 @@ def main() -> None:
                 if end <= start:
                     raise ValueError("empty span")
                 samples, rate = read_span(req.get("chunks") or [], start, end)
+                samples = apply_silence(samples, req.get("silence"), start)
                 quiet = is_quiet(samples, rate)
                 sentences = []
                 if not quiet:
