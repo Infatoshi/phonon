@@ -57,9 +57,10 @@ mkdir -p "$src"
 rsync -a --delete --exclude /app/build --exclude /.gradle --exclude /build --exclude /local.properties \
 	--exclude /app/.cxx --exclude /app/src/main/jniLibs --exclude /app/src/main/java/com/k2fsa \
 	"$here/" "$src/"
-# LineBreaksTest reads the Rust module's reference cases from ../crates (relative to app/).
+# The unit tests (LineBreaksTest, OpenerTest) read the Rust modules' reference cases from
+# ../crates (relative to app/).
 mkdir -p "$src/crates/phonon-llm/src"
-cp "$repo/crates/phonon-llm/src/linebreak_cases.json" "$src/crates/phonon-llm/src/"
+cp "$repo"/crates/phonon-llm/src/*_cases.json "$src/crates/phonon-llm/src/"
 kotlin=$src/app/src/main/java/com/k2fsa/sherpa/onnx
 mkdir -p "$kotlin"
 for f in OfflineRecognizer OfflineStream FeatureConfig QnnConfig HomophoneReplacerConfig; do

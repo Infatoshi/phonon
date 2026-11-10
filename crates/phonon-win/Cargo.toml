@@ -20,6 +20,8 @@ clap = { version = "4", features = ["derive"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hound = "3"
 libloading = "0.8"
+# Backend manifest signatures (backends.rs). Pure Rust, no dependencies without its default features.
+ed25519-compact = { version = "2", default-features = false, features = ["std"] }
 phonon-hotkey = { path = "../phonon-hotkey" }
 phonon-llm = { path = "../phonon-llm" }
 serde.workspace = true

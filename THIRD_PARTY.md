@@ -67,6 +67,12 @@ app carries the license at `Contents/Resources/licenses/llama.cpp/`, together
 with the license of nlohmann/json (MIT, `LICENSE-jsonhpp`), which llama.cpp
 vendors.
 
+Meeting transcript cleanup on macOS runs the unmodified llama.cpp release
+`b12132` (`llama-b12132-bin-macos-arm64.tar.gz`, 16,671,755 bytes, SHA-256
+`0f7b107b860d3e9b7066ddc2b90e2f417641a4fd5f37355a603a1e52a98dc461`, MIT; the
+archive carries its own `LICENSE`). It is not bundled: the app downloads it on
+first use into `Application Support/Phonon/runtime/llama-b12132-macos-arm64/`.
+
 ## mlx-lm LFM3 model definition
 
 - Source: <https://github.com/ml-explore/mlx-lm/pull/2016>, commit `9027ac5b0`

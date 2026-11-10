@@ -120,7 +120,8 @@ pub fn parse_reply(value: &serde_json::Value) -> Result<String> {
 pub enum Device {
     /// llama.cpp's CPU backend; no layer or op leaves the CPU.
     Cpu,
-    /// A discrete GPU through Vulkan (Windows), every layer offloaded.
+    /// A GPU, every layer offloaded: a tuned CUDA runtime from the backend
+    /// manifest, or (Windows) a discrete GPU through Vulkan.
     Gpu,
 }
 
@@ -137,10 +138,12 @@ pub const SATURATED: f64 = 0.85;
 /// llama.cpp leaves integrated GPUs out of that list when a discrete one exists
 /// (an RTX 3090 + Ryzen 9950X3D desktop lists the 3090, not the Radeon iGPU); an iGPU-only
 /// machine lists its iGPU, and `MIN_GPU_DECODE` decides whether it is worth using.
-pub fn pick_vulkan(listing: &str) -> Option<String> {
+/// `kind` is the device prefix: "Vulkan", or "CUDA" for a tuned CUDA runtime
+/// ("  CUDA0: NVIDIA GeForce RTX 3090 (24135 MiB, 23700 MiB free)").
+pub fn pick_device(listing: &str, kind: &str) -> Option<String> {
     listing.lines().find_map(|line| {
         let (device, _) = line.trim().split_once(':')?;
-        let index = device.strip_prefix("Vulkan")?;
+        let index = device.strip_prefix(kind)?;
         index.parse::<u32>().ok()?;
         Some(device.to_string())
     })
@@ -234,10 +237,12 @@ fn runtime_files() -> Result<(PathBuf, PathBuf)> {
 }
 
 /// A command for the bundled server that shows no console window (Windows) and
-/// finds its shared libraries (Linux).
-fn server_command(server: &Path) -> Result<Command> {
+/// finds its shared libraries (Linux). `env` is set on the child only (a tuned
+/// runtime pins its device with CUDA_VISIBLE_DEVICES).
+fn server_command(server: &Path, env: &[(String, String)]) -> Result<Command> {
     let mut command = Command::new(server);
     command.stdin(Stdio::null());
+    command.envs(env.iter().map(|(k, v)| (k, v)));
     if let Some(dir) = server.parent() {
         command.current_dir(dir);
     }
@@ -250,19 +255,19 @@ fn server_command(server: &Path) -> Result<Command> {
         use windows_sys::Win32::System::Threading::ABOVE_NORMAL_PRIORITY_CLASS;
         command.creation_flags(crate::asr::CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS);
     }
+    // every runtime (the CPU one, a tuned GPU one) keeps its libraries beside its server
     #[cfg(target_os = "linux")]
-    crate::linux::runtime_libraries(
-        &mut command,
-        &fetch::component_dir(&manifest::LLAMA_RUNTIME),
-    )?;
+    if let Some(dir) = server.parent() {
+        crate::linux::runtime_libraries(&mut command, dir)?;
+    }
     Ok(command)
 }
 
-/// The Vulkan GPU llama.cpp lists (see `pick_vulkan`), if any. A machine without a
-/// Vulkan driver lists no device and stays on the CPU.
-#[cfg(windows)]
-fn discrete_gpu(server: &Path) -> Option<String> {
-    let mut command = server_command(server).ok()?;
+/// What the server prints for `--list-devices` (stdout and stderr, which carries
+/// ggml's per-device lines). A machine without the driver lists no device; a
+/// module that fails to load (wrong driver, missing library) lists none either.
+fn device_listing(server: &Path, env: &[(String, String)]) -> Option<String> {
+    let mut command = server_command(server, env).ok()?;
     command
         .arg("--list-devices")
         .stdout(Stdio::piped())
@@ -279,19 +284,82 @@ fn discrete_gpu(server: &Path) -> Option<String> {
         std::thread::sleep(Duration::from_millis(100));
     }
     let output = child.wait_with_output().ok()?;
-    let listing = format!(
+    Some(format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
-    pick_vulkan(&listing)
+    ))
+}
+
+/// Which GPU a runtime should offload to, and how to make it see that GPU.
+struct Target<'a> {
+    /// "Vulkan" or "CUDA": the device name prefix the server lists.
+    kind: &'a str,
+    /// Set on every child of this runtime (the tuned runtime's device pin).
+    env: Vec<(String, String)>,
+    /// For a pinned CUDA device: its name; the listing must hold that device alone.
+    pinned: Option<&'a str>,
+}
+
+/// A server on the target GPU of the runtime at `server`, if it lists it, starts,
+/// and decodes fast enough. `label` names the runtime in the log.
+fn gpu_server(
+    server: &Path,
+    target: &Target,
+    label: &str,
+    model: &Path,
+    threads: usize,
+) -> Option<Server> {
+    let kind = target.kind;
+    let listing = device_listing(server, &target.env).unwrap_or_default();
+    if let Some(name) = target.pinned {
+        if !crate::backends::listing_matches(&listing, name) {
+            eprintln!("phonon: {label} does not list the chosen {name} alone; not using it");
+            return None;
+        }
+    }
+    let Some(gpu) = pick_device(&listing, kind) else {
+        eprintln!("phonon: {label} lists no {kind} device");
+        return None;
+    };
+    match Server::spawn(server, model, threads, Some(&gpu), &target.env) {
+        // Twice: the first Vulkan run after an install compiles the GPU's shaders
+        // (3090: 66 tokens/s cold, 300 warm).
+        Ok(main) => match [decode_rate(&main.base), decode_rate(&main.base)]
+            .into_iter()
+            .flatten()
+            .reduce(f64::max)
+        {
+            Some(rate) if rate >= MIN_GPU_DECODE => {
+                eprintln!("phonon: correction runs on {gpu} with {label} ({rate:.0} tokens/s)");
+                Some(main)
+            }
+            rate => {
+                eprintln!(
+                    "phonon: {gpu} with {label} decodes {:.0} tokens/s; not using it",
+                    rate.unwrap_or(0.0)
+                );
+                None
+            }
+        },
+        Err(error) => {
+            eprintln!("phonon: {gpu} with {label} failed ({error:#})");
+            None
+        }
+    }
 }
 
 impl Server {
     /// Start a server and wait until the model answers its health check.
-    fn spawn(server: &Path, model: &Path, threads: usize, gpu: Option<&str>) -> Result<Self> {
+    fn spawn(
+        server: &Path,
+        model: &Path,
+        threads: usize,
+        gpu: Option<&str>,
+        env: &[(String, String)],
+    ) -> Result<Self> {
         let port = free_port()?;
-        let mut command = server_command(server)?;
+        let mut command = server_command(server, env)?;
         command
             .arg("-m")
             .arg(model)
@@ -537,6 +605,8 @@ pub struct Corrector {
     model: PathBuf,
     lean: Arc<Mutex<Lean>>,
     use_lean: AtomicBool,
+    /// The tuned build in use, until the startup check confirms it.
+    pending: Option<crate::backends::Installed>,
 }
 
 /// The one-thread server's state. It starts on a background thread: on the QA VM
@@ -552,36 +622,62 @@ enum Lean {
 impl Corrector {
     /// Start the server and wait until the model answers. Call after
     /// `fetch::ensure_all`.
-    pub fn start() -> Result<Self> {
+    ///
+    /// The fallback order: a tuned GPU runtime from the backend manifest at
+    /// `backends` (when given and this machine has a build), then (Windows) any
+    /// Vulkan GPU, then the CPU. Each GPU path has to list its device, start, and
+    /// decode at `MIN_GPU_DECODE` or faster before it is used.
+    pub fn start(backends: Option<&str>) -> Result<Self> {
         let (server, model) = runtime_files()?;
         let threads = thread_count(
             std::thread::available_parallelism()
                 .map(|count| count.get())
                 .unwrap_or(2),
         );
-        #[cfg(windows)]
-        if let Some(gpu) = discrete_gpu(&server) {
-            match Server::spawn(&server, &model, threads, Some(&gpu)) {
-                // Twice: the first run after an install compiles the GPU's shaders
-                // (3090: 66 tokens/s cold, 300 warm).
-                Ok(main) => match [decode_rate(&main.base), decode_rate(&main.base)]
-                    .into_iter()
-                    .flatten()
-                    .reduce(f64::max)
-                {
-                    Some(rate) if rate >= MIN_GPU_DECODE => {
-                        eprintln!("phonon: correction runs on {gpu} ({rate:.0} tokens/s)");
-                        return Ok(Self::new(main, Device::Gpu, server, model));
+        if let Some(url) = backends {
+            match crate::backends::prepare(url) {
+                Ok(Some(tuned)) => {
+                    let target = Target {
+                        kind: "CUDA",
+                        env: tuned.env(),
+                        pinned: Some(&tuned.device.name),
+                    };
+                    // the manifest's build first, then earlier builds still on disk
+                    for candidate in &tuned.servers {
+                        let label = candidate
+                            .parent()
+                            .and_then(|dir| dir.file_name())
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| tuned.id.clone());
+                        if let Some(main) = gpu_server(candidate, &target, &label, &model, threads)
+                        {
+                            let mut corrector = Self::new(main, Device::Gpu, server, model);
+                            corrector.pending =
+                                candidate.parent().map(|dir| crate::backends::Installed {
+                                    id: tuned.id.clone(),
+                                    dir: dir.to_path_buf(),
+                                });
+                            return Ok(corrector);
+                        }
                     }
-                    rate => eprintln!(
-                        "phonon: {gpu} decodes {:.0} tokens/s; using the CPU",
-                        rate.unwrap_or(0.0)
-                    ),
-                },
-                Err(error) => eprintln!("phonon: {gpu} failed ({error:#}); using the CPU"),
+                }
+                Ok(None) => eprintln!("phonon: no tuned GPU runtime for this machine"),
+                Err(error) => eprintln!("phonon: tuned GPU runtime unavailable ({error:#})"),
             }
         }
-        let main = Server::spawn(&server, &model, threads, None)?;
+        #[cfg(windows)]
+        {
+            let vulkan = Target {
+                kind: "Vulkan",
+                env: Vec::new(),
+                pinned: None,
+            };
+            if let Some(main) = gpu_server(&server, &vulkan, "vulkan", &model, threads) {
+                return Ok(Self::new(main, Device::Gpu, server, model));
+            }
+        }
+        let main = Server::spawn(&server, &model, threads, None, &[])?;
+        eprintln!("phonon: correction runs on the CPU");
         Ok(Self::new(main, Device::Cpu, server, model))
     }
 
@@ -593,6 +689,7 @@ impl Corrector {
             model,
             lean: Arc::new(Mutex::new(Lean::Absent)),
             use_lean: AtomicBool::new(false),
+            pending: None,
         }
     }
 
@@ -601,15 +698,27 @@ impl Corrector {
         self.device
     }
 
-    /// Move from the GPU to the CPU, after the GPU gave a wrong answer.
+    /// The startup check passed: a tuned build in use becomes the family's only
+    /// build on disk (earlier ones were kept in case this one failed).
+    pub fn confirm(&mut self) {
+        if self.device == Device::Gpu {
+            if let Some(installed) = self.pending.take() {
+                installed.confirm();
+            }
+        }
+    }
+
+    /// Move from the GPU to the CPU, after the GPU gave a wrong answer. Earlier
+    /// tuned builds stay on disk.
     pub fn fall_back_to_cpu(&mut self) -> Result<()> {
         let threads = thread_count(
             std::thread::available_parallelism()
                 .map(|count| count.get())
                 .unwrap_or(2),
         );
-        self.main = Server::spawn(&self.server, &self.model, threads, None)?;
+        self.main = Server::spawn(&self.server, &self.model, threads, None, &[])?;
         self.device = Device::Cpu;
+        self.pending = None;
         Ok(())
     }
 
@@ -638,7 +747,7 @@ impl Corrector {
             );
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let next = match Server::spawn(&server, &model, 1, None) {
+                let next = match Server::spawn(&server, &model, 1, None, &[]) {
                     Ok(server) => {
                         eprintln!(
                             "phonon: one-thread corrector ready in {} ms",
@@ -788,15 +897,35 @@ mod tests {
     fn picks_the_listed_vulkan_device() {
         let listing = "load_backend: loaded Vulkan backend from ggml-vulkan.dll\n\
             Available devices:\n  Vulkan0: NVIDIA GeForce RTX 3090 (24322 MiB, 23554 MiB free)\n";
-        assert_eq!(pick_vulkan(listing).as_deref(), Some("Vulkan0"));
+        assert_eq!(pick_device(listing, "Vulkan").as_deref(), Some("Vulkan0"));
         let two = "Available devices:\n  Vulkan1: AMD Radeon RX 7600 (8176 MiB, 8000 MiB free)\n";
-        assert_eq!(pick_vulkan(two).as_deref(), Some("Vulkan1"));
+        assert_eq!(pick_device(two, "Vulkan").as_deref(), Some("Vulkan1"));
         // no Vulkan driver (the QA VM): the CPU
-        assert_eq!(pick_vulkan("Available devices:\n  (none)\n"), None);
         assert_eq!(
-            pick_vulkan("load_backend: loaded CPU backend from ggml-cpu-zen4.dll"),
+            pick_device("Available devices:\n  (none)\n", "Vulkan"),
             None
         );
+        assert_eq!(
+            pick_device(
+                "load_backend: loaded CPU backend from ggml-cpu-zen4.dll",
+                "Vulkan"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn picks_the_listed_cuda_device() {
+        let listing = "load_backend: loaded CUDA backend from /x/libggml-cuda.so\n\
+            load_backend: loaded CPU backend from /x/libggml-cpu-zen4.so\n\
+            Available devices:\n  CUDA0: NVIDIA GeForce RTX 3090 (24135 MiB, 18634 MiB free)\n";
+        assert_eq!(pick_device(listing, "CUDA").as_deref(), Some("CUDA0"));
+        assert_eq!(pick_device(listing, "Vulkan"), None);
+        // the module did not load (no driver, CUDA_VISIBLE_DEVICES empty): no device
+        let none =
+            "ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected\n\
+            Available devices:\n";
+        assert_eq!(pick_device(none, "CUDA"), None);
     }
 
     #[test]

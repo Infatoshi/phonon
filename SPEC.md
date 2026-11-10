@@ -300,6 +300,137 @@ which carry no buttons. The prompt needs, in order:
 - Not done: separating the speaker from other voices in the room. macOS voice processing (echo cancellation of the
   Mac's own output) is the next step if ducking is not enough.
 
+## Meeting notes (macOS)
+
+Recording (bar/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
+asks "take notes?" (or starts by itself with auto-start). Detection (`meeting_capture`) is on by default since
+2026-11-09 (owner's decision; settings schema 3); auto-start (`meeting_auto_start`) stays off, so nothing records
+without a click. Every settings save writes every key, so a stored `false` in a schema 1 or 2 file is the old
+default and cannot be told from a choice: those files read as on once, and the next save writes schema 3, after
+which a `false` is the owner's and stays off. When the migration is what turns detection on (a schema 1 or 2 file
+without `meeting_capture: true`), `meeting_auto_start` is set to false with it, so someone who once enabled
+auto-start and then switched detection off is asked before any recording; they can turn auto-start back on. A file
+that already had detection on keeps its auto-start choice. Meetings/<id>/ holds metadata.json plus 5 s 48 kHz mono
+16-bit WAV chunks of two tracks on one host clock: mic/ (the user) and system/ (the call, ScreenCaptureKit). Each
+track's `<track>_start_offset_samples` places its sample 0 on the shared timeline; Notes shifts both so the
+earlier track starts at 0.
+
+Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
+`transcribe_span`), all on the Mac:
+
+- When a recording stops, an empty transcript.partial.json is written at once (so a quit from then on still
+  transcribes it at the next launch; it goes only when transcript.json is written). Once the recorder has closed
+  its last chunks and metadata.json is final, the meeting stops counting as recording, is queued, and the Notes list
+  reloads so an open page shows it transcribing. Until then Notes shows it as recording, with no Transcribe button.
+  Notes has a Transcribe button for a meeting
+  without a transcript (one recorded before transcripts existed, or one whose last try failed, with the error shown).
+  Meetings are transcribed one at a time.
+- Each track is cut into spans of about 60 s (never over 75 s: Metal Parakeet answers windows up to 82 s, and a
+  longer one would load the MLX copy of the model). A remainder up to 75 s stays one span; a gap in the chunks ends
+  a span. A span that is not the last of its run gives back its last sentence when that sentence ends within 1 s
+  of the cut (and starts 5 s or more in): the next span starts 0.15 s before it, so a sentence is never split.
+- The bar sends one span at a time, `{"cmd":"meeting_span","id","chunks":[{"path","start_sample"}],
+  "start_sample","end_sample"}`, and waits for `{"type":"meeting_span","id","sentences":[{"start","end","text"}],
+  "quiet","audio_seconds","seconds","model"}` (or `"error"`). Its own event type: never read as a dictation's.
+- Dictation goes first. There is one resident speech model; the engine queues spans and hands the ASR sidecar at
+  most one, only when both stacks are ready, no stream is open, no dictation transcript or correction is owed, no
+  key is held (`prewarm` / `stream_start` until `stream_finish` / `stream_stop` / `transcribe`, or
+  `dictation_end` for a dictation that ends without a WAV: discarded, under 80 ms, or a microphone that failed to
+  start), and the last of these was 1 s ago or more. Each of these is a hold with its own start time, and every hold
+  stops counting 120 s after it began, so an end the engine never hears about (an abandoned stream, a result that
+  never came) delays meeting transcripts instead of stopping them. A key
+  pressed while a span is in the sidecar waits for that span only (0.67 s at most for the 20-minute two-track
+  check meeting on MLX; Metal is faster), while the user is still speaking.
+- The sidecar reads only the chunks a span needs (a 2-hour meeting is never in memory), fills a missing stretch
+  with silence, resamples 48 kHz to 16 kHz with the same linear resampler as imported dictation audio
+  (`resample_linear`), and skips the model when no 20 ms frame rises above -50 dBFS RMS (`quiet`: no sentences).
+- Progress: after every span, transcript.partial.json (per track: the track sample transcribed up to, done, and
+  the kept sentences in track seconds; `error` after a failure). A quit or crash resumes from it at the next
+  launch; a quit while recording leaves an empty one so that meeting is transcribed at the next launch. A failed
+  meeting waits for the button, which resumes from the saved cursor. An engine restart re-sends the span in flight.
+- Output: transcript.json `{"schema_version":1,"model","created_at","turns":[{"start_seconds","end_seconds",
+  "speaker":"me"|"call","text"}]}`. Sentences of both tracks go onto the shared timeline by their offsets, in time
+  order; consecutive sentences of one speaker make one turn. Raw Parakeet text (the dictionary's in-decode boosting
+  applies on Metal), no correction model (the cleaned copy is a separate file, below). Everyone on the call is "call": no diarization yet. Words the user
+  dictated to Phonon during the call are not taken out yet, and on speakers the call can leak into "me".
+- Notes: under the player, the transcript as a list (time, You / Call, text), each turn's text selectable, its
+  time a button that seeks the player there; the header's copy button copies the whole transcript as
+  "m:ss You: text" paragraphs. While it runs, "Transcribing… N%" (by track samples done) or "waiting for the speech
+  model"; while recording, a note that the transcript comes at the end.
+- Logs carry meeting ids, counts and timings only, never the text.
+- Check (20-minute Zoom call, two tracks, MLX sidecar outside the app, 2026-11-09): 42 spans, 92 turns, 3,323
+  words in 17.7 s after the model loaded (17.5 s of it in the model); Parakeet's own 120 s / 15 s long-form
+  chunking of each whole track gives 3,335 words. `MeetingTranscriptLiveCheck` (opt in by environment) reruns it.
+
+Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupRuntime.swift; engine `meeting.rs`
+`QuietWatch`), all on the Mac:
+
+- What: the meetings_v2 MB s1 adapter (GGUF LoRA, q8_0, 26,231,840 bytes, sha256 eb04d7f0cd25…) on the shipped
+  correction model (Q4_K_S-e4, sha256 0439996bda58…, the pinned refiner revision) removes fillers, stutters and
+  false starts and fixes misrecognitions, keeping every speaker line in order. Blind judging preferred it to the
+  uncorrected path 66-68% of the time (DEVLOG 2026-11-10 1:15 am). Its TL;DR line failed the attribution bar, so
+  it is always dropped and never shown.
+- When: after transcript.json is written, in the background; Notes has a Clean up button for a transcript without
+  a cleanup (one from before cleanup existed, or one whose last try stopped). Only when the adapter is installed or
+  downloadable; until it is published, only a verified copy under models/meeting-cleanup/ enables it. One meeting
+  at a time.
+- Chunks, as training cut them (meetings_v1 chunks.py): "You" and "Call" become "Speaker 1/2" by first appearance
+  in the meeting; a turn over 120 words is split at its first sentence end from 120 words on, or at 160; a chunk
+  is whole lines, closed once it holds 120-220 words and ends a sentence, and closed before a line that would take
+  it over 220. Training dropped a run that could not reach 120 words; the app keeps it as a short chunk, so no line
+  is left out. The prompt is the training one: the meeting system prompt plus the mode line, the chunk as
+  "Speaker N: words" lines, greedy, at most 2.8 x words + 96 tokens.
+- Checks on every answer (reference: meetings_v1 obj_meet.py; Swift and Python agree on all 380 MB s1/s2 answers
+  to the 190 public eval2 chunks): TL;DR lines removed; every other line "Speaker N: words"; the labels in the input
+  order, a line dropped only when it held nothing but fillers (a kept label with nothing after it counts as
+  dropped); content-word recall against the raw chunk at least 0.85; a line of 12+ content words keeps at least
+  half of them; at most 10 new words per 100; at most 2.2x the input's words. Thresholds from the data: on eval2
+  the lowest recall of a structurally valid answer was 0.867 (s1) / 0.844 (s2), all from removed false starts,
+  the lowest long-line recall 0.58, the most new words 5.7 per 100. A chunk that fails keeps its raw lines: 6/190
+  (s1) and 8/190 (s2), mostly a short line with one content word dropped ("Okay, great.").
+- Output: transcript.cleaned.json `{"schema_version":1,"source":{"turns","sha256"},"runtime","adapter_sha256",
+  "created_at","chunks","raw_chunks","turns":[{"text"|null,"source":"cleaned"|"raw"|"mixed"|"dropped"}]}`, one
+  entry per raw turn by index; a long turn's parts are joined. transcript.json is never rewritten. `source` is a
+  hash of the raw turns: a cleanup of another transcript is never shown.
+- Progress: transcript.cleaned.partial.json after every chunk (per chunk its cleaned lines or the reason it kept
+  the raw ones; `error` after a failure or skip). A quit or crash resumes at the next chunk at the next launch; a
+  stopped or skipped one waits for the button.
+- Runtime: stock llama.cpp b12132 (the Windows/Linux release), `llama-server` on the CPU only (`--device none`, so
+  it never touches the GPU `pe` and Parakeet use), `--no-repack`, 4 threads (at most half the cores), one slot, at
+  nice 15, on 127.0.0.1, its output discarded (its log can quote the meeting). Started for a meeting, stopped when
+  it is done or the app quits; a crash's leftover is stopped at the next start by its recorded pid.
+- Dictation first: the engine sends `{"type":"dictation","quiet":..}` at its first poll and whenever its meeting
+  holds (above) start or stop holding meeting work back. While not quiet, or while the engine is down, the
+  cleanup process is stopped with SIGSTOP (a chunk in flight just waits) and no chunk starts; SIGCONT when quiet.
+  Its timeouts (120 s to answer /health after launch, 600 s per chunk) count running time only, so a pause of any
+  length, during the model load or mid-chunk, is a wait: never a failed start, a timed-out chunk or a re-sent one.
+  A pause asked for before launch starts the process stopped.
+- Memory: the process maps the 988 MB model a second time (clean file pages the system can drop) and holds about
+  0.6 GB of its own (peak footprint 0.58 GB, peak resident 1.6 GB, 16 chunks on an M4 Max). Repacked weights would
+  be 12% faster but hold 1.45 GB. On a 16 GB Mac that is roughly the dictation stack plus 0.6-1.6 GB more while a
+  meeting is cleaned. Gate, like Android's refiner: never under 12 GiB of RAM; skipped (with the reason on Notes)
+  when under 2.5 GB is free, inactive or purgeable when a meeting starts.
+- Downloads, on first use, by the Windows/Linux first-run rules (fetch.rs): pinned URL and SHA-256, bytes into
+  downloads/<name>.part, resumed with HTTP Range after an interruption or a quit, moved into place only once the
+  hash matches, archives unpacked into a staging folder renamed at the end. The runtime: the GitHub release asset
+  llama-b12132-bin-macos-arm64.tar.gz (16,671,755 bytes, sha256 0f7b107b860d…) into runtime/llama-b12132-macos-arm64.
+  The adapter: `phonon-meeting-lora-q8_0.gguf` in Infatoshi/phonon-refiner-1.7b once uploaded (RELEASE: set its URL
+  at that commit in `MeetingCleanupManifest`) into models/meeting-cleanup. The base model is the one dictation
+  already uses (models/refiner's target, else the pinned Hugging Face snapshot), verified by hash; with any other,
+  no cleanup.
+- Notes: the cleaned text by default with a Cleaned / Raw switch (filler-only turns left out of Cleaned), "Cleaned
+  on this Mac; N of M parts kept as heard" when some chunks fell back; "Cleaning up… N%" or "(paused while you
+  dictate)" while it runs; Copy copies what is shown.
+- Speed (Step 1, 2026-11-10, M4 Max on AC, CPU, 4 threads, nice 15, 16 public chunks, 2,192 words): 3.5-4.0 s per
+  chunk, about 25 chunks and 1.5-2 min for a 20-minute 3,500-word meeting. A dictation-shaped `pe` request (300
+  prompt, 60 generated tokens) took p50 480-510 ms with the cleanup running against 363-441 ms idle; with the
+  cleanup stopped (SIGSTOP) 354-357 ms, so the pause is what keeps dictation unaffected. Through the app's own
+  code (`MeetingCleanupLiveCheck`, 2026-11-10): a two-speaker transcript of 34 turns, 2,350 words from the public
+  1-2 speaker chunks, 16 chunks, none kept raw, 66.7 s including the base model's hash check, the start and a 3 s
+  pause halfway.
+- Logs: meeting ids, chunk counts, kept-raw reasons and timings, never text. `MeetingCleanupLiveCheck` (opt in by
+  environment, public chunks only) runs the real runtime and checks the validator against reference verdicts.
+
 ## Competing dictation apps
 
 Two apps holding fn taps means both record and both insert. Phonon detects
@@ -568,8 +699,8 @@ model's vocabulary, case variants, bonus 4 to start and to continue a term, budg
 to `pa serve` as a dictionary request, which swaps it in place between windows (room for about 11k
 terms). The greedy TDT decode follows the trie: a bonus may push it onto a term, a walk commits
 only on a complete term at a word boundary and otherwise rolls back, and a committed boosted term
-takes the dictionary's spelling. Windows answered on the MLX fallback are not boosted. Meetings are
-not transcribed in the app.
+takes the dictionary's spelling. Windows answered on the MLX fallback are not boosted. Meeting spans
+(see "Meeting notes") go through the same decode, so they are boosted too.
 
 Measured (owner dictations, public refiner, 2026-11-02, 733-entry dictionary, 604 terms boosted):
 real_580 WER after the refiner -0.0011 [-0.0019, -0.0003], sep -0.0011 [-0.0020, -0.0005];

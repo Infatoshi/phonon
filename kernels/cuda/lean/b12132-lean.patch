@@ -1,0 +1,286 @@
+Phonon refiner-only CUDA module for llama.cpp b12132 (applies after ../merged/b12132.patch; git apply ignores
+this text). Build with -DGGML_CUDA_PHONON_LEAN=ON (scripts/build-cuda-backend.sh does).
+
+What it removes: device code for every weight type except Q4_K and Q5_K (the refiner's 147 + 7 matmul
+tensors), every attention head size except 128, every KV type except F16, the float matmul kernels (mmf, mmvf;
+the refiner has no float matmul weights), and cuBLAS (stubs that report NOT_SUPPORTED, so ggml aborts loudly
+if one is ever reached). cudart is linked statically: the module's only NVIDIA dependency is libcuda.so.1.
+
+Measured 2026-11-09 on the local RTX 3090 box (CUDA 13.3, sm_86 only, stripped):
+  libggml-cuda.so  stock 64.9 MB (+ cuBLAS/cuBLASLt/cudart 572.7 MB)  ->  lean 19.3 MB, no other CUDA library
+  gzip             stock 42.3 MB (+ 410.2 MB)                          ->  lean 9.7 MB
+  lean, machine code only (CMAKE_CUDA_ARCHITECTURES=86-real, no PTX): 14.5 MB, gzip 5.4 MB
+Per extra architecture (lean, gzip of the extracted code): SASS 5.9-6.1 MB (sm_75/86/89), 7.0 MB (sm_120a);
+PTX 9.2-9.6 MB each, which is why per-arch builds ship SASS only.
+Gate: the four LOG.md prompts x llama-simple / llama-completion fa auto / -fa on, md5-identical to stock b12132
+(12/12), plus 644- and 1610-token prompts with llama-completion, identical.
+
+diff --git a/ggml/src/ggml-cuda/CMakeLists.txt b/ggml/src/ggml-cuda/CMakeLists.txt
+index 297d9ff..2254221 100644
+--- a/ggml/src/ggml-cuda/CMakeLists.txt
++++ b/ggml/src/ggml-cuda/CMakeLists.txt
+@@ -127,6 +127,14 @@ if (CUDAToolkit_FOUND)
+     ggml_cuda_fattn_vec_instances(${CMAKE_CURRENT_SOURCE_DIR} SRCS)
+     list(APPEND GGML_SOURCES_CUDA ${SRCS})
+ 
++    # Phonon's refiner-only build: kernels for Q4_K/Q5_K weights, head size 128 and an F16 KV cache only
++    # (common.cuh), quantized matrix products always through MMQ, no cuBLAS, cudart linked in: the module
++    # needs nothing but the NVIDIA driver.
++    option(GGML_CUDA_PHONON_LEAN "ggml: Phonon refiner-only CUDA kernels, no cuBLAS" OFF)
++    if (GGML_CUDA_PHONON_LEAN)
++        list(APPEND GGML_SOURCES_CUDA phonon-no-cublas.cpp)
++    endif()
++
+     ggml_add_backend_library(ggml-cuda
+                              ${GGML_HEADERS_CUDA}
+                              ${GGML_SOURCES_CUDA}
+@@ -136,10 +144,14 @@ if (CUDAToolkit_FOUND)
+         add_compile_definitions(GGML_CUDA_USE_GRAPHS)
+     endif()
+ 
+-    if (GGML_CUDA_FORCE_MMQ)
++    if (GGML_CUDA_FORCE_MMQ OR GGML_CUDA_PHONON_LEAN)
+         add_compile_definitions(GGML_CUDA_FORCE_MMQ)
+     endif()
+ 
++    if (GGML_CUDA_PHONON_LEAN)
++        add_compile_definitions(GGML_CUDA_PHONON_LEAN)
++    endif()
++
+     if (GGML_CUDA_FORCE_CUBLAS)
+         add_compile_definitions(GGML_CUDA_FORCE_CUBLAS)
+     endif()
+@@ -160,7 +172,9 @@ if (CUDAToolkit_FOUND)
+         target_link_libraries(ggml-cuda PRIVATE CCCL::CCCL)
+     endif()
+ 
+-    if (GGML_STATIC)
++    if (GGML_CUDA_PHONON_LEAN)
++        target_link_libraries(ggml-cuda PRIVATE CUDA::cudart_static)
++    elseif (GGML_STATIC)
+         if (WIN32)
+             # As of 12.3.1 CUDA Toolkit for Windows does not offer a static cublas library
+             target_link_libraries(ggml-cuda PRIVATE CUDA::cudart_static CUDA::cublas)
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index bc83ea3..6d8d51a 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -40,6 +40,22 @@
+ #include "vendors/cuda.h"
+ #endif // defined(GGML_USE_HIP)
+ 
++// Phonon's refiner-only build (GGML_CUDA_PHONON_LEAN): device code only for the refiner's weight types
++// (Q4_K, Q5_K), its attention head size (128) and an F16 KV cache. Every other template still links, as a
++// host stub that aborts with the case it lacks, so a model outside that set fails loudly instead of silently.
++#ifdef GGML_CUDA_PHONON_LEAN
++static constexpr bool phonon_lean = true;
++static constexpr bool phonon_keep_type(ggml_type t) { return t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K; }
++static constexpr bool phonon_keep_head(int d) { return d == 128; }
++static constexpr bool phonon_keep_kv(ggml_type t) { return t == GGML_TYPE_F16; }
++#else
++static constexpr bool phonon_lean = false;
++static constexpr bool phonon_keep_type(ggml_type) { return true; }
++static constexpr bool phonon_keep_head(int) { return true; }
++static constexpr bool phonon_keep_kv(ggml_type) { return true; }
++#endif // GGML_CUDA_PHONON_LEAN
++#define PHONON_LEAN_ABORT(what) GGML_ABORT("this Phonon build has no CUDA kernel for %s", what)
++
+ #define STRINGIZE_IMPL(...) #__VA_ARGS__
+ #define STRINGIZE(...) STRINGIZE_IMPL(__VA_ARGS__)
+ 
+diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+index 96b596e..8c2ef0a 100644
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -2014,7 +2014,7 @@ static __global__ void flash_attn_ext_f16(
+ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(const int cc, const ggml_tensor * dst, const int ncols1, const int ncols2);
+ 
+ template <int DKQ, int DV, int ncols1, int ncols2>
+-void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
++static void ggml_cuda_flash_attn_ext_mma_f16_case_full(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+     const ggml_tensor * KQV = dst;
+     const int id = ggml_cuda_get_device();
+     const int cc = ggml_cuda_info().devices[id].cc;
+@@ -2114,6 +2114,17 @@ void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml
+         (ctx, dst, fattn_kernel, nwarps, nbytes_shared_total, nbatch_fa, true, true, true, use_sparse, warp_size_host, async_kv_preload);
+ }
+ 
++template <int DKQ, int DV, int ncols1, int ncols2>
++void ggml_cuda_flash_attn_ext_mma_f16_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
++    if constexpr (phonon_keep_head(DKQ) && phonon_keep_head(DV)) {
++        ggml_cuda_flash_attn_ext_mma_f16_case_full<DKQ, DV, ncols1, ncols2>(ctx, dst);
++    } else {
++        GGML_UNUSED(ctx);
++        GGML_UNUSED(dst);
++        PHONON_LEAN_ABORT("this flash-attention head size (mma)");
++    }
++}
++
+ 
+ #define DECL_FATTN_MMA_F16_CASE(DKQ, DV, ncols1, ncols2)                          \
+     template void ggml_cuda_flash_attn_ext_mma_f16_case                           \
+diff --git a/ggml/src/ggml-cuda/fattn-tile.cuh b/ggml/src/ggml-cuda/fattn-tile.cuh
+index ba4628f..5e3a0be 100644
+--- a/ggml/src/ggml-cuda/fattn-tile.cuh
++++ b/ggml/src/ggml-cuda/fattn-tile.cuh
+@@ -1328,7 +1328,10 @@ void ggml_cuda_flash_attn_ext_tile_case(ggml_backend_cuda_context & ctx, ggml_te
+     float logit_softcap;
+     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+ 
+-    if (logit_softcap == 0.0f) {
++    if constexpr (!(phonon_keep_head(DKQ) && phonon_keep_head(DV))) {
++        GGML_UNUSED(ctx);
++        PHONON_LEAN_ABORT("this flash-attention head size (tile)");
++    } else if (logit_softcap == 0.0f) {
+         constexpr bool use_logit_softcap = false;
+         launch_fattn_tile_switch_ncols2<DKQ, DV, use_logit_softcap>(ctx, dst);
+     } else {
+diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
+index 9df1512..db1b5e6 100644
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -553,6 +553,11 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
+     float logit_softcap;
+     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+ 
++    if constexpr (!(phonon_keep_head(D) && phonon_keep_kv(type_K) && phonon_keep_kv(type_V))) {
++        GGML_UNUSED(ctx);
++        GGML_UNUSED(Q);
++        PHONON_LEAN_ABORT("this flash-attention head size or KV type (vec)");
++    } else {
+     if (Q->ne[1] == 1) {
+         constexpr int cols_per_block = 1;
+         if (logit_softcap == 0.0f) {
+@@ -573,6 +578,7 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
+         constexpr bool use_logit_softcap = true;
+         ggml_cuda_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V, use_logit_softcap>(ctx, dst);
+     }
++    } // phonon_keep
+ }
+ 
+ #define DECL_FATTN_VEC_CASE(D, type_K, type_V)                              \
+diff --git a/ggml/src/ggml-cuda/mmf.cuh b/ggml/src/ggml-cuda/mmf.cuh
+index 429c887..f3854f9 100644
+--- a/ggml/src/ggml-cuda/mmf.cuh
++++ b/ggml/src/ggml-cuda/mmf.cuh
+@@ -645,6 +645,9 @@ void mul_mat_f_cuda(
+         const int64_t stride_channel_x, const int64_t stride_channel_y, const int64_t stride_channel_dst, const int64_t nsamples_x,
+         const int64_t nsamples_dst, const int64_t stride_sample_x, const int64_t stride_sample_y, const int64_t stride_sample_dst,
+         cudaStream_t stream, const mmf_ids_data * ids_data) {
++    if constexpr (phonon_lean) {
++        PHONON_LEAN_ABORT("float matrix multiplication (mmf)");
++    } else {
+     typedef tile<16, 8, T>     tile_A_16;
+     typedef tile<32, 8, T>     tile_A_32;
+     typedef tile<16, 8, T>     tile_B_16;
+@@ -746,6 +749,7 @@ void mul_mat_f_cuda(
+     }
+ 
+     GGML_UNUSED_VARS(nchannels_y);
++    } // phonon_lean
+ }
+ 
+ template <typename T, int rows_per_block>
+diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
+index 474b19d..450a7e3 100644
+--- a/ggml/src/ggml-cuda/mmq.cuh
++++ b/ggml/src/ggml-cuda/mmq.cuh
+@@ -1640,7 +1640,10 @@ static void mul_mat_q_switch_fusion(ggml_backend_cuda_context & ctx, const mmq_a
+ 
+ template <ggml_type type, ggml_prec prec_src1>
+ void mul_mat_q_case(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
+-    if (ggml_cuda_mmq_needs_fallback(args.nrows_x)) {
++    if constexpr (!phonon_keep_type(type)) {
++        GGML_UNUSED_VARS(ctx, args, stream);
++        PHONON_LEAN_ABORT(ggml_type_name(type));
++    } else if (ggml_cuda_mmq_needs_fallback(args.nrows_x)) {
+         constexpr bool fallback = true;
+         mul_mat_q_switch_fusion<type, fallback, prec_src1>(ctx, args, stream);
+     } else {
+diff --git a/ggml/src/ggml-cuda/mmvf.cu b/ggml/src/ggml-cuda/mmvf.cu
+index a62bf53..9170a4f 100644
+--- a/ggml/src/ggml-cuda/mmvf.cu
++++ b/ggml/src/ggml-cuda/mmvf.cu
+@@ -424,6 +424,9 @@ void launch_mul_mat_vec_f_cuda(
+         const int64_t stride_channel_x, const int64_t stride_channel_y, const int64_t stride_channel_dst, const int64_t nsamples_x,
+         const int64_t nsamples_dst, const int64_t stride_sample_x, const int64_t stride_sample_y, const int64_t stride_sample_dst,
+         const int64_t nsamples_or_ntokens, const int64_t ids_stride, cudaStream_t stream) {
++    if constexpr (phonon_lean) {
++        PHONON_LEAN_ABORT("float matrix-vector multiplication (mmvf)");
++    } else {
+     GGML_ASSERT(ncols        % 2 == 0);
+     GGML_ASSERT(stride_row   % 2 == 0);
+     GGML_ASSERT(stride_col_y % 2 == 0);
+@@ -507,6 +510,7 @@ void launch_mul_mat_vec_f_cuda(
+         default:
+             GGML_ABORT("fatal error");
+     }
++    } // phonon_lean
+ }
+ 
+ template <typename T, typename type_acc>
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index c630fe0..798cc95 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -1309,6 +1309,9 @@ static void mul_mat_vec_q_switch_ncols_dst(
+         const int nsamples_x, const int nsamples_dst, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
+         const int ids_stride, cudaStream_t stream) {
+ 
++    if constexpr (!phonon_keep_type(type)) {
++        PHONON_LEAN_ABORT(ggml_type_name(type));
++    } else {
+     GGML_ASSERT(ncols_x % ggml_blck_size(type) == 0);
+     GGML_ASSERT(ncols_dst <= MMVQ_MAX_BATCH_SIZE);
+ 
+@@ -1490,6 +1493,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
+         default:
+             GGML_ABORT("fatal error");
+     }
++    } // phonon_keep_type
+ }
+ // ---------------------------------------------------------------------------------------------------------------
+ // Pascal batch-1 q4_K matvec. On sm_61 the stock kernel is load/issue bound (~150-220 GB/s of ~360 achievable):
+diff --git a/ggml/src/ggml-cuda/phonon-no-cublas.cpp b/ggml/src/ggml-cuda/phonon-no-cublas.cpp
+new file mode 100644
+index 0000000..261163a
+--- /dev/null
++++ b/ggml/src/ggml-cuda/phonon-no-cublas.cpp
+@@ -0,0 +1,37 @@
++// Phonon refiner-only CUDA build (GGML_CUDA_PHONON_LEAN): cuBLAS is not linked (libcublasLt alone is about
++// 517 MB). The refiner's matrix products are all quantized and go through MMQ/MMVQ, so these entry points are
++// never reached; if one is, it reports CUBLAS_STATUS_NOT_SUPPORTED and ggml's CUBLAS_CHECK aborts with the
++// call site instead of computing a wrong answer. Defined without the cuBLAS headers, with C linkage and the
++// names cublas_v2.h maps to; every stub ignores its arguments (the x86-64 and AArch64 calling conventions
++// leave that safe for an int return).
++
++#include <cstdio>
++
++namespace {
++constexpr int not_supported = 15;  // CUBLAS_STATUS_NOT_SUPPORTED
++
++int refuse(const char * name) {
++    fprintf(stderr, "phonon: %s called, but this CUDA build has no cuBLAS\n", name);
++    return not_supported;
++}
++}  // namespace
++
++#define PHONON_NO_CUBLAS(name) \
++    extern "C" int name() { return refuse(#name); }
++
++PHONON_NO_CUBLAS(cublasCreate_v2)
++PHONON_NO_CUBLAS(cublasDestroy_v2)
++PHONON_NO_CUBLAS(cublasSetStream_v2)
++PHONON_NO_CUBLAS(cublasSetMathMode)
++PHONON_NO_CUBLAS(cublasSetWorkspace_v2)
++PHONON_NO_CUBLAS(cublasGemmEx)
++PHONON_NO_CUBLAS(cublasGemmBatchedEx)
++PHONON_NO_CUBLAS(cublasGemmStridedBatchedEx)
++PHONON_NO_CUBLAS(cublasSgemm_v2)
++PHONON_NO_CUBLAS(cublasSgemmBatched)
++PHONON_NO_CUBLAS(cublasSgemmStridedBatched)
++PHONON_NO_CUBLAS(cublasStrsmBatched)
++
++extern "C" const char * cublasGetStatusString(int) {
++    return "cuBLAS is not part of this Phonon CUDA build";
++}

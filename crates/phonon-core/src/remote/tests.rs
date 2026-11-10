@@ -637,6 +637,12 @@ fn the_mac_s_own_dictation_comes_first() {
     // an empty transcript ends the bar's dictation too
     h.remote.note_bar_event(&asr("p5", "", false));
     assert!(!h.remote.bar_busy());
+    // a dictation the bar dropped frees it too
+    h.remote
+        .note_bar_command(&json!({"cmd": "stream_start", "id": "p6"}));
+    assert!(h.remote.bar_busy());
+    h.remote.note_bar_command(&json!({"cmd": "dictation_end"}));
+    assert!(!h.remote.bar_busy());
     // commands that are not a dictation do not hold the engine
     h.remote
         .note_bar_command(&json!({"cmd": "reload_dictionary"}));

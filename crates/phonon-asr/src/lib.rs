@@ -162,6 +162,12 @@ pub enum AsrEvent {
         index: usize,
         text: String,
     },
+    /// One meeting span transcribed (`transcribe_span`): the sidecar's whole reply
+    /// (`sentences`, `quiet`, `audio_seconds`, `seconds`, `model`), passed on as it is.
+    Span {
+        id: Option<String>,
+        body: serde_json::Value,
+    },
     Error {
         /// The request the error belongs to, when the sidecar names one.
         id: Option<String>,
@@ -243,6 +249,10 @@ impl AsrSidecar {
                         seconds: msg.seconds.unwrap_or(0.0),
                         partial: msg.partial,
                     },
+                    "span" => AsrEvent::Span {
+                        id: msg.id,
+                        body: serde_json::from_str(&line).unwrap_or_default(),
+                    },
                     "segment" => AsrEvent::Segment {
                         id: msg.id,
                         index: msg.index.unwrap_or(0),
@@ -304,6 +314,24 @@ impl AsrSidecar {
 
     pub fn transcribe(&mut self, path: &Path, id: Option<&str>) -> Result<()> {
         self.send(json!({"cmd":"transcribe", "path":path, "id":id}))
+    }
+
+    /// One bounded span of one meeting track: `chunks` ([{"path","start_sample"}]) cover
+    /// track samples [start_sample, end_sample); the reply is AsrEvent::Span.
+    pub fn transcribe_span(
+        &mut self,
+        id: &str,
+        chunks: &serde_json::Value,
+        start_sample: i64,
+        end_sample: i64,
+    ) -> Result<()> {
+        self.send(json!({
+            "cmd": "transcribe_span",
+            "id": id,
+            "chunks": chunks,
+            "start_sample": start_sample,
+            "end_sample": end_sample,
+        }))
     }
 
     pub fn stream_start(&mut self, id: Option<&str>) -> Result<()> {

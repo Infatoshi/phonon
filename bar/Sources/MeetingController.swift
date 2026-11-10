@@ -13,6 +13,8 @@ final class MeetingController {
     private var prompts = MeetingPromptPolicy()
     private var endPolicy: MeetingEndPolicy?
     private var recorder: MeetingRecorder?
+    /// The folder of the meeting being recorded.
+    private var recordingDirectory: URL?
     private var recordingApp: String?
     /// The process whose microphone use defines the call being recorded.
     private var recordingBundleID: String?
@@ -176,6 +178,8 @@ final class MeetingController {
         do {
             let recorder = try MeetingRecorder(directory: directory, metadata: metadata)
             self.recorder = recorder
+            recordingDirectory = directory
+            store.recordingMeetingID = metadata.id
             recordingApp = meeting
             recordingBundleID = bundleID
             endPolicy = MeetingEndPolicy(now: Self.now())
@@ -208,6 +212,13 @@ final class MeetingController {
     func stop(reason: String) {
         guard let recorder else { return }
         self.recorder = nil
+        let directory = recordingDirectory
+        recordingDirectory = nil
+        // Before any async work: a quit while the files close still leaves the meeting marked
+        // for transcription at the next launch (the marker goes when transcript.json is written).
+        if let directory { MeetingTranscriber.markPending(directory: directory) }
+        // `store.recordingMeetingID` stays set until the files are closed (no Transcribe button
+        // against metadata still missing its last chunks).
         endPolicy = nil
         recordingApp = nil
         recordingBundleID = nil
@@ -217,15 +228,23 @@ final class MeetingController {
         if byUser {
             popup.saved(onExpire: { [weak self] in self?.flow.expire() })
         }
-        Task { await recorder.stop(reason: reason) }
+        let store = store
+        Task {
+            await recorder.stop(reason: reason)
+            // The chunks are closed and metadata.json final: queue it and show it on Notes.
+            if let directory { store.meetingRecordingFinished(directory: directory) }
+        }
     }
 
-    /// On quit: close the open chunks synchronously so they stay readable.
+    /// On quit: close the open chunks synchronously so they stay readable, and mark the
+    /// meeting for transcription at the next launch.
     func stopNow(reason: String) {
         timer?.invalidate()
         timer = nil
         guard let recorder else { return }
         self.recorder = nil
         recorder.closeFiles(reason: reason)
+        if let recordingDirectory { MeetingTranscriber.markPending(directory: recordingDirectory) }
+        recordingDirectory = nil
     }
 }

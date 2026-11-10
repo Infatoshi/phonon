@@ -112,6 +112,23 @@ final class ScreenRenderTests: XCTestCase {
         try writeMeeting(
             id: "meeting_b", app: ("com.hnc.Discord", "Discord"), title: nil,
             startedSecondsAgo: 2 * 86_400, chunks: 2)
+        // Invented words for the design sync's transcript.
+        let lines: [(Double, Double, TranscriptSpeaker, String)] = [
+            (0.4, 3.1, .me, "Morning both. Can you hear me okay?"),
+            (3.6, 9.8, .call,
+             "Yes, loud and clear. Priya is joining in a minute, she is just finishing the review."),
+            (10.2, 18.5, .me,
+             "Great. I want to settle the onboarding flow today, mostly the second screen and "
+                + "whether the permission prompt comes before or after the sample dictation."),
+            (19.0, 24.2, .call, "After, I think. People trust it more once they have seen it work."),
+            (24.8, 27.0, .me, "Agreed. Let's write that down."),
+        ]
+        let transcript = MeetingTranscript(
+            model: "mlx-community/parakeet-tdt-0.6b-v2", createdAt: "2026-11-09T12:00:00Z",
+            turns: lines.map {
+                MeetingTranscript.Turn(startSeconds: $0.0, endSeconds: $0.1, speaker: $0.2, text: $0.3)
+            })
+        try transcript.save(to: directory.appendingPathComponent("Meetings/meeting_a"))
     }
 
     private func writeRecording(
@@ -227,6 +244,29 @@ final class ScreenRenderTests: XCTestCase {
                 view, size: CGSize(width: 980, height: 680), name: name,
                 settle: page == .notes ? 1.0 : 0.3)
             XCTAssertGreaterThanOrEqual(rep.pixelsWide, 980)
+        }
+    }
+
+    func testANoteWithATranscriptAndTheOtherTranscriptStatesRender() throws {
+        let store = store()
+        let note = try XCTUnwrap(store.meetings.first { $0.id == "meeting_a" })
+        let transcript = try XCTUnwrap(note.transcript)
+        XCTAssertEqual(transcript.turns.count, 5)
+        XCTAssertEqual(store.transcriptState(note), .ready(transcript))
+        let states: [(NoteTranscriptState, String)] = [
+            (.ready(transcript), "note_transcript"),
+            (.transcribing(progress: 0.42), "note_transcribing"),
+            (.failed("transcribe span failed: the speech model is not loaded"), "note_transcript_failed"),
+            (.notTranscribed, "note_not_transcribed"),
+        ]
+        for (state, name) in states {
+            let view = NoteDetail(note: note, transcript: state)
+                .frame(width: 700)
+                .background(EmberTheme.window)
+                .foregroundStyle(EmberTheme.ink)
+                .font(.system(size: 13.5))
+            let rep = try snapshot(view, size: CGSize(width: 700, height: 560), name: name, settle: 0.6)
+            XCTAssertGreaterThanOrEqual(rep.pixelsWide, 700)
         }
     }
 

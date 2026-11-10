@@ -117,16 +117,23 @@ fn fetch_asset(
     let partial = dir.join(format!("{}.part", asset.name));
     let _ = fs::remove_file(&partial);
 
-    let response = http::agent()
-        .get(asset.url)
-        .call()
-        .with_context(|| format!("download {}", asset.url))?;
-    let declared: u64 = response
-        .header("Content-Length")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(asset.bytes);
-
-    let mut reader = response.into_reader();
+    // file:// serves locally built backends (CI, the selftest); it is checked like a download
+    let (mut reader, declared): (Box<dyn Read>, u64) =
+        if let Some(path) = asset.url.strip_prefix("file://") {
+            let file = fs::File::open(path).with_context(|| format!("open {path}"))?;
+            let length = file.metadata()?.len();
+            (Box::new(file), length)
+        } else {
+            let response = http::agent()
+                .get(asset.url)
+                .call()
+                .with_context(|| format!("download {}", asset.url))?;
+            let declared = response
+                .header("Content-Length")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(asset.bytes);
+            (response.into_reader(), declared)
+        };
     let mut file =
         fs::File::create(&partial).with_context(|| format!("create {}", partial.display()))?;
     let mut hasher = Sha256::new();

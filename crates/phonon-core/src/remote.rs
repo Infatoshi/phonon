@@ -1386,6 +1386,11 @@ impl Remote {
     /// open dictation, and while one runs a client's `start` is refused.
     pub(crate) fn note_bar_command(&mut self, command: &Value) {
         let name = command.get("cmd").and_then(Value::as_str).unwrap_or("");
+        if name == "dictation_end" {
+            // the bar dropped its dictation (too short, discarded): the engine is free
+            self.bar = None;
+            return;
+        }
         let dictation = matches!(
             name,
             "stream_start"

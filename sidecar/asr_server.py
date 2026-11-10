@@ -66,16 +66,107 @@ def read_wav(path: str, sample_rate: int):
     samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
     if channels > 1:
         samples = samples.reshape(-1, channels).mean(axis=1)
-    if rate != sample_rate and samples.size:
-        # Linear resample. Phonon records at the model's rate, so this only runs
-        # for imported audio, where exactness matters less than working at all.
-        duration = samples.size / rate
-        target = np.linspace(
-            0.0, duration, num=int(duration * sample_rate), endpoint=False
+    return resample_linear(samples, rate, sample_rate)
+
+
+def resample_linear(samples, rate: int, sample_rate: int):
+    """Linear resample of mono float samples. Dictation records at the model's rate, so this
+    runs for imported audio and for meeting tracks (48 kHz), where exactness matters less than
+    working at all."""
+    import numpy as np
+
+    if rate == sample_rate or not samples.size:
+        return samples
+    duration = samples.size / rate
+    target = np.linspace(0.0, duration, num=int(duration * sample_rate), endpoint=False)
+    source = np.arange(samples.size, dtype=np.float64) / rate
+    return np.interp(target, source, samples).astype(np.float32)
+
+
+# A span whose loudest 20 ms frame stays under this RMS (-50 dBFS) is treated as silence and
+# never reaches the model: digital silence, or a muted or idle track's noise floor.
+QUIET_RMS = 10 ** (-50 / 20)
+
+
+def is_quiet(samples, rate: int) -> bool:
+    """True when no 20 ms frame of `samples` rises above QUIET_RMS."""
+    import numpy as np
+
+    if not samples.size:
+        return True
+    frame = max(1, rate // 50)
+    usable = samples.size // frame * frame
+    if usable == 0:
+        return float(np.sqrt(np.mean(samples**2))) < QUIET_RMS
+    frames = samples[:usable].reshape(-1, frame)
+    loudest = float(np.sqrt(np.max(np.mean(frames.astype(np.float64) ** 2, axis=1))))
+    return loudest < QUIET_RMS
+
+
+def read_span(chunks: list, start_sample: int, end_sample: int):
+    """Samples [start_sample, end_sample) of one meeting track, as (mono float samples, rate).
+
+    `chunks`: the track's chunk WAVs that cover the span, each {"path", "start_sample"} with
+    start_sample the chunk's first sample on the track. A part no chunk covers (a missing or
+    short chunk) is silence, so the span keeps its length and the times stay on the track's clock.
+    Only these chunks are read: a long meeting is never held in memory."""
+    import numpy as np
+
+    rate = None
+    pieces = []
+    for chunk in sorted(chunks, key=lambda c: int(c["start_sample"])):
+        with wave.open(chunk["path"], "rb") as wav:
+            if wav.getsampwidth() != 2:
+                raise ValueError("meeting chunks must be 16-bit PCM")
+            channels = wav.getnchannels()
+            chunk_rate = wav.getframerate()
+            first = int(chunk["start_sample"])
+            frames = wav.getnframes()
+            lo = max(start_sample, first)
+            hi = min(end_sample, first + frames)
+            if hi <= lo:
+                rate = rate or chunk_rate
+                continue
+            wav.setpos(lo - first)
+            data = wav.readframes(hi - lo)
+        if rate is not None and chunk_rate != rate:
+            raise ValueError("meeting chunks disagree on the sample rate")
+        rate = chunk_rate
+        samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+        if channels > 1:
+            samples = samples.reshape(-1, channels).mean(axis=1)
+        pieces.append((lo, samples))
+    if rate is None:
+        raise ValueError("no chunk covers the span")
+    out = np.zeros(max(0, end_sample - start_sample), dtype=np.float32)
+    for lo, samples in pieces:
+        at = lo - start_sample
+        out[at : at + samples.size] = samples[: out.size - at]
+    return out, rate
+
+
+def sentences_of(result) -> list:
+    """The sentences of an AlignedResult as [{"start","end","text"}] in seconds from the
+    start of the audio it was given; empty sentences are dropped."""
+    out = []
+    for sentence in getattr(result, "sentences", None) or []:
+        text = (getattr(sentence, "text", "") or "").strip()
+        if not text:
+            continue
+        start = float(getattr(sentence, "start", 0.0))
+        end = float(getattr(sentence, "end", start))
+        out.append(
+            {"start": round(start, 3), "end": round(max(start, end), 3), "text": text}
         )
-        source = np.arange(samples.size, dtype=np.float32) / rate
-        samples = np.interp(target, source, samples).astype(np.float32)
-    return samples
+    return out
+
+
+def model_label(model_id: str) -> str:
+    """The model as a meeting transcript names it: the hub id, or a local folder's name only
+    (never its full path)."""
+    if os.path.isdir(model_id):
+        return "local:" + os.path.basename(os.path.normpath(model_id))
+    return model_id
 
 
 def metal_asr_config() -> dict | None:
@@ -591,6 +682,41 @@ def main() -> None:
             except Exception as e:  # noqa: BLE001
                 emit({"type": "error", "id": rid, "msg": f"transcribe failed: {e}"})
                 traceback.print_exc(file=sys.stderr)
+            continue
+        if cmd == "transcribe_span":
+            # One bounded piece of one meeting track (the engine sends one at a time, only while
+            # no dictation is under way). Answers {"type":"span"} with sentence times in seconds
+            # from start_sample. Nothing of the audio or its text goes to stderr.
+            rid = req.get("id")
+            t1 = time.perf_counter()
+            try:
+                start = int(req.get("start_sample") or 0)
+                end = int(req.get("end_sample") or 0)
+                if end <= start:
+                    raise ValueError("empty span")
+                samples, rate = read_span(req.get("chunks") or [], start, end)
+                quiet = is_quiet(samples, rate)
+                sentences = []
+                if not quiet:
+                    audio = resample_linear(
+                        samples, rate, model.preprocessor_config.sample_rate
+                    )
+                    sentences = sentences_of(transcribe_samples(model, audio))
+                emit(
+                    {
+                        "type": "span",
+                        "id": rid,
+                        "sentences": sentences,
+                        "quiet": quiet,
+                        "audio_seconds": round((end - start) / rate, 3),
+                        "seconds": time.perf_counter() - t1,
+                        "model": model_label(model_id),
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                emit(
+                    {"type": "error", "id": rid, "msg": f"transcribe span failed: {e}"}
+                )
             continue
         if cmd == "ping":
             emit({"type": "pong"})

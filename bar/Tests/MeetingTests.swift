@@ -571,10 +571,61 @@ final class MeetingRecordingFilesTests: XCTestCase {
         XCTAssertEqual(HostClock.samples(from: 2_000_000_000, to: 1_990_000_000, rate: 48_000), -480)
     }
 
-    func testMeetingSettingsAreOffByDefault() throws {
-        let settings = try JSONDecoder().decode(
-            NativeSettings.self, from: Data(#"{"schema_version":2}"#.utf8))
-        XCTAssertFalse(settings.meetingCapture)
-        XCTAssertFalse(settings.meetingAutoStart)
+    func testMeetingDetectionAsksByDefaultButNeverAutoStarts() throws {
+        func decode(_ json: String) throws -> NativeSettings {
+            try JSONDecoder().decode(NativeSettings.self, from: Data(json.utf8))
+        }
+        // Fresh install, and files without the key: detection on, auto-start off.
+        XCTAssertTrue(NativeSettings().meetingCapture)
+        XCTAssertFalse(NativeSettings().meetingAutoStart)
+        for json in [#"{}"#, #"{"schema_version":2}"#, #"{"schema_version":3}"#] {
+            XCTAssertTrue(try decode(json).meetingCapture, json)
+            XCTAssertFalse(try decode(json).meetingAutoStart, json)
+        }
+        // Before schema 3 every save wrote the old default, so a stored false is
+        // turned on once.
+        let upgraded = try decode(
+            #"{"schema_version":2,"meeting_capture":false,"meeting_auto_start":false}"#)
+        XCTAssertTrue(upgraded.meetingCapture)
+        XCTAssertFalse(upgraded.meetingAutoStart)
+        // Auto-start enabled once, then detection switched off: the upgrade turns detection
+        // on but auto-start off, so no call is recorded without asking.
+        for schema in [1, 2] {
+            let armed = try decode(
+                #"{"schema_version":\#(schema),"meeting_capture":false,"meeting_auto_start":true}"#)
+            XCTAssertTrue(armed.meetingCapture, "schema \(schema)")
+            XCTAssertFalse(armed.meetingAutoStart, "schema \(schema): must ask before recording")
+        }
+        XCTAssertFalse(
+            try decode(#"{"schema_version":2,"meeting_auto_start":true}"#).meetingAutoStart)
+        // Detection already on: nothing is forced, auto-start keeps the owner's choice.
+        XCTAssertTrue(
+            try decode(#"{"schema_version":2,"meeting_capture":true,"meeting_auto_start":true}"#)
+                .meetingAutoStart)
+        XCTAssertTrue(
+            try decode(#"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":true}"#)
+                .meetingAutoStart)
+        // From schema 3 a false is the owner's choice and stays off.
+        let chosen = try decode(#"{"schema_version":3,"meeting_capture":false}"#)
+        XCTAssertFalse(chosen.meetingCapture)
+        XCTAssertTrue(try decode(#"{"schema_version":3,"meeting_capture":true}"#).meetingCapture)
+    }
+
+    @MainActor
+    func testTurningMeetingDetectionOffSurvivesARelaunch() throws {
+        let support = FileManager.default.temporaryDirectory
+            .appendingPathComponent("phonon-meeting-default-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: support) }
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let settingsURL = support.appendingPathComponent("settings.json")
+        try Data(#"{"schema_version":2,"meeting_capture":false}"#.utf8).write(to: settingsURL)
+
+        let store = NativeAppStore(supportDirectory: support)
+        XCTAssertTrue(store.settings.meetingCapture, "an upgrade turns detection on once")
+        store.updateSettings { $0.meetingCapture = false }
+
+        let relaunched = NativeAppStore(supportDirectory: support)
+        XCTAssertFalse(relaunched.settings.meetingCapture, "the owner's off stays off")
+        XCTAssertFalse(relaunched.settings.meetingAutoStart)
     }
 }

@@ -28,6 +28,7 @@ import java.io.File
  *  - the RAM gate (REFINER_LOAD ok=false below ~4 GB: the raw transcript is committed);
  *  - dictation into a multi-line and a single-line field, read back from the field;
  *  - the line-break stage: numbered steps keep their newlines in the multi-line field and none in the single-line;
+ *  - the opener stage: a prompt-mode "okay ..." commits starting with the opener (refiner loaded only);
  *  - dictation into another app's field (Messages composer, then the contact editor), read back by accessibility.
  * Every line goes to logcat under tag "Phonon" with the prefix E2ET.
  */
@@ -321,6 +322,17 @@ class ImeE2ETest {
             log("REFINE field=$name refiner=$refiner e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} " +
                 "newlines=${text.count { it == '\n' }} field=\"${esc(text)}\"")
         }
+        // opener restore: a prompt-mode dictation that opens with "okay" commits with the opener in front, whether
+        // the refiner kept it or the opener stage put it back (the guard's raw fallback starts with it too)
+        var openerOk = true
+        if (refiner) {
+            focus(multi)
+            val e2e = refineCommit("okay so the deploy is going to slip to thursday because the tests are failing", "prompt")
+            val text = fieldText(multi)
+            openerOk = Regex("^(okay|ok)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+            log("OPENER ok=$openerOk e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} field=\"${esc(text)}\"")
+            phononLog().lastOrNull { it.contains("REFINE total_ms=") }?.let { log("OPENER refiner_text=${it.substringAfter("{\"text\":").take(200)}") }
+        }
         log("MEM after_dictation ${meminfo()} ${Mem.snapshot()}")
         smaps("after_dictation")
 
@@ -332,5 +344,6 @@ class ImeE2ETest {
         log("NOFIELD e2e=${dictateWav("s1.wav")?.substringAfter("E2E ")?.substringBefore(" text=")}")
         log("DONE ${meminfo()} ${Mem.snapshot()}")
         assertTrue("the first dictation did not reach the field", firstOk)
+        assertTrue("the opener did not survive to the field", openerOk)
     }
 }

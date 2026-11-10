@@ -6,11 +6,30 @@ import SwiftUI
 
 /// One recorded meeting as `MeetingRecorder` left it under
 /// Meetings/<id>/: the metadata.json index plus closed 5 s WAV chunks of
-/// the mic track (you) and the system track (the call). The app records
-/// audio only; no transcript is stored, so the Notes page plays the audio.
+/// the mic track (you) and the system track (the call), and once it has been
+/// transcribed, transcript.json (MeetingTranscript.swift).
 struct MeetingNote: Identifiable, Equatable {
     let metadata: MeetingMetadata
     let directory: URL
+    var transcript: MeetingTranscript?
+    /// Why the last transcription stopped, from transcript.partial.json.
+    var transcriptError: String?
+    /// The cleaned transcript, transcript.cleaned.json (MeetingCleanup.swift).
+    var cleaned: CleanedTranscript?
+    /// Why the last cleanup stopped or was skipped, from transcript.cleaned.partial.json.
+    var cleanupError: String?
+
+    init(
+        metadata: MeetingMetadata, directory: URL, transcript: MeetingTranscript? = nil,
+        transcriptError: String? = nil, cleaned: CleanedTranscript? = nil, cleanupError: String? = nil
+    ) {
+        self.metadata = metadata
+        self.directory = directory
+        self.transcript = transcript
+        self.transcriptError = transcriptError
+        self.cleaned = cleaned
+        self.cleanupError = cleanupError
+    }
 
     var id: String { metadata.id }
 
@@ -35,7 +54,9 @@ struct MeetingNote: Identifiable, Equatable {
 
     /// Where each track's sample 0 sits on the shared timeline, shifted so the
     /// earliest track starts at 0.
-    private var offsets: (mic: Int64, system: Int64) {
+    private var offsets: (mic: Int64, system: Int64) { Self.timelineOffsets(metadata) }
+
+    static func timelineOffsets(_ metadata: MeetingMetadata) -> (mic: Int64, system: Int64) {
         let mic = metadata.micStartOffsetSamples ?? 0
         let system = metadata.systemStartOffsetSamples ?? 0
         let base = min(mic, system)
@@ -88,7 +109,12 @@ struct MeetingNote: Identifiable, Equatable {
                 let metadata = try? decoder.decode(MeetingMetadata.self, from: data),
                 !(metadata.micChunks.isEmpty && metadata.systemChunks.isEmpty)
             else { return nil }
-            return MeetingNote(metadata: metadata, directory: folder)
+            return MeetingNote(
+                metadata: metadata, directory: folder,
+                transcript: MeetingTranscript.load(from: folder),
+                transcriptError: MeetingTranscriptProgress.load(from: folder)?.error,
+                cleaned: CleanedTranscript.load(from: folder),
+                cleanupError: MeetingCleanupProgress.load(from: folder)?.error)
         }
         .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
     }
@@ -288,7 +314,14 @@ struct NotesView: View {
 
             Group {
                 if let note = selected {
-                    NoteDetail(note: note).id(note.id)
+                    NoteDetail(
+                        note: note, transcript: store.transcriptState(note),
+                        cleanup: store.cleanupState(note),
+                        cleanupAvailable: store.meetingCleanupAvailable,
+                        onTranscribe: { store.transcribeMeeting(note) },
+                        onCleanUp: { store.cleanMeeting(note) }
+                    )
+                    .id(note.id)
                 } else {
                     Color.clear
                 }
@@ -330,8 +363,20 @@ struct NoteListRow: View {
 
 struct NoteDetail: View {
     let note: MeetingNote
+    var transcript: NoteTranscriptState = .notTranscribed
+    var cleanup: NoteCleanupState = .none
+    var cleanupAvailable = false
+    var onTranscribe: () -> Void = {}
+    var onCleanUp: () -> Void = {}
     @StateObject private var player = MeetingPlayer()
     @State private var peaks: [Float] = []
+    /// Show the speech model's raw turns instead of the cleaned ones.
+    @State private var showRaw = false
+
+    /// The lines listed (and copied) now.
+    private func rows(_ ready: MeetingTranscript) -> [NoteTranscriptRows.Row] {
+        NoteTranscriptRows.rows(ready, cleanup: cleanup, showRaw: showRaw)
+    }
 
     static func subtitle(_ note: MeetingNote) -> String {
         let when = note.startedAt.map { FeedTime.label($0) } ?? ""
@@ -352,12 +397,15 @@ struct NoteDetail: View {
                             .foregroundStyle(EmberTheme.mute)
                     }
                     Spacer()
-                    // No transcript is stored for meetings yet; the button
-                    // stays where the mock puts it and says so.
-                    Button {} label: { Image(systemName: "doc.on.doc") }
-                        .buttonStyle(IconButtonStyle())
-                        .disabled(true)
-                        .help("No transcript stored for this meeting")
+                    if case .ready(let ready) = transcript, !ready.turns.isEmpty {
+                        CopyIconButton(
+                            text: NoteTranscriptRows.plainText(rows(ready)), help: "Copy transcript")
+                    } else {
+                        Button {} label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(IconButtonStyle())
+                            .disabled(true)
+                            .help("No transcript to copy yet")
+                    }
                 }
 
                 HStack(spacing: 12) {
@@ -404,19 +452,13 @@ struct NoteDetail: View {
                         .padding(.vertical, 6)
                 }
 
-                // What the folder holds: the two tracks. Speaker labels and
-                // timestamps need a transcript, which meetings do not have yet.
-                trackLine(label: "You", color: EmberTheme.ember2, track: .mic, help: "Your microphone")
+                // What the folder holds: the two tracks.
+                trackLine(label: "You", color: Self.meColor, track: .mic, help: "Your microphone")
                 trackLine(
-                    label: "Call", color: Color(hex: 0x9CC7B8), track: .system,
+                    label: "Call", color: Self.callColor, track: .system,
                     help: "The call's audio (everyone else)")
                 Rectangle().fill(Color(hex: 0x191512)).frame(height: 1)
-                Text("No transcript yet: Phonon keeps this meeting's audio.")
-                    .foregroundStyle(EmberTheme.mute)
-                    .padding(.top, 12)
-                    .help(
-                        "Meetings are recorded on this Mac as two tracks, your mic and the call. "
-                            + "Transcripts are not made in the app yet.")
+                transcriptSection.padding(.top, 12)
             }
             .padding(.horizontal, 24)
             .padding(.top, 24)
@@ -430,6 +472,138 @@ struct NoteDetail: View {
             }.value
         }
         .onDisappear { player.stop() }
+    }
+
+    static let meColor = EmberTheme.ember2
+    static let callColor = Color(hex: 0x9CC7B8)
+
+    @ViewBuilder private var transcriptSection: some View {
+        switch transcript {
+        case .ready(let ready) where ready.turns.isEmpty:
+            Text("No speech was heard in this meeting.")
+                .foregroundStyle(EmberTheme.mute)
+        case .ready(let ready):
+            VStack(alignment: .leading, spacing: 12) {
+                cleanupBar
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(rows(ready).enumerated()), id: \.offset) { _, row in
+                        turnRow(row)
+                    }
+                }
+            }
+        case .transcribing(let progress):
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(
+                    progress.map { "Transcribing… \(Int(($0 * 100).rounded()))%" }
+                        ?? "Transcribing… (waiting for the speech model)"
+                )
+                .foregroundStyle(EmberTheme.mute)
+            }
+            .help("Transcribed on this Mac, a minute at a time; dictation always goes first.")
+        case .recording:
+            Text("Recording. The transcript is made when the meeting ends.")
+                .foregroundStyle(EmberTheme.mute)
+        case .notTranscribed, .failed:
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Button("Transcribe", action: onTranscribe)
+                        .buttonStyle(PillButtonStyle(primary: true))
+                        .help("Transcribe this meeting on this Mac")
+                    Text("No transcript yet.").foregroundStyle(EmberTheme.mute)
+                }
+                if case .failed(let message) = transcript {
+                    Text("The last try stopped: \(message)")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(EmberTheme.warm)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    /// Above the transcript: whether it is cleaned, the Raw / Cleaned switch, the cleanup's
+    /// progress, or the button that starts one.
+    @ViewBuilder private var cleanupBar: some View {
+        switch cleanup {
+        case .cleaned(let cleaned):
+            HStack(spacing: 10) {
+                Picker("", selection: $showRaw) {
+                    Text("Cleaned").tag(false)
+                    Text("Raw").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Cleaned: fillers and false starts removed on this Mac. Raw: the speech model's words.")
+                Text(Self.cleanupSummary(cleaned))
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(EmberTheme.mute)
+            }
+        case .cleaning(let progress, let paused):
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(Self.cleaningLabel(progress: progress, paused: paused))
+                    .foregroundStyle(EmberTheme.mute)
+            }
+            .help("Cleaned on this Mac in the background; dictation always goes first.")
+        case .failed(let message):
+            HStack(spacing: 12) {
+                if cleanupAvailable {
+                    Button("Clean up", action: onCleanUp)
+                        .buttonStyle(PillButtonStyle(primary: false))
+                        .help("Clean this transcript on this Mac")
+                }
+                Text(message)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(EmberTheme.warm)
+                    .textSelection(.enabled)
+            }
+        case .none:
+            if cleanupAvailable {
+                Button("Clean up", action: onCleanUp)
+                    .buttonStyle(PillButtonStyle(primary: false))
+                    .help("Remove fillers and false starts on this Mac; the raw transcript is kept")
+            }
+        }
+    }
+
+    static func cleanupSummary(_ cleaned: CleanedTranscript) -> String {
+        cleaned.rawChunks == 0
+            ? "Cleaned on this Mac."
+            : "Cleaned on this Mac; \(cleaned.rawChunks) of \(cleaned.chunks) parts kept as heard."
+    }
+
+    static func cleaningLabel(progress: Double?, paused: Bool) -> String {
+        if paused { return "Cleaning up… (paused while you dictate)" }
+        return progress.map { "Cleaning up… \(Int(($0 * 100).rounded()))%" } ?? "Cleaning up… (waiting its turn)"
+    }
+
+    private func turnRow(_ turn: NoteTranscriptRows.Row) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Button {
+                let duration = note.durationSeconds
+                guard duration > 0 else { return }
+                player.seek(note, to: turn.startSeconds / duration)
+            } label: {
+                Text(FeedTime.clock(turn.startSeconds))
+                    .font(.mono(12))
+                    .foregroundStyle(EmberTheme.dim)
+                    .frame(width: 46, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Play from here")
+            Text(turn.speaker.label)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(turn.speaker == .me ? Self.meColor : Self.callColor)
+                .frame(width: 70, alignment: .leading)
+            Text(turn.text)
+                .foregroundStyle(EmberTheme.soft)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func trackLine(label: String, color: Color, track: MeetingTrack, help: String)
