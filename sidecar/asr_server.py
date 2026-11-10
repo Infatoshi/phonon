@@ -304,7 +304,7 @@ def model_source(model_id: str, revision: str | None, need_folder: bool) -> str:
 
 
 def main() -> None:
-    model_id = "mlx-community/parakeet-tdt-0.6b-v2"
+    model_id = "mlx-community/parakeet-tdt-0.6b-v3"
     revision = None
     args = sys.argv[1:]
     for i, a in enumerate(args):
@@ -631,12 +631,13 @@ def main() -> None:
                     audio = decode_pcm16(
                         base64.b64encode(wav.readframes(wav.getnframes())).decode()
                     )
-                with model.transcribe_stream(context_size=(128, 64)) as demo_stream:
-                    for offset in range(0, len(audio), 6_400):
-                        demo_stream.add_audio(
-                            mx.array(audio[offset : offset + 6_400], dtype=mx.bfloat16)
-                        )
-                    text = (getattr(demo_stream.result, "text", "") or "").strip()
+                # the segment scheme live dictation runs (stream_start "segments"), on the same model
+                # object (Metal when it passed its self-test); parakeet-mlx's own chunked streaming is not
+                # what dictation uses, and v3 spells "fluid" "float" through it
+                demo_stream = stream_transcriber(model, {})
+                for offset in range(0, len(audio), 6_400):
+                    demo_stream.feed(audio[offset : offset + 6_400], work=True)
+                text = (demo_stream.finish(None) or "").strip()
                 emit(
                     {
                         "type": "result",

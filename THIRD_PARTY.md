@@ -13,15 +13,15 @@ The signed DMG bundles the arm64 `uv` executable so a clean Mac can create the
 local Python environment used by the sidecars. Model weights and Python
 packages are still downloaded into the user's normal caches on first launch.
 
-## Parakeet TDT 0.6B v2
+## Parakeet TDT 0.6B v3
 
-- Source: <https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2>
-- Upstream model: NVIDIA Parakeet TDT 0.6B v2,
-  <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2>
+- Source: <https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3>
+- Upstream model: NVIDIA Parakeet TDT 0.6B v3,
+  <https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3>
 - License: CC-BY-4.0. Converted to MLX by mlx-community; Phonon downloads it
   unchanged from that repository.
 - Primary weight: `model.safetensors`
-- Size: 2,471,559,904 bytes
+- Size: 2,508,288,736 bytes
 - SHA-256: `b958c37a6baa6874a279108755c8f2818e27bf647d72d54800a234a421341dfe`
 
 ## Phonon ASR: Parakeet TDT 0.6B v2 + N8avg, int8 ONNX (Windows, Linux, Android)

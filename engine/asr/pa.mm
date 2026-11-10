@@ -104,6 +104,7 @@ static float bf16_round(float x) {  // round to nearest even bf16 (the MLX model
 // model.safetensors -> one shared fp16 buffer: names -> half offsets (256-byte aligned tensors; each layer's
 // linear_q, linear_k, linear_v back to back, as the fused q / k / v projection reads them). F32 (rounded to bf16
 // first, the app's MLX dtype), BF16 and F16 sources.
+static uint32_t g_ntok = 1025;  // vocabulary + blank, from decoder.prediction.embed.weight (v2 1025, v3 8193)
 static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<MTLBuffer> & wbuf, std::map<std::string, uint32_t> & woff,
                              size_t & wsize) {
     const int fd = open(path, O_RDONLY);
@@ -167,6 +168,7 @@ static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<M
     for (size_t i : order) {
         dst[i] = off;
         const size_t n = (ts[i].b - ts[i].a) / (ts[i].type == 0 ? 4 : 2);
+        if (ts[i].name == "decoder.prediction.embed.weight") g_ntok = (uint32_t) (n / 640);
         off += (n * 2 + 255) / 256 * 128;  // halves, 256-byte aligned (q / k / v sizes are multiples of 256 bytes)
     }
     wsize = off * 2;
@@ -258,7 +260,7 @@ int main(int argc, char ** argv) {
         // activations against bf16 weights: asr_server.transcribe_samples)
         const int bf16_run = getenv("PA_BF16") ? atoi(getenv("PA_BF16")) : 0;
         // weights: WEIGHTS.bin (+ .idx, from ref.py export: fp16, mmapped) or the Hugging Face snapshot's
-        // model.safetensors itself (mlx-community/parakeet-tdt-0.6b-v2: 697 float32 tensors, the MLX parameter
+        // model.safetensors itself (mlx-community/parakeet-tdt-0.6b-v2 / -v3: 697 float32 tensors, the MLX parameter
         // names), converted at load exactly as the export does: rounded to bf16 (the app's MLX dtype), stored fp16
         std::map<std::string, uint32_t> woff;  // half offsets
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
@@ -469,13 +471,13 @@ int main(int argc, char ** argv) {
         const uint32_t HDd = 640;
         const uint32_t aE = take((size_t) pad32(cT) * HDd), nS = 64 + 12 * HDd + TDT_KF * TDT_NSL * TDT_PSTRIDE, aS = take(nS),
                        aOut = take(1 + 4 * cmaxout),
-                       aDbg = take(4 * 512), aDbgL = take(1030 + 2 * 640);
+                       aDbg = take(4 * 512), aDbgL = take(g_ntok + 5 + 2 * 640);
         // GPU log-mel: samples, power spectrum [frames][257], log mel [frames][128], filterbank [128][257], cos / sin / window
         const uint32_t aWav = take((size_t) cap_mel * 160 + 1024), aPow = take((size_t) cap_mel * 257), aLmel = take((size_t) cap_mel * F0),
                        aFb = take(128 * 257), aTw = take(2 * 512 + 400);
         // layer-0 input projection table b0 + Wx0 embed[t] (PA_XTAB=0: off): embed copied in as half rows, float table out
         const bool use_xtab = !getenv("PA_XTAB") || atoi(getenv("PA_XTAB"));
-        const uint32_t aEmb = take((size_t) pad32(1025) * HDd / 2), aXtab = take((size_t) 1025 * 4 * HDd);
+        const uint32_t aEmb = take((size_t) pad32(g_ntok) * HDd / 2), aXtab = take((size_t) g_ntok * 4 * HDd);
         // dictionary boosting (PA_TRIE=file from bias/make_trie.py: the flat trie the tdt kernel walks, uint32 words);
         // committed spans out: count, {start token, end token, canonical term, boosted} x maxspans, flips, rollbacks
         std::vector<uint32_t> trie;
@@ -536,7 +538,7 @@ int main(int argc, char ** argv) {
         const int lin_v = 4, tn2 = getenv("PA_TN2") ? atoi(getenv("PA_TN2")) : 2;
         // PA_UNROLL=n: unroll lin4's k loop n times (measured at T 22: no gain, within the 0.1 ms noise)
         const std::string unroll = getenv("PA_UNROLL") && *getenv("PA_UNROLL") ? std::string("#define LIN4_UNROLL _Pragma(\"clang loop unroll_count(") + getenv("PA_UNROLL") + ")\")\n" : "";
-        src = [[NSString stringWithFormat:@"#define TN2 %d\n#define DEC_BF16 %d\n#define TDT_LNU %u\n#define TDT_KF %u\n%s", tn2, bf16_run, TDT_LNU, TDT_KF,
+        src = [[NSString stringWithFormat:@"#define TN2 %d\n#define DEC_BF16 %d\n#define TDT_LNU %u\n#define TDT_KF %u\n#define NTOK_V %u\n%s", tn2, bf16_run, TDT_LNU, TDT_KF, g_ntok,
                                           unroll.c_str()] stringByAppendingString:src];
         id<MTLLibrary> lib = [dev newLibraryWithSource:src options:[MTLCompileOptions new] error:&err];
         if (!lib) { fprintf(stderr, "%s\n", err.localizedDescription.UTF8String); return 1; }
@@ -733,11 +735,11 @@ int main(int argc, char ** argv) {
                 [e dispatchThreadgroups:MTLSizeMake(D / (8 * tn2), (PT + 31) / 32, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             }
             if (use_xtab) {  // b0 + Wx0 embed[t], t < 1025: rows 1025, n 2560, k 640, half in, float out
-                memcpy((uint16_t *) A + 2 * aEmb, (const uint16_t *) wptr + W("decoder.prediction.embed.weight"), (size_t) 1025 * HDd * 2);
-                Lin Lx = { 2 * aEmb, aXtab, 0, W(dp + "0.Wx"), W(dp + "0.bias"), 1025, 4 * HDd, HDd, 0, 1.f, 0 };
+                memcpy((uint16_t *) A + 2 * aEmb, (const uint16_t *) wptr + W("decoder.prediction.embed.weight"), (size_t) g_ntok * HDd * 2);
+                Lin Lx = { 2 * aEmb, aXtab, 0, W(dp + "0.Wx"), W(dp + "0.bias"), g_ntok, 4 * HDd, HDd, 0, 1.f, 0 };
                 [e setBytes:&Lx length:sizeof Lx atIndex:0];
                 [e setComputePipelineState:pL4[1][0][3][tni(tn2)]];
-                [e dispatchThreadgroups:MTLSizeMake(4 * HDd / (8 * tn2), (1025 + 31) / 32, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                [e dispatchThreadgroups:MTLSizeMake(4 * HDd / (8 * tn2), (g_ntok + 31) / 32, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             }
             [e endEncoding];
             [cb commit];
@@ -865,7 +867,7 @@ int main(int argc, char ** argv) {
                     std::vector<uint32_t> t(m);
                     if (m && fread(t.data(), 4, m, stdin) != m) break;
                     uint32_t st = m > trie_cap ? 1 : 0;
-                    if (!st && m && (m < 16 || (uint64_t) t[0] * 4 + (uint64_t) t[1] * 3 + 16 + 1025 + 2 * 1032 != m)) st = 2;
+                    if (!st && m && (m < 16 || (uint64_t) t[0] * 4 + (uint64_t) t[1] * 3 + 16 + g_ntok + 2 * (g_ntok + 7) != m)) st = 2;
                     if (!st) {
                         if (m) memcpy((uint32_t *) A + aTrie, t.data(), (size_t) m * 4);
                         TD.trie = m ? aTrie : ~0u;

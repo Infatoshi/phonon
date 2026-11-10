@@ -81,6 +81,10 @@ struct NativeSettings: Codable, Equatable {
     var byokEnabled: Bool
     var byokBaseURL: String
     var byokModel: String
+    /// The instructions the correction model runs under (Settings > Advanced > Correction
+    /// prompt). Empty is the wording it was trained on. The engine reads it from
+    /// settings.json when the file changes, so an edit applies to the next correction.
+    var refinerPrompt: String
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -115,6 +119,7 @@ struct NativeSettings: Codable, Equatable {
         case byokEnabled = "byok_enabled"
         case byokBaseURL = "byok_base_url"
         case byokModel = "byok_model"
+        case refinerPrompt = "refiner_prompt"
     }
 
     init(
@@ -149,7 +154,8 @@ struct NativeSettings: Codable, Equatable {
         writingModesByApp: [String: String] = [:],
         byokEnabled: Bool = false,
         byokBaseURL: String = "",
-        byokModel: String = ""
+        byokModel: String = "",
+        refinerPrompt: String = ""
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -183,6 +189,7 @@ struct NativeSettings: Codable, Equatable {
         self.byokEnabled = byokEnabled
         self.byokBaseURL = byokBaseURL
         self.byokModel = byokModel
+        self.refinerPrompt = refinerPrompt
     }
 
     init(from decoder: Decoder) throws {
@@ -261,6 +268,8 @@ struct NativeSettings: Codable, Equatable {
         byokEnabled = (try? values.decodeIfPresent(Bool.self, forKey: .byokEnabled)) ?? false
         byokBaseURL = ((try? values.decodeIfPresent(String.self, forKey: .byokBaseURL)) ?? nil) ?? ""
         byokModel = ((try? values.decodeIfPresent(String.self, forKey: .byokModel)) ?? nil) ?? ""
+        refinerPrompt =
+            ((try? values.decodeIfPresent(String.self, forKey: .refinerPrompt)) ?? nil) ?? ""
     }
 }
 

@@ -543,8 +543,11 @@ kernel void subflat(constant Sub & P [[buffer(0)]], device float * A [[buffer(2)
 // durations, frames, confidences and spans are identical.
 // The MLX app runs in bf16: h, c, the pred / enc projections, z and the logits are rounded to bf16 where MLX rounds.
 #define HD 640
-#define NOUT 1030
-#define NTOK 1025
+#ifndef NTOK_V
+#define NTOK_V 1025                   // vocabulary + blank; pa.mm sets it from the weights (v2: 1025, v3: 8193)
+#endif
+#define NTOK NTOK_V
+#define NOUT (NTOK + 5)               // + the 5 TDT durations
 #define NSL 20                        // joint row slices per frame (fixed: the order of the softmax partial sums)
 #define RPT ((NOUT + NSL - 1) / NSL)
 #define PSTRIDE 12  // uints per slice partial: max, argmax, Z, Sx, duration max / argmax, runner-up, best child
@@ -598,8 +601,8 @@ inline TrieV trie_view(device const uint * t) {
     v.nd = t + 16;
     v.ed = v.nd + 4 * nodes;
     v.root = v.ed + 3 * edges;
-    v.ws = v.root + 1025;
-    v.bd = v.ws + 1032;
+    v.ws = v.root + NTOK;
+    v.bd = v.ws + (NTOK + 7);
     v.s_start = as_type<float>(t[2]);
     v.s_cont = as_type<float>(t[3]);
     v.budget_fx = (long) (as_type<float>(t[4]) * FX_ONE);
@@ -608,7 +611,7 @@ inline TrieV trie_view(device const uint * t) {
 }
 inline uint trie_child(TrieV v, uint node, uint k) {  // child node of `node` on token k, ~0 when none
     if (node == 0) {
-        const uint c = k < 1025 ? v.root[k] : ~0u;
+        const uint c = k < NTOK ? v.root[k] : ~0u;
         return c == ~0u ? ~0u : (c & 0x7fffffffu);
     }
     const uint off = v.nd[4 * node], cnt = v.nd[4 * node + 1];

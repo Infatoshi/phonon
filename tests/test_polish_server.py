@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 
 from sidecar.polish_server import (
@@ -24,6 +25,7 @@ from sidecar.polish_server import (
     restore_terms,
     snapshot_is_complete,
     split_rendered_prompt,
+    use_refiner_prompt,
     with_transcript,
     writing_mode,
 )
@@ -147,6 +149,26 @@ def test_refiner_system_prompt_matches_the_training_format():
     assert refiner_system_prompt(["vLLM"], line) == (
         REFINER_SYSTEM_PROMPT + "\n" + line + "\nVocabulary the speaker may use: vLLM"
     )
+
+
+def test_a_request_can_bring_its_own_refiner_prompt():
+    try:
+        assert use_refiner_prompt({"refiner_prompt": "  Fix grammar.  "}) == "Fix grammar."
+        assert refiner_system_prompt([]) == "Fix grammar."
+        assert refiner_system_prompt(["vLLM"], "Mode.") == (
+            "Fix grammar.\nMode.\nVocabulary the speaker may use: vLLM"
+        )
+        # the next request that names none is back on the trained wording
+        assert use_refiner_prompt({"app_category": "chat"}) == REFINER_SYSTEM_PROMPT
+        assert refiner_system_prompt([]) == REFINER_SYSTEM_PROMPT
+    finally:
+        use_refiner_prompt(None)
+
+
+def test_an_unusable_refiner_prompt_falls_back_to_the_trained_one():
+    for bad in ("", "   ", 7, None, ["x"], "x" * 4001, "a\x00PHONON_USER_TURN\x00b"):
+        assert use_refiner_prompt({"refiner_prompt": bad}) == REFINER_SYSTEM_PROMPT
+    assert use_refiner_prompt("not a dict") == REFINER_SYSTEM_PROMPT
 
 
 MODE_LINES = {
@@ -476,3 +498,12 @@ def test_split_point_prefers_the_sentence_end_nearest_the_middle():
     assert (
         split_point(["a", "b", "c", "d."]) == 2
     )  # the final word's period is not a split
+
+
+def test_the_settings_editor_shows_the_wording_the_refiner_was_trained_on():
+    # bar/Sources/CorrectionPrompt.swift repeats REFINER_SYSTEM_PROMPT as the editor's default
+    from pathlib import Path
+
+    swift = (Path(__file__).parent.parent / "bar/Sources/CorrectionPrompt.swift").read_text()
+    pieces = re.findall(r'^\s*(?:\+ )?"(.*)"$', swift.split("static let trained =")[1].split("\n\n")[0], re.M)
+    assert "".join(pieces) == REFINER_SYSTEM_PROMPT

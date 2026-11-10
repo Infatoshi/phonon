@@ -258,8 +258,21 @@ enum StreamRefine {
 }
 
 enum PreviewRevisionPolicy {
+    /// A partial that is only the front of the last one (the recognizer has not heard the tail
+    /// yet) cannot shrink the preview. A shorter partial that disagrees with the last one is a
+    /// revision (every partial re-transcribes the whole recording), so it replaces it: keeping
+    /// the longer one pinned a wrong tail for seconds, and every refiner draft for the newer
+    /// transcript was then skipped as stale (owner trace 2026-11-10, "a little bit more than a
+    /// little bit" held from 1.7 s to 6.5 s).
     static func stableAcoustic(previous: String, candidate: String) -> String {
-        wordCount(candidate) < wordCount(previous) ? previous : candidate
+        let old = words(previous)
+        let new = words(candidate)
+        guard new.count < old.count else { return candidate }
+        return old.starts(with: new) ? previous : candidate
+    }
+
+    private static func words(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0.isWhitespace }).map { LiveTextPolicy.normalized(String($0)) }
     }
 
     static func safeFinalText(source: String, candidate: String) -> String {
@@ -2353,6 +2366,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         // Meeting transcripts: after each recording stops, from the Notes button, and at
         // launch for any a quit interrupted. Spans go through the engine's meeting queue.
         meetingTranscriber.send = { [weak self] command in self?.engine.send(command) }
+        PromptTester.shared.send = { [weak self] command in self?.engine.send(command) }
+        PromptTester.shared.isReady = { [weak self] in self?.enginesReady == true }
         meetingTranscriber.onJobsChanged = { [weak self] jobs in
             self?.appStore.meetingTranscription = jobs
         }
@@ -2840,6 +2855,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             let kind = ev["kind"] as? String ?? ""
             let id = ev["id"] as? String
 
+            if kind == "polish",
+                PromptTester.shared.handleResult(
+                    id: id, text: ev["text"] as? String,
+                    seconds: (ev["latency_ms"] as? Double).map { $0 / 1_000 })
+            {
+                return  // a try from Settings > Advanced > Correction prompt: never typed anywhere
+            }
+
             if kind == "asr" {
                 let text = (ev["text"] as? String ?? "").trimmingCharacters(
                     in: .whitespacesAndNewlines)
@@ -2984,6 +3007,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             meetingCleaner.setDictationQuiet(ev["quiet"] as? Bool ?? false)
         case "error":
             let msg = ev["msg"] as? String ?? "error"
+            if PromptTester.shared.handleError(id: ev["id"] as? String, message: msg) { return }
             appStore.lastError = msg
             NSLog("phonon engine error: \(msg)")
             if let id = ev["id"] as? String, id != activeId { return }
