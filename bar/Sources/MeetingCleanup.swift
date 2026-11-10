@@ -108,6 +108,28 @@ enum MeetingCleanupChunker {
         return out
     }
 
+    /// A rejected chunk's second pass (GOAL N13): the same lines as two chunks, cut at the line
+    /// boundary nearest half its words. Nil for a one-line chunk.
+    static func halves(_ chunk: CleanupChunk) -> (CleanupChunk, CleanupChunk)? {
+        guard chunk.lines.count >= 2 else { return nil }
+        let total = chunk.wordCount
+        var best = 1
+        var bestGap = Int.max
+        var words = 0
+        for cut in 1..<chunk.lines.count {
+            words += chunk.lines[cut - 1].wordCount
+            let gap = abs(2 * words - total)
+            if gap < bestGap {
+                bestGap = gap
+                best = cut
+            }
+        }
+        return (
+            CleanupChunk(index: chunk.index, lines: Array(chunk.lines[..<best])),
+            CleanupChunk(index: chunk.index, lines: Array(chunk.lines[best...]))
+        )
+    }
+
     static func endsSentence(_ text: String) -> Bool {
         guard let last = text.last else { return false }
         return last == "." || last == "?" || last == "!"
@@ -120,13 +142,35 @@ enum CleanupOutcome: Equatable {
     case cleaned([String?])
     /// The answer failed a check; the chunk keeps its raw lines.
     case rejected(String)
+    /// After the second pass one half passed and one did not: per chunk line its text, the raw
+    /// text at the offsets in `raw`, and why that half was rejected.
+    case mixed([String?], raw: [Int], reason: String)
+
+    /// A rejected chunk's two halves, each checked by itself, as one outcome for the chunk: both
+    /// cleaned is cleaned, both rejected keeps the first answer's reason, one of each is mixed.
+    static func combine(
+        _ first: CleanupOutcome, _ second: CleanupOutcome, halves: (CleanupChunk, CleanupChunk), original: String
+    ) -> CleanupOutcome {
+        switch (first, second) {
+        case (.cleaned(let a), .cleaned(let b)):
+            return .cleaned(a + b)
+        case (.cleaned(let a), .rejected(let why)):
+            let raw = halves.1.lines.map { Optional($0.text) }
+            return .mixed(a + raw, raw: Array(a.count..<(a.count + raw.count)), reason: why)
+        case (.rejected(let why), .cleaned(let b)):
+            return .mixed(halves.0.lines.map { Optional($0.text) } + b, raw: Array(0..<halves.0.lines.count), reason: why)
+        default:
+            return .rejected(original)
+        }
+    }
 }
 
 /// The checks on an answer, before anything of it is used. Thresholds from the MB adapters'
-/// outputs on the 190 public eval2 chunks (2026-11-10): structure failed on 6/190 (s1) and
-/// 7/190 (s2), mostly a short non-filler line dropped ("Okay, great."); among the rest the
+/// outputs on the 190 public eval2 chunks (2026-11-10): among structurally valid answers the
 /// lowest content recall was 0.867 / 0.844 (false starts removed), the lowest recall of a line
-/// with 12+ content words 0.58, the most new words 5.7 per 100.
+/// with 12+ content words 0.58, the most new words 5.7 per 100. With the line alignment below
+/// (not greedy) 3/190 (s1) and 4/190 (s2) are rejected; tests/meeting_cleanup_check.py is the
+/// Python reference and gives the same verdict on all 380 answers.
 enum MeetingCleanupValidator {
     static let minChunkRecall = 0.85
     static let longLineWords = 12
@@ -193,29 +237,99 @@ enum MeetingCleanupValidator {
         return Double(kept) / Double(source.count)
     }
 
-    static func check(_ chunk: CleanupChunk, output: String) -> CleanupOutcome {
-        guard let answer = parse(output) else { return .rejected("unlabelled line") }
-        let input = chunk.lines
-        var cleaned = [String?](repeating: nil, count: input.count)
-        /// Input lines whose label the answer kept.
+    /// Words two lines share (multiset).
+    static func overlap(_ a: String, _ b: String) -> Int {
+        var have: [String: Int] = [:]
+        for word in tokens(b) { have[word, default: 0] += 1 }
+        var shared = 0
+        for word in tokens(a) where (have[word] ?? 0) > 0 {
+            have[word]! -= 1
+            shared += 1
+        }
+        return shared
+    }
+
+    /// Same label, and a non-empty answer line of fillers only never stands for a line that held
+    /// content (that line was dropped, not cleaned).
+    static func canStandFor(_ answer: (label: String, text: String), _ input: CleanupLine) -> Bool {
+        guard answer.label == input.label else { return false }
+        return !(!answer.text.isEmpty && fillerOnly(answer.text) && !fillerOnly(input.text))
+    }
+
+    /// Answer line k -> input line, strictly increasing, each able to stand for its input line, every input line left out
+    /// filler-only; of those, the one sharing the most words with the input. Nil when there is
+    /// none. The greedy walk this replaces matched each answer line to the first input line of
+    /// its label, so a kept line could land on an earlier filler line of the same speaker
+    /// ("Speaker 2: Right." before "Speaker 2: <the real line>") and a correct answer was
+    /// rejected: 3 of 6 (s1) and 4 of 8 (s2) eval2 fallbacks. Ties take the match over the skip
+    /// from the end, as tests/meeting_cleanup_check.py does.
+    static func align(_ input: [CleanupLine], _ answer: [(label: String, text: String)]) -> [Int]? {
+        let n = input.count
+        let m = answer.count
+        let filler = input.map { fillerOnly($0.text) }
+        var best = [[Int?]](repeating: [Int?](repeating: nil, count: n + 1), count: m + 1)
+        best[0][0] = 0
+        if n > 0 {
+            for j in 1...n { best[0][j] = filler[j - 1] ? best[0][j - 1] : nil }
+        }
+        func score(_ i: Int, _ j: Int) -> Int? {
+            guard canStandFor(answer[i - 1], input[j - 1]), let before = best[i - 1][j - 1] else { return nil }
+            return before + overlap(answer[i - 1].text, input[j - 1].text)
+        }
+        if m > 0, n > 0 {
+            for i in 1...m {
+                for j in 1...n {
+                    let skip = filler[j - 1] ? best[i][j - 1] : nil
+                    let match = score(i, j)
+                    best[i][j] = [skip, match].compactMap { $0 }.max()
+                }
+            }
+        }
+        guard let total = best[m][n] else { return nil }
+        var at = [Int](repeating: 0, count: m)
+        var i = m
+        var j = n
+        var remaining = total
+        while i > 0 {
+            if let match = score(i, j), match == remaining {
+                at[i - 1] = j - 1
+                remaining = best[i - 1][j - 1]!
+                i -= 1
+            } else {
+                remaining = best[i][j - 1]!
+            }
+            j -= 1
+        }
+        return at
+    }
+
+    /// Why no alignment exists, named by the greedy walk the check used before.
+    static func structuralReason(_ input: [CleanupLine], _ answer: [(label: String, text: String)]) -> String {
         var answered: Set<Int> = []
         var next = 0
-        for (label, text) in answer {
+        for (label, _) in answer {
             while next < input.count && input[next].label != label {
-                if !fillerOnly(input[next].text) { return .rejected("speaker order") }
+                if !fillerOnly(input[next].text) { return "speaker order" }
                 next += 1
             }
-            guard next < input.count else { return .rejected("extra speaker line") }
-            // A label kept with nothing after it ("Speaker 4:" for "you know,") is a dropped
-            // filler line; the recall checks below catch one that held real words.
-            if !text.isEmpty { cleaned[next] = text }
+            guard next < input.count else { return "extra speaker line" }
             answered.insert(next)
             next += 1
         }
-        for (index, line) in input.enumerated()
-        where !answered.contains(index) && !fillerOnly(line.text) {
-            return .rejected("speaker line lost")
+        for (index, line) in input.enumerated() where !answered.contains(index) && !fillerOnly(line.text) {
+            return "speaker line lost"
         }
+        return "speaker order"
+    }
+
+    static func check(_ chunk: CleanupChunk, output: String) -> CleanupOutcome {
+        guard let answer = parse(output) else { return .rejected("unlabelled line") }
+        let input = chunk.lines
+        guard let at = align(input, answer) else { return .rejected(structuralReason(input, answer)) }
+        var cleaned = [String?](repeating: nil, count: input.count)
+        // A label kept with nothing after it ("Speaker 4:" for "you know,") is a dropped filler
+        // line; the recall checks below catch one that held real words.
+        for (line, index) in zip(answer, at) where !line.text.isEmpty { cleaned[index] = line.text }
         let inputWords = input.flatMap { tokens($0.text) }
         let outputWords = cleaned.compactMap { $0 }.flatMap(tokens)
         if Double(outputWords.count) > maxLengthRatio * Double(max(1, inputWords.count)) {
@@ -264,15 +378,28 @@ struct CleanupChunkResult: Codable, Equatable {
     var lines: [String?]?
     var reason: String?
     var seconds: Double?
+    /// Lines (offsets in the chunk) kept raw while the rest is cleaned: a half the second pass
+    /// could not clean.
+    var raw: [Int]?
+    /// Why the first answer was rejected, when the chunk went through the second pass.
+    var retried: String?
 
-    init(chunk: Int, outcome: CleanupOutcome, seconds: Double? = nil) {
+    init(chunk: Int, outcome: CleanupOutcome, seconds: Double? = nil, retried: String? = nil) {
         self.chunk = chunk
         self.seconds = seconds
+        self.retried = retried
         switch outcome {
         case .cleaned(let lines): self.lines = lines
         case .rejected(let reason): self.reason = reason
+        case .mixed(let lines, let raw, let reason):
+            self.lines = lines
+            self.raw = raw
+            self.reason = reason
         }
     }
+
+    /// Whether any of the chunk's lines fell back to raw (the N13 count).
+    var keptRaw: Bool { lines == nil || !(raw ?? []).isEmpty }
 }
 
 /// Meetings/<id>/transcript.cleaned.partial.json: the chunks cleaned so far, so a quit
@@ -365,9 +492,10 @@ struct CleanedTranscript: Codable, Equatable {
         var rawChunks = 0
         for chunk in chunks {
             let lines = byChunk[chunk.index]?.lines
-            if lines == nil || lines!.count != chunk.lines.count { rawChunks += 1 }
+            let raw = Set(byChunk[chunk.index]?.raw ?? [])
+            if lines == nil || lines!.count != chunk.lines.count || !raw.isEmpty { rawChunks += 1 }
             for (offset, line) in chunk.lines.enumerated() {
-                if let lines, lines.count == chunk.lines.count {
+                if let lines, lines.count == chunk.lines.count, !raw.contains(offset) {
                     parts[line.turn].append((lines[offset], true))
                 } else {
                     parts[line.turn].append((line.text, false))

@@ -46,6 +46,7 @@ final class MeetingCleanupLiveCheck: XCTestCase {
             switch MeetingCleanupValidator.check(CleanupChunk(index: 0, lines: lines), output: answer.text) {
             case .cleaned: verdict = "ok"
             case .rejected(let reason): verdict = reason
+            case .mixed: verdict = "mixed (never from one answer)"
             }
             verdicts[verdict, default: 0] += 1
             if verdict == answer.verdict { agree += 1 } else { print("disagree", answer.id, verdict, answer.verdict ?? "") }

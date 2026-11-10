@@ -147,6 +147,37 @@ final class MeetingCleaner {
         done(id, job: .failed(message))
     }
 
+    /// One chunk's answer, checked: a runtime error is tried once more on a fresh process, and
+    /// a chunk that breaks it twice is "runtime error". Nil when cancelled, or when the process
+    /// would not start again (the meeting has then failed).
+    private func answer(
+        _ chunk: CleanupChunk, runtime: MeetingCleanupRuntime, id: String, output: URL,
+        progress: MeetingCleanupProgress
+    ) async -> CleanupOutcome? {
+        for attempt in 0..<2 {
+            await gate()
+            if Task.isCancelled { return nil }
+            do {
+                let text = try await runtime.complete(
+                    system: MeetingCleanupPrompt.system, user: chunk.prompt, maxTokens: chunk.maxTokens)
+                return MeetingCleanupValidator.check(chunk, output: text)
+            } catch {
+                if Task.isCancelled { return nil }
+                runtime.stop()
+                do {
+                    try await runtime.start()
+                    runtime.setPaused(!runnable)
+                } catch {
+                    if Task.isCancelled { return nil }
+                    fail(id, output: output, progress: progress, message: error.localizedDescription)
+                    return nil
+                }
+                if attempt == 1 { return .rejected("runtime error") }
+            }
+        }
+        return .rejected("runtime error")
+    }
+
     private func run(_ directory: URL) async {
         let id = directory.lastPathComponent
         let output = outputDirectory(directory)
@@ -192,32 +223,25 @@ final class MeetingCleaner {
 
         let finished = Set(progress.results.map(\.chunk))
         for chunk in chunks where !finished.contains(chunk.index) {
-            var outcome: CleanupOutcome?
             let chunkStarted = Date()
-            for attempt in 0..<2 where outcome == nil {
-                await gate()
-                if Task.isCancelled { return }
-                do {
-                    let answer = try await made.runtime.complete(
-                        system: MeetingCleanupPrompt.system, user: chunk.prompt, maxTokens: chunk.maxTokens)
-                    outcome = MeetingCleanupValidator.check(chunk, output: answer)
-                } catch {
-                    if Task.isCancelled { return }
-                    // once more on a fresh process; a chunk that breaks it twice keeps its raw lines
-                    made.runtime.stop()
-                    do {
-                        try await made.runtime.start()
-                        made.runtime.setPaused(!runnable)
-                    } catch {
-                        if Task.isCancelled { return }
-                        return fail(id, output: output, progress: progress, message: error.localizedDescription)
-                    }
-                    if attempt == 1 { outcome = .rejected("runtime error") }
-                }
+            guard var outcome = await answer(chunk, runtime: made.runtime, id: id, output: output, progress: progress)
+            else { return }
+            var retried: String?
+            // Second pass (GOAL N13): a rejected answer is asked again as two halves, each
+            // checked by the same validator; a half that still fails keeps its raw lines.
+            if case .rejected(let reason) = outcome, reason != "runtime error",
+                let halves = MeetingCleanupChunker.halves(chunk)
+            {
+                guard
+                    let first = await answer(halves.0, runtime: made.runtime, id: id, output: output, progress: progress),
+                    let second = await answer(halves.1, runtime: made.runtime, id: id, output: output, progress: progress)
+                else { return }
+                retried = reason
+                outcome = CleanupOutcome.combine(first, second, halves: halves, original: reason)
             }
             let result = CleanupChunkResult(
-                chunk: chunk.index, outcome: outcome ?? .rejected("runtime error"),
-                seconds: (Date().timeIntervalSince(chunkStarted) * 10).rounded() / 10)
+                chunk: chunk.index, outcome: outcome,
+                seconds: (Date().timeIntervalSince(chunkStarted) * 10).rounded() / 10, retried: retried)
             progress.results.append(result)
             do {
                 try progress.save(to: output)

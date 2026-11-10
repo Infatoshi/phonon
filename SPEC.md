@@ -394,14 +394,21 @@ Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupR
   it over 220. Training dropped a run that could not reach 120 words; the app keeps it as a short chunk, so no line
   is left out. The prompt is the training one: the meeting system prompt plus the mode line, the chunk as
   "Speaker N: words" lines, greedy, at most 2.8 x words + 96 tokens.
-- Checks on every answer (reference: meetings_v1 obj_meet.py; Swift and Python agree on all 380 MB s1/s2 answers
-  to the 190 public eval2 chunks): TL;DR lines removed; every other line "Speaker N: words"; the labels in the input
-  order, a line dropped only when it held nothing but fillers (a kept label with nothing after it counts as
-  dropped); content-word recall against the raw chunk at least 0.85; a line of 12+ content words keeps at least
-  half of them; at most 10 new words per 100; at most 2.2x the input's words. Thresholds from the data: on eval2
-  the lowest recall of a structurally valid answer was 0.867 (s1) / 0.844 (s2), all from removed false starts,
-  the lowest long-line recall 0.58, the most new words 5.7 per 100. A chunk that fails keeps its raw lines: 6/190
-  (s1) and 8/190 (s2), mostly a short line with one content word dropped ("Okay, great.").
+- Checks on every answer (reference: tests/meeting_cleanup_check.py, meetings_v1 obj_meet.py thresholds; Swift and
+  Python agree on all 380 MB s1/s2 answers to the 190 public eval2 chunks): TL;DR lines removed; every other line
+  "Speaker N: words"; the labels in the input order, a line dropped only when it held nothing but fillers (a kept
+  label with nothing after it counts as dropped); content-word recall against the raw chunk at least 0.85; a line
+  of 12+ content words keeps at least half of them; at most 10 new words per 100; at most 2.2x the input's words.
+  Answer lines are matched to input lines by dynamic programming: in order, same label, every input line left out
+  filler-only, a non-empty filler-only answer line never standing for a line with content, and of those the
+  matching that shares the most words. (Until 2026-11-10 a greedy walk matched each answer line to the first input
+  line of its label, so a kept line could land on an earlier filler line of the same speaker and a correct answer
+  was rejected: 3 of the 6 (s1) and 4 of the 8 (s2) fallbacks.) Thresholds from the data: on eval2 the lowest
+  recall of a structurally valid answer was 0.867 (s1) / 0.844 (s2), all from removed false starts, the lowest
+  long-line recall 0.58, the most new words 5.7 per 100. A rejected answer is asked again as two chunks, the lines
+  cut at the boundary nearest half the words, each checked the same way; a half that still fails keeps its raw
+  lines (`raw` and `retried` in the progress file), and a chunk with any raw line counts as kept raw. First pass
+  only, on eval2: 3/190 (s1) and 4/190 (s2) kept raw; the second pass has not been scored yet.
 - Output: transcript.cleaned.json `{"schema_version":1,"source":{"turns","sha256"},"runtime","adapter_sha256",
   "created_at","chunks","raw_chunks","turns":[{"text"|null,"source":"cleaned"|"raw"|"mixed"|"dropped"}]}`, one
   entry per raw turn by index; a long turn's parts are joined. transcript.json is never rewritten. `source` is a
