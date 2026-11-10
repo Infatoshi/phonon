@@ -29,7 +29,7 @@ FILLERS = {
     "mmm", "oh", "yeah", "okay", "ok", "right", "yes", "so", "like", "well", "mm-mm", "yep", "sure", "alright",
 }  # fmt: skip
 LABEL = re.compile(r"^\s*\**(Speaker \d+)\**\s*:\s*\**")
-TLDR = re.compile(r"^\s*\**\s*TL;?\s*DR", re.I)
+TLDR = re.compile(r"^\s*\**\s*TL;?\s*DR", re.IGNORECASE)
 
 
 def tokens(text):
