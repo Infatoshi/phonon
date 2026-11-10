@@ -135,6 +135,43 @@ pub enum Device {
 /// (DEVLOG 2026-11-07 9:50 pm and 10:30 pm).
 pub const SATURATED: f64 = 0.85;
 
+/// PCI vendor ids of GPU makers that ship a Vulkan driver on Windows: NVIDIA,
+/// AMD, Intel. A machine with none of them (a VM's virtual adapter, Microsoft
+/// Basic Display) has no device `--list-devices` could offer, and the listing is
+/// not free: cold, with real-time scanning on and every vCPU busy, it hit its
+/// 20 s timeout (W11, Windows 11 VM, 2026-11-10). Integrated GPUs keep the
+/// listing: registry memory sizes cannot tell them from discrete ones (DEVLOG
+/// 2026-11-07), and `MIN_GPU_DECODE` still decides.
+const GPU_VENDORS: &[&str] = &["VEN_10DE", "VEN_1002", "VEN_8086"];
+
+/// Whether any display adapter id ("PCI\VEN_10DE&DEV_2204&...") is from a GPU vendor.
+#[cfg(any(windows, test))]
+fn any_gpu_vendor(adapter_ids: &[String]) -> bool {
+    adapter_ids.iter().any(|id| {
+        let id = id.to_ascii_uppercase();
+        id.strip_prefix("PCI\\")
+            .is_some_and(|rest| GPU_VENDORS.iter().any(|vendor| rest.starts_with(vendor)))
+    })
+}
+
+/// The PnP ids of the display adapters Windows knows (EnumDisplayDevicesW).
+#[cfg(windows)]
+pub fn display_adapter_ids() -> Vec<String> {
+    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW};
+    let mut ids = Vec::new();
+    for index in 0..32 {
+        // SAFETY: a zeroed DISPLAY_DEVICEW with `cb` set is what the call expects.
+        let mut device: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+        device.cb = std::mem::size_of::<DISPLAY_DEVICEW>() as u32;
+        if unsafe { EnumDisplayDevicesW(std::ptr::null(), index, &mut device, 0) } == 0 {
+            break;
+        }
+        let end = device.DeviceID.iter().position(|&c| c == 0).unwrap_or(128);
+        ids.push(String::from_utf16_lossy(&device.DeviceID[..end]));
+    }
+    ids
+}
+
 /// The `VulkanN` device to offload to: the first one `llama-server --list-devices`
 /// prints ("  Vulkan0: NVIDIA GeForce RTX 3090 (24322 MiB, 23554 MiB free)").
 /// llama.cpp leaves integrated GPUs out of that list when a discrete one exists
@@ -669,13 +706,20 @@ impl Corrector {
         }
         #[cfg(windows)]
         {
-            let vulkan = Target {
-                kind: "Vulkan",
-                env: Vec::new(),
-                pinned: None,
-            };
-            if let Some(main) = gpu_server(&server, &vulkan, "vulkan", &model, threads) {
-                return Ok(Self::new(main, Device::Gpu, server, model));
+            let adapters = display_adapter_ids();
+            if any_gpu_vendor(&adapters) {
+                let vulkan = Target {
+                    kind: "Vulkan",
+                    env: Vec::new(),
+                    pinned: None,
+                };
+                if let Some(main) = gpu_server(&server, &vulkan, "vulkan", &model, threads) {
+                    return Ok(Self::new(main, Device::Gpu, server, model));
+                }
+            } else {
+                eprintln!(
+                    "phonon: no NVIDIA, AMD or Intel display adapter; not listing Vulkan devices"
+                );
             }
         }
         let main = Server::spawn(&server, &model, threads, None, &[])?;
@@ -814,6 +858,39 @@ impl Corrector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vulkan_is_listed_only_with_a_gpu_vendors_adapter() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // RTX 3090 desktop with a Radeon iGPU; an Intel laptop; an AMD APU alone
+        assert!(any_gpu_vendor(&ids(&[
+            "PCI\\VEN_10DE&DEV_2204&SUBSYS_38811462&REV_A1",
+            "PCI\\VEN_1002&DEV_13C0&SUBSYS_00000000&REV_C1",
+        ])));
+        assert!(any_gpu_vendor(&ids(&[
+            "PCI\\VEN_8086&DEV_A7A0&SUBSYS_0B141028&REV_04"
+        ])));
+        assert!(any_gpu_vendor(&ids(&["pci\\ven_1002&dev_15bf&rev_c4"])));
+        // a QEMU VM (virtio-vga, Bochs/stdvga), Microsoft Basic Display, Hyper-V, nothing
+        assert!(!any_gpu_vendor(&ids(&[
+            "PCI\\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01"
+        ])));
+        assert!(!any_gpu_vendor(&ids(&[
+            "PCI\\VEN_1234&DEV_1111&SUBSYS_11001AF4&REV_02"
+        ])));
+        assert!(!any_gpu_vendor(&ids(&[
+            "ROOT\\BasicDisplay",
+            "ROOT\\BasicRender"
+        ])));
+        assert!(!any_gpu_vendor(&ids(&[
+            "VMBUS\\{DA0A7802-E377-4AAC-8E77-0558EB1073F8}"
+        ])));
+        assert!(!any_gpu_vendor(&[]));
+        // a vendor id later in the string (a subsystem id) is not the adapter's vendor
+        assert!(!any_gpu_vendor(&ids(&[
+            "PCI\\VEN_1AF4&DEV_1050&SUBSYS_VEN_10DE"
+        ])));
+    }
 
     #[test]
     fn a_short_transcript_is_one_group() {
