@@ -328,8 +328,14 @@ Detection (bar/Sources/MeetingDetection.swift), every 4 s, from CoreAudio's proc
 plays; Phonon left out), the frontmost app and, for a browser that is not private and itself captures, its tab:
 - A capturing process counts as the app it belongs to, compared without case (Wispr Flow 1.6's table): a
   `.helper` process is its app (Chrome, Edge, Brave, Arc, Slack, Discord), com.apple.WebKit.GPU is Safari,
-  com.apple.avconferenced is FaceTime, Teams 2's module host is Teams. The verdict names the app itself, and a
-  recording follows any process of it.
+  com.apple.avconferenced is FaceTime, Teams 2's module host is Teams, and any us.zoom.* process (CptHost,
+  ZoomPhone, the meeting hosts, ZoomCefHelper) is Zoom. A process with no bundle id (a daemon such as
+  avconferenced) is named by its executable. The verdict names the app itself, and a recording follows any process
+  of it. On the owner's Mac (2026-11-10, each helper's Info.plist) the helpers exist as named: Chrome
+  com.google.Chrome.helper(.renderer), Brave com.brave.Browser.helper, Slack com.tinyspeck.slackmacgap.helper,
+  Discord com.hnc.Discord.helper(.GPU/.Renderer), Zoom us.zoom.CptHost and us.zoom.ZoomCefHelper, WebKit's
+  com.apple.WebKit.GPU, /usr/libexec/avconferenced. Arc, Edge, Teams, Webex and Telegram are not installed there.
+  Which of these processes captures during a call has not been observed on any Mac.
 - A call app (Zoom, Teams, Webex, FaceTime, RingCentral, Around) capturing is a call. A browser in front capturing
   on a conference page is a call. A chat app (Slack, Discord, WhatsApp, Telegram) is a call only while it is in
   front, captures, and also plays audio (the far side): a voice message or clip only captures.
@@ -338,9 +344,10 @@ plays; Phonon left out), the frontmost app and, for a browser that is not privat
   (dictation in Phonon, Wispr Flow and Apple Dictation, voice messages, clips, Voice Memos, video, ChatGPT voice,
   voice search, Loom). Logic level, 2026-11-10: 30 of 30 calls asked within 10 s at every poll phase (3 s at
   most), all recorded to the end, 0 false prompts; before this, 7 of 30 and 18 false prompts (voice messages).
-  Known limits: a browser call whose tab leaves the front within 2 s of the mic coming on is missed at half the
-  poll phases, and a call app's own microphone test is offered. Which process captures for each app comes from
-  Wispr's table, not from this Mac: a live call per app remains the owner's check.
+- Known limits (asserted in `testKnownLimits`): a browser call whose tab leaves the front within 2 s of the mic
+  coming on, with no lobby, is missed at 2 of 4 poll phases (a browser is read only while its tab is in front);
+  and a call app's own microphone test (Zoom's settings) is offered like a call. Which process captures for each
+  app comes from Wispr's table: a live call per app remains the owner's check.
 
 Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
 `transcribe_span`), all on the Mac:

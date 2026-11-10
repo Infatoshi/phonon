@@ -60,6 +60,15 @@ final class MeetingDetectorTests: XCTestCase {
         XCTAssertEqual(MeetingDetector.owner(of: "com.apple.avconferenced"), "com.apple.facetime")
         XCTAssertEqual(MeetingDetector.owner(of: "com.microsoft.teams2.modulehost"), "com.microsoft.teams2")
         XCTAssertEqual(MeetingDetector.owner(of: "com.example.helperapp"), "com.example.helperapp", "a word, not a helper")
+        // helper bundle ids as installed on the owner's Mac (2026-11-10, Info.plist of each helper)
+        XCTAssertEqual(MeetingDetector.owner(of: "com.google.Chrome.helper.renderer"), "com.google.chrome")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.brave.Browser.helper"), "com.brave.browser")
+        XCTAssertEqual(MeetingDetector.owner(of: "com.hnc.Discord.helper.GPU"), "com.hnc.discord")
+        XCTAssertEqual(MeetingDetector.owner(of: "us.zoom.CptHost"), "us.zoom.xos")
+        XCTAssertEqual(MeetingDetector.owner(of: "us.zoom.ZoomCefHelper.renderer"), "us.zoom.xos")
+        XCTAssertEqual(MeetingDetector.owner(of: "avconferenced"), "com.apple.facetime", "a daemon by its executable")
+        XCTAssertEqual(
+            MeetingDetector.evaluate(evidence(holders: ["us.zoom.CptHost"])), .meeting(app: "Zoom", bundleID: "us.zoom.xos"))
         XCTAssertEqual(
             MeetingDetector.evaluate(evidence(holders: ["com.apple.avconferenced"])),
             .meeting(app: "FaceTime", bundleID: "com.apple.FaceTime"))

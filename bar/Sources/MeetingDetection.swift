@@ -66,6 +66,8 @@ enum MeetingDetector {
     static let processOwners = [
         "com.apple.webkit.gpu": "com.apple.safari",
         "com.apple.avconferenced": "com.apple.facetime",
+        // a daemon with no bundle id is named by its executable (`MicrophoneHolders`)
+        "avconferenced": "com.apple.facetime",
         "com.microsoft.teams2.modulehost": "com.microsoft.teams2",
     ]
 
@@ -75,6 +77,9 @@ enum MeetingDetector {
     static func owner(of bundleID: String) -> String {
         let id = bundleID.lowercased()
         if let owner = processOwners[id] { return owner }
+        // Zoom's other processes (us.zoom.CptHost shares the screen and its sound, ZoomPhone,
+        // the meeting hosts) are Zoom; its helpers are named ZoomCefHelper, not `.helper`
+        if id.hasPrefix("us.zoom.") { return "us.zoom.xos" }
         if let range = id.range(of: ".helper"), range.lowerBound > id.startIndex,
             range.upperBound == id.endIndex || id[range.upperBound] == "." || id[range.upperBound] == " "
         {
@@ -262,11 +267,21 @@ enum MicrophoneHolders {
             let playing = isRunning(object, kAudioProcessPropertyIsRunningOutput)
             guard capturing || playing, let pid = processID(object), pid != ownPID,
                 let id = bundleID(object) ?? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+                    ?? executableName(pid)
             else { continue }
             if capturing { input.append(id) }
             if playing { output.append(id) }
         }
         return (input, output)
+    }
+
+    /// A daemon (avconferenced for FaceTime) has no bundle id and no NSRunningApplication:
+    /// its executable's name, so it is not dropped.
+    private static func executableName(_ pid: pid_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        let name = URL(fileURLWithPath: String(cString: buffer)).lastPathComponent
+        return name.isEmpty ? nil : name
     }
 
     private static func processObjects() -> [AudioObjectID] {
