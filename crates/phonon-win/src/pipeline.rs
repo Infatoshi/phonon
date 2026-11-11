@@ -57,9 +57,15 @@ impl Engine {
         self.corrector.device()
     }
 
-    /// Whether the next correction goes to the one-thread server (saturated CPU).
+    /// Whether the next correction goes to the fallback server (saturated CPU).
     pub fn lean(&self) -> bool {
         self.corrector.lean()
+    }
+
+    /// Start the saturated-CPU fallback corrector now (see `Corrector::start_lean`).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn start_lean(&self) {
+        self.corrector.start_lean();
     }
 
     /// Call while idle with the machine's busy fraction (see `Corrector::warm`).

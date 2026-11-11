@@ -135,6 +135,20 @@ pub enum Device {
 /// (DEVLOG 2026-11-07 9:50 pm and 10:30 pm).
 pub const SATURATED: f64 = 0.85;
 
+/// Threads of the fallback corrector used while the CPU is saturated. Windows 11
+/// VM, 8 vCPU, a Normal-priority busy loop on every vCPU, llama-bench pp16+tg32 at
+/// AboveNormal, two rounds (2026-11-10): 1 thread 16.0 / 15.6 t/s, 2 threads
+/// 17.2 / 17.1, 3 threads 16.7 / 3.5 (one round stalled). Two looked stable on
+/// that one VM, but bare metal was never measured, so it stays at one until a
+/// bare-metal comparison.
+const LEAN_THREADS: usize = 1;
+
+/// Threads of the fallback corrector on a machine with `logical_cpus` logical
+/// CPUs: `LEAN_THREADS`, never more than the main server gets.
+fn lean_threads(logical_cpus: usize) -> usize {
+    LEAN_THREADS.min(thread_count(logical_cpus))
+}
+
 /// PCI vendor ids of GPU makers that ship a Vulkan driver on Windows: NVIDIA,
 /// AMD, Intel. A machine with none of them (a VM's virtual adapter, Microsoft
 /// Basic Display) has no device `--list-devices` could offer, and the listing is
@@ -639,7 +653,8 @@ fn correct_one(base: &str, raw: &str, mode: &str) -> Result<(String, bool)> {
 
 /// The correction model, resident: a server on the GPU when the machine has a
 /// discrete one (Windows), otherwise on the CPU, plus (Windows, CPU only) a
-/// one-thread server for dictations that start while every core is busy.
+/// small fallback server (`LEAN_THREADS` threads) for dictations that start while
+/// every core is busy.
 pub struct Corrector {
     main: Server,
     device: Device,
@@ -651,7 +666,7 @@ pub struct Corrector {
     pending: Option<crate::backends::Installed>,
 }
 
-/// The one-thread server's state. It starts on a background thread: on the QA VM
+/// The fallback server's state. It starts on a background thread: on the QA VM
 /// with every vCPU busy, starting it took about 12 s (2026-11-07), and started at
 /// key-down that held up the dictation's text by about 7 s.
 enum Lean {
@@ -772,7 +787,7 @@ impl Corrector {
     }
 
     /// Call while idle and at key-down with the machine's busy fraction. The first
-    /// time the CPU is saturated this starts the one-thread server in the
+    /// time the CPU is saturated this starts the fallback server in the
     /// background (it shares the mapped weights; about 240 MB of its own), so it is
     /// usually ready before the user dictates. Returns whether a saturated
     /// dictation can use it. Windows only: Linux's scheduler degrades gracefully
@@ -784,6 +799,22 @@ impl Corrector {
         if !busy.is_some_and(|busy| busy >= SATURATED) {
             return false;
         }
+        self.spawn_lean()
+    }
+
+    /// Start the fallback corrector now, whatever the load (Windows, CPU only):
+    /// on a machine that is already saturated when the user first dictates, the
+    /// first-busy-moment start in `warm` left that dictation waiting for it
+    /// (W2, Windows 11 VM, 2026-11-10: ready 8.1 s and 25.4 s after the load began).
+    pub fn start_lean(&self) {
+        if self.device == Device::Cpu && cfg!(windows) {
+            self.spawn_lean();
+        }
+    }
+
+    /// Start the fallback server in the background unless it already started.
+    /// Returns whether a saturated dictation can use it.
+    fn spawn_lean(&self) -> bool {
         let Ok(mut lean) = self.lean.lock() else {
             return false;
         };
@@ -794,18 +825,23 @@ impl Corrector {
                 self.server.clone(),
                 self.model.clone(),
             );
+            let threads = lean_threads(
+                std::thread::available_parallelism()
+                    .map(|count| count.get())
+                    .unwrap_or(2),
+            );
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let next = match Server::spawn(&server, &model, 1, None, &[]) {
+                let next = match Server::spawn(&server, &model, threads, None, &[]) {
                     Ok(server) => {
                         eprintln!(
-                            "phonon: one-thread corrector ready in {} ms",
+                            "phonon: {threads}-thread corrector ready in {} ms",
                             started.elapsed().as_millis()
                         );
                         Lean::Ready(server)
                     }
                     Err(error) => {
-                        eprintln!("phonon: one-thread corrector did not start: {error:#}");
+                        eprintln!("phonon: {threads}-thread corrector did not start: {error:#}");
                         Lean::Failed
                     }
                 };
@@ -818,13 +854,13 @@ impl Corrector {
     }
 
     /// Call at key-down with the machine's busy fraction: a saturated CPU sends
-    /// this dictation's correction to the one-thread server.
+    /// this dictation's correction to the fallback server.
     pub fn prepare(&self, busy: Option<f64>) {
         let lean = self.warm(busy);
         self.use_lean.store(lean, Ordering::Release);
     }
 
-    /// Whether the next correction goes to the one-thread server.
+    /// Whether the next correction goes to the fallback server.
     pub fn lean(&self) -> bool {
         self.use_lean.load(Ordering::Acquire)
     }
@@ -1019,5 +1055,16 @@ mod tests {
         assert_eq!(thread_count(16), 8);
         assert_eq!(thread_count(32), 16);
         assert_eq!(thread_count(64), 16);
+    }
+
+    #[test]
+    fn fallback_threads_never_exceed_the_main_server() {
+        for logical_cpus in [1, 2, 3, 4, 8, 16, 64] {
+            let lean = lean_threads(logical_cpus);
+            assert!(lean >= 1);
+            assert!(lean <= LEAN_THREADS);
+            assert!(lean <= thread_count(logical_cpus));
+        }
+        assert_eq!(lean_threads(2), 1);
     }
 }
