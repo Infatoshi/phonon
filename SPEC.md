@@ -845,8 +845,9 @@ retrain gained.
 
 Number pass (shared output stage, `phonon_llm::numpass::apply(input, output)`, last, on the final text after the line
 breaks; settings.json `number_pass`, default OFF; Windows/Linux: `number_pass.txt` in the data folder, "on" turns it
-on. v4.3.2 is the final revision of this after-model pass; no default-ON change is planned for it, and further
-number work goes to a pre-pass on the model input and to training rows): deterministic, driven by what was said. It converts spoken number WORDS the correction model left as words,
+on. v4.3.2 is the final revision of this after-model pass. default OFF; turning it on by default is the owner's
+decision, after it has run switched on on the owner's own machine with its changes logged. Further number work goes
+to a pre-pass on the model input and to training rows): deterministic, driven by what was said. It converts spoken number WORDS the correction model left as words,
 and never rewrites, regroups or strips anything already written in digits or symbols (a leading "+", grouped digits,
 a "$" amount, a formatted date, a version, a time). Invariant, enforced per replacement and on the whole result (the
 model's text comes back unchanged on any failure): INV-1, the output's digits in order are a subsequence of the digits
