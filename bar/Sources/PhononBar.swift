@@ -1445,11 +1445,26 @@ final class MicRecorder {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    /// Whether the microphone must be started again once a reselect has dropped the device:
+    /// held warm (Instant microphone), or a dictation is capturing right now. Without the
+    /// second case a cold start whose engine rebuilt its graph (a configuration change right
+    /// after `start()`) was stopped 0.4 s in and left deaf for the rest of that dictation.
+    static func shouldRestartAfterReselect(primed: Bool, capturing: Bool) -> Bool {
+        primed || capturing
+    }
+
+    private var isCapturing: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return captureEnabled
+    }
+
     private func reselectDevice(reason: String) {
         NSLog("phonon mic: reselect (\(reason))")
         pendingReselect = nil
+        let capturing = isCapturing
         forgetDevice()
-        guard primed else { return }
+        guard Self.shouldRestartAfterReselect(primed: primed, capturing: capturing) else { return }
         do {
             try ensureHardwareRunning()
             reselectRetries = 0
