@@ -8,11 +8,12 @@
 //!   "triple" before a digit word, separated by spaces, commas, hyphens, dots or
 //!   hesitations like "um"; at least 4 digit words and 7 digits; not starting with "oh")
 //!   becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC`, `BBB-CCCC` or the digits run together;
-//! - money: "<number words> dollars|dollar|bucks|euros|euro|pounds [and <n> cents]" and
-//!   "<a> point <b> million dollars" become `$N`, `$1,200`, `$N.CC`, `$A.B million`, `€N`
-//!   or `£N`;
-//! - dates: "<Month> [the] <ordinal>" and "the <ordinal> of <Month>" (optional
-//!   ", <year words>") still in words in the output become "<Month> <D>[, YYYY]".
+//! - money: "<number words> dollars|dollar|euros|euro [and <n> cents]" and
+//!   "<a> point <b> million dollars" become `$N`, `$1,200`, `$N.CC`, `$A.B million` or
+//!   `€N`.
+//!
+//! Spoken ordinal dates ("the sixteenth of January"), "bucks" and "pounds" are left as the
+//! refiner wrote them (v4.3.2: those were style rewrites reviewers did not prefer).
 //!
 //! Phone and money values replace the output span that holds them: after the two input
 //! words before the value (the anchor must occur exactly once in the output), else before
@@ -23,7 +24,7 @@
 //! The rule converts spoken number words. It never rewrites, regroups or strips what the
 //! refiner already wrote in digits or symbols (a leading "+", grouped digits, a "$" amount,
 //! a formatted date, a version, a time). Enforced in code: each replacement (one phone
-//! run, one money amount, the date stage) is kept only if INV-1..3 hold between before and
+//! run, one money amount) is kept only if INV-1..6 hold between before and
 //! after, and the whole result is checked once more against the refiner's output, which is
 //! returned unchanged on any failure.
 //! - INV-1, digits: the output's ASCII digits, read in order, are a subsequence of the
@@ -44,24 +45,28 @@
 //!   output is split on any whitespace (space, tab, `\n`, `\r`, ...), every run is kept, and
 //!   a span never crosses a run holding a line break; checked as: the whitespace runs that
 //!   hold a line break are the same, in order.
-//! - INV-6, words (v2.3.1): no word outside the number vocabulary is removed. On whitespace
-//!   tokens (punctuation stripped, lowercased; a token with a digit or currency sign is a
-//!   value), the words that are not removable are the same, in order. Removable: number
-//!   words, "point", unit words (dollars, bucks, cents, euros, pounds, ...), hesitations;
-//!   "a" right before a scale word ("a thousand"); "and" between a number or unit token and
-//!   a number token; "the" before an ordinal; "of" between an ordinal and a month. A span
-//!   also stops at a token that ends a sentence, and its edges are trimmed to number, unit
-//!   or digit tokens ("$2,500 a night" keeps "a").
+//! - INV-6, words (v2.3.1, tightened in v4.3.2): no word outside the number vocabulary is
+//!   removed, and no number word vanishes without becoming digits. On whitespace tokens
+//!   (punctuation stripped, lowercased; a token with a digit or currency sign is a value),
+//!   the words that are not removable are the same, in order. Unit words (dollars, bucks,
+//!   cents, euros, pounds, ...) and hesitations may go. Number words, "point", "a" right
+//!   before a scale word, "the" before an ordinal and "of" between an ordinal and a month
+//!   may go only when the rule added digits. "and" may go only inside a spoken amount: not
+//!   right after a sentence end, before a number token, and after a scale word ("two
+//!   hundred and five") or before number words that run on to "cents"/"point" ("twelve
+//!   dollars and fifty cents"). This is the audit protocol's v4.3.2 wording or stricter. A
+//!   span also stops at a token that ends a sentence and at an "and" that may not go
+//!   inside it, and its edges are trimmed to number, unit or digit tokens ("$2,500 a
+//!   night" keeps "a"; "$88.18 and two heads" keeps "and two").
 //!
 //! So a wrong or missing digit the refiner wrote stays as written: that belongs to the
 //! refiner's training, not to a post-rule.
 //!
 //! # Version
 //!
-//! The final rule, numpass **v2.3.1 + v4** (frozen as v4.3.1): a literal port of the
-//! research reference `passes_v4_3_1.numpass_v4_3_1` (frozen 2026-11-11, sha256
-//! fef013da...; on `passes_v2_3_1`, sha256 12ebecfc...; regexes spelled out by hand here).
-//! It is v2 plus:
+//! The final revision of this after-model pass, numpass **v4.3.2**: a literal port of the
+//! research reference `passes_v4_3_2.numpass_v4_3_2` (frozen 2026-11-11, sha256
+//! 7727e14f...; regexes spelled out by hand here). It is v2 plus:
 //! - v2.1: a hyphen-joined token whose parts are all number words ("forty-five",
 //!   "four-one-five", "twenty-first") belongs to phone and money spans and a span widens
 //!   over one directly beside it; dates accept hyphens between ordinal and year words. v2
@@ -75,12 +80,15 @@
 //!   went in beside the old words ("$45 dollars", "forty $45"); and its money span took in
 //!   "a" and ran past a sentence end ("$2,500 night", "$52,000 step closer").
 //! - v4: "double" / "triple" before a digit word in a phone run.
+//! - v4.3.2: an "and <number word>" that is not part of the amount ends a money span (v4.3.1
+//!   turned "$88.18 and two heads" into "$88.18 heads"); INV-6 tightened; the ordinal-date
+//!   stage and the "bucks" -> "$" and "pounds" -> "£" rewrites removed.
 //!
 //! Percentages and plain cardinals have no rule and are never touched.
 //!
 //! `fixtures/numpass_cases.json` holds the reference's own outputs on the public T14/T14b
 //! refiner outputs (parity), the public T13/T15/T16 outputs (guard), pairs derived from the
-//! public ones that exercise each revision, and the reference's 66 test cases. Known
+//! public ones that exercise each revision, and the reference's 78 test cases. Known
 //! differences from the Python: digits are ASCII 0-9 (Python's `\d` also takes other
 //! scripts' decimal digits) and amounts above 10^38 are left alone.
 
@@ -165,7 +173,7 @@ const MONTHS: &[&str] = &[
 const STRIP: &[char] = &['(', ')', '[', ']', '.', ',', ';', ':', '!', '?', '"', '\''];
 
 /// The refiner's `input` (what was said) and its `output`: the output with spoken phone
-/// numbers, money amounts and word dates written as digits. Phone, then money, then dates.
+/// numbers and money amounts written as digits. Phone, then money.
 pub fn apply(input: &str, output: &str) -> String {
     // INV-4: nothing spoken as a number word, nothing to convert
     if !has_number_words(input) {
@@ -173,10 +181,7 @@ pub fn apply(input: &str, output: &str) -> String {
     }
     let text = phone_fix(input, output);
     let text = money_fix(input, &text);
-    // the date stage is kept only if it holds INV-1..3 on its own
-    let dated = date_fix(input, &text);
-    let text = if inv_ok(&text, &dated) { dated } else { text };
-    // and the whole result once more against what the refiner wrote
+    // the whole result once more against what the refiner wrote
     if inv_ok(output, &text) {
         text
     } else {
@@ -246,11 +251,12 @@ fn hyph_num(s: &str) -> bool {
     low.contains('-') && low.split('-').all(is_numword)
 }
 
+/// The currency words a spoken amount is written for. v4.3.2: "bucks" and "pounds" are
+/// no longer rewritten to "$" / "£" (a style choice; they pass through unchanged).
 fn currency(w: &str) -> Option<&'static str> {
     match w {
-        "dollars" | "dollar" | "bucks" => Some("$"),
+        "dollars" | "dollar" => Some("$"),
         "euros" | "euro" => Some("€"),
-        "pounds" => Some("£"),
         _ => None,
     }
 }
@@ -296,59 +302,6 @@ fn w2n(ws: &[&str]) -> Option<u128> {
 /// Python's `str.isspace` (the `\s` of a str pattern).
 fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
-/// Python's `\w`.
-fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// `\b` at byte offset `p` of `s`.
-fn boundary(s: &str, p: usize) -> bool {
-    let before = s[..p].chars().next_back().is_some_and(is_word);
-    let after = s[p..].chars().next().is_some_and(is_word);
-    before != after
-}
-
-fn skip_spaces(s: &str, mut p: usize) -> usize {
-    while let Some(c) = s[p..].chars().next().filter(|&c| is_space(c)) {
-        p += c.len_utf8();
-    }
-    p
-}
-
-/// `\s+` at `p`: the offset after it.
-fn spaces1(s: &str, p: usize) -> Option<usize> {
-    let q = skip_spaces(s, p);
-    (q > p).then_some(q)
-}
-
-/// A lowercase ASCII literal at `p`, case-insensitively as Python's `(?i)` matches it
-/// (which also lets `i` match İ and ı, `k` the Kelvin sign and `s` the long s).
-fn literal_ci(s: &str, p: usize, lit: &str) -> Option<usize> {
-    let mut chars = s[p..].chars();
-    let mut q = p;
-    for l in lit.chars() {
-        let c = chars.next()?;
-        let same = c.to_ascii_lowercase() == l
-            || (l == 'i' && matches!(c, '\u{130}' | '\u{131}'))
-            || (l == 'k' && c == '\u{212a}')
-            || (l == 's' && c == '\u{17f}');
-        if !same {
-            return None;
-        }
-        q += c.len_utf8();
-    }
-    Some(q)
-}
-
-fn literal(s: &str, p: usize, lit: &str) -> Option<usize> {
-    s[p..].starts_with(lit).then_some(p + lit.len())
-}
-
-/// Python's `str.split()`.
-fn split_py(s: &str) -> Vec<&str> {
-    s.split(is_space).filter(|w| !w.is_empty()).collect()
 }
 
 /// `_norm` of the reference: lowercased, only a-z and apostrophes kept.
@@ -480,6 +433,7 @@ fn anchor_span<'a>(
     // may token `i` join a span whose next token is `i + 1` / previous token is `i - 1`
     let joins_back = |i: usize| !(line_break(seps[i - 1]) || ends_sentence(toks[i - 1]));
     let mut span = None;
+    let mut from_left = false;
     if !left.is_empty() {
         let l = left.len();
         let pos: Vec<usize> = (0..n)
@@ -493,6 +447,7 @@ fn anchor_span<'a>(
             }
             if k > j {
                 span = Some((j, k));
+                from_left = true;
             }
         }
     }
@@ -530,6 +485,18 @@ fn anchor_span<'a>(
         && !line_break(seps[k - 1])
     {
         k += 1;
+    }
+    // v4.3.2: an "and" that may not go inside a number ends the span (from the left anchor
+    // the span stops before it, from the right anchor it starts after it)
+    let bad: Vec<usize> = (j..k)
+        .filter(|&i| word_of(toks[i]).as_deref() == Some("and") && !and_ok(toks, i))
+        .collect();
+    if let (Some(&first), Some(&last)) = (bad.first(), bad.last()) {
+        if from_left {
+            k = first;
+        } else {
+            j = last + 1;
+        }
     }
     while k > j && matches!(norm(toks[k - 1]).as_str(), "and" | "point") {
         k -= 1;
@@ -599,8 +566,37 @@ fn is_number_token(t: &str) -> bool {
     }
 }
 
-/// Inside a span: "a" only right before a scale word, "and" only between a number or unit
-/// token and a number token, "point" and hesitations only between number tokens.
+/// v4.3.2: may the "and" at `toks[i]` go inside a number? Only before a number token and
+/// not right after a sentence end, and either (a) after a scale word ("two hundred and
+/// five") or (b) after a number or unit token when the number tokens after it run on to
+/// "cents", "cent" or "point" ("twelve dollars and fifty cents").
+fn and_ok(toks: &[&str], i: usize) -> bool {
+    if i == 0 || i + 1 >= toks.len() || !is_number_token(toks[i + 1]) || ends_sentence(toks[i - 1])
+    {
+        return false;
+    }
+    let prev = word_of(toks[i - 1]);
+    if prev
+        .as_deref()
+        .is_some_and(|p| SCALES.contains(&p.rsplit('-').next().unwrap_or(p)))
+    {
+        return true;
+    }
+    if !(is_number_token(toks[i - 1]) || prev.as_deref().is_some_and(is_unit_word)) {
+        return false;
+    }
+    let mut m = i + 1;
+    while m < toks.len()
+        && (is_number_token(toks[m]) || word_of(toks[m]).is_some_and(|w| is_hes(&w)))
+    {
+        m += 1;
+    }
+    m < toks.len()
+        && word_of(toks[m]).is_some_and(|w| matches!(w.as_str(), "cents" | "cent" | "point"))
+}
+
+/// Inside a span: "a" only right before a scale word, "and" only where `and_ok` allows it,
+/// "point" and hesitations only between number tokens.
 fn span_words_ok(toks: &[&str]) -> bool {
     (0..toks.len()).all(|i| {
         let Some(w) = word_of(toks[i]) else {
@@ -617,9 +613,7 @@ fn span_words_ok(toks: &[&str]) -> bool {
             "a" => next
                 .and_then(word_of)
                 .is_some_and(|n| SCALES.contains(&n.as_str())),
-            "and" => {
-                (num_prev || prev.and_then(word_of).is_some_and(|p| is_unit_word(&p))) && num_next
-            }
+            "and" => and_ok(toks, i),
             w if w == "point" || is_hes(w) => num_prev && num_next,
             _ => false,
         }
@@ -649,8 +643,10 @@ fn trim_span(toks: &[&str], mut j: usize, mut k: usize) -> (usize, usize) {
     (j, k)
 }
 
-/// INV-6: the words of `text` no number conversion may remove, in order.
-fn kept_words(text: &str) -> Vec<String> {
+/// INV-6: the words of `text` no number conversion may remove, in order. Unit words and
+/// hesitations may go; number words, "point", "a", "the" and "of" only when the rule added
+/// digits (`added`), and then only where listed; "and" only where `and_ok` allows it.
+fn kept_words(text: &str, added: bool) -> Vec<String> {
     let split = split_ws(text);
     let toks: Vec<&str> = split.toks.into_iter().filter(|t| !t.is_empty()).collect();
     let words: Vec<Option<String>> = toks.iter().map(|t| word_of(t)).collect();
@@ -662,19 +658,21 @@ fn kept_words(text: &str) -> Vec<String> {
     let mut kept = Vec::new();
     for (i, w) in words.iter().enumerate() {
         let Some(w) = w else { continue };
-        if is_number_word(w) || is_unit_word(w) || is_hes(w) || w == "point" {
+        if is_unit_word(w) || is_hes(w) {
+            continue;
+        }
+        if !added && w != "and" {
+            kept.push(w.clone());
+            continue;
+        }
+        if is_number_word(w) || w == "point" {
             continue;
         }
         let prev = i.checked_sub(1).and_then(at);
         let (next, next2) = (at(i + 1), at(i + 2));
         let removable = match w.as_str() {
             "a" => next.as_deref().is_some_and(|n| SCALES.contains(&n)),
-            "and" => {
-                i > 0
-                    && i + 1 < toks.len()
-                    && (is_number_token(toks[i - 1]) || prev.as_deref().is_some_and(is_unit_word))
-                    && is_number_token(toks[i + 1])
-            }
+            "and" => and_ok(&toks, i),
             "the" => {
                 is_ord(&next)
                     || (matches!(next.as_deref(), Some("twenty" | "thirty")) && is_ord(&next2))
@@ -1080,9 +1078,13 @@ fn inv_ok(before: &str, after: &str) -> bool {
         return false;
     }
     plus_runs(before).iter().all(|run| after.contains(run))
-        // v2.3.1: INV-5 line breaks kept, INV-6 words kept
+        // v2.3.1: INV-5 line breaks kept, INV-6 words kept (v4.3.2: number words may go
+        // only when digits were added)
         && line_breaks(before) == line_breaks(after)
-        && kept_words(before) == kept_words(after)
+        && {
+            let added = digits(after).len() > digits(before).len();
+            kept_words(before, added) == kept_words(after, added)
+        }
 }
 
 /// A "+" in the span or in the token right before it.
@@ -1128,229 +1130,6 @@ fn span_digits(toks: &[&str]) -> Option<String> {
     Some(out)
 }
 
-// ---------------------------------------------------------------- dates
-
-/// "twenty second" -> 22, "ninth" -> 9; None if not an ordinal phrase.
-fn ordinal_value(ws: &[&str]) -> Option<u32> {
-    let ord = |w: &str| ORDW.iter().find(|(name, _)| *name == w).map(|&(_, v)| v);
-    let last = ord(ws.last()?)?;
-    match ws {
-        [_] => Some(last),
-        [tens, _] if last < 10 => tens_value(tens).map(|t| t as u32 + last),
-        _ => None,
-    }
-}
-
-/// Year words at the start of `ws` -> (year, words used): "twenty twenty six",
-/// "two thousand five", "nineteen ninety eight", "twenty nineteen".
-fn year(ws: &[&str]) -> Option<(u128, usize)> {
-    if ws.len() >= 3 && ws[0] == "two" && ws[1] == "thousand" {
-        let r = if unit_index(ws[2]).is_some() {
-            w2n(&ws[2..3])
-        } else {
-            None
-        };
-        return Some(match r {
-            Some(r) if r < 10 => (2000 + r, 3),
-            _ => (2000, 2),
-        });
-    }
-    if ws.len() >= 2 && matches!(ws[0], "nineteen" | "twenty") {
-        let hi = if ws[0] == "nineteen" { 19 } else { 20 };
-        if let Some(mut lo) = tens_value(ws[1]) {
-            let mut n = 2;
-            if let Some(u) = ws
-                .get(2)
-                .and_then(|w| unit_index(w))
-                .filter(|u| (1..10).contains(u))
-            {
-                lo += u as u128;
-                n = 3;
-            }
-            return Some((hi * 100 + lo, n));
-        }
-        if let Some(u) = unit_index(ws[1]).filter(|&u| u >= 10) {
-            return Some((hi * 100 + u as u128, 2));
-        }
-    }
-    None
-}
-
-/// One ordinal word at `p` of the lowercased input (no ordinal is a prefix of another).
-fn ordinal_word_at(s: &str, p: usize) -> Option<usize> {
-    ORDW.iter().find_map(|(w, _)| literal(s, p, w))
-}
-
-/// `ORDRX` at `p`, in the regex's order: with a "twenty"/"thirty" in front, then without.
-fn ordinal_ends(s: &str, p: usize) -> Vec<usize> {
-    let mut ends = Vec::new();
-    if let Some(q) = ["twenty", "thirty"]
-        .iter()
-        .find_map(|w| literal(s, p, w))
-        .and_then(|q| spaces1(s, q))
-    {
-        ends.extend(ordinal_word_at(s, q));
-    }
-    ends.extend(ordinal_word_at(s, p));
-    ends
-}
-
-fn month_at(s: &str, p: usize) -> Option<(&'static str, usize)> {
-    MONTHS
-        .iter()
-        .find_map(|m| literal(s, p, m).map(|q| (*m, q)))
-}
-
-/// A spoken word date in the lowercased input starting at `p`:
-/// `\b(?:(MONTH)\s+(?:the\s+)?(ORDRX)|the\s+(ORDRX)\s+of\s+(MONTH))\b`.
-/// Returns (end, month, ordinal text).
-fn input_date_at(s: &str, p: usize) -> Option<(usize, &'static str, &str)> {
-    if !boundary(s, p) {
-        return None;
-    }
-    if let Some((month, q)) = month_at(s, p) {
-        if let Some(q) = spaces1(s, q) {
-            let with_the = literal(s, q, "the").and_then(|r| spaces1(s, r));
-            for r in with_the.into_iter().chain([q]) {
-                for e in ordinal_ends(s, r) {
-                    if boundary(s, e) {
-                        return Some((e, month, &s[r..e]));
-                    }
-                }
-            }
-        }
-    }
-    let q = literal(s, p, "the").and_then(|q| spaces1(s, q))?;
-    for e in ordinal_ends(s, q) {
-        let found = spaces1(s, e)
-            .and_then(|r| literal(s, r, "of"))
-            .and_then(|r| spaces1(s, r))
-            .and_then(|r| month_at(s, r));
-        if let Some((month, end)) = found {
-            if boundary(s, end) {
-                return Some((end, month, &s[q..e]));
-            }
-        }
-    }
-    None
-}
-
-/// Ordinal or year words separated by `[\s-]+` (v2.1: spaces or hyphens),
-/// case-insensitively, at `p`.
-fn words_ci(s: &str, p: usize, words: &[&str]) -> Option<usize> {
-    let mut q = p;
-    for (i, w) in words.iter().enumerate() {
-        if i > 0 {
-            let mut r = q;
-            while let Some(c) = s[r..].chars().next().filter(|&c| is_space(c) || c == '-') {
-                r += c.len_utf8();
-            }
-            if r == q {
-                return None;
-            }
-            q = r;
-        }
-        q = literal_ci(s, q, w)?;
-    }
-    Some(q)
-}
-
-/// The date still in words in the output:
-/// `(?i)\b(?:month\s+(?:the\s+)?ORD|the\s+ORD\s+of\s+month)\b`, first match.
-fn output_date(s: &str, month: &str, ord: &[&str]) -> Option<(usize, usize)> {
-    let at = |p: usize| -> Option<usize> {
-        if !boundary(s, p) {
-            return None;
-        }
-        if let Some(q) = literal_ci(s, p, month).and_then(|q| spaces1(s, q)) {
-            let with_the = literal_ci(s, q, "the").and_then(|r| spaces1(s, r));
-            for r in with_the.into_iter().chain([q]) {
-                if let Some(e) = words_ci(s, r, ord).filter(|&e| boundary(s, e)) {
-                    return Some(e);
-                }
-            }
-        }
-        literal_ci(s, p, "the")
-            .and_then(|q| spaces1(s, q))
-            .and_then(|q| words_ci(s, q, ord))
-            .and_then(|q| spaces1(s, q))
-            .and_then(|q| literal_ci(s, q, "of"))
-            .and_then(|q| spaces1(s, q))
-            .and_then(|q| literal_ci(s, q, month))
-            .filter(|&e| boundary(s, e))
-    };
-    s.char_indices()
-        .map(|(p, _)| p)
-        .find_map(|p| at(p).map(|e| (p, e)))
-}
-
-/// `\s*,?\s*` at `p`.
-fn comma_gap(s: &str, p: usize) -> usize {
-    let q = skip_spaces(s, p);
-    let q = literal(s, q, ",").unwrap_or(q);
-    skip_spaces(s, q)
-}
-
-/// The year words after a date in the input: `\s*,?\s*((?:[a-z]+\s*){1,3})`.
-fn year_words(s: &str) -> Option<&str> {
-    let start = comma_gap(s, 0);
-    let mut q = start;
-    for _ in 0..3 {
-        let run = s[q..]
-            .find(|c: char| !c.is_ascii_lowercase())
-            .unwrap_or(s.len() - q);
-        if run == 0 {
-            break;
-        }
-        q = skip_spaces(s, q + run);
-    }
-    (q > start).then(|| &s[start..q])
-}
-
-fn date_fix(inp: &str, out: &str) -> String {
-    let low = inp.to_lowercase();
-    let mut out = out.to_string();
-    let mut from = 0;
-    while let Some((end, month, ord)) = low[from..]
-        .char_indices()
-        .find_map(|(k, _)| input_date_at(&low, from + k))
-    {
-        from = end;
-        let ord: Vec<&str> = split_py(ord);
-        let Some(day) = ordinal_value(&ord) else {
-            continue;
-        };
-        let rest = year_words(&low[end..]);
-        let yr = rest.and_then(|r| year(&split_py(r)));
-        let Some((start, stop)) = output_date(&out, month, &ord) else {
-            continue;
-        };
-        let mut tail = out[stop..].to_string();
-        if let (Some((y, n)), Some(rest)) = (yr, rest) {
-            let ywords = &split_py(rest)[..n];
-            let gap = comma_gap(&tail, 0);
-            if let Some(e) = words_ci(&tail, gap, ywords).filter(|&e| boundary(&tail, e)) {
-                tail = format!(", {y}{}", &tail[e..]);
-            }
-        }
-        // a year already in digits keeps its comma: ^\s*,?\s*(\d{4})\b -> ", \1"
-        let gap = comma_gap(&tail, 0);
-        let four = tail[gap..]
-            .bytes()
-            .take(4)
-            .filter(u8::is_ascii_digit)
-            .count()
-            == 4;
-        if four && boundary(&tail, gap + 4) {
-            tail = format!(", {}", &tail[gap..]);
-        }
-        let mut month_name = month.to_string();
-        month_name[..1].make_ascii_uppercase();
-        out = format!("{}{month_name} {day}{tail}", &out[..start]);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1394,34 +1173,37 @@ mod tests {
         let (n, changed) = check("parity");
         assert_eq!(n, 1693);
         // v2 changed 571; the invariant leaves wrong or missing digits the refiner wrote alone
-        // (v2.3: 236; v2.3.1 also keeps "a" in "$2,500 a night" and a filler at a span edge)
-        assert_eq!(changed, 228);
+        // (v2.3: 236; v2.3.1: 228, keeping "a" in "$2,500 a night"; v4.3.2 no longer rewrites
+        // ordinal dates, "bucks" or "pounds")
+        assert_eq!(changed, 164);
     }
 
     /// Public T13/T15/T16 outputs whose input holds a digit, a digit word, a currency word
-    /// or a month (every other row cannot change): only the documented date rewrites.
+    /// or a month (every other row cannot change): v4.3.2 changes none (the only changes
+    /// were ordinal-date rewrites, now removed).
     #[test]
-    fn guard_rows_change_only_the_documented_dates() {
+    fn guard_rows_are_unchanged() {
         let (n, changed) = check("guard");
         assert_eq!(n, 523);
-        assert_eq!(changed, 6);
+        assert_eq!(changed, 0);
     }
 
     /// The revisions' own parity: pairs derived from the public ones (hyphenated number
     /// words, a digit word after a phone run, double/triple, "+", brackets, dots, % and :
-    /// beside digits, line breaks, tabs, CRLF, words after amounts, sentence ends) on which
-    /// the final rule and v2 differ, 100 per deciding revision.
+    /// beside digits, line breaks, tabs, CRLF, words after amounts, sentence ends, "bucks"
+    /// and "pounds", "<amount> and <number word>" across merged sentences) on which a
+    /// revision decides, 100 per deciding revision.
     #[test]
     fn revision_fixes_match_the_reference() {
         let (n, _) = check("fixes");
-        assert_eq!(n, 400);
+        assert_eq!(n, 500);
     }
 
-    /// The reference's own test file (`test_numpass_v2_3_1.py`), all 66 cases.
+    /// The reference's own test file (`test_numpass_v4_3_2.py`), all 78 cases.
     #[test]
     fn reference_test_cases() {
         let (n, _) = check("reference_tests");
-        assert_eq!(n, 66);
+        assert_eq!(n, 78);
     }
 
     /// The swallowed digit word and the phone-length edges (v2.2), double/triple (v4).
@@ -1551,16 +1333,16 @@ mod tests {
                 "We have forty-five open tickets",
             ),
             (count, "We have 45 open tickets", "We have 45 open tickets"),
-            // dates: hyphenated ordinal and year words
+            // dates: v4.3.2 no longer rewrites ordinal dates
             (
                 "the launch is on march twenty first, twenty twenty six",
                 "The launch is on March twenty-first, twenty twenty-six.",
-                "The launch is on March 21, 2026.",
+                "The launch is on March twenty-first, twenty twenty-six.",
             ),
             (
                 launch,
                 "The launch is on March twenty first.",
-                "The launch is on March 21.",
+                "The launch is on March twenty first.",
             ),
             (
                 launch,
@@ -1663,12 +1445,13 @@ mod tests {
             ),
             "Raised $2.5 million last year."
         );
+        // v4.3.2: "bucks" and "pounds" stay as written
         assert_eq!(
             apply(
                 "it was one thousand two hundred bucks total",
                 "It was 1200 bucks total."
             ),
-            "It was $1,200 total."
+            "It was 1200 bucks total."
         );
         assert_eq!(
             apply("about thirty euros each", "About 30 euros each."),
@@ -1676,7 +1459,11 @@ mod tests {
         );
         assert_eq!(
             apply("about thirty pounds each", "About 30 pounds each."),
-            "About £30 each."
+            "About 30 pounds each."
+        );
+        assert_eq!(
+            apply("about thirty pounds each", "About thirty pounds each."),
+            "About thirty pounds each."
         );
         // no number word before the currency: nothing to write
         assert_eq!(
@@ -1685,52 +1472,69 @@ mod tests {
         );
     }
 
+    /// v4.3.2: spoken ordinal dates are no longer rewritten; every form stays as written.
     #[test]
-    fn word_dates() {
-        assert_eq!(
-            apply(
+    fn word_dates_stay_as_written() {
+        for (input, output) in [
+            (
                 "due may the fifth, twenty twenty six",
-                "Due May the fifth, twenty twenty six."
+                "Due May the fifth, twenty twenty six.",
             ),
-            "Due May 5, 2026."
-        );
-        assert_eq!(
-            apply(
+            (
                 "on the tenth of april two thousand five we met",
-                "On the tenth of April 2005 we met."
+                "On the tenth of April 2005 we met.",
             ),
-            "On April 10, 2005 we met."
-        );
-        assert_eq!(
-            apply(
-                "block september the twenty fourth please",
-                "Block September the 24th please."
+            (
+                "we ship on the sixteenth of january",
+                "We ship on the sixteenth of January.",
             ),
-            "Block September the 24th please."
-        );
-        assert_eq!(
-            apply(
+            (
                 "block september twenty fourth please",
-                "Block September twenty-fourth please."
+                "Block September twenty-fourth please.",
             ),
-            "Block September 24 please." // v2 left the hyphenated ordinal in words
-        );
-        assert_eq!(
-            apply(
-                "block september twenty fourth please",
-                "Block September twenty fourth please."
+            ("set it to april first", "Set it to April first."),
+            ("may i go first", "May I go first?"),
+        ] {
+            assert_eq!(apply(input, output), output);
+        }
+    }
+
+    /// v4.3.2: an amount followed by "and <number word>" that is not part of it (two
+    /// sentences run together) keeps every word; "dollars and N cents" still converts.
+    #[test]
+    fn and_after_an_amount_stays_unless_cents_follow() {
+        let merged = "the cab was thirty four dollars and twelve cents and three bags fit";
+        let cases = [
+            // v4.3.1 wrote "The cab was $34.12 bags fit."
+            (
+                merged,
+                "The cab was $34.12 and three bags fit.",
+                "The cab was $34.12 and three bags fit.",
             ),
-            "Block September 24 please."
-        );
-        assert_eq!(
-            apply("set it to april first", "Set it to April first."),
-            "Set it to April 1."
-        );
-        // a word that is not a date stays
-        assert_eq!(
-            apply("may i go first", "May I go first?"),
-            "May I go first?"
-        );
+            (
+                "the cab was thirty four dollars and three bags fit",
+                "The cab was thirty four dollars and three bags fit.",
+                "The cab was $34 and three bags fit.",
+            ),
+            (
+                "the cab was thirty four dollars and three bags fit",
+                "The cab was 34 dollars and three bags fit.",
+                "The cab was $34 and three bags fit.",
+            ),
+            (
+                "the cab was thirty four dollars and twelve cents",
+                "The cab was 34 dollars and 12 cents.",
+                "The cab was $34.12.",
+            ),
+            (
+                "the deposit is three hundred and twenty dollars",
+                "The deposit is three hundred and twenty dollars.",
+                "The deposit is $320.",
+            ),
+        ];
+        for (input, output, want) in cases {
+            assert_eq!(apply(input, output), want, "{output}");
+        }
     }
 
     #[test]
@@ -1927,23 +1731,32 @@ mod tests {
         if breaks(out) != breaks(new) {
             bad.push("INV-5");
         }
-        // INV-6: the plain words no conversion may remove, in order
+        // INV-6, as frozen in the audit protocol for v4.3.2: the plain words no conversion
+        // may remove, in order. Unit words and hesitations may go; "and" only inside an
+        // amount (after a number, value or unit word that does not end a sentence, before a
+        // number or value); number words, "point", "a" before a scale word, "the" before an
+        // ordinal and "of" between an ordinal and a month only if digits were added.
+        let added = new.chars().filter(char::is_ascii_digit).count()
+            > out.chars().filter(char::is_ascii_digit).count();
         let kept = |s: &str| -> Vec<String> {
-            let toks: Vec<String> = s
+            let raw: Vec<&str> = s
                 .split(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
                 .filter(|t| !t.is_empty())
+                .collect();
+            let toks: Vec<String> = raw
+                .iter()
                 .map(|t| t.trim_matches(STRIP).to_lowercase())
                 .collect();
             let numw = |t: &str| !t.is_empty() && t.split('-').all(|p| words.contains(&p));
             let num = |t: &str| t.contains(|c: char| c.is_ascii_digit()) || numw(t);
-            let losable = |t: &str| {
-                numw(t)
-                    || [
-                        "point", "dollars", "dollar", "bucks", "cents", "cent", "euros", "euro",
-                        "pounds", "usd", "um", "uh", "er", "erm", "uhm", "hmm", "ah", "umm", "uhh",
-                    ]
-                    .contains(&t)
+            let unit = |t: &str| {
+                [
+                    "dollars", "dollar", "bucks", "cents", "cent", "euros", "euro", "pounds", "usd",
+                ]
+                .contains(&t)
             };
+            let hes =
+                |t: &str| ["um", "uh", "er", "erm", "uhm", "hmm", "ah", "umm", "uhh"].contains(&t);
             let ord = |t: &str| ORDW.iter().any(|(o, _)| *o == t);
             let get = |i: usize| toks.get(i).map(String::as_str).unwrap_or("");
             let mut res = Vec::new();
@@ -1951,15 +1764,24 @@ mod tests {
                 if w.is_empty()
                     || w.contains(['$', '€', '£'])
                     || w.contains(|c: char| c.is_ascii_digit())
+                    || unit(w)
+                    || hes(w)
                 {
                     continue;
                 }
                 let (p, n, n2) = (if i > 0 { get(i - 1) } else { "" }, get(i + 1), get(i + 2));
-                let skip = losable(w)
-                    || (w == "a" && ["hundred", "thousand", "million", "billion"].contains(&n))
-                    || (w == "and" && (num(p) || losable(p)) && num(n))
-                    || (w == "the" && (ord(n) || (["twenty", "thirty"].contains(&n) && ord(n2))))
-                    || (w == "of" && ord(p) && MONTHS.contains(&n));
+                let skip = if w == "and" {
+                    i > 0 && (num(p) || unit(p)) && !raw[i - 1].ends_with(['.', '!', '?']) && num(n)
+                } else {
+                    added
+                        && (numw(w)
+                            || w == "point"
+                            || (w == "a"
+                                && ["hundred", "thousand", "million", "billion"].contains(&n))
+                            || (w == "the"
+                                && (ord(n) || (["twenty", "thirty"].contains(&n) && ord(n2))))
+                            || (w == "of" && ord(p) && MONTHS.contains(&n)))
+                };
                 if !skip {
                     res.push(w.clone());
                 }
@@ -1989,6 +1811,11 @@ mod tests {
         assert_eq!(violations("five", "$5 a night", "$5 night"), ["INV-6"]);
         assert!(violations("five", "a hundred and five dollars", "$105").is_empty());
         assert!(violations("one", "the first of May", "May 1").is_empty());
+        // v4.3.2: a number word may not vanish without becoming digits
+        assert_eq!(
+            violations("two", "$88.18 and two heads", "$88.18 heads"),
+            ["INV-6"]
+        );
         let cases = cases();
         let mut n = 0;
         for set in ["parity", "guard", "fixes", "reference_tests"] {
@@ -2004,7 +1831,7 @@ mod tests {
                 n += 1;
             }
         }
-        assert_eq!(n, 1693 + 523 + 400 + 66);
+        assert_eq!(n, 1693 + 523 + 500 + 78);
     }
 
     /// Seeded random dictations (number words, digits already written, "+", $ % : . / ( ),
@@ -2133,7 +1960,8 @@ mod tests {
             );
         }
         // the generator exercises real rewrites, not only the identity
-        assert!(changed > 200, "{changed}");
+        // (198 with v4.3.2, which no longer rewrites dates, "bucks" or "pounds")
+        assert!(changed > 150, "{changed}");
         assert_eq!(identity_cases, 4_000);
     }
 
@@ -2144,9 +1972,10 @@ mod tests {
         assert_eq!(w2n(&["oh"]), None);
         assert_eq!(with_commas(1234567), "1,234,567");
         assert_eq!(fmt_digits("14155550199"), "1-415-555-0199");
-        assert_eq!(year(&["twenty", "twenty", "six"]), Some((2026, 3)));
-        assert_eq!(year(&["two", "thousand", "and"]), Some((2000, 2)));
-        assert_eq!(year(&["nineteen", "eighteen"]), Some((1918, 2)));
+        assert!(and_ok(&["hundred", "and", "five"], 1));
+        assert!(and_ok(&["$12", "and", "50", "cents"], 1));
+        assert!(!and_ok(&["$88.18", "and", "two", "heads"], 1));
+        assert!(!and_ok(&["dollars.", "and", "fifty", "cents"], 1));
         assert!(amount_token("$1,200") && amount_token("3.5M") && amount_token("€"));
         assert!(!amount_token("1x") && !amount_token("$k") && !amount_token(""));
     }

@@ -1,5 +1,5 @@
 {
-"about": "numpass final rule v2.3.1 + v4 reference outputs (passes_v4_3_1.numpass_v4_3_1, sha256 fef013da1f7f...; passes_v2_3_1 sha256 12ebecfc3364...). parity: every distinct (refiner input, refiner output) pair of the public synthetic T14 and T14b number sets, shipped and candidate refiners, after the opener rule and line breaks; expected = the reference's output. guard: public T13 (synthetic self-corrections), T15 (synthetic layout commands) and T16 (public speech clips) outputs whose input holds a digit, digit word, currency word or month (no other row can change); expected changes only 'April first' -> 'April 1' (T13) and 'the tenth of April 2013' -> 'April 10, 2013' (T16). fixes: pairs derived from those public pairs by mechanical edits (hyphenated number words, a digit word after a phone run, double/triple, '+', brackets, dots, percent and time symbols next to digits, line breaks, tabs and CRLF, words after amounts, sentence ends) on which the final rule differs from v2: up to 100 each where the v2.1 hyphen fix, the v2.2 run-length fix, v2.3's invariant / v4's double-triple, or v2.3.1's whitespace and word guards decide; expected = the final rule. reference_tests: the 66 cases of the reference's test_numpass_v2_3_1.py (49 from v2.3, 9 line-break, 8 word), expected as written there (the final rule gives exactly these).",
+"about": "numpass v4.3.2, the final after-model revision, reference outputs (passes_v4_3_2.numpass_v4_3_2, sha256 7727e14f12f1...). parity: every distinct (refiner input, refiner output) pair of the public synthetic T14 and T14b number sets, shipped and candidate refiners, after the opener rule and line breaks; expected = the reference's output. guard: public T13 (synthetic self-corrections), T15 (synthetic layout commands) and T16 (public speech clips) outputs whose input holds a digit, digit word, currency word or month (no other row can change); v4.3.2 changes none of them (the ordinal-date rewrite is removed). fixes: pairs derived from the public pairs by mechanical edits (hyphenated number words, a digit word after a phone run, double/triple, '+', brackets, dots, percent and time symbols next to digits, line breaks, tabs and CRLF, words after amounts, sentence ends, 'bucks'/'pounds' for 'dollars', '<amount> and <number word>' across merged sentences) on which a revision decides: up to 100 each for the v2.1 hyphen fix, the v2.2 run-length fix, v2.3's invariant / v4's double-triple, v2.3.1's whitespace and word guards, and v4.3.2; expected = v4.3.2. reference_tests: the 78 cases of the reference's test_numpass_v4_3_2.py (66 from v4.3.1 with 4 flipped to identity, 12 v4.3.2), expected as written there.",
 "parity": [
 {
 "input": "Can we move the review to May twenty first?",
@@ -99,7 +99,7 @@
 {
 "input": "She's flying back on April second, twenty twenty six.",
 "output": "she's flying back on April second, 2026",
-"expected": "she's flying back on April 2, 2026"
+"expected": "she's flying back on April second, 2026"
 },
 {
 "input": "She's flying back on April second, twenty twenty six.",
@@ -359,17 +359,17 @@
 {
 "input": "let's lock the schedule by the eighth of may. that's one of the reasons i'm asking",
 "output": "Let's lock the schedule by the eighth of May. That's one of the reasons I'm asking.",
-"expected": "Let's lock the schedule by May 8. That's one of the reasons I'm asking."
+"expected": "Let's lock the schedule by the eighth of May. That's one of the reasons I'm asking."
 },
 {
 "input": "let's lock the schedule by the eighth of may. that's one of the reasons i'm asking",
 "output": "let's lock the schedule by the eighth of May. that's one of the reasons I'm asking",
-"expected": "let's lock the schedule by May 8. that's one of the reasons I'm asking"
+"expected": "let's lock the schedule by the eighth of May. that's one of the reasons I'm asking"
 },
 {
 "input": "let's lock the schedule by the eighth of may. that's one of the reasons i'm asking",
 "output": "Let's lock the schedule by the eighth of May. That is one of the reasons I am asking.",
-"expected": "Let's lock the schedule by May 8. That is one of the reasons I am asking."
+"expected": "Let's lock the schedule by the eighth of May. That is one of the reasons I am asking."
 },
 {
 "input": "The offsite got pushed to August 24th, twenty twenty five.",
@@ -489,12 +489,12 @@
 {
 "input": "let's lock the schedule by october first",
 "output": "Let's lock the schedule by October first.",
-"expected": "Let's lock the schedule by October 1."
+"expected": "Let's lock the schedule by October first."
 },
 {
 "input": "let's lock the schedule by october first",
 "output": "let's lock the schedule by October first",
-"expected": "let's lock the schedule by October 1"
+"expected": "let's lock the schedule by October first"
 },
 {
 "input": "The offsite got pushed to March fourteenth. This is the first time I've seen it.",
@@ -1314,12 +1314,12 @@
 {
 "input": "we spent ninety seven uh, pounds on cloud credits last month",
 "output": "We spent 97 pounds on Cloud Credits last month.",
-"expected": "We spent £97 on Cloud Credits last month."
+"expected": "We spent 97 pounds on Cloud Credits last month."
 },
 {
 "input": "we spent ninety seven uh, pounds on cloud credits last month",
 "output": "we spent 97 pounds on cloud credits last month",
-"expected": "we spent £97 on cloud credits last month"
+"expected": "we spent 97 pounds on cloud credits last month"
 },
 {
 "input": "we spent ninety seven uh, pounds on cloud credits last month",
@@ -1389,12 +1389,12 @@
 {
 "input": "The quote from the contractor was forty pounds. I'd rather do it all at once.",
 "output": "The quote from the contractor was 40 pounds. I'd rather do it all at once.",
-"expected": "The quote from the contractor was £40. I'd rather do it all at once."
+"expected": "The quote from the contractor was 40 pounds. I'd rather do it all at once."
 },
 {
 "input": "The quote from the contractor was forty pounds. I'd rather do it all at once.",
 "output": "the quote from the contractor was 40 pounds. I'd rather do it all at once",
-"expected": "the quote from the contractor was £40. I'd rather do it all at once"
+"expected": "the quote from the contractor was 40 pounds. I'd rather do it all at once"
 },
 {
 "input": "The quote from the contractor was forty pounds. I'd rather do it all at once.",
@@ -1439,12 +1439,12 @@
 {
 "input": "The hotel was sixteen pounds a night.",
 "output": "The hotel was 16 pounds a night.",
-"expected": "The hotel was £16 a night."
+"expected": "The hotel was 16 pounds a night."
 },
 {
 "input": "The hotel was sixteen pounds a night.",
 "output": "the hotel was 16 pounds a night",
-"expected": "the hotel was £16 a night"
+"expected": "the hotel was 16 pounds a night"
 },
 {
 "input": "We spent twenty uh eight dollars and forty five cents on cloud credits last month.",
@@ -1539,12 +1539,12 @@
 {
 "input": "Our budget uh for the trip is seventy three pounds.",
 "output": "Our budget for the trip is 73 pounds.",
-"expected": "Our budget for the trip is £73."
+"expected": "Our budget for the trip is 73 pounds."
 },
 {
 "input": "Our budget uh for the trip is seventy three pounds.",
 "output": "our budget for the trip is 73 pounds",
-"expected": "our budget for the trip is £73"
+"expected": "our budget for the trip is 73 pounds"
 },
 {
 "input": "The refund should be twelve hundred dollars. This is the first time I've seen it.",
@@ -1624,17 +1624,17 @@
 {
 "input": "the license costs fifteen pounds per seat. i'd rather do it all at once",
 "output": "The license costs 15 pounds per seat. I'd rather do it all at once.",
-"expected": "The license costs £15 per seat. I'd rather do it all at once."
+"expected": "The license costs 15 pounds per seat. I'd rather do it all at once."
 },
 {
 "input": "the license costs fifteen pounds per seat. i'd rather do it all at once",
 "output": "the license costs 15 pounds per seat. I'd rather do it all at once",
-"expected": "the license costs £15 per seat. I'd rather do it all at once"
+"expected": "the license costs 15 pounds per seat. I'd rather do it all at once"
 },
 {
 "input": "the license costs fifteen pounds per seat. i'd rather do it all at once",
 "output": "The license costs 15 pounds per seat. I would rather do it all at once.",
-"expected": "The license costs £15 per seat. I would rather do it all at once."
+"expected": "The license costs 15 pounds per seat. I would rather do it all at once."
 },
 {
 "input": "Revenue came in at five thousand two hundred dollars for the quarter.",
@@ -1689,12 +1689,12 @@
 {
 "input": "The refund should be thirty two pounds.",
 "output": "The refund should be 32 pounds.",
-"expected": "The refund should be £32."
+"expected": "The refund should be 32 pounds."
 },
 {
 "input": "The refund should be thirty two pounds.",
 "output": "the refund should be 32 pounds",
-"expected": "the refund should be £32"
+"expected": "the refund should be 32 pounds"
 },
 {
 "input": "They're asking seventy eight dollars and eighty one cents for the used monitor.",
@@ -1749,12 +1749,12 @@
 {
 "input": "Can you approve thirteen pounds for the conference?",
 "output": "Can you approve 13 pounds for the conference?",
-"expected": "Can you approve £13 for the conference?"
+"expected": "Can you approve 13 pounds for the conference?"
 },
 {
 "input": "Can you approve thirteen pounds for the conference?",
 "output": "can you approve 13 pounds for the conference?",
-"expected": "can you approve £13 for the conference?"
+"expected": "can you approve 13 pounds for the conference?"
 },
 {
 "input": "Can you approve thirteen pounds for the conference?",
@@ -3934,12 +3934,12 @@
 {
 "input": "we spent ninety seven uh, pounds on cloud credits last month",
 "output": "We spent 97 pounds on cloud credits last month.",
-"expected": "We spent £97 on cloud credits last month."
+"expected": "We spent 97 pounds on cloud credits last month."
 },
 {
 "input": "we spent ninety seven uh, pounds on cloud credits last month",
 "output": "We spent ninety seven pounds on cloud credits last month.",
-"expected": "We spent £97 on cloud credits last month."
+"expected": "We spent ninety seven pounds on cloud credits last month."
 },
 {
 "input": "I owe you two point six million dollars for dinner.",
@@ -4344,12 +4344,12 @@
 {
 "input": "the lease renewal is due may the fifth, twenty twenty six",
 "output": "The lease renewal is due May the fifth, 2026.",
-"expected": "The lease renewal is due May 5, 2026."
+"expected": "The lease renewal is due May the fifth, 2026."
 },
 {
 "input": "the lease renewal is due may the fifth, twenty twenty six",
 "output": "the lease renewal is due May the fifth, 2026",
-"expected": "the lease renewal is due May 5, 2026"
+"expected": "the lease renewal is due May the fifth, 2026"
 },
 {
 "input": "our flights home are on november 7th",
@@ -4409,7 +4409,7 @@
 {
 "input": "block my calendar for february the ninth, please",
 "output": "block my calendar for February the ninth, please",
-"expected": "block my calendar for February 9, please"
+"expected": "block my calendar for February the ninth, please"
 },
 {
 "input": "The audit window closes December the eighteenth, twenty twenty five.",
@@ -4444,12 +4444,12 @@
 {
 "input": "Is the vendor um call still on Saturday, May first, twenty twenty five?",
 "output": "Is the vendor call still on Saturday, May first, 2025?",
-"expected": "Is the vendor call still on Saturday, May 1, 2025?"
+"expected": "Is the vendor call still on Saturday, May first, 2025?"
 },
 {
 "input": "Is the vendor um call still on Saturday, May first, twenty twenty five?",
 "output": "is the vendor call still on Saturday, May first, 2025?",
-"expected": "is the vendor call still on Saturday, May 1, 2025?"
+"expected": "is the vendor call still on Saturday, May first, 2025?"
 },
 {
 "input": "Put the board meeting on May the tenth, two thousand five. It's one thing after another.",
@@ -4459,12 +4459,12 @@
 {
 "input": "Put the board meeting on May the tenth, two thousand five. It's one thing after another.",
 "output": "Put the board meeting on May the tenth, 2005. It's one thing after another.",
-"expected": "Put the board meeting on May 10, 2005. It's one thing after another."
+"expected": "Put the board meeting on May the tenth, 2005. It's one thing after another."
 },
 {
 "input": "Put the board meeting on May the tenth, two thousand five. It's one thing after another.",
 "output": "put the board meeting on May the tenth, 2005. it's one thing after another",
-"expected": "put the board meeting on May 10, 2005. it's one thing after another"
+"expected": "put the board meeting on May the tenth, 2005. it's one thing after another"
 },
 {
 "input": "Put the board meeting on May the tenth, two thousand five. It's one thing after another.",
@@ -4479,7 +4479,7 @@
 {
 "input": "the lease renewal is due september first",
 "output": "the lease renewal is due September first",
-"expected": "the lease renewal is due September 1"
+"expected": "the lease renewal is due September first"
 },
 {
 "input": "Our flights home are on Monday, March fifteenth.",
@@ -4514,12 +4514,12 @@
 {
 "input": "Grandma's party is March the ninth, twenty twenty seven at the park.",
 "output": "Grandma's party is March the ninth, 2027 at the park.",
-"expected": "Grandma's party is March 9, 2027 at the park."
+"expected": "Grandma's party is March the ninth, 2027 at the park."
 },
 {
 "input": "Grandma's party is March the ninth, twenty twenty seven at the park.",
 "output": "grandma's party is March the ninth, 2027 at the park",
-"expected": "grandma's party is March 9, 2027 at the park"
+"expected": "grandma's party is March the ninth, 2027 at the park"
 },
 {
 "input": "Grandma's party is March the ninth, twenty twenty seven at the park.",
@@ -4554,7 +4554,7 @@
 {
 "input": "The uh, audit window closes September third, twenty nineteen.",
 "output": "the audit window closes September third, 2019",
-"expected": "the audit window closes September 3, 2019"
+"expected": "the audit window closes September third, 2019"
 },
 {
 "input": "We moved uh, the hackathon to October eighth. We'll cross that bridge when we get there, one way or another.",
@@ -4579,12 +4579,12 @@
 {
 "input": "is the vendor call still on june the fifth, two thousand five",
 "output": "Is the vendor call still on June the fifth, 2005?",
-"expected": "Is the vendor call still on June 5, 2005?"
+"expected": "Is the vendor call still on June the fifth, 2005?"
 },
 {
 "input": "is the vendor call still on june the fifth, two thousand five",
 "output": "is the vendor call still on June the fifth, 2005?",
-"expected": "is the vendor call still on June 5, 2005?"
+"expected": "is the vendor call still on June the fifth, 2005?"
 },
 {
 "input": "Put the board meeting on September the twenty fourth. Back to square one, I guess.",
@@ -4629,7 +4629,7 @@
 {
 "input": "Ship the beta no later than June the sixteenth, twenty twenty five. First things first, though.",
 "output": "Ship the beta no later than June the sixteenth, 2025. First things first, though.",
-"expected": "Ship the beta no later than June 16, 2025. First things first, though."
+"expected": "Ship the beta no later than June the sixteenth, 2025. First things first, though."
 },
 {
 "input": "Ship the beta no later than June the sixteenth, twenty twenty five. First things first, though.",
@@ -4854,12 +4854,12 @@
 {
 "input": "Our flights home are on November the ninth.",
 "output": "Our flights home are on November the ninth.",
-"expected": "Our flights home are on November 9."
+"expected": "Our flights home are on November the ninth."
 },
 {
 "input": "Our flights home are on November the ninth.",
 "output": "our flights home are on November the ninth",
-"expected": "our flights home are on November 9"
+"expected": "our flights home are on November the ninth"
 },
 {
 "input": "Our flights home are on November the ninth.",
@@ -5464,12 +5464,12 @@
 {
 "input": "Send Marta six hundred and fifty bucks for the tickets.",
 "output": "Send Marta 650 bucks for the tickets.",
-"expected": "Send Marta $650 for the tickets."
+"expected": "Send Marta 650 bucks for the tickets."
 },
 {
 "input": "Send Marta six hundred and fifty bucks for the tickets.",
 "output": "send Marta 650 bucks for the tickets",
-"expected": "send Marta $650 for the tickets"
+"expected": "send Marta 650 bucks for the tickets"
 },
 {
 "input": "Send Marta six hundred and fifty bucks for the tickets.",
@@ -5494,7 +5494,7 @@
 {
 "input": "the um plumber charged twenty bucks for the visit",
 "output": "the plumber charged 20 bucks for the visit",
-"expected": "the plumber charged $20 for the visit"
+"expected": "the plumber charged 20 bucks for the visit"
 },
 {
 "input": "Annual pricing is eighty eight dollars for the team plan.",
@@ -5649,7 +5649,7 @@
 {
 "input": "that jacket is on sale for eighty eight dollars and eighteen cents. two heads are better than one",
 "output": "that jacket is on sale for $88.18 and two heads are better than one",
-"expected": "that jacket is on sale for $88.18 heads are better than one"
+"expected": "that jacket is on sale for $88.18 and two heads are better than one"
 },
 {
 "input": "We raised forty seven bucks in the seed round.",
@@ -5659,12 +5659,12 @@
 {
 "input": "We raised forty seven bucks in the seed round.",
 "output": "We raised 47 bucks in the seed round.",
-"expected": "We raised $47 in the seed round."
+"expected": "We raised 47 bucks in the seed round."
 },
 {
 "input": "We raised forty seven bucks in the seed round.",
 "output": "we raised 47 bucks in the seed round",
-"expected": "we raised $47 in the seed round"
+"expected": "we raised 47 bucks in the seed round"
 },
 {
 "input": "Dinner came to fifty two dollars with tip.",
@@ -5694,12 +5694,12 @@
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
 "output": "Parking downtown is 168 bucks a day. It's one thing after another.",
-"expected": "Parking downtown is $168 a day. It's one thing after another."
+"expected": "Parking downtown is 168 bucks a day. It's one thing after another."
 },
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
 "output": "parking downtown is 168 bucks a day. it's one thing after another",
-"expected": "parking downtown is $168 a day. it's one thing after another"
+"expected": "parking downtown is 168 bucks a day. it's one thing after another"
 },
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
@@ -5804,12 +5804,12 @@
 {
 "input": "dinner came to thirty eight bucks with tip. we'll cross that bridge when we get there, one way or another",
 "output": "Dinner came to 38 bucks with tip. We'll cross that bridge when we get there, one way or another.",
-"expected": "Dinner came to $38 with tip. We'll cross that bridge when we get there, one way or another."
+"expected": "Dinner came to 38 bucks with tip. We'll cross that bridge when we get there, one way or another."
 },
 {
 "input": "dinner came to thirty eight bucks with tip. we'll cross that bridge when we get there, one way or another",
 "output": "dinner came to 38 bucks with tip. we'll cross that bridge when we get there, one way or another",
-"expected": "dinner came to $38 with tip. we'll cross that bridge when we get there, one way or another"
+"expected": "dinner came to 38 bucks with tip. we'll cross that bridge when we get there, one way or another"
 },
 {
 "input": "dinner came to thirty eight bucks with tip. we'll cross that bridge when we get there, one way or another",
@@ -5874,12 +5874,12 @@
 {
 "input": "Our AWS bill hit sixty four pounds this month.",
 "output": "Our AWS bill hit 64 pounds this month.",
-"expected": "Our AWS bill hit £64 this month."
+"expected": "Our AWS bill hit 64 pounds this month."
 },
 {
 "input": "Our AWS bill hit sixty four pounds this month.",
 "output": "our AWS bill hit 64 pounds this month",
-"expected": "our AWS bill hit £64 this month"
+"expected": "our AWS bill hit 64 pounds this month"
 },
 {
 "input": "Our AWS bill hit sixty four pounds this month.",
@@ -5894,12 +5894,12 @@
 {
 "input": "The plumber charged seventeen uh bucks for the visit. First things first, though.",
 "output": "The plumber charged 17 bucks for the visit. First things first, though.",
-"expected": "The plumber charged $17 for the visit. First things first, though."
+"expected": "The plumber charged 17 bucks for the visit. First things first, though."
 },
 {
 "input": "The plumber charged seventeen uh bucks for the visit. First things first, though.",
 "output": "the plumber charged 17 bucks for the visit. first things first, though",
-"expected": "the plumber charged $17 for the visit. first things first, though"
+"expected": "the plumber charged 17 bucks for the visit. first things first, though"
 },
 {
 "input": "Annual pricing is seven hundred fifty euros for the team plan.",
@@ -5929,12 +5929,12 @@
 {
 "input": "we raised fifty two bucks in the seed round",
 "output": "We raised 52 bucks in the seed round.",
-"expected": "We raised $52 in the seed round."
+"expected": "We raised 52 bucks in the seed round."
 },
 {
 "input": "we raised fifty two bucks in the seed round",
 "output": "we raised 52 bucks in the seed round",
-"expected": "we raised $52 in the seed round"
+"expected": "we raised 52 bucks in the seed round"
 },
 {
 "input": "Dinner came to seven uh hundred and fifty six dollars with tip.",
@@ -7984,12 +7984,12 @@
 {
 "input": "block my calendar for february the ninth, please",
 "output": "Block my calendar for February the ninth, please.",
-"expected": "Block my calendar for February 9, please."
+"expected": "Block my calendar for February the ninth, please."
 },
 {
 "input": "The audit window closes December the eighteenth, twenty twenty five.",
 "output": "The audit window closes December the eighteenth, 2025.",
-"expected": "The audit window closes December 18, 2025."
+"expected": "The audit window closes December the eighteenth, 2025."
 },
 {
 "input": "Put the board meeting on May the tenth, two thousand five. It's one thing after another.",
@@ -7999,17 +7999,17 @@
 {
 "input": "Ship the beta no later than July the eighteenth, twenty twenty six. Two heads are better than one.",
 "output": "Ship the beta no later than July the eighteenth, 2026. Two heads are better than one.",
-"expected": "Ship the beta no later than July 18, 2026. Two heads are better than one."
+"expected": "Ship the beta no later than July the eighteenth, 2026. Two heads are better than one."
 },
 {
 "input": "Block my calendar for December the first, twenty twenty six, please.",
 "output": "Block my calendar for December the first, 2026, please.",
-"expected": "Block my calendar for December 1, 2026, please."
+"expected": "Block my calendar for December the first, 2026, please."
 },
 {
 "input": "The uh, audit window closes September third, twenty nineteen.",
 "output": "The audit window closes September third, 2019.",
-"expected": "The audit window closes September 3, 2019."
+"expected": "The audit window closes September third, 2019."
 },
 {
 "input": "We moved uh, the hackathon to October eighth. We'll cross that bridge when we get there, one way or another.",
@@ -8019,7 +8019,7 @@
 {
 "input": "Ship the beta no later than June the sixteenth, twenty twenty five. First things first, though.",
 "output": "ship the beta no later than June the sixteenth, 2025. first things first, though",
-"expected": "ship the beta no later than June 16, 2025. first things first, though"
+"expected": "ship the beta no later than June the sixteenth, 2025. first things first, though"
 },
 {
 "input": "Is the vendor call still on August twenty eighth, twenty twenty six?",
@@ -8039,7 +8039,7 @@
 {
 "input": "Ship the beta no later than March the eighth, twenty nineteen. We'll cross that bridge when we get there, one way or another.",
 "output": "Ship the beta no later than March the eighth, 2019. We'll cross that bridge when we get there, one way or another.",
-"expected": "Ship the beta no later than March 8, 2019. We'll cross that bridge when we get there, one way or another."
+"expected": "Ship the beta no later than March the eighth, 2019. We'll cross that bridge when we get there, one way or another."
 },
 {
 "input": "Ship the beta no later than March the eighth, twenty nineteen. We'll cross that bridge when we get there, one way or another.",
@@ -8109,7 +8109,7 @@
 {
 "input": "We raised forty seven bucks in the seed round.",
 "output": "We raised $47k in the seed round.",
-"expected": "We raised $47 in the seed round."
+"expected": "We raised $47k in the seed round."
 },
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
@@ -8144,7 +8144,7 @@
 {
 "input": "The plumber charged seventeen uh bucks for the visit. First things first, though.",
 "output": "The plumber charged $17 bucks for the visit. First things first, though.",
-"expected": "The plumber charged $17 for the visit. First things first, though."
+"expected": "The plumber charged $17 bucks for the visit. First things first, though."
 },
 {
 "input": "Parking downtown is eight thousand two hundred dollars a day.",
@@ -8961,17 +8961,17 @@
 {
 "input": "change the release date in the config to march first... sorry i mean april first and then run the config validation test",
 "output": "1. Change the release date in the config to April first.\n2. Run the config validation test.",
-"expected": "1. Change the release date in the config to April 1.\n2. Run the config validation test."
+"expected": "1. Change the release date in the config to April first.\n2. Run the config validation test."
 },
 {
 "input": "change the release date in the config to march first... sorry i mean april first and then run the config validation test",
 "output": "Change the release date in the config to April first and then run the config validation test.",
-"expected": "Change the release date in the config to April 1 and then run the config validation test."
+"expected": "Change the release date in the config to April first and then run the config validation test."
 },
 {
 "input": "change the release date in the config to march first... sorry i mean april first and then run the config validation test",
 "output": "change the release date in the config to April first and then run the config validation test",
-"expected": "change the release date in the config to April 1 and then run the config validation test"
+"expected": "change the release date in the config to April first and then run the config validation test"
 },
 {
 "input": "change the release date in the config to march first... sorry i mean april first and then run the config validation test",
@@ -10251,12 +10251,12 @@
 {
 "input": "On the tenth of april twenty thirteen, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr Nevin Matis, and transmitted his C V.",
 "output": "On the tenth of April 2013, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr. Nevin Matis, and transmitted his CV.",
-"expected": "On April 10, 2013, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr. Nevin Matis, and transmitted his CV."
+"expected": "On the tenth of April 2013, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr. Nevin Matis, and transmitted his CV."
 },
 {
 "input": "On the tenth of april twenty thirteen, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr Nevin Matis, and transmitted his C V.",
 "output": "on the tenth of April 2013, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr. Nevin Matis, and transmitted his CV",
-"expected": "on April 10, 2013, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr. Nevin Matis, and transmitted his CV"
+"expected": "on the tenth of April 2013, the Government of the Republic of Croatia notified the Council of the name of its candidate to the court, Mr. Nevin Matis, and transmitted his CV"
 },
 {
 "input": "Hey, our push-up counter never actually just added two push-ups for the plus two subscribers that we got. Make sure that this is functionally working.",
@@ -10491,7 +10491,7 @@
 {
 "input": "change the release date in the config to march first... sorry i mean april first and then run the config validation test",
 "output": "Change the release date in the config to April first, and then run the config validation test.",
-"expected": "Change the release date in the config to April 1, and then run the config validation test."
+"expected": "Change the release date in the config to April first, and then run the config validation test."
 },
 {
 "input": "uh quick one the workshop is in the riverside room actually no the oak room so can you update the calendar invite and ping me thanks",
@@ -11088,12 +11088,12 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six. one more time",
-"expected": "The launch is on March 21, 2026. one more time"
+"expected": "The launch is on March twenty-first, twenty twenty-six. one more time"
 },
 {
 "input": "the hotel was twenty five hundred dollars a night",
 "output": "The\thotel was 2,5 twenty-one 00 dollars a night.",
-"expected": "The\thotel was $2,500 a night."
+"expected": "The\thotel was 2,5 twenty-one 00 dollars a night."
 },
 {
 "input": "We spent ninety-three dollars and seventy six cents on credits",
@@ -11103,7 +11103,7 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first twenty twenty-six."
 },
 {
 "input": "call the front desk at four one five five five five zero one four two",
@@ -11113,7 +11113,7 @@
 {
 "input": "THe launch is on march twenty first, twenty twenty six",
 "output": "The\tlaunch is on March twenty-first, twenty twenty-six.",
-"expected": "The\tlaunch is on March 21, 2026."
+"expected": "The\tlaunch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "We\n\nspent ninety\tthree\ndollars\tand\nseventy six\tcents on\tcredits",
@@ -11138,12 +11138,12 @@
 {
 "input": "THe launch iſ on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six. nine",
-"expected": "The launch is on March 21, 2026. nine"
+"expected": "The launch is on March twenty-first, twenty twenty-six. nine"
 },
 {
 "input": "Can you approve thirteen pounds for the conference?",
 "output": "can you approve 1 twenty-one 3 pounds for the conference?",
-"expected": "can you approve £13 for the conference?"
+"expected": "can you approve 1 twenty-one 3 pounds for the conference?"
 },
 {
 "input": "We spent ninety three dollars and seventy six cents on credits",
@@ -11173,7 +11173,7 @@
 {
 "input": "the launch iſ on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "It costs forty five nine dollars for the tickets",
@@ -11183,12 +11183,12 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six two of them",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch iſ on March twenty-first, twenty twenty-six. um 2013",
-"expected": "The launch iſ on March 21, 2026. um 2013"
+"expected": "The launch iſ on March twenty-first, twenty twenty-six. um 2013"
 },
 {
 "input": "It costs forty five dollars for the tickets oh well",
@@ -11208,7 +11208,7 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six two",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "it costs a thousand two\thundred\ndollars\ttotal",
@@ -11238,12 +11238,12 @@
 {
 "input": "the launch\nis on march\ttwenty first,\r\ntwenty\n\ntwenty\n\nsix",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "The quote from the contractor was ninety dollars.",
 "output": "THe quote from THe contractor was $9 twenty-one 0",
-"expected": "THe quote from THe contractor was $90"
+"expected": "THe quote from THe contractor was $9 twenty-one 0"
 },
 {
 "input": "It costs forty five dollars for the tickets",
@@ -11253,7 +11253,7 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "WE\n\nSPENT\nNINETY\tTHREE DOLLARS\r\nAND\r\nSEVENTY\nSIX\r\nCENTS ON CREDITS",
@@ -11273,12 +11273,12 @@
 {
 "input": "THe\tlaunch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "Can you approve twenty six dollars and twelve cents for the conference? That's one of the reasons I'm asking.",
 "output": "can you approve 2 twenty-one 6 dollars and 12 cents for the conference? that's one of the reasons i'm asking",
-"expected": "can you approve $26.12 for the conference? that's one of the reasons i'm asking"
+"expected": "can you approve 2 twenty-one 6 dollars and 12 cents for the conference? that's one of the reasons i'm asking"
 },
 {
 "input": "It\tcosts forty five dollars for the tickets",
@@ -11308,12 +11308,12 @@
 {
 "input": "1. the launch is on march twenty first, twenty twenty six\n2. Ship it.",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "THe launch iſ on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "We spent\n\nninety three\ndollars\r\nand\r\nseventy\nsix cents on credits",
@@ -11323,12 +11323,12 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is\r\non March twenty-first, twenty\ttwenty-six.",
-"expected": "The launch is\r\non March 21, 2026."
+"expected": "The launch is\r\non March twenty-first, twenty\ttwenty-six."
 },
 {
 "input": "Can you approve twenty six dollars and twelve cents for the conference? That's one of the reasons I'm asking.",
 "output": "Can you approve $2 twenty-one 6.12 for the conference? That's one of the reasons I'm asking.",
-"expected": "Can you approve $26.12 for the conference? That's one of the reasons I'm asking."
+"expected": "Can you approve $2 twenty-one 6.12 for the conference? That's one of the reasons I'm asking."
 },
 {
 "input": "We spent ninety three dollars and seventy six cents on credits",
@@ -11338,7 +11338,7 @@
 {
 "input": "the launch is on\n\nmarch\r\ntwenty\n\nfirst, twenty\r\ntwenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "call the front\tdesk\n\nat\r\nfour one\r\nfive\r\nfive five five\n\nzero one four two",
@@ -11358,17 +11358,17 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty-twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty-twenty-six."
 },
 {
 "input": "the\tlaunch is on march twenty first, twenty twenty six",
 "output": "The\tlaunch is on March twenty-first, twenty twenty-six.",
-"expected": "The\tlaunch is on March 21, 2026."
+"expected": "The\tlaunch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first twenty-twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first twenty-twenty-six."
 },
 {
 "input": "We\tspent ninety three dollars and seventy six cents on credits",
@@ -11403,7 +11403,7 @@
 {
 "input": "We spent ninety three bucks and seventy six cents on credits",
 "output": "We  spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We  spent $93.76 on credits"
+"expected": "We  spent ninety-three dollars and seventy-six cents on credits"
 },
 {
 "input": "We spent ninety three dollars and seventy six cents on credits um +2013",
@@ -11418,12 +11418,12 @@
 {
 "input": "The quote from the contractor was forty pounds. I'd rather do it all at once.",
 "output": "The quote from the contractor was 4 twenty-one 0 pounds. I'd rather do it all at once.",
-"expected": "The quote from the contractor was £40. I'd rather do it all at once."
+"expected": "The quote from the contractor was 4 twenty-one 0 pounds. I'd rather do it all at once."
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six four people",
 "output": "The launch is on March twenty-first, twenty twenty-six. one more time",
-"expected": "The launch is on March 21, 2026. one more time"
+"expected": "The launch is on March twenty-first, twenty twenty-six. one more time"
 },
 {
 "input": "It costs forty five dollars for the tickets",
@@ -11463,7 +11463,7 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "the launch is on march twenty-first, twenty twenty-six. um 2013",
-"expected": "the launch is on March 21, 2026. um 2013"
+"expected": "the launch is on march twenty-first, twenty twenty-six. um 2013"
 },
 {
 "input": "We  spent ninety three one dollars and seventy six cents on credits",
@@ -11473,7 +11473,7 @@
 {
 "input": "the launch is on march twenty first twenty twenty six four",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "We spent ninety three dollars and change and seventy six cents on credits",
@@ -11483,17 +11483,17 @@
 {
 "input": "the\tlaunch is\n\non\n\nmarch twenty\nfirst, twenty\r\ntwenty\tsix",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "the\tlaunch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "WE SPENT NINETY THREE BUCKS AND SEVENTY SIX CENTS ON CREDITS",
 "output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
+"expected": "We spent ninety-three dollars and seventy-six cents on credits"
 },
 {
 "input": "call THe front desk at four one five five five five zero one four two",
@@ -11503,7 +11503,7 @@
 {
 "input": "the launch is on march twenty first twenty twenty six",
 "output": "The launch is on March twenty-first twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first twenty twenty-six."
 },
 {
 "input": "We spent ninety three dollars and seventy six cents on credits",
@@ -11513,7 +11513,7 @@
 {
 "input": "The\nrefund\n\nshould\tbe twelve hundred dollars. This is\n\nthe\nfirst\ntime\n\nI've seen it.",
 "output": "The refund should be forty-five dollars 1,200. This is the first time I have seen it.",
-"expected": "The refund should be $1,200. This is the first time I have seen it."
+"expected": "The refund should be forty-five dollars 1,200. This is the first time I have seen it."
 },
 {
 "input": "It coſts forty five dollars for the tickets",
@@ -11543,12 +11543,12 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six. nine",
-"expected": "The launch is on March 21, 2026. nine"
+"expected": "The launch is on March twenty-first, twenty twenty-six. nine"
 },
 {
 "input": "the launch is on\r\nmarch\r\ntwenty first,\r\ntwenty twenty\n\nsix um 2013",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "call the front desk at four-one five-five five-five zero-one four-two",
@@ -11568,22 +11568,22 @@
 {
 "input": "the launch is on march twenty first, twenty twenty six four people",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six two",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six four.",
-"expected": "The launch is on March 21, 2026 four."
+"expected": "The launch is on March twenty-first, twenty twenty-six four."
 },
 {
 "input": "THE LAUNCH IS ON MARCH TWENTY FIRST, TWENTY TWENTY SIX",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "input": "call\nme\tat\r\nfour one\n\nfive\r\nfive\tfive\r\nfive\r\nzero\r\none four\ntwo\none\nmore\n\ntime",
@@ -12593,7 +12593,7 @@
 {
 "input": "it was twelve hundred bucks total",
 "output": "It was 1200. A bucks total. um 2013",
-"expected": "It was $1,200. A bucks total. um 2013"
+"expected": "It was 1200. A bucks total. um 2013"
 },
 {
 "input": "It costs forty five dollars for the tickets",
@@ -12618,7 +12618,7 @@
 {
 "input": "it was twelve hundred bucks a night total",
 "output": "It\twas 1200 bucks total.",
-"expected": "It\twas $1,200 total."
+"expected": "It\twas 1200 bucks total."
 },
 {
 "input": "dial\tone four one double five five five zero one four two one more time",
@@ -12628,7 +12628,7 @@
 {
 "input": "The plumber charged seventeen uh bucks for the visit. First things first, though.",
 "output": "The plumber charged 17. And bucks for the visit. First things first, though.",
-"expected": "The plumber charged $17. And bucks for the visit. First things first, though."
+"expected": "The plumber charged 17. And bucks for the visit. First things first, though."
 },
 {
 "input": "the hotel was twenty five hundred dollars a night",
@@ -12693,7 +12693,7 @@
 {
 "input": "the hotel was twenty five hundred dollars a night",
 "output": "The hotel was 2,5 twenty-one 00 dollars a night. oh well",
-"expected": "The hotel was $2,500 a night. oh well"
+"expected": "The hotel was 2,5 twenty-one 00 dollars a night. oh well"
 },
 {
 "input": "pay  forty five dollars then ship it",
@@ -12703,12 +12703,12 @@
 {
 "input": "the hotel was twenty five hundred bucks a night",
 "output": "1. The hotel was 2,500 dollars a night.\n2. Ship it.",
-"expected": "1. The hotel was $2,500 a night.\n2. Ship it."
+"expected": "1. The hotel was 2,500 dollars a night.\n2. Ship it."
 },
 {
 "input": "the hotel was twenty five hundred bucks a night",
 "output": "the hotel was 2,500 dollars a night.",
-"expected": "the hotel was $2,500 a night."
+"expected": "the hotel was 2,500 dollars a night."
 },
 {
 "input": "PAY FORTY FIVE DOLLARS THEN SHIP IT",
@@ -12728,7 +12728,7 @@
 {
 "input": "it was twelve hundred bucks total",
 "output": "It was 1200. And bucks total.",
-"expected": "It was $1,200. And bucks total."
+"expected": "It was 1200. And bucks total."
 },
 {
 "input": "1. we  raised fifty two thousand dollars one step closer\n2. Ship it.",
@@ -12743,7 +12743,7 @@
 {
 "input": "We spent ninety three dollars and seventy six cents on credits",
 "output": "We\tspent ninety-three\tdollars and\tseventy-six\r\ncents\ton credits",
-"expected": "We\tspent $93.76\r\ncents\ton credits"
+"expected": "We\tspent ninety-three\tdollars and\tseventy-six\r\ncents\ton credits"
 },
 {
 "input": "pay forty five dollars then ship it",
@@ -12753,7 +12753,7 @@
 {
 "input": "it costs a thousand two hundred bucks total",
 "output": "It costs a thousand two hundred dollars. Two total.",
-"expected": "It costs $1,200. Two total."
+"expected": "It costs a thousand two hundred dollars. Two total."
 },
 {
 "input": "we raised\n\nfifty two\r\nthousand dollars one step\tcloser",
@@ -12813,12 +12813,12 @@
 {
 "input": "it was twelve hundred bucks total",
 "output": "It was 1200 bucks a night total.",
-"expected": "It was $1,200 a night total."
+"expected": "It was 1200 bucks a night total."
 },
 {
 "input": "it was twelve hundred bucks total",
 "output": "It\n\nwas\n1200\tbucks\ntotal.",
-"expected": "It\n\nwas\n$1,200\ntotal."
+"expected": "It\n\nwas\n1200\tbucks\ntotal."
 },
 {
 "input": "pay forty five dollars and five cents then ship it",
@@ -12833,7 +12833,7 @@
 {
 "input": "The hotel was sixteen pounds a night.",
 "output": "The hotel was 16 pounds a night.",
-"expected": "The hotel was £16 a night."
+"expected": "The hotel was 16 pounds a night."
 },
 {
 "input": "pay forty five dollars then ship it",
@@ -12873,12 +12873,12 @@
 {
 "input": "we raised fifty two thousand bucks one step closer",
 "output": "We raised fifty-two thousand dollars. A One step closer.",
-"expected": "We raised $52,000. A One step closer."
+"expected": "We raised fifty-two thousand dollars. A One step closer."
 },
 {
 "input": "it was twelve hundred bucks total",
 "output": "It was 1200. One bucks total.",
-"expected": "It was $1,200. One bucks total."
+"expected": "It was 1200. One bucks total."
 },
 {
 "input": "pay forty five dollars then ship it",
@@ -12968,7 +12968,7 @@
 {
 "input": "it was twelve hundred bucks total",
 "output": "It was 1200 bucks total.",
-"expected": "It was $1,200 total."
+"expected": "It was 1200 bucks total."
 },
 {
 "input": "1. the hotel was seven hundred fifty euros a night\n2. Ship it.",
@@ -13008,7 +13008,7 @@
 {
 "input": "it was twelve hundred bucks total",
 "output": "1.\nIt was 1200 bucks a day total.\n2.\nShip it.",
-"expected": "1.\nIt was $1,200 a day total.\n2.\nShip it."
+"expected": "1.\nIt was 1200 bucks a day total.\n2.\nShip it."
 },
 {
 "input": "the hotel was twenty five hundred dollars a night um 2013",
@@ -13023,7 +13023,7 @@
 {
 "input": "the hotel was twenty five hundred bucks a night",
 "output": "The hotel was 2,500. Two dollars a night.",
-"expected": "The hotel was $2,500. Two dollars a night."
+"expected": "The hotel was 2,500. Two dollars a night."
 },
 {
 "input": "call\nthe\ndesk at five five\tfive\r\nzero\n\none\nfour two then\nship\tit four\tpeople",
@@ -13084,6 +13084,506 @@
 "input": "it costs\n\na\tthousand\ttwo\nhundred dollars\r\ntotal um 2013",
 "output": "It costs a thousand two hundred dollars total.",
 "expected": "It costs $1,200 total."
+},
+{
+"input": "The hotel was two thousand five hundred bucks a night. Let's take it one step at a time.",
+"output": "The hotel was 2,500 bucks a night. Let's take it one step at a time.",
+"expected": "The hotel was 2,500 bucks a night. Let's take it one step at a time."
+},
+{
+"input": "The hotel was two thousand five hundred pounds a night. Let's take it one step at a time.",
+"output": "The hotel was 2,500 pounds a night. Let's take it one step at a time.",
+"expected": "The hotel was 2,500 pounds a night. Let's take it one step at a time."
+},
+{
+"input": "The hotel was two thousand five hundred bucks a night. Let's take it one step at a time.",
+"output": "the hotel was 2500 bucks a night. let's take it one step at a time",
+"expected": "the hotel was 2500 bucks a night. let's take it one step at a time"
+},
+{
+"input": "The hotel was two thousand five hundred pounds a night. Let's take it one step at a time.",
+"output": "the hotel was 2500 pounds a night. let's take it one step at a time",
+"expected": "the hotel was 2500 pounds a night. let's take it one step at a time"
+},
+{
+"input": "We spent ninety three bucks and seventy six cents on cloud credits last month.",
+"output": "we spent 93 bucks and 76 cents on cloud credits last month",
+"expected": "we spent 93 bucks and 76 cents on cloud credits last month"
+},
+{
+"input": "Can uh you approve twenty one thousand bucks for the conference? On second thought, ask Priya too.",
+"output": "Can uh you approve twenty one thousand bucks for the conference? On second thought, ask Priya too.",
+"expected": "Can uh you approve twenty one thousand bucks for the conference? On second thought, ask Priya too."
+},
+{
+"input": "Can uh you approve twenty one thousand pounds for the conference? On second thought, ask Priya too.",
+"output": "Can uh you approve twenty one thousand pounds for the conference? On second thought, ask Priya too.",
+"expected": "Can uh you approve twenty one thousand pounds for the conference? On second thought, ask Priya too."
+},
+{
+"input": "Can uh you approve twenty one thousand bucks for the conference? On second thought, ask Priya too.",
+"output": "Can you approve 21,000 bucks for the conference? On second thought, ask Priya too.",
+"expected": "Can you approve 21,000 bucks for the conference? On second thought, ask Priya too."
+},
+{
+"input": "Can uh you approve twenty one thousand pounds for the conference? On second thought, ask Priya too.",
+"output": "Can you approve 21,000 pounds for the conference? On second thought, ask Priya too.",
+"expected": "Can you approve 21,000 pounds for the conference? On second thought, ask Priya too."
+},
+{
+"input": "Can uh you approve twenty one thousand bucks for the conference? On second thought, ask Priya too.",
+"output": "can you approve 21,000 bucks for the conference? on second thought, ask Priya too",
+"expected": "can you approve 21,000 bucks for the conference? on second thought, ask Priya too"
+},
+{
+"input": "Can uh you approve twenty one thousand pounds for the conference? On second thought, ask Priya too.",
+"output": "can you approve 21,000 pounds for the conference? on second thought, ask Priya too",
+"expected": "can you approve 21,000 pounds for the conference? on second thought, ask Priya too"
+},
+{
+"input": "The license costs nine point four million bucks per seat. Let's take it one step at a time.",
+"output": "The license costs $9.4 million bucks per seat. Let's take it one step at a time.",
+"expected": "The license costs $9.4 million bucks per seat. Let's take it one step at a time."
+},
+{
+"input": "The license costs nine point four million bucks per seat. Let's take it one step at a time.",
+"output": "the license costs 9.4 million bucks per seat. let's take it one step at a time",
+"expected": "the license costs 9.4 million bucks per seat. let's take it one step at a time"
+},
+{
+"input": "The license costs nine point four million pounds per seat. Let's take it one step at a time.",
+"output": "the license costs 9.4 million pounds per seat. let's take it one step at a time",
+"expected": "the license costs 9.4 million pounds per seat. let's take it one step at a time"
+},
+{
+"input": "Revenue came in at one point five million bucks for the quarter. That's one of the reasons I'm asking.",
+"output": "Revenue came in at one point 5 million bucks for the quarter. That's one of the reasons I'm asking.",
+"expected": "Revenue came in at one point 5 million bucks for the quarter. That's one of the reasons I'm asking."
+},
+{
+"input": "Revenue came in at one point five million pounds for the quarter. That's one of the reasons I'm asking.",
+"output": "Revenue came in at one point 5 million pounds for the quarter. That's one of the reasons I'm asking.",
+"expected": "Revenue came in at one point 5 million pounds for the quarter. That's one of the reasons I'm asking."
+},
+{
+"input": "Revenue came in at one point five million bucks for the quarter. That's one of the reasons I'm asking.",
+"output": "revenue came in at one point five million bucks for the quarter. that's one of the reasons I'm asking",
+"expected": "revenue came in at one point five million bucks for the quarter. that's one of the reasons I'm asking"
+},
+{
+"input": "Revenue came in at one point five million pounds for the quarter. That's one of the reasons I'm asking.",
+"output": "revenue came in at one point five million pounds for the quarter. that's one of the reasons I'm asking",
+"expected": "revenue came in at one point five million pounds for the quarter. that's one of the reasons I'm asking"
+},
+{
+"input": "I owe you six thousand four hundred bucks for dinner.",
+"output": "I owe you $6,400 bucks for dinner.",
+"expected": "I owe you $6,400 bucks for dinner."
+},
+{
+"input": "I owe you six thousand four hundred bucks for dinner.",
+"output": "I owe you 6,400 bucks for dinner",
+"expected": "I owe you 6,400 bucks for dinner"
+},
+{
+"input": "I owe you six thousand four hundred pounds for dinner.",
+"output": "I owe you 6,400 pounds for dinner",
+"expected": "I owe you 6,400 pounds for dinner"
+},
+{
+"input": "The quote from the contractor was ninety dollars and two heads are better than one",
+"output": "The quote from the contractor was $90 and two heads are better than one.",
+"expected": "The quote from the contractor was $90 and two heads are better than one."
+},
+{
+"input": "The quote from the contractor was ninety dollars and three of us went",
+"output": "The quote from the contractor was $90 and three of us went.",
+"expected": "The quote from the contractor was $90 and three of us went."
+},
+{
+"input": "The quote from the contractor was ninety dollars and two heads are better than one",
+"output": "the quote from the contractor was $90 and two heads are better than one",
+"expected": "the quote from the contractor was $90 and two heads are better than one"
+},
+{
+"input": "The quote from the contractor was ninety dollars and three of us went",
+"output": "the quote from the contractor was $90 and three of us went",
+"expected": "the quote from the contractor was $90 and three of us went"
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred dollars and two heads are better than one",
+"output": "Our budget for the trip is $8,800 and two heads are better than one.",
+"expected": "Our budget for the trip is $8,800 and two heads are better than one."
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred dollars and three of us went",
+"output": "Our budget for the trip is $8,800 and three of us went.",
+"expected": "Our budget for the trip is $8,800 and three of us went."
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred bucks.",
+"output": "Our budget for the trip is 8,800 bucks.",
+"expected": "Our budget for the trip is 8,800 bucks."
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred pounds.",
+"output": "Our budget for the trip is 8,800 pounds.",
+"expected": "Our budget for the trip is 8,800 pounds."
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred dollars and two heads are better than one",
+"output": "Our budget for the trip is 8,800 dollars and two heads are better than one.",
+"expected": "Our budget for the trip is $8,800 and two heads are better than one."
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred dollars and three of us went",
+"output": "Our budget for the trip is 8,800 dollars and three of us went.",
+"expected": "Our budget for the trip is $8,800 and three of us went."
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred bucks.",
+"output": "our budget for the trip is 8800 bucks",
+"expected": "our budget for the trip is 8800 bucks"
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred pounds.",
+"output": "our budget for the trip is 8800 pounds",
+"expected": "our budget for the trip is 8800 pounds"
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred dollars and two heads are better than one",
+"output": "our budget for the trip is 8800 dollars and two heads are better than one",
+"expected": "our budget for the trip is $8,800 and two heads are better than one"
+},
+{
+"input": "Our budget for the trip is eight thousand eight hundred dollars and three of us went",
+"output": "our budget for the trip is 8800 dollars and three of us went",
+"expected": "our budget for the trip is $8,800 and three of us went"
+},
+{
+"input": "the refund should be three point eight million bucks",
+"output": "The refund should be $3.8 million bucks.",
+"expected": "The refund should be $3.8 million bucks."
+},
+{
+"input": "the refund should be three point eight million dollars and two heads are better than one",
+"output": "The refund should be $3.8 million dollars and two heads are better than one.",
+"expected": "The refund should be $3.8 million dollars and two heads are better than one."
+},
+{
+"input": "the refund should be three point eight million dollars and three of us went",
+"output": "The refund should be $3.8 million dollars and three of us went.",
+"expected": "The refund should be $3.8 million dollars and three of us went."
+},
+{
+"input": "the refund should be three point eight million bucks",
+"output": "The refund should be 3.8 million bucks.",
+"expected": "The refund should be 3.8 million bucks."
+},
+{
+"input": "the refund should be three point eight million pounds",
+"output": "The refund should be 3.8 million pounds.",
+"expected": "The refund should be 3.8 million pounds."
+},
+{
+"input": "the refund should be three point eight million dollars and two heads are better than one",
+"output": "The refund should be 3.8 million dollars and two heads are better than one.",
+"expected": "The refund should be 3.8 million dollars and two heads are better than one."
+},
+{
+"input": "the refund should be three point eight million dollars and three of us went",
+"output": "The refund should be 3.8 million dollars and three of us went.",
+"expected": "The refund should be 3.8 million dollars and three of us went."
+},
+{
+"input": "the refund should be three point eight million bucks",
+"output": "the refund should be 3.8 million bucks",
+"expected": "the refund should be 3.8 million bucks"
+},
+{
+"input": "the refund should be three point eight million pounds",
+"output": "the refund should be 3.8 million pounds",
+"expected": "the refund should be 3.8 million pounds"
+},
+{
+"input": "the refund should be three point eight million dollars and two heads are better than one",
+"output": "the refund should be 3.8 million dollars and two heads are better than one",
+"expected": "the refund should be 3.8 million dollars and two heads are better than one"
+},
+{
+"input": "the refund should be three point eight million dollars and three of us went",
+"output": "the refund should be 3.8 million dollars and three of us went",
+"expected": "the refund should be 3.8 million dollars and three of us went"
+},
+{
+"input": "They're asking four thousand eight hundred bucks for the used monitor.",
+"output": "They're asking 4,800 bucks for the used monitor.",
+"expected": "They're asking 4,800 bucks for the used monitor."
+},
+{
+"input": "They're asking four thousand eight hundred pounds for the used monitor.",
+"output": "They're asking 4,800 pounds for the used monitor.",
+"expected": "They're asking 4,800 pounds for the used monitor."
+},
+{
+"input": "They're asking four thousand eight hundred bucks for the used monitor.",
+"output": "they're asking 4800 bucks for the used monitor",
+"expected": "they're asking 4800 bucks for the used monitor"
+},
+{
+"input": "They're asking four thousand eight hundred pounds for the used monitor.",
+"output": "they're asking 4800 pounds for the used monitor",
+"expected": "they're asking 4800 pounds for the used monitor"
+},
+{
+"input": "the hotel was uh, three thousand nine hundred bucks a night",
+"output": "The hotel was 3,900 bucks a night.",
+"expected": "The hotel was 3,900 bucks a night."
+},
+{
+"input": "the hotel was uh, three thousand nine hundred pounds a night",
+"output": "The hotel was 3,900 pounds a night.",
+"expected": "The hotel was 3,900 pounds a night."
+},
+{
+"input": "the hotel was uh, three thousand nine hundred bucks a night",
+"output": "the hotel was 3,900 bucks a night",
+"expected": "the hotel was 3,900 bucks a night"
+},
+{
+"input": "the hotel was uh, three thousand nine hundred pounds a night",
+"output": "the hotel was 3,900 pounds a night",
+"expected": "the hotel was 3,900 pounds a night"
+},
+{
+"input": "The license costs four thousand seven hundred bucks per seat.",
+"output": "The license costs 4,700 bucks per seat.",
+"expected": "The license costs 4,700 bucks per seat."
+},
+{
+"input": "The license costs four thousand seven hundred pounds per seat.",
+"output": "The license costs 4,700 pounds per seat.",
+"expected": "The license costs 4,700 pounds per seat."
+},
+{
+"input": "The license costs four thousand seven hundred bucks per seat.",
+"output": "the license costs 4,700 bucks per seat",
+"expected": "the license costs 4,700 bucks per seat"
+},
+{
+"input": "The license costs four thousand seven hundred pounds per seat.",
+"output": "the license costs 4,700 pounds per seat",
+"expected": "the license costs 4,700 pounds per seat"
+},
+{
+"input": "revenue came in at nine point five million bucks for the quarter",
+"output": "Revenue came in at $9.5 million bucks for the quarter.",
+"expected": "Revenue came in at $9.5 million bucks for the quarter."
+},
+{
+"input": "revenue came in at nine point five million bucks for the quarter",
+"output": "revenue came in at 9.5 million bucks for the quarter",
+"expected": "revenue came in at 9.5 million bucks for the quarter"
+},
+{
+"input": "revenue came in at nine point five million pounds for the quarter",
+"output": "revenue came in at 9.5 million pounds for the quarter",
+"expected": "revenue came in at 9.5 million pounds for the quarter"
+},
+{
+"input": "I owe you two point six million bucks for dinner.",
+"output": "I owe you $2.6 million bucks for dinner.",
+"expected": "I owe you $2.6 million bucks for dinner."
+},
+{
+"input": "I owe you two point six million bucks for dinner.",
+"output": "I owe you two point six million bucks for dinner.",
+"expected": "I owe you two point six million bucks for dinner."
+},
+{
+"input": "I owe you two point six million pounds for dinner.",
+"output": "I owe you two point six million pounds for dinner.",
+"expected": "I owe you two point six million pounds for dinner."
+},
+{
+"input": "I owe you two point six million bucks for dinner.",
+"output": "I owe you two point six million bucks for dinner",
+"expected": "I owe you two point six million bucks for dinner"
+},
+{
+"input": "I owe you two point six million pounds for dinner.",
+"output": "I owe you two point six million pounds for dinner",
+"expected": "I owe you two point six million pounds for dinner"
+},
+{
+"input": "Our budget for the trip is seventy one dollars and two heads are better than one",
+"output": "Our budget for the trip is $71 and two heads are better than one.",
+"expected": "Our budget for the trip is $71 and two heads are better than one."
+},
+{
+"input": "Our budget for the trip is seventy one dollars and three of us went",
+"output": "Our budget for the trip is $71 and three of us went.",
+"expected": "Our budget for the trip is $71 and three of us went."
+},
+{
+"input": "Our budget for the trip is seventy one bucks.",
+"output": "our budget for the trip is 71 bucks",
+"expected": "our budget for the trip is 71 bucks"
+},
+{
+"input": "Our budget for the trip is seventy one pounds.",
+"output": "our budget for the trip is 71 pounds",
+"expected": "our budget for the trip is 71 pounds"
+},
+{
+"input": "Our budget for the trip is seventy one dollars and two heads are better than one",
+"output": "our budget for the trip is 71 dollars and two heads are better than one",
+"expected": "our budget for the trip is $71 and two heads are better than one"
+},
+{
+"input": "Our budget for the trip is seventy one dollars and three of us went",
+"output": "our budget for the trip is 71 dollars and three of us went",
+"expected": "our budget for the trip is $71 and three of us went"
+},
+{
+"input": "the refund should be sixty six dollars and two heads are better than one",
+"output": "The refund should be $66 and two heads are better than one.",
+"expected": "The refund should be $66 and two heads are better than one."
+},
+{
+"input": "the refund should be sixty six dollars and three of us went",
+"output": "The refund should be $66 and three of us went.",
+"expected": "The refund should be $66 and three of us went."
+},
+{
+"input": "the refund should be sixty six bucks",
+"output": "the refund should be 66 bucks",
+"expected": "the refund should be 66 bucks"
+},
+{
+"input": "the refund should be sixty six pounds",
+"output": "the refund should be 66 pounds",
+"expected": "the refund should be 66 pounds"
+},
+{
+"input": "the refund should be sixty six dollars and two heads are better than one",
+"output": "the refund should be 66 dollars and two heads are better than one",
+"expected": "the refund should be $66 and two heads are better than one"
+},
+{
+"input": "the refund should be sixty six dollars and three of us went",
+"output": "the refund should be 66 dollars and three of us went",
+"expected": "the refund should be $66 and three of us went"
+},
+{
+"input": "They're asking nine um thousand eight hundred bucks for the used monitor.",
+"output": "they're asking 9,800 bucks for the used monitor",
+"expected": "they're asking 9,800 bucks for the used monitor"
+},
+{
+"input": "They're asking nine um thousand eight hundred pounds for the used monitor.",
+"output": "they're asking 9,800 pounds for the used monitor",
+"expected": "they're asking 9,800 pounds for the used monitor"
+},
+{
+"input": "Can you approve twenty six bucks and twelve cents for the conference? That's one of the reasons I'm asking.",
+"output": "can you approve 26 bucks and 12 cents for the conference? that's one of the reasons I'm asking",
+"expected": "can you approve 26 bucks and 12 cents for the conference? that's one of the reasons I'm asking"
+},
+{
+"input": "The uh license costs seventeen hundred bucks per seat.",
+"output": "The license costs 1700 bucks per seat.",
+"expected": "The license costs 1700 bucks per seat."
+},
+{
+"input": "The uh license costs seventeen hundred pounds per seat.",
+"output": "The license costs 1700 pounds per seat.",
+"expected": "The license costs 1700 pounds per seat."
+},
+{
+"input": "The uh license costs seventeen hundred bucks per seat.",
+"output": "the license costs 1700 bucks per seat",
+"expected": "the license costs 1700 bucks per seat"
+},
+{
+"input": "The uh license costs seventeen hundred pounds per seat.",
+"output": "the license costs 1700 pounds per seat",
+"expected": "the license costs 1700 pounds per seat"
+},
+{
+"input": "Revenue came in at uh, nine thousand eight hundred pounds for the quarter. Let's take it one step at a time.",
+"output": "Revenue came in at 9,800 pounds for the quarter. Let's take it one step at a time.",
+"expected": "Revenue came in at 9,800 pounds for the quarter. Let's take it one step at a time."
+},
+{
+"input": "Revenue came in at uh, nine thousand eight hundred pounds for the quarter. Let's take it one step at a time.",
+"output": "revenue came in at 9,800 pounds for the quarter. let's take it one step at a time",
+"expected": "revenue came in at 9,800 pounds for the quarter. let's take it one step at a time"
+},
+{
+"input": "i owe you two point nine million pounds for dinner. this is the first time i've seen it",
+"output": "i owe you 2.9 million pounds for dinner. this is the first time i've seen it",
+"expected": "i owe you 2.9 million pounds for dinner. this is the first time i've seen it"
+},
+{
+"input": "The quote from the contractor was two point two million dollars and two heads are better than one",
+"output": "The quote from the contractor was $2.2 million and two heads are better than one.",
+"expected": "The quote from the contractor was $2.2 million and two heads are better than one."
+},
+{
+"input": "The quote from the contractor was two point two million dollars and three of us went",
+"output": "The quote from the contractor was $2.2 million and three of us went.",
+"expected": "The quote from the contractor was $2.2 million and three of us went."
+},
+{
+"input": "The quote from the contractor was two point two million pounds.",
+"output": "The quote from the contractor was 2.2 million pounds.",
+"expected": "The quote from the contractor was 2.2 million pounds."
+},
+{
+"input": "The quote from the contractor was two point two million dollars and two heads are better than one",
+"output": "The quote from the contractor was 2.2 million dollars and two heads are better than one.",
+"expected": "The quote from the contractor was 2.2 million dollars and two heads are better than one."
+},
+{
+"input": "The quote from the contractor was two point two million dollars and three of us went",
+"output": "The quote from the contractor was 2.2 million dollars and three of us went.",
+"expected": "The quote from the contractor was 2.2 million dollars and three of us went."
+},
+{
+"input": "The quote from the contractor was two point two million pounds.",
+"output": "the quote from the contractor was 2.2 million pounds",
+"expected": "the quote from the contractor was 2.2 million pounds"
+},
+{
+"input": "The quote from the contractor was two point two million dollars and two heads are better than one",
+"output": "the quote from the contractor was 2.2 million dollars and two heads are better than one",
+"expected": "the quote from the contractor was 2.2 million dollars and two heads are better than one"
+},
+{
+"input": "The quote from the contractor was two point two million dollars and three of us went",
+"output": "the quote from the contractor was 2.2 million dollars and three of us went",
+"expected": "the quote from the contractor was 2.2 million dollars and three of us went"
+},
+{
+"input": "The refund should be twelve hundred pounds. This is the first time I've seen it.",
+"output": "the refund should be 1200 pounds. this is the first time I've seen it",
+"expected": "the refund should be 1200 pounds. this is the first time I've seen it"
+},
+{
+"input": "they're asking five thousand um six hundred pounds for the used monitor",
+"output": "They're asking 5,600 pounds for the used monitor.",
+"expected": "They're asking 5,600 pounds for the used monitor."
+},
+{
+"input": "the new keyboard was three hundred fifty euros and two heads are better than one",
+"output": "The new keyboard was 350 euros and two heads are better than one.",
+"expected": "The new keyboard was €350 and two heads are better than one."
+},
+{
+"input": "the new keyboard was three hundred fifty euros and three of us went",
+"output": "The new keyboard was 350 euros and three of us went.",
+"expected": "The new keyboard was €350 and three of us went."
 }
 ],
 "reference_tests": [
@@ -13162,14 +13662,14 @@
 "category": "date",
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"expected": "The launch is on March twenty-first, twenty twenty-six."
 },
 {
 "group": "v2.3 reference",
 "category": "date",
 "input": "the launch is on march twenty first",
 "output": "The launch is on March twenty first.",
-"expected": "The launch is on March 21."
+"expected": "The launch is on March twenty first."
 },
 {
 "group": "v2.3 reference",
@@ -13365,7 +13865,7 @@
 "category": "money",
 "input": "it was twelve hundred bucks",
 "output": "It was 1200 bucks.",
-"expected": "It was $1,200."
+"expected": "It was 1200 bucks."
 },
 {
 "group": "v2.3 generated",
@@ -13386,7 +13886,7 @@
 "category": "date",
 "input": "the deadline is march third twenty twenty four",
 "output": "The deadline is March third, 2024.",
-"expected": "The deadline is March 3, 2024."
+"expected": "The deadline is March third, 2024."
 },
 {
 "group": "v2.3 generated",
@@ -13548,6 +14048,90 @@
 "input": "pay twelve dollars and fifty cents today",
 "output": "Pay 12 dollars and 50 cents today.",
 "expected": "Pay $12.50 today."
+},
+{
+"group": "v4.3.2",
+"category": "and-merged",
+"input": "the cab was thirty four dollars and twelve cents and three bags fit in the trunk",
+"output": "The cab was $34.12 and three bags fit in the trunk.",
+"expected": "The cab was $34.12 and three bags fit in the trunk."
+},
+{
+"group": "v4.3.2",
+"category": "and-merged",
+"input": "the cab was thirty four dollars and three bags fit in the trunk",
+"output": "The cab was thirty four dollars and three bags fit in the trunk.",
+"expected": "The cab was $34 and three bags fit in the trunk."
+},
+{
+"group": "v4.3.2",
+"category": "and-merged",
+"input": "the cab was thirty four dollars and three bags fit in the trunk",
+"output": "The cab was 34 dollars and three bags fit in the trunk.",
+"expected": "The cab was $34 and three bags fit in the trunk."
+},
+{
+"group": "v4.3.2",
+"category": "and-cents",
+"input": "the cab was thirty four dollars and twelve cents",
+"output": "The cab was thirty-four dollars and twelve cents.",
+"expected": "The cab was $34.12."
+},
+{
+"group": "v4.3.2",
+"category": "and-cents",
+"input": "the cab was thirty four dollars and twelve cents",
+"output": "The cab was 34 dollars and 12 cents.",
+"expected": "The cab was $34.12."
+},
+{
+"group": "v4.3.2",
+"category": "and-scale",
+"input": "the deposit is three hundred and twenty dollars",
+"output": "The deposit is three hundred and twenty dollars.",
+"expected": "The deposit is $320."
+},
+{
+"group": "v4.3.2",
+"category": "date-kept",
+"input": "we ship on the sixteenth of january",
+"output": "We ship on the sixteenth of January.",
+"expected": "We ship on the sixteenth of January."
+},
+{
+"group": "v4.3.2",
+"category": "date-kept",
+"input": "we ship on january sixteenth",
+"output": "We ship on January 16th.",
+"expected": "We ship on January 16th."
+},
+{
+"group": "v4.3.2",
+"category": "bucks-kept",
+"input": "lunch was twenty bucks",
+"output": "Lunch was twenty bucks.",
+"expected": "Lunch was twenty bucks."
+},
+{
+"group": "v4.3.2",
+"category": "pounds-kept",
+"input": "the train was forty pounds",
+"output": "The train was forty pounds.",
+"expected": "The train was forty pounds."
+},
+{
+"group": "v4.3.2",
+"category": "pounds-kept",
+"input": "the train was forty pounds",
+"output": "The train was 40 pounds.",
+"expected": "The train was 40 pounds."
+},
+{
+"group": "v4.3.2",
+"category": "euros",
+"input": "the train was forty euros",
+"output": "The train was forty euros.",
+"expected": "The train was €40."
 }
 ]
 }
