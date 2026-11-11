@@ -1,0 +1,148 @@
+{
+ "_about": "Every Hugging Face model the macOS sidecars may download: the exact revision and, per file, its size and sha256 at that revision (LFS sha256 from the Hub file metadata; small files hashed from the Hub). The sidecars refuse a hub download not listed here. crates/phonon-asr and crates/phonon-llm pin the same revisions; their tests check that they agree.",
+ "models": {
+  "mlx-community/parakeet-tdt-0.6b-v2": {
+   "revision": "8ae155301e23d820d82aa60d24817c900e69e487",
+   "files": {
+    ".gitattributes": {
+     "size": 1519,
+     "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+    },
+    "README.md": {
+     "size": 945,
+     "sha256": "af484ebbab54ee50ccfa4f07e778c0f7b2f05a0ac6a2d138e5aee5aae1366f9b"
+    },
+    "config.json": {
+     "size": 36176,
+     "sha256": "9bd323e60afe2615c983a5d9fc3a2c0470df2a03edf90c0f861bd59509d07264"
+    },
+    "model.safetensors": {
+     "size": 2471559904,
+     "sha256": "b958c37a6baa6874a279108755c8f2818e27bf647d72d54800a234a421341dfe"
+    },
+    "tokenizer.model": {
+     "size": 251396,
+     "sha256": "5a3a82c48998709f9bc9f5db2924d99a899d20bf82550ca52272da7c7557b0a0"
+    },
+    "tokenizer.vocab": {
+     "size": 10393,
+     "sha256": "dbe7ec6bd066c4526080940e1614e6582b9161515e856c2c39a1d49267c88cbc"
+    },
+    "vocab.txt": {
+     "size": 5066,
+     "sha256": "70b25deed256d79365a3c290d6191c31cc2315d952faf18d5c3a334f46e4866e"
+    }
+   }
+  },
+  "Infatoshi/phonon-refiner-1.7b": {
+   "revision": "b20b28075046af94056ab5d5bff89a7abc0f6f50",
+   "files": {
+    ".gitattributes": {
+     "size": 1718,
+     "sha256": "9cbf71b65ab9d165067f19a0ea06c050f7764b213617fd977f138145efe83756"
+    },
+    "LICENSE": {
+     "size": 10574,
+     "sha256": "4d28ca14dedc0b3d0fcc2b3339f0e79931faa33874f3d24f522183a8fc70068c"
+    },
+    "NOTICE": {
+     "size": 1293,
+     "sha256": "6e22035f2acf0564af88c389402bcda046a0ba5f6bfa46074b56741cd8df4d60"
+    },
+    "README.md": {
+     "size": 22325,
+     "sha256": "d3387af96c26feb0432f6ac790dd65ff8313f68199a94d6251e8dfd13ec0e91e"
+    },
+    "chat_template.jinja": {
+     "size": 12129,
+     "sha256": "f45005c50cd2a97329722bf3a2dee9f16c04cdf825a589b280fb7e99e6827818"
+    },
+    "config.json": {
+     "size": 28490,
+     "sha256": "82959de49f43ef3a185a82fa093caf4f91c2b62ad19a11d6043df7987af4bf38"
+    },
+    "generation_config.json": {
+     "size": 328,
+     "sha256": "bfe4a6d7d5fd2218845f716157632fff5b7b137628055a69871e41026c0750b5"
+    },
+    "model.safetensors": {
+     "size": 1133072403,
+     "sha256": "4d901d5d36ece0ae628afaac08009c3550fd6832df5e78f20784e3402bfb2441"
+    },
+    "model.safetensors.index.json": {
+     "size": 41831,
+     "sha256": "a6b6a42bb621feacd690f99b658fc29ccbe771d61c2a8f28c936ab93c3fd203e"
+    },
+    "phonon-refiner-1.7b-Q4_K_S-e4.gguf": {
+     "size": 988453696,
+     "sha256": "0439996bda5886b92c86db49249be7d7ad2175ccf35bf2630c09433684e502e5"
+    },
+    "phonon-refiner-1.7b-dflash2-drafter.gguf": {
+     "size": 214803168,
+     "sha256": "56eccf7c9cb760231aee8bd6744e2144b4219987222fef770fe3970d143f5fd7"
+    },
+    "phonon_engine.json": {
+     "size": 136,
+     "sha256": "5aff5a55a6734846c61e4ce3966b2078c549419b01a6f395d08dca670058067e"
+    },
+    "phonon_refiner.json": {
+     "size": 3389,
+     "sha256": "dd96b7f19aeed9e56576d4e7395c9936f87f946013547c11df663280cf0e376d"
+    },
+    "tokenizer.json": {
+     "size": 17908634,
+     "sha256": "41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44"
+    },
+    "tokenizer_config.json": {
+     "size": 1896,
+     "sha256": "236f21425c08d31bfa5062767da6a3f1354ca0b89ac4138cfa9bdbb47a6700b2"
+    }
+   }
+  },
+  "mlx-community/gemma-4-e2b-it-4bit": {
+   "revision": "238767527555cb75a05732a84dff5d6ba0dd6809",
+   "files": {
+    ".gitattributes": {
+     "size": 1570,
+     "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+    },
+    "README.md": {
+     "size": 593,
+     "sha256": "9bd9184deee34e15f680922484005dec022a444239b81cc3fc3b226fc9de7a05"
+    },
+    "chat_template.jinja": {
+     "size": 17336,
+     "sha256": "2f1b4d75d067bae3fe44e676721c7f077d243bc007156cb9c2f8b5836613d082"
+    },
+    "config.json": {
+     "size": 6395,
+     "sha256": "6397cb6eca41b911d1dcab74e17941351057bd759284052a2331918ff6f9246c"
+    },
+    "generation_config.json": {
+     "size": 208,
+     "sha256": "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de"
+    },
+    "model.safetensors": {
+     "size": 3550670554,
+     "sha256": "038e39a37a7667373d2c3991375446b10c96ae1d717a68674870343db376b76e"
+    },
+    "model.safetensors.index.json": {
+     "size": 218323,
+     "sha256": "edb157dbf495e23f37377af4a628a9ad13c4ee7937f93ccb36ec9e9a19940f16"
+    },
+    "processor_config.json": {
+     "size": 1316,
+     "sha256": "de3e580aebdc98272d4c4547daffe6525fcbae18a83a0e0bcf0d7444d4ee6f37"
+    },
+    "tokenizer.json": {
+     "size": 32169626,
+     "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+    },
+    "tokenizer_config.json": {
+     "size": 2740,
+     "sha256": "080d9e1aff284e2f6043889cd05367966f7c7b80e025fbc0b06745e218158656"
+    }
+   }
+  }
+ }
+}

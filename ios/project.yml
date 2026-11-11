@@ -68,7 +68,8 @@ targets:
     dependencies:
       - target: PhononKeyboard
       - package: FluidAudio
-      # llama.cpp b12132 prebuilt (GitHub release llama-b12132-xcframework.zip); the refiner runs on its CPU backend
+      # llama.cpp b12132 plus llama-b12132-phonon.patch, built by ./build_llama.sh (not the stock release zip:
+      # Refiner calls the patch's ggml_cpu_phonon_set); the refiner runs on its CPU backend
       - framework: Frameworks/llama.xcframework
         embed: true
   # The refiner self-test as an XCTest for Firebase Test Lab (./testlab.sh). The 943 MB model is copied into the

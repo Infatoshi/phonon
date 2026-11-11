@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 /// weights the sidecar falls back to. The revision is exact so an upstream
 /// re-upload cannot change what shipped users run.
 /// RELEASE: the revision is the Hugging Face commit of the upload; set it
-/// after the upload and before tagging.
+/// after the upload and before tagging, together with the file hashes in
+/// sidecar/model_pins.json (a test checks the two agree).
 pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
 pub const POLISH_MODEL_REVISION: &str = "b20b28075046af94056ab5d5bff89a7abc0f6f50";
 /// Pinned runtime, for the same reason.
