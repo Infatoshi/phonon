@@ -413,7 +413,7 @@ const WRITING_STYLES: &[&str] = &["minimal", "casual", "formal"];
 
 /// settings.json `writing_modes_by_app` values: bundle id -> one of the refiner's
 /// four modes (Settings > Advanced > Writing mode per app). Others are ignored.
-const APP_WRITING_MODES: &[&str] = &["minimal", "casual", "formal", "prompt"];
+pub const APP_WRITING_MODES: &[&str] = &["minimal", "casual", "formal", "prompt"];
 
 /// Add the user's fixed writing mode to a sidecar `context` (the sidecar then
 /// uses it instead of the app category's mode).
@@ -421,6 +421,26 @@ pub fn with_writing_mode(context: Option<Value>, mode: Option<&str>) -> Option<V
     let Some(mode) = mode else { return context };
     let mut context = context.unwrap_or_else(|| json!({}));
     context["writing_mode"] = json!(mode);
+    Some(context)
+}
+
+/// The longest correction prompt the owner may set (Settings > Advanced > Correction prompt).
+/// The sidecar enforces the same cap and falls back to the trained wording above it.
+pub const REFINER_PROMPT_MAX_CHARS: usize = 4000;
+
+/// `prompt` as the sidecar may run it: trimmed, and None when blank or over the cap.
+pub fn usable_refiner_prompt(prompt: &str) -> Option<String> {
+    let prompt = prompt.trim();
+    (!prompt.is_empty() && prompt.chars().count() <= REFINER_PROMPT_MAX_CHARS)
+        .then(|| prompt.to_string())
+}
+
+/// Add the owner's own correction prompt to a sidecar `context`; the sidecar then runs the
+/// refiner under it instead of the trained wording. None leaves `context` as it is.
+pub fn with_refiner_prompt(context: Option<Value>, prompt: Option<&str>) -> Option<Value> {
+    let Some(prompt) = prompt else { return context };
+    let mut context = context.unwrap_or_else(|| json!({}));
+    context["refiner_prompt"] = json!(prompt);
     Some(context)
 }
 
@@ -444,6 +464,9 @@ pub struct StylePreferenceCache {
     writing_mode: Option<String>,
     /// `writing_modes_by_app` from the same file: bundle id -> mode.
     app_writing_modes: std::collections::BTreeMap<String, String>,
+    /// `refiner_prompt` from the same file: the owner's own correction prompt, None for the
+    /// trained wording.
+    refiner_prompt: Option<String>,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
     /// File reads and parse attempts (for tests and diagnostics).
@@ -477,6 +500,13 @@ impl StylePreferenceCache {
     pub fn live_text(&mut self) -> bool {
         self.refresh();
         self.live_text
+    }
+
+    /// The owner's own correction prompt (settings.json `refiner_prompt`), None when it is
+    /// unset, blank or over `REFINER_PROMPT_MAX_CHARS`: the refiner then keeps its trained one.
+    pub fn refiner_prompt(&mut self) -> Option<String> {
+        self.refresh();
+        self.refiner_prompt.clone()
     }
 
     /// The one writing mode the user picked for every app (`minimal`,
@@ -514,6 +544,7 @@ impl StylePreferenceCache {
             self.live_text = false;
             self.writing_mode = None;
             self.app_writing_modes.clear();
+            self.refiner_prompt = None;
             return;
         };
         let stamp = Some((meta.modified().ok(), meta.len()));
@@ -557,6 +588,11 @@ impl StylePreferenceCache {
                     .and_then(Value::as_str)
                     .filter(|mode| WRITING_STYLES.contains(mode))
                     .map(str::to_string);
+                self.refiner_prompt = settings
+                    .extra
+                    .get("refiner_prompt")
+                    .and_then(Value::as_str)
+                    .and_then(usable_refiner_prompt);
                 self.app_writing_modes = settings
                     .extra
                     .get("writing_modes_by_app")
@@ -778,6 +814,52 @@ mod tests {
         assert_eq!(categorize("com.openai.chat", None), AppCategory::AiPrompt);
         assert_eq!(categorize("md.obsidian", None), AppCategory::Docs);
         assert_eq!(categorize("com.apple.finder", None), AppCategory::Other);
+    }
+
+    #[test]
+    fn the_owners_correction_prompt_rides_along_in_the_sidecar_context() {
+        use super::{usable_refiner_prompt, with_refiner_prompt, REFINER_PROMPT_MAX_CHARS};
+        assert_eq!(with_refiner_prompt(None, None), None);
+        assert_eq!(
+            with_refiner_prompt(Some(json!({"app_category": "chat"})), Some("Fix it.")),
+            Some(json!({"app_category": "chat", "refiner_prompt": "Fix it."}))
+        );
+        assert_eq!(
+            usable_refiner_prompt("  Fix it.\n").as_deref(),
+            Some("Fix it.")
+        );
+        assert_eq!(usable_refiner_prompt("   "), None);
+        assert_eq!(
+            usable_refiner_prompt(&"x".repeat(REFINER_PROMPT_MAX_CHARS)).map(|p| p.len()),
+            Some(REFINER_PROMPT_MAX_CHARS)
+        );
+        assert_eq!(
+            usable_refiner_prompt(&"x".repeat(REFINER_PROMPT_MAX_CHARS + 1)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_settings_file_supplies_the_correction_prompt() {
+        let dir =
+            std::env::temp_dir().join(format!("phonon-refiner-prompt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let mut cache = StylePreferenceCache::new(Some(path.clone()));
+        assert_eq!(cache.refiner_prompt(), None); // no file
+        for (body, expected) in [
+            (
+                r#"{"schema_version":2,"refiner_prompt":" Fix grammar. "}"#,
+                Some("Fix grammar."),
+            ),
+            (r#"{"schema_version":2,"refiner_prompt":"   "}"#, None),
+            (r#"{"schema_version":2,"refiner_prompt":7}"#, None),
+            (r#"{"schema_version":2}"#, None),
+        ] {
+            std::fs::write(&path, body).unwrap();
+            assert_eq!(cache.refiner_prompt().as_deref(), expected, "{body}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

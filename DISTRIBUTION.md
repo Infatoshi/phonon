@@ -12,7 +12,7 @@ releases provide a Developer ID-signed and notarized DMG.
   runtime, both sidecars, the native refiner engine (`Contents/Helpers/pe`,
   with its Metal shader sources in `Contents/Resources/engine`), the prompt,
   the English word list, the startup audio fixture, and third-party notices.
-- ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v2` model, pinned by
+- ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v3` model, pinned by
   revision. It is public, ungated, CC-BY-4.0, and approximately 2.5 GB.
 - Correction uses Phonon's public refiner, `Infatoshi/phonon-refiner-1.7b`,
   pinned by revision (`crates/phonon-llm/src/paths.rs`). It is fine-tuned from

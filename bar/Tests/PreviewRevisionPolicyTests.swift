@@ -160,6 +160,23 @@ final class PreviewRevisionPolicyTests: XCTestCase {
         )
     }
 
+    func testShorterAcousticRevisionReplacesAWrongTail() {
+        // owner trace 2026-11-10: a long wrong early guess must not hold back the corrected text
+        let previous = "live preview is a little bit more than a little bit"
+        let revised = "being corrected it is not showing"
+
+        XCTAssertEqual(
+            PreviewRevisionPolicy.stableAcoustic(previous: previous, candidate: revised), revised)
+    }
+
+    func testShorterPartialThatOnlyDropsTheTailKeepsPrevious() {
+        let previous = "Hey team, quick update"
+
+        XCTAssertEqual(
+            PreviewRevisionPolicy.stableAcoustic(previous: previous, candidate: "hey team"),
+            previous)
+    }
+
     func testNewerAcousticRevisionWithSameLengthCanReplacePrevious() {
         XCTAssertEqual(
             PreviewRevisionPolicy.stableAcoustic(

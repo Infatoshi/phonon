@@ -13,17 +13,17 @@ from sidecar import asr_terms
 from sidecar.pa_client import SNAP
 
 
-def toy_vocabulary():
+def toy_vocabulary(size=1024):
     v = ["<unk>", "▁", "▁a", "ab", "▁ab"] + list(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     )
-    return v + [f"<pad{i}>" for i in range(1024 - len(v))]
+    return v + [f"<pad{i}>" for i in range(size - len(v))]
 
 
-def layout(flat):
+def layout(flat, vocab=1024):
     """nodes, edges, and whether the length is the one pa checks before taking a dictionary"""
     nodes, edges = int(flat[0]), int(flat[1])
-    ok = len(flat) == 16 + 4 * nodes + 3 * edges + 1025 + 2 * 1032
+    ok = len(flat) == 16 + 4 * nodes + 3 * edges + (vocab + 1) + 2 * (vocab + 8)
     return nodes, edges, ok
 
 
@@ -59,9 +59,13 @@ def test_terms_that_only_encode_with_unk_give_no_trie():
     assert asr_terms.flat_trie(toy_vocabulary(), ["!!", "??"]) is None
 
 
-def test_vocabulary_size_is_checked():
-    with pytest.raises(ValueError):
-        asr_terms.flat_trie(toy_vocabulary()[:1000], ["ab"])
+@pytest.mark.parametrize("size", [1024, 8192])
+def test_trie_follows_the_vocabulary_size(size):
+    # pa's NTOK is the vocabulary + blank (v2: 1025, v3: 8193): root, word_start and boundary scale with it
+    v = toy_vocabulary(size)
+    flat = asr_terms.flat_trie(v, ["ab", "Cd"])
+    nodes, edges, ok = layout(flat, size)
+    assert ok
 
 
 @pytest.mark.skipif(

@@ -33,8 +33,8 @@ impl Waker {
 
 /// Pinned ASR model and runtime. Exact revisions so an upstream release cannot
 /// change what shipped users run.
-pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
-pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
+pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v3";
+pub const ASR_MODEL_REVISION: &str = "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15";
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
 
 /// A local Parakeet folder used instead of the pinned download: the pinned MLX snapshot's layout (config.json,

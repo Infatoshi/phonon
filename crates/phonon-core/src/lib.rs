@@ -4,6 +4,9 @@
 //!   {"cmd":"status"}
 //!   {"cmd":"transcribe","path":"/tmp/x.wav","id":"..."}
 //!   {"cmd":"polish","text":"...","id":"...","context":"<ocr>","app":{"bundle_id":"...","name":"...","url_host":"..."},"textbox":{...}}
+//!   — optional `"refiner_prompt":"..."` (empty: the trained wording) and `"writing_mode":"minimal|casual|formal|prompt"`
+//!   run this one request under that correction prompt and mode instead of the settings' (Settings >
+//!   Advanced > Correction prompt tries a draft this way; the user's own endpoint is skipped)
 //!   {"cmd":"prewarm"}  — dictation started; no event in reply
 //!   {"cmd":"stream_start","id":"...","app":{...}} / {"cmd":"stream_chunk","id":"...","pcm16":"<base64>"} /
 //!   {"cmd":"stream_stop","id":"..."}  — live audio; with streaming refine a segment stream
@@ -216,6 +219,14 @@ impl StreamFinish {
             }
         }
     }
+}
+
+/// What a caller may choose for one polish request instead of the settings: the correction
+/// prompt (`Some("")` is the trained wording) and the writing mode.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PolishOverrides<'a> {
+    pub refiner_prompt: Option<&'a str>,
+    pub writing_mode: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1103,9 +1114,13 @@ impl Engine {
             .dictionary
             .prepare_polish_input_with_context(&text, &screen);
         let live = id.filter(|id| self.live_text_stream.as_deref() == Some(*id));
-        let context = app_context::with_writing_mode(
-            stream_commit_json(category, live.map(|id| (id, index))),
-            mode.as_deref(),
+        let refiner_prompt = self.styles.refiner_prompt();
+        let context = app_context::with_refiner_prompt(
+            app_context::with_writing_mode(
+                stream_commit_json(category, live.map(|id| (id, index))),
+                mode.as_deref(),
+            ),
+            refiner_prompt.as_deref(),
         );
         let polisher = self.polisher.as_mut()?;
         let error = polisher
@@ -1178,6 +1193,30 @@ impl Engine {
         textbox: Option<&serde_json::Value>,
         keep_context: bool,
     ) -> Result<()> {
+        self.polish_request_with(
+            text,
+            screen_text,
+            id,
+            app,
+            textbox,
+            keep_context,
+            PolishOverrides::default(),
+        )
+    }
+
+    /// `polish_request` with the correction prompt and writing mode of the request chosen by
+    /// the caller: Settings > Advanced > Correction prompt tries a prompt it has not saved.
+    #[allow(clippy::too_many_arguments)]
+    pub fn polish_request_with(
+        &mut self,
+        text: &str,
+        screen_text: &str,
+        id: Option<&str>,
+        app: Option<&serde_json::Value>,
+        textbox: Option<&serde_json::Value>,
+        keep_context: bool,
+        overrides: PolishOverrides<'_>,
+    ) -> Result<()> {
         if self.polisher.is_none() {
             bail!("the required local correction model is unavailable");
         }
@@ -1196,9 +1235,21 @@ impl Engine {
         let mode = self
             .styles
             .writing_mode_for(app.as_ref().map(|app| app.bundle_id.as_str()));
-        let context = app_context::with_writing_mode(
-            app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
-            mode.as_deref(),
+        let mode = overrides
+            .writing_mode
+            .filter(|mode| app_context::APP_WRITING_MODES.contains(mode))
+            .map(str::to_string)
+            .or(mode);
+        let refiner_prompt = match overrides.refiner_prompt {
+            Some(prompt) => app_context::usable_refiner_prompt(prompt),
+            None => self.styles.refiner_prompt(),
+        };
+        let context = app_context::with_refiner_prompt(
+            app_context::with_writing_mode(
+                app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
+                mode.as_deref(),
+            ),
+            refiner_prompt.as_deref(),
         );
         let layout_mode = mode
             .clone()
@@ -1222,7 +1273,13 @@ impl Engine {
         }
         // The user's own endpoint refines the same transcript beside the local refiner;
         // the local result stands in whenever it fails or is late.
-        if let (Some(endpoint), Some(id)) = (self.byok.clone(), id) {
+        // (not for a prompt being tried: the endpoint would answer instead of the refiner)
+        let byok = if overrides.refiner_prompt.is_some() {
+            None
+        } else {
+            self.byok.clone()
+        };
+        if let (Some(endpoint), Some(id)) = (byok, id) {
             let mut vocabulary = self
                 .polish_requests
                 .last()
@@ -1376,8 +1433,26 @@ fn finish_correction(
     let polished =
         phonon_llm::opener::restore(source, data::extract_transcript_payload(polished), mode);
     let mut corrected = safe_polish_output(dictionary, source, &polished);
+    // The refiner keeps the casing it is given, and a piece of speech that opens after a
+    // pause is often recognised lowercase ("...events. one was in the masjid"): the capital
+    // after a full stop goes back before the style preferences, which may lower it on purpose.
+    corrected.text =
+        phonon_llm::sentence_case::capitalize_sentence_starts(&corrected.text, &|word| {
+            spelled_lowercase_on_purpose(dictionary, word)
+        });
     corrected.text = app_context::apply_style(&corrected.text, style, dictionary);
     corrected
+}
+
+/// A dictionary term the owner spells in lowercase (`npm`, `pip`): it keeps its case at the
+/// start of a sentence.
+fn spelled_lowercase_on_purpose(dictionary: &data::DictionaryFile, word: &str) -> bool {
+    dictionary.entries.iter().any(|entry| {
+        entry
+            .canonical()
+            .split_whitespace()
+            .any(|part| part.trim_matches(|c: char| !c.is_alphanumeric()) == word)
+    })
 }
 
 /// The transcript so far a live-text draft refines, when the draft belongs to the open
@@ -1677,7 +1752,7 @@ pub fn run_engine_serve() -> Result<()> {
                         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
                         let context = v.get("context").and_then(|x| x.as_str()).unwrap_or("");
                         let id = v.get("id").and_then(|x| x.as_str());
-                        if let Err(e) = eng.polish_request(
+                        if let Err(e) = eng.polish_request_with(
                             text,
                             context,
                             id,
@@ -1686,6 +1761,10 @@ pub fn run_engine_serve() -> Result<()> {
                             v.get("local_history")
                                 .and_then(|x| x.as_bool())
                                 .unwrap_or(false),
+                            PolishOverrides {
+                                refiner_prompt: v.get("refiner_prompt").and_then(|x| x.as_str()),
+                                writing_mode: v.get("writing_mode").and_then(|x| x.as_str()),
+                            },
                         ) {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
                         }
@@ -2145,6 +2224,42 @@ mod tests {
         expected.text = crate::app_context::apply_style(&expected.text, &style, &dictionary);
         assert_eq!(corrected.text, expected.text);
         assert!(corrected.text.contains("vLLM"));
+    }
+
+    #[test]
+    fn the_correction_path_capitalises_after_a_full_stop() {
+        let dictionary = DictionaryFile {
+            entries: vec![DictionaryEntry {
+                phrase: "n p m".into(),
+                replacement: Some("npm".into()),
+                spoken_forms: Vec::new(),
+                source: "test".into(),
+                starred: false,
+                usage_count: 0,
+            }],
+            ..DictionaryFile::default()
+        };
+        let source = "we had two events. one was in the masjid. did we agree on dates";
+        let corrected = finish_correction(
+            &dictionary,
+            source,
+            "We had two events. one was in the masjid. did we agree on dates?",
+            &[],
+            "minimal",
+        );
+        assert_eq!(
+            corrected.text,
+            "We had two events. One was in the masjid. Did we agree on dates?"
+        );
+        // a term spelled lowercase on purpose keeps its case; a chosen style may still lower it
+        let corrected = finish_correction(
+            &dictionary,
+            "it built. n p m ran",
+            "It built. npm ran.",
+            &["all_lowercase".to_string()],
+            "minimal",
+        );
+        assert_eq!(corrected.text, "it built. npm ran.");
     }
 
     #[test]

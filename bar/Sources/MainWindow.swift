@@ -1215,6 +1215,9 @@ struct SettingsView: View {
                             + "Ghostty, iTerm). Prompt keeps a request as an instruction; "
                             + "Minimal only cleans up. Applies from the next dictation.")
             }
+            AdvancedBlock("Correction prompt") {
+                CorrectionPromptEditor(store: store, onChanged: onSettingsChanged)
+            }
             LearnedStylesList(store: store, onChanged: onSettingsChanged)
             SettingRow(
                 "Streaming",

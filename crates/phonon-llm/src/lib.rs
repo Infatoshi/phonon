@@ -18,6 +18,7 @@ pub mod byok;
 pub mod linebreak;
 pub mod opener;
 mod paths;
+pub mod sentence_case;
 
 use anyhow::{bail, Context, Result};
 pub use paths::{

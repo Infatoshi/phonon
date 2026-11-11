@@ -274,8 +274,34 @@ def restore_terms(spoken: str, output: str, vocab: list[str]) -> str:
     return "".join(out) + output[last:]
 
 
+# The instructions the refiner runs under. The trained wording unless the owner wrote their own
+# (Settings > Advanced > Correction prompt): the engine puts it in a request's `context` as
+# `refiner_prompt`, and use_refiner_prompt() reads it before each request is served. Prompts
+# are rendered per request and compared token by token with the cached prefix, so a different
+# wording only misses that cache; it can never be served stale state.
+REFINER_PROMPT_MAX_CHARS = 4000
+_refiner_instructions = REFINER_SYSTEM_PROMPT
+
+
+def use_refiner_prompt(context) -> str:
+    """Select the instructions for the request `context` belongs to; returns them. The trained
+    wording when the context names none (or one that is empty, not text, or over the cap)."""
+    global _refiner_instructions
+    custom = context.get("refiner_prompt") if isinstance(context, dict) else None
+    if (
+        isinstance(custom, str)
+        and custom.strip()
+        and len(custom) <= REFINER_PROMPT_MAX_CHARS
+        and PROMPT_SPLIT_SENTINEL not in custom
+    ):
+        _refiner_instructions = custom.strip()
+    else:
+        _refiner_instructions = REFINER_SYSTEM_PROMPT
+    return _refiner_instructions
+
+
 def refiner_system_prompt(vocab: list[str], mode_line: str = "") -> str:
-    system = REFINER_SYSTEM_PROMPT
+    system = _refiner_instructions
     if mode_line:
         system += "\n" + mode_line
     if not vocab:
@@ -1549,6 +1575,7 @@ def main() -> None:
                 stream_reset()
                 emit({"ok": False, "error": "empty inputText"})
                 return True
+            use_refiner_prompt(request.get("context"))
             mode = writing_mode(mode_lines, mode_table, request.get("context"))
             try:
                 emit(run(text, mode=mode))
@@ -1610,6 +1637,7 @@ def main() -> None:
             return bool(queue)
 
         context = request.get("context")
+        use_refiner_prompt(context)
         mode = writing_mode(mode_lines, mode_table, context)
         try:
             emit(stream_commit(text, should_abort, mode, draft_request(context)))

@@ -430,14 +430,16 @@ final class MeetingCleanerTests: XCTestCase {
     private func meeting(_ id: String, turns: Int = 10) throws -> (URL, MeetingTranscript) {
         let folder = root.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let transcript = MeetingTranscript(
-            model: "m", createdAt: "",
-            turns: (0..<turns).map { index in
+        var built: [MeetingTranscript.Turn] = []
+        for index in 0..<turns {
+            let words: [String] = (0..<60).map { "t\(index)w\($0)" }
+            let speaker: TranscriptSpeaker = index % 2 == 0 ? .me : .call
+            built.append(
                 MeetingTranscript.Turn(
                     startSeconds: Double(index * 20), endSeconds: Double(index * 20 + 19),
-                    speaker: index % 2 == 0 ? .me : .call,
-                    text: (0..<60).map { "t\(index)w\($0)" }.joined(separator: " ") + ".")
-            })
+                    speaker: speaker, text: words.joined(separator: " ") + "."))
+        }
+        let transcript = MeetingTranscript(model: "m", createdAt: "", turns: built)
         try transcript.save(to: folder)
         return (folder, transcript)
     }
