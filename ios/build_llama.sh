@@ -18,6 +18,9 @@ fi
 cd "$WORK"
 git checkout --quiet -- . && git clean -fdq -e 'build-*'
 git apply "$HERE/llama-b12132-phonon.patch"
+# experiment branch ios-head-shortlist: the shortlist output head (llama_phonon_sl_*); inert unless the model file
+# was built by ios/shortlist_gguf.py
+git apply "$HERE/llama-b12132-shortlist.patch"
 ./build-xcframework.sh ios-device ios-sim > "$HERE/build-llama.log" 2>&1 || { tail -30 "$HERE/build-llama.log"; exit 1; }
 rm -rf "$HERE/Frameworks/llama.xcframework"
 mkdir -p "$HERE/Frameworks"

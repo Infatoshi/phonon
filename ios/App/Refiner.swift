@@ -25,7 +25,15 @@ final class Refiner: @unchecked Sendable {
         let guardFired: Bool
         /// FNV-1a over the generated token ids: equal hashes = token-identical output across thread configurations
         let tokenHash: UInt64
+        /// shortlist-head experiment: decode steps where rule R1 fell back to the full head (0 on the full head)
+        var fallbacks: Int = 0
     }
+
+    /// Shortlist-head experiment (branch ios-head-shortlist): set when the model file carries phonon.sl.k (built by
+    /// ios/shortlist_gguf.py). Rule R1, frozen offline at the 5% fallback rate: when the best in-list logit is below
+    /// this, compute every other row and take the full argmax.
+    static let slThreshold: Float = 28.152
+    private(set) var shortlist = false
 
     private let model: OpaquePointer
     private let ctx: OpaquePointer
@@ -64,6 +72,7 @@ final class Refiner: @unchecked Sendable {
             llama_model_free(m)
             return nil
         }
+        shortlist = llama_phonon_sl_k(c) > 0
         var tp: ggml_threadpool_t? = nil
         if persistentPool && threads > 1 {
             var tpp = ggml_threadpool_params_default(threads)
@@ -156,8 +165,20 @@ final class Refiner: @unchecked Sendable {
         var out: [UInt8] = []
         var gen = 0
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        var fallbacks = 0
+        if shortlist {  // the dictation's own token ids join the shortlist for this dictation
+            var ids = tokenize(raw)
+            _ = llama_phonon_sl_set_extras(ctx, &ids, Int32(ids.count))
+        }
         while ok && gen < cap {
-            var tok = llama_sampler_sample(sampler, ctx, -1)
+            var tok: llama_token
+            if shortlist {
+                var fb: Int32 = 0
+                tok = llama_phonon_sl_sample(ctx, Self.slThreshold, 0, &fb, nil, nil)
+                fallbacks += Int(fb)
+            } else {
+                tok = llama_sampler_sample(sampler, ctx, -1)
+            }
             if llama_vocab_is_eog(vocab, tok) { break }
             out += piece(tok)
             gen += 1
@@ -176,6 +197,6 @@ final class Refiner: @unchecked Sendable {
         if fired { text = raw } else { text = LineBreaks.apply(Opener.restore(raw: raw, refined: text, mode: mode), mode: mode) }
         return Output(text: text, promptTokens: tokens.count, genTokens: gen,
                       prefillMs: Int(t1.timeIntervalSince(t0) * 1000), decodeMs: Int(t2.timeIntervalSince(t1) * 1000),
-                      guardFired: fired, tokenHash: hash)
+                      guardFired: fired, tokenHash: hash, fallbacks: fallbacks)
     }
 }

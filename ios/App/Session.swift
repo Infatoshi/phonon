@@ -324,12 +324,15 @@ final class Session: ObservableObject {
             let stock = arg("--stock") == "1"
             Refiner.setStock(stock)
             let before = Self.threadPriorities()
-            guard let r = self.refiner ?? Refiner(path: url.path, threads: threads, persistentPool: usePool) else {
+            // shortlist-head experiment: --model NAME loads Documents/NAME (the product always loads refiner.gguf)
+            let path = arg("--model").map { url.deletingLastPathComponent().appendingPathComponent($0).path } ?? url.path
+            guard let r = self.refiner ?? Refiner(path: path, threads: threads, persistentPool: usePool) else {
                 DispatchQueue.main.async { self.refinerStatus = "Self-test: model failed to load" }
                 return
             }
             let stamp = arg("--stamp") ?? ""
             rows.append(["load_ms": Int(Date().timeIntervalSince(t0) * 1000), "threads": r.threads, "stamp": stamp,
+                         "model": (path as NSString).lastPathComponent, "shortlist": r.shortlist,
                          "pool": r.persistentPool, "stock": stock, "caller_qos": Int(qos_class_self().rawValue),
                          "thermal": ProcessInfo.processInfo.thermalState.rawValue, "threads_by_pri_before": before])
             // each mode twice in a row: rep 0 prefills the fixed head (a mode switch), rep 1 reuses it
@@ -340,7 +343,7 @@ final class Session: ObservableObject {
                     rows.append(["rep": rep, "mode": mode, "total_ms": Int(Date().timeIntervalSince(t) * 1000),
                                  "prefill_ms": o.prefillMs, "decode_ms": o.decodeMs, "prompt_tok": o.promptTokens,
                                  "gen_tok": o.genTokens, "guard": o.guardFired, "out": o.text,
-                                 "tok_hash": String(o.tokenHash, radix: 16)])
+                                 "tok_hash": String(o.tokenHash, radix: 16), "fallback": o.fallbacks])
                 }
             }
             // live threads by base priority after the run (a persistent pool's workers are still alive, paused)
