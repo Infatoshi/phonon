@@ -29,9 +29,10 @@ final class Refiner: @unchecked Sendable {
         var fallbacks: Int = 0
     }
 
-    /// Shortlist-head experiment (branch ios-head-shortlist): set when the model file carries phonon.sl.k (built by
-    /// ios/shortlist_gguf.py). Rule R1, frozen offline at the 5% fallback rate: when the best in-list logit is below
-    /// this, compute every other row and take the full argmax.
+    /// Shortlist output head: on only when the loaded model file carries phonon.sl.k, phonon.sl.order and the
+    /// output.slx tensor (built by ios/shortlist_gguf.py; llama_phonon_sl_k returns 0 otherwise, and today's tied
+    /// refiner.gguf takes the stock sampler path unchanged). Rule R1, frozen offline at the 5% fallback rate: when the
+    /// best in-list logit is below this, compute every other row and take the full argmax.
     static let slThreshold: Float = 28.152
     private(set) var shortlist = false
 

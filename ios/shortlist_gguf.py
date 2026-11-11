@@ -6,8 +6,9 @@ output.slx: SLX_ROWS rows of zeros that llama_phonon_sl_set_extras fills per dic
 the dictation's own token ids. Metadata: phonon.sl.k (K) and phonon.sl.order (slot -> token id, n_vocab int32).
 Every other tensor and key is copied unchanged. Needs ios/llama-b12132-shortlist.patch to load.
 
-usage: uv run --no-project --with numpy python -I shortlist_gguf.py GGUF_PY_DIR IN.gguf LISTS.json OUT.gguf [K]
-  GGUF_PY_DIR: gguf-py from the llama.cpp b12132 tree; LISTS.json: {"32000": [ids...]} (static list incl. forced rows)
+usage: uv run --no-project --with numpy --with pyyaml python -I shortlist_gguf.py GGUF_PY_DIR IN.gguf LISTS.json OUT.gguf [K]
+  GGUF_PY_DIR: gguf-py from the llama.cpp b12132 tree; LISTS.json: {"32000": [ids...]} (static list incl. forced rows,
+  from ios/shortlist_lists.py)
 """
 import json
 import sys
