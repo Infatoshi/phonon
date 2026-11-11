@@ -577,13 +577,14 @@ fn correct_at(base: &str, raw: &str, mode: &str) -> Result<String> {
 }
 
 /// The number pass switch, the Mac's settings.json `number_pass`: one word in this file in
-/// the data root, next to `writing_mode.txt`. "off" turns it off; no file or anything else
-/// leaves it on (the default). Read at each dictation, so an edit applies to the next one.
+/// the data root, next to `writing_mode.txt`. "on" turns it on; no file or anything else
+/// leaves it off (the default until the do-no-harm audit passes). Read at each dictation,
+/// so an edit applies to the next one.
 const NUMBER_PASS_FILE: &str = "number_pass.txt";
 
 fn number_pass_on_in(root: &Path) -> bool {
     std::fs::read_to_string(root.join(NUMBER_PASS_FILE))
-        .map_or(true, |text| !text.trim().eq_ignore_ascii_case("off"))
+        .is_ok_and(|text| text.trim().eq_ignore_ascii_case("on"))
 }
 
 /// Words per correction request. With the 2048-token context: about 330 transcript
@@ -878,16 +879,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn number_pass_is_on_unless_the_file_says_off() {
+    fn number_pass_is_off_unless_the_file_says_on() {
         let root = std::env::temp_dir().join(format!("phonon-win-numpass-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        assert!(number_pass_on_in(&root)); // no file
+        assert!(!number_pass_on_in(&root)); // no file
         for (text, on) in [
             ("off\n", false),
-            (" OFF ", false),
+            ("", false),
+            ("yes", false),
             ("on\n", true),
-            ("", true),
+            (" ON ", true),
         ] {
             std::fs::write(root.join(NUMBER_PASS_FILE), text).unwrap();
             assert_eq!(number_pass_on_in(&root), on, "{text:?}");

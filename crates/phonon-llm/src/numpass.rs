@@ -1,13 +1,13 @@
 //! Number pass (shared output stage: macOS engine, Windows and Linux builds), run on the
 //! final text after the line breaks (`linebreak`).
 //!
-//! The refiner sometimes leaves a spoken number in words, splits a phone number, or drops
-//! a digit when a filler sits inside it. This deterministic pass looks at what was said
-//! (the refiner's input) and rewrites, in the refiner's output, only:
-//! - phone: a digit-by-digit run in the input (zero, oh, one..nine or digits, separated by
-//!   spaces, commas, hyphens, dots or hesitations like "um"; at least 4 digit words and 7
-//!   digits; not starting with "oh") becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC`, `BBB-CCCC`
-//!   or the digits run together;
+//! The refiner sometimes leaves a spoken number in words. This deterministic pass looks at
+//! what was said (the refiner's input) and converts, in the refiner's output, only spoken
+//! number WORDS it left as words:
+//! - phone: a digit-by-digit run in the input (zero, oh, one..nine or digits, "double" /
+//!   "triple" before a digit word, separated by spaces, commas, hyphens, dots or
+//!   hesitations like "um"; at least 4 digit words and 7 digits; not starting with "oh")
+//!   becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC`, `BBB-CCCC` or the digits run together;
 //! - money: "<number words> dollars|dollar|bucks|euros|euro|pounds [and <n> cents]" and
 //!   "<a> point <b> million dollars" become `$N`, `$1,200`, `$N.CC`, `$A.B million`, `€N`
 //!   or `£N`;
@@ -18,29 +18,54 @@
 //! words before the value (the anchor must occur exactly once in the output), else before
 //! the two words after it; no unique anchor, no change.
 //!
-//! Version: numpass **v2.2**. A literal port of the research reference
-//! `passes_v2_2.numpass_v2_2` (frozen 2026-11-11, sha256 e8607047...; its regexes are
-//! spelled out by hand here). v2.2 = v2 plus two bug fixes:
-//! - v2.1: v2 left a hyphenated number word beside the new digits ("forty-five dollars" ->
-//!   "forty-five $45"). A hyphen-joined token whose parts are all number words
-//!   ("forty-five", "four-one-five", "twenty-first") now belongs to phone and money spans,
-//!   a span widens over such a token directly beside it, and the date rule accepts hyphens
-//!   between ordinal and year words in the output.
-//! - v2.2: v2 let a phone run swallow the digit word that starts the next words ("... four
-//!   two one more time" -> "41555501421 more time"). A run one digit past a complete length
-//!   (7, 10, or 11 starting with 1) that ends in a single digit word followed by another
-//!   word leaves that digit word out; a run right after "plus" is never trimmed.
+//! # Invariant
+//!
+//! The rule converts spoken number words. It never rewrites, regroups or strips what the
+//! refiner already wrote in digits or symbols (a leading "+", grouped digits, a "$" amount,
+//! a formatted date, a version, a time). Enforced in code: each replacement (one phone
+//! run, one money amount, the date stage) is kept only if INV-1..3 hold between before and
+//! after, and the whole result is checked once more against the refiner's output, which is
+//! returned unchanged on any failure.
+//! - INV-1, digits: the output's ASCII digits, read in order, are a subsequence of the
+//!   digits after the rule. New digits come only from converted number words; no existing
+//!   digit is removed, changed or reordered.
+//! - INV-2, symbols: no `+ $ € £ % : . / ( )` inside or directly beside an existing digit is
+//!   removed (per-symbol count may not drop).
+//! - INV-3, regrouping: spaces, commas or hyphens between existing digits change only when
+//!   the input's spoken words give exactly the same digit string (phone: the span reads as
+//!   the spoken run; money with no number word left: same digits as the spoken amount).
+//!   A run with a leading "+" is never touched: no span holds or directly follows a "+"
+//!   token, and every `+<digits>` run survives verbatim.
+//! - INV-4, identity: if the INPUT holds no spoken number word (zero..nineteen, twenty..
+//!   ninety, hundred, thousand, million, billion, oh, double, triple, the ordinals
+//!   first..twentieth and thirtieth; hyphen-joined forms count by their parts), the output
+//!   is returned unchanged.
+//!
+//! So a wrong or missing digit the refiner wrote stays as written: that belongs to the
+//! refiner's training, not to a post-rule.
+//!
+//! # Version
+//!
+//! The final rule, numpass **v2.3 + v4**: a literal port of the research reference
+//! `passes_v4_3.numpass_v4_3` (frozen 2026-11-11, sha256 1f1c236d...; on `passes_v2_3`,
+//! sha256 744d7287...; regexes spelled out by hand here). It is v2 plus:
+//! - v2.1: a hyphen-joined token whose parts are all number words ("forty-five",
+//!   "four-one-five", "twenty-first") belongs to phone and money spans and a span widens
+//!   over one directly beside it; dates accept hyphens between ordinal and year words. v2
+//!   wrote "forty-five $45".
+//! - v2.2: a phone run one digit past a complete length (7, 10, or 11 starting with 1)
+//!   that ends in a single digit word followed by another word leaves that word out, never
+//!   after "plus" ("... four two one more time"; v2 wrote "41555501421 more time").
+//! - v2.3: the invariant above.
+//! - v4: "double" / "triple" before a digit word in a phone run.
 //!
 //! Percentages and plain cardinals have no rule and are never touched.
 //!
-//! `fixtures/numpass_cases.json` holds the v2.2 reference's own outputs on the public
-//! T14/T14b refiner outputs (parity), on the public T13/T15/T16 outputs (guard), and on
-//! pairs derived from the public ones that exercise the two fixes. Measured with v2 on the
-//! shipped refiner: T14b (fresh set) worst-mode correct 0.807 -> 0.967 (the fixes came
-//! after those sets were read). Known differences from the Python: digits are ASCII 0-9
-//! (Python's `\d` also takes other scripts' decimal digits) and amounts above 10^38 are
-//! left alone. Known reference behaviour kept for parity: an international number the
-//! refiner wrote as "+33 1 23 45 67 89" is run together without its "+".
+//! `fixtures/numpass_cases.json` holds the reference's own outputs on the public T14/T14b
+//! refiner outputs (parity), the public T13/T15/T16 outputs (guard), pairs derived from the
+//! public ones that exercise each revision, and the reference's 49 test cases. Known
+//! differences from the Python: digits are ASCII 0-9 (Python's `\d` also takes other
+//! scripts' decimal digits) and amounts above 10^38 are left alone.
 
 const DIGW: &[(&str, char)] = &[
     ("zero", '0'),
@@ -125,9 +150,21 @@ const STRIP: &[char] = &['(', ')', '[', ']', '.', ',', ';', ':', '!', '?', '"', 
 /// The refiner's `input` (what was said) and its `output`: the output with spoken phone
 /// numbers, money amounts and word dates written as digits. Phone, then money, then dates.
 pub fn apply(input: &str, output: &str) -> String {
+    // INV-4: nothing spoken as a number word, nothing to convert
+    if !has_number_words(input) {
+        return output.to_string();
+    }
     let text = phone_fix(input, output);
     let text = money_fix(input, &text);
-    date_fix(input, &text)
+    // the date stage is kept only if it holds INV-1..3 on its own
+    let dated = date_fix(input, &text);
+    let text = if inv_ok(&text, &dated) { dated } else { text };
+    // and the whole result once more against what the refiner wrote
+    if inv_ok(output, &text) {
+        text
+    } else {
+        output.to_string()
+    }
 }
 
 // ---------------------------------------------------------------- word tables
@@ -451,20 +488,41 @@ fn complete(d: &str) -> bool {
     matches!(d.len(), 7 | 10) || (d.len() == 11 && d.starts_with('1'))
 }
 
-/// Digit-by-digit runs in the input: (digits, anchors, cut). v2.2: a run one digit past a
-/// complete length that ends in a single digit word followed by a non-digit word ("... four
-/// two one more time") leaves that digit word out (`cut`); never after "plus".
+/// v4: "double" / "triple" before a digit word repeat it.
+fn repeat(w: &str) -> Option<usize> {
+    match w {
+        "double" => Some(2),
+        "triple" => Some(3),
+        _ => None,
+    }
+}
+
+/// Digit-by-digit runs in the input: (digits, anchors, cut). v4: "double five", "triple
+/// oh" read as 55, 000. v2.2: a run one digit past a complete length that ends in a single
+/// digit word followed by a non-digit word ("... four two one more time") leaves that digit
+/// word out (`cut`); never after "plus" or when the word is the target of double/triple.
 fn phone_runs(inp: &str) -> Vec<(String, Anchors, bool)> {
     let ws = tokens(inp);
     let low: Vec<String> = ws.iter().map(|w| w.to_lowercase()).collect();
+    let rep_at = |j: usize| {
+        repeat(&low[j]).filter(|_| low.get(j + 1).is_some_and(|n| digit_word(n).is_some()))
+    };
     let mut res = Vec::new();
     let mut i = 0;
     while i < ws.len() {
         let w = low[i].as_str();
-        if (digit_word(w).is_some() && w != "oh") || is_digits(w) {
+        if rep_at(i).is_some() || (digit_word(w).is_some() && w != "oh") || is_digits(w) {
             let (mut j, mut digs, mut nw, mut last) = (i, String::new(), 0, i);
             while j < ws.len() {
                 let x = low[j].as_str();
+                if let Some(times) = rep_at(j) {
+                    let d = digit_word(&low[j + 1]).unwrap();
+                    digs.extend(std::iter::repeat_n(d, times));
+                    nw += times;
+                    last = j + 1;
+                    j += 2;
+                    continue;
+                }
                 if let Some(d) = digit_word(x) {
                     digs.push(d);
                     nw += 1;
@@ -480,7 +538,9 @@ fn phone_runs(inp: &str) -> Vec<(String, Anchors, bool)> {
             }
             let next = ws.get(last + 1).copied().unwrap_or("");
             let intl = i > 0 && low[i - 1] == "plus";
+            let by_rep = last > 0 && repeat(&low[last - 1]).is_some();
             let cut = !intl
+                && !by_rep
                 && !complete(&digs)
                 && complete(&digs[..digs.len() - 1])
                 && digit_word(&low[last]).is_some()
@@ -524,6 +584,7 @@ fn numish(w: &str) -> bool {
     let low = s.to_lowercase();
     digit_word(&low).is_some()
         || is_hes(&low)
+        || repeat(&low).is_some()
         || hyph_num(s)
         || (s.chars().any(|c| c.is_ascii_digit())
             && s.chars()
@@ -552,8 +613,21 @@ fn phone_fix(inp: &str, out: &str) -> String {
             }
             span = Some((j, k));
         }
-        if let Some(span) = span {
-            out = replace(&toks, span, &fmt_digits(&digs));
+        let Some((j, k)) = span else { continue };
+        // INV-3: never touch a "+" run; the span must read exactly as the spoken run
+        if plus_near(&toks, j, k) || span_digits(&toks[j..k]).as_deref() != Some(digs.as_str()) {
+            continue;
+        }
+        // INV-2: a phone span may not hold $ % : . / ( ) beside its digits
+        if prot_counts(strip_tail(&toks[j..k].join(" ")))
+            .iter()
+            .any(|&n| n > 0)
+        {
+            continue;
+        }
+        let new = replace(&toks, (j, k), &fmt_digits(&digs));
+        if inv_ok(&out, &new) {
+            out = new;
         }
     }
     out
@@ -677,11 +751,159 @@ fn money_fix(inp: &str, out: &str) -> String {
                 .chain(t.chars())
                 .any(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
         });
-        if has_value {
-            out = replace(&toks, (j, k), &canon);
+        if !has_value || plus_near(&toks, j, k) {
+            continue;
+        }
+        let old = strip_tail(&toks[j..k].join(" ")).to_string();
+        let has_number_word = toks[j..k].iter().any(|t| {
+            ascii_words(&t.to_lowercase()).iter().any(|w| {
+                is_unit_or_tens(w) || matches!(*w, "hundred" | "thousand" | "million" | "billion")
+            }) || hyph_num(t.trim_matches(STRIP))
+        });
+        // INV-3: a pure regroup only when the spoken amount has the same digits
+        if !has_number_word && digits(&old) != digits(&canon) {
+            continue;
+        }
+        // INV-2 inside the span
+        let (pc, po) = (prot_counts(&canon), prot_counts(&old));
+        if pc.iter().zip(po.iter()).any(|(c, o)| c < o) {
+            continue;
+        }
+        let new = replace(&toks, (j, k), &canon);
+        if inv_ok(&out, &new) {
+            out = new;
         }
     }
     out
+}
+
+// ---------------------------------------------------------------- invariant (v2.3)
+
+/// INV-2's protected symbols.
+const PROT: [char; 10] = ['+', '$', '€', '£', '%', ':', '.', '/', '(', ')'];
+
+/// INV-4's spoken number words: units, tens, hundred, thousand, million, billion, oh,
+/// double, triple and the ordinals (hyphen-joined forms count by their parts).
+fn has_number_words(inp: &str) -> bool {
+    ascii_words(&inp.to_lowercase()).iter().any(|w| {
+        is_unit_or_tens(w)
+            || matches!(
+                *w,
+                "hundred" | "thousand" | "million" | "billion" | "oh" | "double" | "triple"
+            )
+            || ORDW.iter().any(|(o, _)| o == w)
+    })
+}
+
+/// The runs of a-z in `s`.
+fn ascii_words(s: &str) -> Vec<&str> {
+    s.split(|c: char| !c.is_ascii_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn digits(s: &str) -> String {
+    s.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// How many of each protected symbol sit directly beside a digit.
+fn prot_counts(s: &str) -> [usize; PROT.len()] {
+    let chars: Vec<char> = s.chars().collect();
+    let mut counts = [0; PROT.len()];
+    for (i, c) in chars.iter().enumerate() {
+        let Some(p) = PROT.iter().position(|x| x == c) else {
+            continue;
+        };
+        let beside = (i > 0 && chars[i - 1].is_ascii_digit())
+            || chars.get(i + 1).is_some_and(char::is_ascii_digit);
+        if beside {
+            counts[p] += 1;
+        }
+    }
+    counts
+}
+
+/// The `+<digits>` runs of `s`: `\+\d(?:[\d\s().\-]*\d)?`.
+fn plus_runs(s: &str) -> Vec<&str> {
+    let mut runs = Vec::new();
+    let mut from = 0;
+    while let Some(p) = s[from..].find('+').map(|k| from + k) {
+        let mut chars = s[p + 1..].char_indices();
+        if !chars.next().is_some_and(|(_, c)| c.is_ascii_digit()) {
+            from = p + 1;
+            continue;
+        }
+        let mut end = p + 2;
+        for (k, c) in chars {
+            if c.is_ascii_digit() {
+                end = p + 1 + k + 1;
+            } else if !(is_space(c) || "().-".contains(c)) {
+                break;
+            }
+        }
+        runs.push(&s[p..end]);
+        from = end;
+    }
+    runs
+}
+
+/// INV-1, INV-2 and the "+" part of INV-3 between two versions of one output: the old
+/// digits are a subsequence of the new, no protected symbol beside a digit is lost, and
+/// every "+<digits>" run survives verbatim.
+fn inv_ok(before: &str, after: &str) -> bool {
+    let new = digits(after);
+    let mut rest = new.chars();
+    if !digits(before).chars().all(|d| rest.any(|n| n == d)) {
+        return false;
+    }
+    let (pb, pa) = (prot_counts(before), prot_counts(after));
+    if pa.iter().zip(pb.iter()).any(|(a, b)| a < b) {
+        return false;
+    }
+    plus_runs(before).iter().all(|run| after.contains(run))
+}
+
+/// A "+" in the span or in the token right before it.
+fn plus_near(toks: &[&str], j: usize, k: usize) -> bool {
+    toks[j..k].iter().any(|t| t.contains('+')) || (j > 0 && toks[j - 1].contains('+'))
+}
+
+/// One trailing `.,;:!?` removed.
+fn strip_tail(s: &str) -> &str {
+    s.strip_suffix(['.', ',', ';', ':', '!', '?']).unwrap_or(s)
+}
+
+/// The digits output tokens read as, in order: digits as written, digit words, and
+/// double/triple before a digit word; hesitations skipped. None if anything else is there.
+fn span_digits(toks: &[&str]) -> Option<String> {
+    let (mut out, mut times) = (String::new(), 1);
+    for t in toks {
+        let mut i = 0;
+        while let Some(c) = t[i..].chars().next() {
+            if c.is_ascii_digit() {
+                out.extend(std::iter::repeat_n(c, times));
+                times = 1;
+                i += 1;
+            } else if c.is_ascii_alphabetic() || c == '\'' {
+                let len = t[i..]
+                    .find(|c: char| !(c.is_ascii_alphabetic() || c == '\''))
+                    .unwrap_or(t.len() - i);
+                let word = t[i..i + len].to_lowercase();
+                if let Some(d) = digit_word(&word) {
+                    out.extend(std::iter::repeat_n(d, times));
+                    times = 1;
+                } else if let Some(r) = repeat(&word) {
+                    times = r;
+                } else if !is_hes(&word) {
+                    return None;
+                }
+                i += len;
+            } else {
+                i += c.len_utf8();
+            }
+        }
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------- dates
@@ -949,7 +1171,8 @@ mod tests {
     fn matches_the_python_reference() {
         let (n, changed) = check("parity");
         assert_eq!(n, 1693);
-        assert_eq!(changed, 571);
+        // v2 changed 571; the invariant leaves wrong or missing digits the refiner wrote alone
+        assert_eq!(changed, 236);
     }
 
     /// Public T13/T15/T16 outputs whose input holds a digit, a digit word, a currency word
@@ -961,17 +1184,24 @@ mod tests {
         assert_eq!(changed, 6);
     }
 
-    /// The fixes' own parity: pairs derived from the public ones (number words joined by
-    /// hyphens, a digit word after a phone run) on which v2.2 and v2 differ.
+    /// The revisions' own parity: pairs derived from the public ones (hyphenated number
+    /// words, a digit word after a phone run, double/triple, "+", brackets, dots, % and :
+    /// beside digits) on which the final rule and v2 differ, 100 per deciding revision.
     #[test]
     fn revision_fixes_match_the_reference() {
-        let (n, changed) = check("fixes");
+        let (n, _) = check("fixes");
         assert_eq!(n, 300);
-        assert!(changed > 250, "{changed}");
     }
 
-    /// `test_numpass_v2_2.py`'s own cases beyond v2.1's: the swallowed digit word and the
-    /// phone-length edges. Expected values are the v2.2 reference's outputs.
+    /// The reference's own test file (`test_numpass_v2_3.py`), all 49 cases.
+    #[test]
+    fn reference_test_cases() {
+        let (n, _) = check("reference_tests");
+        assert_eq!(n, 49);
+    }
+
+    /// The swallowed digit word and the phone-length edges (v2.2), double/triple (v4).
+    /// Expected values are the final reference's outputs.
     #[test]
     fn a_digit_run_stops_at_a_complete_length() {
         let call = "call me at four one five five five five zero one four two one more time";
@@ -1019,12 +1249,17 @@ mod tests {
                 "The London office is +44 20 7946 0958.",
                 "The London office is +44 20 7946 0958.",
             ),
-            // known reference behaviour (open issue): an international number written with
-            // its "+" and groups is run together
+            // INV-3: a "+" run stays exactly as written (v2.2 ran it together)
             (
                 "paris is plus three three one two three four five six seven eight nine please",
                 "Paris is +33 1 23 45 67 89 please.",
-                "Paris is 33123456789 please.",
+                "Paris is +33 1 23 45 67 89 please.",
+            ),
+            // v4: double/triple read as repeated digits
+            (
+                "call four one five triple five zero one four two now",
+                "Call four one five triple five zero one four two now.",
+                "Call 415-555-0142 now.",
             ),
         ];
         for (input, output, want) in cases {
@@ -1134,10 +1369,10 @@ mod tests {
             apply(filler, "Call me at 555 123 4567 tomorrow."),
             "Call me at 555-123-4567 tomorrow."
         );
-        // the digit the refiner dropped next to the filler comes back
+        // INV-1/3: a digit the refiner dropped is not restored (the written digits stay)
         assert_eq!(
             apply(filler, "Call me at 555 123 456 tomorrow."),
-            "Call me at 555-123-4567 tomorrow."
+            "Call me at 555 123 456 tomorrow."
         );
         assert_eq!(
             apply(
@@ -1151,7 +1386,7 @@ mod tests {
                 "plus one four one five five five five oh one nine nine is my cell",
                 "+1 415 555 0199 is my cell."
             ),
-            "1-415-555-0199 is my cell."
+            "+1 415 555 0199 is my cell." // INV-3: never a "+" run
         );
         // seven digits, "oh" inside the run
         assert_eq!(
@@ -1280,6 +1515,219 @@ mod tests {
             assert_eq!(apply(text, text), text);
         }
         assert_eq!(apply("hello", "Hi  there"), "Hi  there");
+    }
+
+    // ------------------------------------------------------------ invariant properties
+    // Written apart from the rule's own guard (`inv_ok`), as the reference's tests are.
+
+    /// The invariant violations of `new` against the refiner's `out` for `input`:
+    /// "INV-4" a change with no spoken number word in the input, "INV-1" an existing digit
+    /// removed, changed or reordered, "INV-2" a protected symbol beside a digit lost or a
+    /// "+<digits>" run not kept verbatim.
+    fn violations(input: &str, out: &str, new: &str) -> Vec<&'static str> {
+        const WORDS: &str = "zero one two three four five six seven eight nine ten eleven twelve \
+            thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty \
+            sixty seventy eighty ninety hundred thousand million billion oh double triple first \
+            second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth \
+            fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth thirtieth";
+        let words: Vec<&str> = WORDS.split_whitespace().collect();
+        let lower = input.to_lowercase();
+        let spoken = lower
+            .split(|c: char| !c.is_ascii_lowercase())
+            .any(|w| words.contains(&w));
+        let mut bad = Vec::new();
+        if !spoken && new != out {
+            bad.push("INV-4");
+        }
+        let after: Vec<char> = new.chars().filter(char::is_ascii_digit).collect();
+        let mut at = 0;
+        for d in out.chars().filter(char::is_ascii_digit) {
+            match after[at..].iter().position(|&c| c == d) {
+                Some(k) => at += k + 1,
+                None => {
+                    bad.push("INV-1");
+                    break;
+                }
+            }
+        }
+        let count = |s: &str, sym: char| {
+            let c: Vec<char> = s.chars().collect();
+            (0..c.len())
+                .filter(|&i| {
+                    c[i] == sym
+                        && ((i > 0 && c[i - 1].is_ascii_digit())
+                            || (i + 1 < c.len() && c[i + 1].is_ascii_digit()))
+                })
+                .count()
+        };
+        let symbols_lost = "+$€£%:./()".chars().any(|s| count(new, s) < count(out, s));
+        // every "+" followed by a digit, up to its last digit before anything outside
+        // digits, whitespace, ( ) . -
+        let plus_lost = out.match_indices('+').any(|(p, _)| {
+            let tail: Vec<char> = out[p + 1..].chars().collect();
+            if !tail.first().is_some_and(char::is_ascii_digit) {
+                return false;
+            }
+            let mut last = 0;
+            for (i, c) in tail.iter().enumerate() {
+                if c.is_ascii_digit() {
+                    last = i;
+                } else if !(c.is_whitespace() || "().-".contains(*c)) {
+                    break;
+                }
+            }
+            let run: String = std::iter::once('+')
+                .chain(tail[..=last].iter().copied())
+                .collect();
+            !new.contains(&run)
+        });
+        if symbols_lost || plus_lost {
+            bad.push("INV-2");
+        }
+        bad
+    }
+
+    /// The invariant holds on every row of the fixture (public outputs, derived pairs and
+    /// the reference's test cases), for the rule's actual output.
+    #[test]
+    fn invariant_holds_on_every_fixture_row() {
+        // the checker itself catches each kind of harm
+        assert_eq!(
+            violations("hi there", "Room 5", "Room 6"),
+            ["INV-4", "INV-1"]
+        );
+        assert_eq!(violations("one", "at +1 415", "at 1-415"), ["INV-2"]);
+        assert_eq!(violations("one", "45% off", "45 off"), ["INV-2"]);
+        assert_eq!(violations("one", "415 555", "555 415"), ["INV-1"]);
+        assert!(violations("one", "415 555", "415-555 1").is_empty());
+        let cases = cases();
+        let mut n = 0;
+        for set in ["parity", "guard", "fixes", "reference_tests"] {
+            for case in cases[set].as_array().unwrap() {
+                let input = case["input"].as_str().unwrap();
+                let output = case["output"].as_str().unwrap();
+                let new = apply(input, output);
+                assert_eq!(
+                    violations(input, output, &new),
+                    Vec::<&str>::new(),
+                    "{output}"
+                );
+                n += 1;
+            }
+        }
+        assert_eq!(n, 1693 + 523 + 300 + 49);
+    }
+
+    /// Seeded random dictations (number words, digits already written, "+", $ % : . / ( ),
+    /// hyphens, dates, money, fillers) and random refiner outputs, part derived from the
+    /// input: the invariant holds on every one, and an input with no number word leaves the
+    /// output exactly as it was.
+    #[test]
+    fn invariant_holds_on_seeded_random_text() {
+        const SPOKEN: &[&str] = &[
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "zero", "oh",
+            "ten", "twelve", "fifteen", "twenty", "thirty", "forty", "fifty", "ninety", "hundred",
+            "thousand", "million", "first", "second", "fifth", "twenty", "double", "triple",
+            "point", "and", "cents", "dollars", "bucks", "euros", "pounds", "plus", "percent",
+            "april", "may", "the", "of", "um", "uh", "call", "me", "at", "room", "costs", "on",
+            "is", "more", "time", "people", "please", ",", ".",
+        ];
+        const WRITTEN: &[&str] = &[
+            "415",
+            "555",
+            "0142",
+            "1",
+            "+1",
+            "+44",
+            "(415)",
+            "555-0142",
+            "415.555.0142",
+            "$45",
+            "$1,200",
+            "€30",
+            "£64",
+            "45%",
+            "10:30",
+            "3/4",
+            "v2.10.1",
+            "2026",
+            "1200",
+            "12.50",
+            "forty-five",
+            "four-one-five",
+            "twenty-first",
+            "one",
+            "five",
+            "two",
+            "four",
+            "triple",
+            "double",
+            "dollars",
+            "April",
+            "May",
+            "the",
+            "of",
+            "call",
+            "me",
+            "at",
+            "Room",
+            "costs",
+            "is",
+            "more",
+            "time",
+            "people",
+            "please",
+            "um",
+            ",",
+            ".",
+            "-",
+            "+",
+            "(",
+            ")",
+        ];
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        let (mut changed, mut identity_cases) = (0, 0);
+        for case in 0..20_000 {
+            let len = 3 + next(14);
+            let input: Vec<&str> = (0..len).map(|_| SPOKEN[next(SPOKEN.len())]).collect();
+            let input = if case % 5 == 0 {
+                // no number word at all: INV-4 must return the output untouched
+                identity_cases += 1;
+                "call me at the room please".to_string()
+            } else {
+                input.join(" ")
+            };
+            // an output that keeps part of the input's words and writes other tokens
+            let mut out: Vec<&str> = Vec::new();
+            for w in input.split(' ') {
+                match next(4) {
+                    0 => out.push(WRITTEN[next(WRITTEN.len())]),
+                    1 => {}
+                    _ => out.push(w),
+                }
+            }
+            for _ in 0..next(3) {
+                out.insert(next(out.len() + 1), WRITTEN[next(WRITTEN.len())]);
+            }
+            let sep = [" ", " ", " ", ", ", "-"][next(5)];
+            let out = out.join(sep) + [".", "", "?"][next(3)];
+            let new = apply(&input, &out);
+            changed += usize::from(new != out);
+            assert_eq!(
+                violations(&input, &out, &new),
+                Vec::<&str>::new(),
+                "input: {input}\nout: {out}\nnew: {new}"
+            );
+        }
+        // the generator exercises real rewrites, not only the identity
+        assert!(changed > 200, "{changed}");
+        assert_eq!(identity_cases, 4_000);
     }
 
     #[test]

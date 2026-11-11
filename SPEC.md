@@ -844,23 +844,30 @@ Measured offline on those 608 dictations: WER against the owner's references 9.7
 retrain gained.
 
 Number pass (shared output stage, `phonon_llm::numpass::apply(input, output)`, last, on the final text after the line
-breaks; settings.json `number_pass`, default on; Windows/Linux: `number_pass.txt` in the data folder, "off" turns it
-off): deterministic, driven by what was said. A digit-by-digit run in the transcript (zero/oh/one..nine or digits,
-spaces, commas, hyphens, dots and hesitations like "um" inside it; at least 4 digit words and 7 digits; not starting
-with "oh") becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC`, `BBB-CCCC` or the digits run together; a spoken amount ("forty five
-dollars", "bucks", "euros", "pounds", "and N cents", "two point five million dollars") becomes `$45`, `$1,200`,
-`$12.50`, `$2.5 million`, `€N` or `£N`; a spoken word date ("May the fifth", "the tenth of April", optional year words)
-still in words in the output becomes "May 5, 2026". Phone and money replace the output span after the two transcript
-words before the value (they must occur exactly once in the output), else before the two words after it; no unique
-anchor, no change. A hyphenated number word ("forty-five", "four-one-five", "twenty-first") belongs to the value, so
-no word form is left beside the digits; a phone run one digit past a complete length (7, 10, 11 starting with 1)
-that ends in a digit word followed by another word ("... four two one more time") leaves that word out, except after
-"plus". A literal port of the research numpass v2.2 (v2 plus those two fixes), checked against its outputs on 1,693
-public T14/T14b pairs and 300 pairs that exercise the fixes (`fixtures/numpass_cases.json`). Measured with the reference, shipped refiner, worst-mode correct: T14b (fresh
-set) 0.807 -> 0.967, T14c (fresh) -> 0.953; T14 0.823 -> 0.950 with v1 (v2's 0.993 there is tuning). On public
-T13/T15/T16 outputs it changes only two dates ("April first" -> "April 1", "the tenth of April 2013" -> "April 10,
-2013"). Not read yet: "double"/"triple" digits ("triple five"), most of T14c's remaining wrongly added numbers. Live
-text drafts get it too. iPhone and Android do not have it yet.
+breaks; settings.json `number_pass`, default OFF; Windows/Linux: `number_pass.txt` in the data folder, "on" turns it
+on. The default flips to on only in a later change, after the do-no-harm audit passes its frozen bar on the final
+rule): deterministic, driven by what was said. It converts spoken number WORDS the correction model left as words,
+and never rewrites, regroups or strips anything already written in digits or symbols (a leading "+", grouped digits,
+a "$" amount, a formatted date, a version, a time). Invariant, enforced per replacement and on the whole result (the
+model's text comes back unchanged on any failure): INV-1, the output's digits in order are a subsequence of the digits
+after; INV-2, no `+ $ € £ % : . / ( )` beside a digit is lost; INV-3, existing digits are regrouped only when the
+spoken words give exactly the same digits, and never a run with a leading "+"; INV-4, a transcript with no spoken
+number word leaves the output unchanged. So a wrong or missing digit the model wrote stays: that is the model's
+training to fix. Conversions: a digit-by-digit run in the transcript (zero/oh/one..nine or digits, "double"/"triple"
+before a digit word, hesitations like "um" inside it; at least 4 digit words and 7 digits; not starting with "oh";
+stopping at a complete length, 7, 10 or 11 starting with 1, when the next digit word starts other words: "... four
+two one more time") becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC` or `BBB-CCCC`; a spoken amount ("forty five dollars",
+"bucks", "euros", "pounds", "and N cents", "two point five million dollars") becomes `$45`, `$1,200`, `$12.50`,
+`$2.5 million`, `€N` or `£N`; a spoken word date ("May the fifth", "the tenth of April", optional year words) still
+in words, spaces or hyphens, becomes "May 5, 2026". A hyphenated number word ("forty-five") belongs to the value.
+Phone and money replace the output span after the two transcript words before the value (they must occur exactly once
+in the output), else before the two words after it; no unique anchor, no change. A literal port of the research
+numpass v2.3 + v4 (`fixtures/numpass_cases.json`: its outputs on 1,693 public T14/T14b pairs, 523 public guard rows,
+300 derived pairs and its 49 test cases). Worst-mode correct with the shipped model (a regression check: these sets
+were read while the rule was written): T14 0.823 -> 0.880, T14b 0.807 -> 0.860; most remaining failures are digits the
+model wrote wrong, which the invariant leaves alone. On public T13/T15/T16 outputs it changes only two dates ("April
+first" -> "April 1", "the tenth of April 2013" -> "April 10, 2013"). Live text drafts get it too. iPhone and Android
+do not have it yet.
 
 Your own model endpoint (issue #24; settings.json `byok_enabled`, `byok_base_url`, `byok_model`; the API key in the
 login Keychain, service `com.infatoshi.phonon.byok`): off by default, no default endpoint, no Phonon-hosted service.

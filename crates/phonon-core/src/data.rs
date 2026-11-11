@@ -524,9 +524,10 @@ pub struct SettingsFile {
     #[serde(default = "default_live_text_style")]
     pub live_text_style: String,
     /// Number pass (`phonon_llm::numpass`): after the refiner, spoken phone numbers, money
-    /// amounts and word dates are written as digits. On by default; it only rewrites those.
+    /// amounts and word dates are written as digits. Off by default until the do-no-harm
+    /// audit passes its frozen bar on the final rule; then the default flips to on.
     /// Read again when the file changes, so a change applies to the next dictation.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub number_pass: bool,
     /// Style preferences the user approved, by app category
     /// (`{"chat": ["lowercase_start"]}`).
@@ -555,7 +556,7 @@ impl Default for SettingsFile {
             stream_refine: None,
             live_text: default_live_text(),
             live_text_style: default_live_text_style(),
-            number_pass: true,
+            number_pass: false,
             style_preferences: BTreeMap::new(),
             extra: BTreeMap::new(),
         }
@@ -1505,11 +1506,11 @@ mod tests {
         )
         .unwrap();
         assert!(settings.edit_learning);
-        assert!(settings.number_pass); // absent: on
-        let off: SettingsFile =
-            serde_json::from_str(r#"{"schema_version":2,"number_pass":false}"#).unwrap();
-        assert!(!off.number_pass);
-        assert!(off.extra.is_empty(), "a typed field, not an unknown key");
+        assert!(!settings.number_pass); // absent: off until the audit passes
+        let on: SettingsFile =
+            serde_json::from_str(r#"{"schema_version":2,"number_pass":true}"#).unwrap();
+        assert!(on.number_pass);
+        assert!(on.extra.is_empty(), "a typed field, not an unknown key");
         assert_eq!(settings.stream_refine, None); // absent: the engine decides by memory
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("stream_refine")); // and a rewrite does not pin it
