@@ -18,13 +18,29 @@
 //! words before the value (the anchor must occur exactly once in the output), else before
 //! the two words after it; no unique anchor, no change.
 //!
-//! A literal port of the research reference "numpass v2" (`passes_v2.numpass_v2`, frozen
-//! 2026-11-11; its regexes are spelled out by hand here). `fixtures/numpass_cases.json`
-//! holds the reference's own outputs on the public T14/T14b refiner outputs (parity) and on
-//! the public T13/T15/T16 outputs (guard). Measured with the reference on the shipped
-//! refiner: T14b (fresh set) worst-mode correct 0.823 -> 0.967. Known differences from the
-//! Python: digits are ASCII 0-9 (Python's `\d` also takes other scripts' decimal digits)
-//! and amounts above 10^38 are left alone.
+//! Version: numpass **v2.2**. A literal port of the research reference
+//! `passes_v2_2.numpass_v2_2` (frozen 2026-11-11, sha256 e8607047...; its regexes are
+//! spelled out by hand here). v2.2 = v2 plus two bug fixes:
+//! - v2.1: v2 left a hyphenated number word beside the new digits ("forty-five dollars" ->
+//!   "forty-five $45"). A hyphen-joined token whose parts are all number words
+//!   ("forty-five", "four-one-five", "twenty-first") now belongs to phone and money spans,
+//!   a span widens over such a token directly beside it, and the date rule accepts hyphens
+//!   between ordinal and year words in the output.
+//! - v2.2: v2 let a phone run swallow the digit word that starts the next words ("... four
+//!   two one more time" -> "41555501421 more time"). A run one digit past a complete length
+//!   (7, 10, or 11 starting with 1) that ends in a single digit word followed by another
+//!   word leaves that digit word out; a run right after "plus" is never trimmed.
+//!
+//! Percentages and plain cardinals have no rule and are never touched.
+//!
+//! `fixtures/numpass_cases.json` holds the v2.2 reference's own outputs on the public
+//! T14/T14b refiner outputs (parity), on the public T13/T15/T16 outputs (guard), and on
+//! pairs derived from the public ones that exercise the two fixes. Measured with v2 on the
+//! shipped refiner: T14b (fresh set) worst-mode correct 0.807 -> 0.967 (the fixes came
+//! after those sets were read). Known differences from the Python: digits are ASCII 0-9
+//! (Python's `\d` also takes other scripts' decimal digits) and amounts above 10^38 are
+//! left alone. Known reference behaviour kept for parity: an international number the
+//! refiner wrote as "+33 1 23 45 67 89" is run together without its "+".
 
 const DIGW: &[(&str, char)] = &[
     ("zero", '0'),
@@ -160,6 +176,20 @@ fn is_moneyw(w: &str) -> bool {
                 | "pounds"
                 | "usd"
         )
+}
+
+/// v2.1 `NUMWORD`: units, tens, hundred, thousand, million, oh and the ordinals.
+fn is_numword(w: &str) -> bool {
+    is_unit_or_tens(w)
+        || matches!(w, "hundred" | "thousand" | "million" | "oh")
+        || ORDW.iter().any(|(o, _)| *o == w)
+}
+
+/// v2.1: a hyphen-joined token whose every part is a number word ("forty-five",
+/// "four-one-five", "twenty-first").
+fn hyph_num(s: &str) -> bool {
+    let low = s.to_lowercase();
+    low.contains('-') && low.split('-').all(is_numword)
 }
 
 fn currency(w: &str) -> Option<&'static str> {
@@ -380,9 +410,18 @@ fn anchor_span<'a>(
             }
         }
     }
-    let Some((j, mut k)) = span else {
+    let Some((mut j, mut k)) = span else {
         return (toks, None);
     };
+    // v2.1: a hyphenated number word directly beside the span joins it (plain number words
+    // are already inside), unless punctuation ends the token before the gap
+    let ends_mark = |t: &str| t.ends_with(['.', ',', ';', ':', '!', '?']);
+    while j > 0 && hyph_num(toks[j - 1].trim_matches(STRIP)) && !ends_mark(toks[j - 1]) {
+        j -= 1;
+    }
+    while k < n && hyph_num(toks[k].trim_matches(STRIP)) && !ends_mark(toks[k - 1]) {
+        k += 1;
+    }
     while k > j && matches!(norm(toks[k - 1]).as_str(), "and" | "point") {
         k -= 1;
     }
@@ -407,8 +446,15 @@ fn replace(toks: &[&str], (j, k): (usize, usize), new: &str) -> String {
 
 // ---------------------------------------------------------------- phone
 
-/// Digit-by-digit runs in the input: (digits, anchors).
-fn phone_runs(inp: &str) -> Vec<(String, Anchors)> {
+/// A complete phone length: 7, 10, or 11 starting with 1.
+fn complete(d: &str) -> bool {
+    matches!(d.len(), 7 | 10) || (d.len() == 11 && d.starts_with('1'))
+}
+
+/// Digit-by-digit runs in the input: (digits, anchors, cut). v2.2: a run one digit past a
+/// complete length that ends in a single digit word followed by a non-digit word ("... four
+/// two one more time") leaves that digit word out (`cut`); never after "plus".
+fn phone_runs(inp: &str) -> Vec<(String, Anchors, bool)> {
     let ws = tokens(inp);
     let low: Vec<String> = ws.iter().map(|w| w.to_lowercase()).collect();
     let mut res = Vec::new();
@@ -432,8 +478,26 @@ fn phone_runs(inp: &str) -> Vec<(String, Anchors)> {
                 }
                 j += 1;
             }
+            let next = ws.get(last + 1).copied().unwrap_or("");
+            let intl = i > 0 && low[i - 1] == "plus";
+            let cut = !intl
+                && !complete(&digs)
+                && complete(&digs[..digs.len() - 1])
+                && digit_word(&low[last]).is_some()
+                && is_word_token(next)
+                && digit_word(&next.to_lowercase()).is_none();
+            if cut {
+                // drop the trailing digit word (and any separator or hesitation before it)
+                let mut k = last - 1;
+                while k > i && !(digit_word(&low[k]).is_some() || is_digits(ws[k])) {
+                    k -= 1;
+                }
+                digs.pop();
+                nw -= 1;
+                last = k;
+            }
             if nw >= 4 && digs.len() >= 7 {
-                res.push((digs, context(&ws, i, last + 1)));
+                res.push((digs, context(&ws, i, last + 1), cut));
             }
             i = last + 1;
         } else {
@@ -460,15 +524,34 @@ fn numish(w: &str) -> bool {
     let low = s.to_lowercase();
     digit_word(&low).is_some()
         || is_hes(&low)
+        || hyph_num(s)
         || (s.chars().any(|c| c.is_ascii_digit())
             && s.chars()
                 .all(|c| c.is_ascii_digit() || "-.:()+/".contains(c)))
 }
 
+/// Digits a token holds: digit characters plus hyphen-separated digit words.
+fn digit_count(t: &str) -> usize {
+    let s = t.trim_matches(STRIP).to_lowercase();
+    s.chars().filter(char::is_ascii_digit).count()
+        + s.split('-').filter(|p| digit_word(p).is_some()).count()
+}
+
 fn phone_fix(inp: &str, out: &str) -> String {
     let mut out = out.to_string();
-    for (digs, anchors) in phone_runs(inp) {
-        let (toks, span) = anchor_span(&out, &anchors, numish);
+    for (digs, anchors, cut) in phone_runs(inp) {
+        let (toks, mut span) = anchor_span(&out, &anchors, numish);
+        if let (Some((j, mut k)), true) = (span, cut) {
+            // the left-anchored span may run on over the cut-off digit word
+            // ("415-555-0142 one more"): give it back
+            while k - 1 > j
+                && digit_word(&toks[k - 1].trim_matches(STRIP).to_lowercase()).is_some()
+                && toks[j..k - 1].iter().map(|t| digit_count(t)).sum::<usize>() >= digs.len()
+            {
+                k -= 1;
+            }
+            span = Some((j, k));
+        }
         if let Some(span) = span {
             out = replace(&toks, span, &fmt_digits(&digs));
         }
@@ -580,7 +663,7 @@ fn amount_token(s: &str) -> bool {
 
 fn moneyish(w: &str) -> bool {
     let s = w.trim_matches(STRIP);
-    !s.is_empty() && (is_moneyw(&s.to_lowercase()) || amount_token(s))
+    !s.is_empty() && (is_moneyw(&s.to_lowercase()) || hyph_num(s) || amount_token(s))
 }
 
 fn money_fix(inp: &str, out: &str) -> String {
@@ -708,12 +791,20 @@ fn input_date_at(s: &str, p: usize) -> Option<(usize, &'static str, &str)> {
     None
 }
 
-/// Words separated by `\s+`, case-insensitively, at `p`.
+/// Ordinal or year words separated by `[\s-]+` (v2.1: spaces or hyphens),
+/// case-insensitively, at `p`.
 fn words_ci(s: &str, p: usize, words: &[&str]) -> Option<usize> {
     let mut q = p;
     for (i, w) in words.iter().enumerate() {
         if i > 0 {
-            q = spaces1(s, q)?;
+            let mut r = q;
+            while let Some(c) = s[r..].chars().next().filter(|&c| is_space(c) || c == '-') {
+                r += c.len_utf8();
+            }
+            if r == q {
+                return None;
+            }
+            q = r;
         }
         q = literal_ci(s, q, w)?;
     }
@@ -870,6 +961,170 @@ mod tests {
         assert_eq!(changed, 6);
     }
 
+    /// The fixes' own parity: pairs derived from the public ones (number words joined by
+    /// hyphens, a digit word after a phone run) on which v2.2 and v2 differ.
+    #[test]
+    fn revision_fixes_match_the_reference() {
+        let (n, changed) = check("fixes");
+        assert_eq!(n, 300);
+        assert!(changed > 250, "{changed}");
+    }
+
+    /// `test_numpass_v2_2.py`'s own cases beyond v2.1's: the swallowed digit word and the
+    /// phone-length edges. Expected values are the v2.2 reference's outputs.
+    #[test]
+    fn a_digit_run_stops_at_a_complete_length() {
+        let call = "call me at four one five five five five zero one four two one more time";
+        let cases = [
+            // v2 gave "Call me at 41555501421 more time."
+            (call, "Call me at 415-555-0142 one more time.", "Call me at 415-555-0142 one more time."),
+            (
+                call,
+                "Call me at four one five five five five zero one four two one more time.",
+                "Call me at 415-555-0142 one more time.",
+            ),
+            (
+                "my cell is six four seven two two two eight one nine three",
+                "My cell is 647 222 8193.",
+                "My cell is 647-222-8193.",
+            ),
+            (
+                "the toll free line is one eight zero zero five five five two two two two",
+                "The toll-free line is 1 800 555 2222.",
+                "The toll-free line is 1-800-555-2222.",
+            ),
+            (
+                "dial one four one five five five five zero one four two one more time",
+                "Dial 1 415 555 0142 one more time.",
+                "Dial 1-415-555-0142 one more time.",
+            ),
+            (
+                "book the room at five five five zero one four two four people are coming",
+                "Book the room at 555-0142, four people are coming.",
+                "Book the room at 555-0142, four people are coming.",
+            ),
+            (
+                "text four one five five five five zero one four two two of them are mine",
+                "Text 415-555-0142, two of them are mine.",
+                "Text 415-555-0142, two of them are mine.",
+            ),
+            // after "plus": never trimmed, as v2.1 ("dial plus" is not in the output: no change)
+            (
+                "dial plus one four one five five five five zero one four two",
+                "Dial +1 415 555 0142.",
+                "Dial +1 415 555 0142.",
+            ),
+            (
+                "the london office is plus four four two zero seven nine four six zero nine five eight",
+                "The London office is +44 20 7946 0958.",
+                "The London office is +44 20 7946 0958.",
+            ),
+            // known reference behaviour (open issue): an international number written with
+            // its "+" and groups is run together
+            (
+                "paris is plus three three one two three four five six seven eight nine please",
+                "Paris is +33 1 23 45 67 89 please.",
+                "Paris is 33123456789 please.",
+            ),
+        ];
+        for (input, output, want) in cases {
+            assert_eq!(apply(input, output), want, "{output}");
+        }
+    }
+
+    /// The reference's own test file (`test_numpass_v2_1.py`), case for case: no word form
+    /// of a number is left beside its digits, hyphenated or not, in any category, and
+    /// percentages and plain cardinals (no rule) stay exactly as the refiner wrote them.
+    #[test]
+    fn no_word_form_left_beside_the_digits() {
+        let tickets = "It costs forty five dollars for the tickets";
+        let credits = "We spent ninety three dollars and seventy six cents on credits";
+        let churn = "Churn was down forty five percent this year";
+        let count = "We have forty five open tickets";
+        let launch = "the launch is on march twenty first";
+        let desk = "call the front desk at four one five five five five zero one four two";
+        let cases = [
+            // money, hyphenated and not, from the right anchor and from the left
+            (
+                tickets,
+                "It costs forty-five dollars for the tickets",
+                "It costs $45 for the tickets",
+            ),
+            (
+                tickets,
+                "It costs forty five dollars for the tickets",
+                "It costs $45 for the tickets",
+            ),
+            (
+                "It costs forty five dollars",
+                "It costs forty-five dollars.",
+                "It costs $45.",
+            ),
+            (
+                credits,
+                "We spent ninety-three dollars and seventy-six cents on credits",
+                "We spent $93.76 on credits",
+            ),
+            (
+                "The plumber charged seven hundred and fifty six dollars for the visit",
+                "The plumber charged seven hundred fifty-six dollars for the visit",
+                "The plumber charged $756 for the visit",
+            ),
+            (
+                "We spent forty five dollars on lunch",
+                "We spent $45 on lunch",
+                "We spent $45 on lunch",
+            ),
+            // percentages and plain cardinals: untouched either way
+            (
+                churn,
+                "Churn was down forty-five percent this year",
+                "Churn was down forty-five percent this year",
+            ),
+            (
+                churn,
+                "Churn was down 45% this year",
+                "Churn was down 45% this year",
+            ),
+            (
+                count,
+                "We have forty-five open tickets",
+                "We have forty-five open tickets",
+            ),
+            (count, "We have 45 open tickets", "We have 45 open tickets"),
+            // dates: hyphenated ordinal and year words
+            (
+                "the launch is on march twenty first, twenty twenty six",
+                "The launch is on March twenty-first, twenty twenty-six.",
+                "The launch is on March 21, 2026.",
+            ),
+            (
+                launch,
+                "The launch is on March twenty first.",
+                "The launch is on March 21.",
+            ),
+            (
+                launch,
+                "The launch is on March 21st.",
+                "The launch is on March 21st.",
+            ),
+            // phones: digit words hyphenated, spaced, partly digits
+            (
+                desk,
+                "Call the front desk at four-one-five 555-0142.",
+                "Call the front desk at 415-555-0142.",
+            ),
+            (
+                desk,
+                "Call the front desk at 4155, 5501, 42.",
+                "Call the front desk at 415-555-0142.",
+            ),
+        ];
+        for (input, output, want) in cases {
+            assert_eq!(apply(input, output), want, "{output}");
+        }
+    }
+
     // Every expected value below is the Python reference's output on the same pair.
 
     #[test]
@@ -920,14 +1175,13 @@ mod tests {
 
     #[test]
     fn money_amounts() {
-        // the reference's own quirk, kept for parity: a hyphenated number word is not part
-        // of the amount span, so only "dollars" is replaced
+        // v2 left "forty-five $45" here; v2.1 takes the hyphenated word into the span
         assert_eq!(
             apply(
                 "it costs forty five dollars for the room",
                 "It costs forty-five dollars for the room."
             ),
-            "It costs forty-five $45 for the room."
+            "It costs $45 for the room."
         );
         assert_eq!(
             apply(
@@ -1000,7 +1254,7 @@ mod tests {
                 "block september twenty fourth please",
                 "Block September twenty-fourth please."
             ),
-            "Block September twenty-fourth please."
+            "Block September 24 please." // v2 left the hyphenated ordinal in words
         );
         assert_eq!(
             apply(

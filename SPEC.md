@@ -852,8 +852,11 @@ dollars", "bucks", "euros", "pounds", "and N cents", "two point five million dol
 `$12.50`, `$2.5 million`, `€N` or `£N`; a spoken word date ("May the fifth", "the tenth of April", optional year words)
 still in words in the output becomes "May 5, 2026". Phone and money replace the output span after the two transcript
 words before the value (they must occur exactly once in the output), else before the two words after it; no unique
-anchor, no change. A literal port of the research numpass v2, checked against its outputs on 1,693 public T14/T14b
-pairs (`fixtures/numpass_cases.json`). Measured with the reference, shipped refiner, worst-mode correct: T14b (fresh
+anchor, no change. A hyphenated number word ("forty-five", "four-one-five", "twenty-first") belongs to the value, so
+no word form is left beside the digits; a phone run one digit past a complete length (7, 10, 11 starting with 1)
+that ends in a digit word followed by another word ("... four two one more time") leaves that word out, except after
+"plus". A literal port of the research numpass v2.2 (v2 plus those two fixes), checked against its outputs on 1,693
+public T14/T14b pairs and 300 pairs that exercise the fixes (`fixtures/numpass_cases.json`). Measured with the reference, shipped refiner, worst-mode correct: T14b (fresh
 set) 0.807 -> 0.967, T14c (fresh) -> 0.953; T14 0.823 -> 0.950 with v1 (v2's 0.993 there is tuning). On public
 T13/T15/T16 outputs it changes only two dates ("April first" -> "April 1", "the tenth of April 2013" -> "April 10,
 2013"). Not read yet: "double"/"triple" digits ("triple five"), most of T14c's remaining wrongly added numbers. Live
