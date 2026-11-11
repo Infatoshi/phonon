@@ -6,9 +6,10 @@ cost seconds, so a verified snapshot is recorded in a small marker in Phonon's d
 (revision, and per file the size and sha256 it was checked against); a later launch hashes
 only a file whose marker entry is missing or whose size changed.
 
-A snapshot file that is a symlink pointing outside its repository's cache folder was put
-there by hand (the owner's own fine-tuned speech model) and is reported, not checked; a file
-the hub downloaded always resolves into the cache's blobs. A file that fails the check is
+A snapshot file that is a symlink pointing outside the hub's blob folders was put there by
+hand (the owner's own fine-tuned speech model) and is reported, not checked; a file the hub
+downloaded always resolves into its repository's blobs or, for a Xet download with
+huggingface_hub 2.x, into the cache-wide <cache>/blobs. A file that fails the check is
 removed with its blob and the snapshot is fetched once more; failing again is an error.
 """
 
@@ -101,13 +102,27 @@ def _write_marker(path: str, snapshot: str, revision: str, files: dict) -> None:
     os.replace(tmp, path)
 
 
+def hub_blob_dirs(snapshot: str) -> tuple[str, str]:
+    """Where the hub keeps this snapshot's file contents, from the snapshot path
+    (<cache>/models--Org--name/snapshots/<revision>): the repository's own blobs folder,
+    and the cache-wide one huggingface_hub 2.x uses for Xet downloads
+    (<cache>/blobs/<xx>/<hash>, which the repository's blob links to)."""
+    repo_dir = os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(snapshot))))
+    return os.path.join(repo_dir, "blobs"), os.path.join(os.path.dirname(repo_dir), "blobs")
+
+
+def _in_hub_blobs(snapshot: str, target: str) -> bool:
+    return any(target.startswith(folder + os.sep) for folder in hub_blob_dirs(snapshot))
+
+
 def is_local_override(snapshot: str, name: str) -> bool:
-    """A symlink in the snapshot that resolves outside this repository's cache folder."""
+    """A symlink in the snapshot that resolves outside the hub's blob folders for it (its
+    repository's blobs and the cache-wide blobs): a file put there by hand, including one in
+    another repository's folder."""
     path = os.path.join(snapshot, name)
     if not os.path.islink(path):
         return False
-    repo_dir = os.path.realpath(os.path.dirname(os.path.dirname(snapshot)))
-    return not os.path.realpath(path).startswith(repo_dir + os.sep)
+    return not _in_hub_blobs(snapshot, os.path.realpath(path))
 
 
 def check_snapshot(
@@ -145,16 +160,21 @@ def check_snapshot(
 
 
 def _remove(snapshot: str, name: str) -> None:
-    """Drop a failing file and, when it is a hub symlink, the blob it points to."""
+    """Drop a failing file. For a hub file, every link on the way (snapshot entry, the
+    repository's blob, which may link on to the cache-wide blob) and the content itself go,
+    so the next fetch downloads it again. For a local override only the snapshot's link goes,
+    never the file it points to."""
     path = os.path.join(snapshot, name)
-    repo_dir = os.path.realpath(os.path.dirname(os.path.dirname(snapshot)))
-    target = os.path.realpath(path)
-    try:
-        if os.path.islink(path) and target.startswith(os.path.join(repo_dir, "blobs") + os.sep):
-            os.remove(target)
-        os.remove(path)
-    except OSError:
-        pass
+    chain = [path]
+    if os.path.islink(path) and _in_hub_blobs(snapshot, os.path.realpath(path)):
+        while os.path.islink(chain[-1]) and len(chain) < 8:
+            link = chain[-1]
+            chain.append(os.path.normpath(os.path.join(os.path.dirname(link), os.readlink(link))))
+    for item in chain:
+        try:
+            os.remove(item)
+        except OSError:
+            pass
 
 
 def verified_snapshot(
