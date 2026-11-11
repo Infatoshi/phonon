@@ -113,32 +113,36 @@ struct KeyboardView: View {
 
     private var off: Bool { model.phase == .needsSession || model.phase == .needsAccess }
 
+    /// The states whose bar is the plain idle fluid, where a status can flash: app not running looks like ready.
+    private var resting: Bool { model.phase == .ready || model.phase == .needsSession }
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// A status shown over the ready bar for about 2 s ("Didn't catch that", "Cancelled"), then faded out; `flashID`
-    /// tells a stale timer from the current one.
+    /// A status shown over the resting bar for about 2 s ("Didn't catch that", "Cancelled"), then faded out;
+    /// `flashID` tells a stale timer from the current one.
     @State private var flash: String?
     @State private var flashID = 0
 
     /// At rest the bar is a grey, softly blurred fluid that drifts inside the capsule (no label). Pressed, it becomes
     /// the Mac's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2.6x: the black capsule whose ember
-    /// centre lights and swells with your voice, then breathes while the text is written. The off states (no Full
-    /// Access, app not running) keep a short label over the fluid, since they need an instruction; in the ready
-    /// state a new status shows the same way for about 2 s.
+    /// centre lights and swells with your voice, then breathes while the text is written. With the app not running
+    /// it looks the same (a tap opens Phonon). Only no Full Access keeps a short label over a dimmed fluid, since it
+    /// needs an instruction; at rest a new status shows the same way for about 2 s.
     private var talkBar: some View {
         let active = model.phase == .listening || model.phase == .working
         let pillMode: MacPill.Mode = model.phase == .listening ? .listening : .working
         let animate = model.visible && !model.lowPower && !reduceMotion
+        let noAccess = model.phase == .needsAccess
         return ZStack {
             if active {
                 MacPill(mode: pillMode, level: voiceLevel, scale: 2.6, animate: animate)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)))
             } else {
-                IdleFluid(animate: animate, dim: off)
+                IdleFluid(animate: animate, dim: noAccess)
                     .overlay {
-                        if off {
+                        if noAccess {
                             barText(barLabel)
-                        } else if let flash, model.phase == .ready {
+                        } else if let flash, resting {
                             barText(flash).transition(.opacity)
                         }
                     }
@@ -147,8 +151,8 @@ struct KeyboardView: View {
         }
         .animation(.easeOut(duration: 0.18), value: active)
         .onChange(of: model.statusSeq) { _, _ in showStatus() }
-        .onChange(of: model.phase) { _, phase in
-            if phase != .ready { clearFlash() }
+        .onChange(of: model.phase) { _, _ in
+            if !resting { clearFlash() }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 42)
@@ -207,7 +211,7 @@ struct KeyboardView: View {
 
     /// Show the new status over the ready bar for about 2 s; a newer one replaces it and restarts the timer.
     private func showStatus() {
-        guard model.phase == .ready, !model.status.isEmpty else {
+        guard resting, !model.status.isEmpty else {
             clearFlash()
             return
         }
@@ -237,6 +241,7 @@ struct KeyboardView: View {
         switch model.phase {
         case .listening: return model.latched ? "Tap to finish" : "Let go to finish"
         case .working: return "Writing it down"
+        case .needsSession: return model.status.isEmpty ? "Opens Phonon once to keep the mic ready" : model.status
         default: return model.status.isEmpty ? "Hold to talk, or tap" : model.status
         }
     }

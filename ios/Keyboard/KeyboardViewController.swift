@@ -80,7 +80,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         pongTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self, self.model.phase == .needsSession || self.model.phase == .needsAccess else { return }
             self.model.phase = .needsSession
-            self.model.status = "Opens Phonon once to keep the mic ready"
+            self.model.status = ""  // the bar shows no text here; VoiceOver's hint explains (KeyboardUI hint)
         }
         if IPC.sessionAlive { gotPong() }
     }
