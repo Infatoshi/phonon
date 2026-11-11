@@ -68,8 +68,13 @@ pub fn installed(component: &Component) -> bool {
 
 /// SHA-256 of a file, lowercase hex.
 pub fn file_sha256(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Sha256::new();
+    hash_file_into(&mut hasher, path)?;
+    Ok(hex(&hasher.finalize()))
+}
+
+fn hash_file_into(hasher: &mut Sha256, path: &Path) -> Result<()> {
+    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut buffer = vec![0u8; 1 << 20];
     loop {
         let read = file.read(&mut buffer)?;
@@ -78,7 +83,7 @@ pub fn file_sha256(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(hex(&hasher.finalize()))
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -96,18 +101,30 @@ fn fetch_asset(
     asset: &Asset,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<PathBuf> {
-    let dir = paths::downloads();
-    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    download(
+        &paths::downloads(),
+        asset,
+        &mut |done_bytes, total_bytes| {
+            on_progress(Progress {
+                label: component.label,
+                file: asset.name,
+                done_bytes,
+                total_bytes,
+            })
+        },
+    )
+}
+
+/// Fetch `asset` into `dir`. An interrupted transfer leaves `<name>.part` behind and
+/// the next call asks the server for the rest. A resumed file that fails the hash is
+/// thrown away and fetched once more from zero.
+fn download(dir: &Path, asset: &Asset, report: &mut dyn FnMut(u64, u64)) -> Result<PathBuf> {
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     let target = dir.join(asset.name);
 
     if target.is_file() {
         if file_sha256(&target)? == asset.sha256 {
-            on_progress(Progress {
-                label: component.label,
-                file: asset.name,
-                done_bytes: asset.bytes,
-                total_bytes: asset.bytes,
-            });
+            report(asset.bytes, asset.bytes);
             return Ok(target);
         }
         // A truncated or stale file is worth nothing; take the bytes again.
@@ -115,31 +132,54 @@ fn fetch_asset(
     }
 
     let partial = dir.join(format!("{}.part", asset.name));
-    let _ = fs::remove_file(&partial);
+    loop {
+        let mut have = fs::metadata(&partial).map(|meta| meta.len()).unwrap_or(0);
+        if have > asset.bytes {
+            let _ = fs::remove_file(&partial);
+            have = 0;
+        }
+        let (actual, resumed) = receive(asset, &partial, have, report)?;
+        if actual == asset.sha256 {
+            fs::rename(&partial, &target)
+                .with_context(|| format!("install {}", target.display()))?;
+            return Ok(target);
+        }
+        let _ = fs::remove_file(&partial);
+        if !resumed {
+            bail!(
+                "{} failed verification: expected sha256 {}, got {}",
+                asset.name,
+                asset.sha256,
+                actual
+            );
+        }
+    }
+}
 
-    // file:// serves locally built backends (CI, the selftest); it is checked like a download
-    let (mut reader, declared): (Box<dyn Read>, u64) =
-        if let Some(path) = asset.url.strip_prefix("file://") {
-            let file = fs::File::open(path).with_context(|| format!("open {path}"))?;
-            let length = file.metadata()?.len();
-            (Box::new(file), length)
-        } else {
-            let response = http::agent()
-                .get(asset.url)
-                .call()
-                .with_context(|| format!("download {}", asset.url))?;
-            let declared = response
-                .header("Content-Length")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(asset.bytes);
-            (response.into_reader(), declared)
-        };
-    let mut file =
-        fs::File::create(&partial).with_context(|| format!("create {}", partial.display()))?;
+/// Bring `partial` up to the full asset and return its SHA-256, plus whether the
+/// bytes already on disk were kept. `have` is the length of `partial` now.
+fn receive(
+    asset: &Asset,
+    partial: &Path,
+    have: u64,
+    report: &mut dyn FnMut(u64, u64),
+) -> Result<(String, bool)> {
     let mut hasher = Sha256::new();
+    if have > 0 && have == asset.bytes {
+        hash_file_into(&mut hasher, partial)?;
+        return Ok((hex(&hasher.finalize()), true));
+    }
+    let (mut reader, start, declared) = open_body(asset, have)?;
+    let mut file = if start > 0 {
+        hash_file_into(&mut hasher, partial)?;
+        fs::OpenOptions::new().append(true).open(partial)
+    } else {
+        fs::File::create(partial)
+    }
+    .with_context(|| format!("open {}", partial.display()))?;
     let mut buffer = vec![0u8; 1 << 20];
-    let mut done: u64 = 0;
-    let mut last_report: u64 = 0;
+    let mut done = start;
+    let mut last_report = start;
     loop {
         let read = reader.read(&mut buffer).context("read download body")?;
         if read == 0 {
@@ -153,29 +193,58 @@ fn fetch_asset(
         // the tray than in the socket.
         if done - last_report >= 4 << 20 || done == declared {
             last_report = done;
-            on_progress(Progress {
-                label: component.label,
-                file: asset.name,
-                done_bytes: done,
-                total_bytes: declared.max(done),
-            });
+            report(done, declared.max(done));
         }
     }
     file.flush()?;
-    drop(file);
+    Ok((hex(&hasher.finalize()), start > 0))
+}
 
-    let actual = hex(&hasher.finalize());
-    if actual != asset.sha256 {
-        let _ = fs::remove_file(&partial);
-        bail!(
-            "{} failed verification: expected sha256 {}, got {}",
-            asset.name,
-            asset.sha256,
-            actual
-        );
+/// Open the asset's bytes from `offset`. Returns the reader, the offset its first
+/// byte belongs at (0 when the source sends the whole file), and the full length.
+fn open_body(asset: &Asset, offset: u64) -> Result<(Box<dyn Read>, u64, u64)> {
+    // file:// serves locally built backends (CI, the selftest); it is checked like a download
+    if let Some(path) = asset.url.strip_prefix("file://") {
+        let file = fs::File::open(path).with_context(|| format!("open {path}"))?;
+        let length = file.metadata()?.len();
+        return Ok((Box::new(file), 0, length));
     }
-    fs::rename(&partial, &target).with_context(|| format!("install {}", target.display()))?;
-    Ok(target)
+    let mut request = http::agent().get(asset.url);
+    if offset > 0 {
+        request = request.set("Range", &format!("bytes={offset}-"));
+    }
+    let response = match request.call() {
+        Ok(response) => response,
+        // The server cannot serve the rest of this partial; take the whole file.
+        Err(ureq::Error::Status(416, _)) if offset > 0 => return open_body(asset, 0),
+        Err(error) => return Err(error).with_context(|| format!("download {}", asset.url)),
+    };
+    if offset > 0 && response.status() == 206 {
+        let range = response
+            .header("Content-Range")
+            .and_then(parse_content_range);
+        if range == Some((offset, asset.bytes - 1, asset.bytes)) {
+            return Ok((response.into_reader(), offset, asset.bytes));
+        }
+        // Not the range we asked for: start over rather than splice wrong bytes.
+        return open_body(asset, 0);
+    }
+    let declared = response
+        .header("Content-Length")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(asset.bytes);
+    Ok((response.into_reader(), 0, declared))
+}
+
+/// `bytes FIRST-LAST/TOTAL` as numbers; anything else (including an unknown total) is None.
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let (span, total) = value.trim().strip_prefix("bytes ")?.split_once('/')?;
+    let (first, last) = span.split_once('-')?;
+    Some((
+        first.trim().parse().ok()?,
+        last.trim().parse().ok()?,
+        total.trim().parse().ok()?,
+    ))
 }
 
 /// Expand a downloaded asset in-process, choosing its format by name.
@@ -335,6 +404,200 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// How the test server answers a Range request.
+    #[derive(Clone, Copy)]
+    enum Ranges {
+        Honor,
+        Ignore,
+        WrongStart,
+    }
+
+    /// Serve `body` over HTTP on 127.0.0.1 and record each request's Range header.
+    fn serve(
+        body: Vec<u8>,
+        ranges: Ranges,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    ) {
+        use std::io::{BufRead, BufReader};
+        use std::sync::{Arc, Mutex};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/asset.bin", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut range = None;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                        range = Some(value.trim().trim_end_matches('-').to_string());
+                    }
+                }
+                log.lock().unwrap().push(range.clone());
+                let total = body.len();
+                let start = match (range.and_then(|r| r.parse::<usize>().ok()), ranges) {
+                    (Some(start), Ranges::Honor) => Some(start),
+                    (Some(start), Ranges::WrongStart) => Some(start - 1),
+                    _ => None,
+                };
+                let head = match start {
+                    Some(start) => format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{}/{total}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        total - 1,
+                        total - start
+                    ),
+                    None => format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+                    ),
+                };
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.write_all(&body[start.unwrap_or(0)..]).unwrap();
+            }
+        });
+        (url, seen)
+    }
+
+    fn asset_for(url: String, body: &[u8]) -> Asset {
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        Asset {
+            name: "asset.bin",
+            url: Box::leak(url.into_boxed_str()),
+            sha256: Box::leak(hex(&hasher.finalize()).into_boxed_str()),
+            bytes: body.len() as u64,
+        }
+    }
+
+    fn fixture_body() -> Vec<u8> {
+        (0..100_000u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resumes_a_partial_with_a_range_request() {
+        let body = fixture_body();
+        let (url, seen) = serve(body.clone(), Ranges::Honor);
+        let asset = asset_for(url, &body);
+        let dir = fresh_dir("phonon-win-resume-test");
+        fs::write(dir.join("asset.bin.part"), &body[..40_000]).unwrap();
+        let mut first_report = None;
+        let path = download(&dir, &asset, &mut |done, _| {
+            first_report.get_or_insert(done);
+        })
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(*seen.lock().unwrap(), vec![Some("40000".to_string())]);
+        assert!(first_report.unwrap() > 40_000);
+        assert!(!dir.join("asset.bin.part").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restarts_when_the_server_ignores_range() {
+        let body = fixture_body();
+        let (url, seen) = serve(body.clone(), Ranges::Ignore);
+        let asset = asset_for(url, &body);
+        let dir = fresh_dir("phonon-win-ignore-range-test");
+        fs::write(dir.join("asset.bin.part"), &body[..40_000]).unwrap();
+        let path = download(&dir, &asset, &mut |_, _| {}).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(*seen.lock().unwrap(), vec![Some("40000".to_string())]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restarts_when_the_content_range_is_wrong() {
+        let body = fixture_body();
+        let (url, seen) = serve(body.clone(), Ranges::WrongStart);
+        let asset = asset_for(url, &body);
+        let dir = fresh_dir("phonon-win-wrong-range-test");
+        fs::write(dir.join("asset.bin.part"), &body[..40_000]).unwrap();
+        let path = download(&dir, &asset, &mut |_, _| {}).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(*seen.lock().unwrap(), vec![Some("40000".to_string()), None]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_partial_longer_than_the_asset_starts_over() {
+        let body = fixture_body();
+        let (url, seen) = serve(body.clone(), Ranges::Honor);
+        let asset = asset_for(url, &body);
+        let dir = fresh_dir("phonon-win-long-partial-test");
+        fs::write(dir.join("asset.bin.part"), vec![0u8; body.len() + 10]).unwrap();
+        let path = download(&dir, &asset, &mut |_, _| {}).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(*seen.lock().unwrap(), vec![None]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corrupt_partial_fails_the_hash_and_is_fetched_again_from_zero() {
+        let body = fixture_body();
+        let (url, seen) = serve(body.clone(), Ranges::Honor);
+        let asset = asset_for(url, &body);
+        let dir = fresh_dir("phonon-win-corrupt-partial-test");
+        fs::write(dir.join("asset.bin.part"), vec![0xffu8; 40_000]).unwrap();
+        let path = download(&dir, &asset, &mut |_, _| {}).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(*seen.lock().unwrap(), vec![Some("40000".to_string()), None]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_wrong_file_fails_after_one_fresh_retry() {
+        let body = fixture_body();
+        let (url, seen) = serve(body.clone(), Ranges::Honor);
+        let mut asset = asset_for(url, &body);
+        asset.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
+        let dir = fresh_dir("phonon-win-wrong-hash-test");
+        fs::write(dir.join("asset.bin.part"), &body[..40_000]).unwrap();
+        let error = download(&dir, &asset, &mut |_, _| {}).unwrap_err();
+        assert!(error.to_string().contains("failed verification"));
+        assert_eq!(*seen.lock().unwrap(), vec![Some("40000".to_string()), None]);
+        assert!(!dir.join("asset.bin.part").exists());
+        assert!(!dir.join("asset.bin").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_urls_still_download_over_a_stale_partial() {
+        let body = fixture_body();
+        let dir = fresh_dir("phonon-win-file-url-test");
+        let source = dir.join("source.bin");
+        fs::write(&source, &body).unwrap();
+        let asset = asset_for(format!("file://{}", source.display()), &body);
+        let downloads = dir.join("downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("asset.bin.part"), vec![0xffu8; 10]).unwrap();
+        let path = download(&downloads, &asset, &mut |_, _| {}).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), body);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_content_range() {
+        assert_eq!(
+            parse_content_range("bytes 40000-99999/100000"),
+            Some((40_000, 99_999, 100_000))
+        );
+        assert_eq!(parse_content_range("bytes 0-9/*"), None);
+        assert_eq!(parse_content_range("items 0-9/10"), None);
     }
 
     #[test]

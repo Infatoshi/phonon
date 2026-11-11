@@ -34,21 +34,36 @@ def test_model_source_uses_an_existing_folder_as_it_is(tmp_path, monkeypatch):
     _fake_hub(monkeypatch, _no_download)
 
     for revision in ("8ae155301e23d820d82aa60d24817c900e69e487", None):
-        for need_folder in (True, False):
-            assert model_source(str(tmp_path), revision, need_folder) == str(tmp_path)
+        assert model_source(str(tmp_path), revision) == str(tmp_path)
 
 
-def test_model_source_resolves_a_pinned_hub_id(monkeypatch):
+def test_model_source_resolves_a_pinned_hub_id_and_verifies_it(monkeypatch):
     calls = []
 
     def fake(model_id, revision=None):
         calls.append((model_id, revision))
-        return "/snapshots/" + (revision or "main")
+        return "/snapshots/" + revision
 
     _fake_hub(monkeypatch, fake)
+    verified = []
+
+    def fake_verified(model_id, revision, fetch, **kwargs):
+        verified.append((model_id, revision))
+        return fetch()
+
+    import sidecar.model_pins
+
+    monkeypatch.setattr(sidecar.model_pins, "verified_snapshot", fake_verified)
+    hub = "mlx-community/parakeet-tdt-0.6b-v2"
+    pin = "8ae155301e23d820d82aa60d24817c900e69e487"
+    assert model_source(hub, pin) == "/snapshots/" + pin
+    assert calls == verified == [(hub, pin)]
+
+
+def test_model_source_never_fetches_a_branch(monkeypatch):
+    _fake_hub(monkeypatch, _no_download)
 
     hub = "mlx-community/parakeet-tdt-0.6b-v2"
-    assert model_source(hub, "abc", False) == "/snapshots/abc"
-    assert model_source(hub, None, True) == "/snapshots/main"
-    assert model_source(hub, None, False) == hub  # parakeet_mlx resolves an unpinned id itself
-    assert calls == [(hub, "abc"), (hub, None)]
+    for revision in (None, "main", "a" * 40):  # no revision, a branch, a commit with no hashes
+        with pytest.raises(ValueError):
+            model_source(hub, revision)
