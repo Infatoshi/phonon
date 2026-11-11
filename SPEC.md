@@ -843,6 +843,22 @@ polish would resolve); Windows/Linux run it in `correct_at` (always minimal ther
 Measured offline on those 608 dictations: WER against the owner's references 9.74% -> about 8.6%, more than a full
 retrain gained.
 
+Number pass (shared output stage, `phonon_llm::numpass::apply(input, output)`, last, on the final text after the line
+breaks; settings.json `number_pass`, default on; Windows/Linux: `number_pass.txt` in the data folder, "off" turns it
+off): deterministic, driven by what was said. A digit-by-digit run in the transcript (zero/oh/one..nine or digits,
+spaces, commas, hyphens, dots and hesitations like "um" inside it; at least 4 digit words and 7 digits; not starting
+with "oh") becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC`, `BBB-CCCC` or the digits run together; a spoken amount ("forty five
+dollars", "bucks", "euros", "pounds", "and N cents", "two point five million dollars") becomes `$45`, `$1,200`,
+`$12.50`, `$2.5 million`, `€N` or `£N`; a spoken word date ("May the fifth", "the tenth of April", optional year words)
+still in words in the output becomes "May 5, 2026". Phone and money replace the output span after the two transcript
+words before the value (they must occur exactly once in the output), else before the two words after it; no unique
+anchor, no change. A literal port of the research numpass v2, checked against its outputs on 1,693 public T14/T14b
+pairs (`fixtures/numpass_cases.json`). Measured with the reference, shipped refiner, worst-mode correct: T14b (fresh
+set) 0.807 -> 0.967, T14c (fresh) -> 0.953; T14 0.823 -> 0.950 with v1 (v2's 0.993 there is tuning). On public
+T13/T15/T16 outputs it changes only two dates ("April first" -> "April 1", "the tenth of April 2013" -> "April 10,
+2013"). Not read yet: "double"/"triple" digits ("triple five"), most of T14c's remaining wrongly added numbers. Live
+text drafts get it too. iPhone and Android do not have it yet.
+
 Your own model endpoint (issue #24; settings.json `byok_enabled`, `byok_base_url`, `byok_model`; the API key in the
 login Keychain, service `com.infatoshi.phonon.byok`): off by default, no default endpoint, no Phonon-hosted service.
 The bar sends `{"cmd":"byok"}` with the key over the engine's stdin; the engine posts the raw transcript, the mode line

@@ -16,6 +16,7 @@
 
 pub mod byok;
 pub mod linebreak;
+pub mod numpass;
 pub mod opener;
 mod paths;
 

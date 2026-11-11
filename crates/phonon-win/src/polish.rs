@@ -568,7 +568,22 @@ fn correct_at(base: &str, raw: &str, mode: &str) -> Result<String> {
     // (phonon_llm::linebreak); greeting and sign-off lines are for email only, and
     // this corrector does not know the target app, so it never splits them
     let text = phonon_llm::opener::restore(raw, &text, mode);
-    Ok(phonon_llm::linebreak::layout(&text, mode, false))
+    let text = phonon_llm::linebreak::layout(&text, mode, false);
+    // then spoken phone numbers, money and dates as digits (phonon_llm::numpass)
+    if number_pass_on_in(&crate::paths::data_root()) {
+        return Ok(phonon_llm::numpass::apply(raw, &text));
+    }
+    Ok(text)
+}
+
+/// The number pass switch, the Mac's settings.json `number_pass`: one word in this file in
+/// the data root, next to `writing_mode.txt`. "off" turns it off; no file or anything else
+/// leaves it on (the default). Read at each dictation, so an edit applies to the next one.
+const NUMBER_PASS_FILE: &str = "number_pass.txt";
+
+fn number_pass_on_in(root: &Path) -> bool {
+    std::fs::read_to_string(root.join(NUMBER_PASS_FILE))
+        .map_or(true, |text| !text.trim().eq_ignore_ascii_case("off"))
 }
 
 /// Words per correction request. With the 2048-token context: about 330 transcript
@@ -861,6 +876,24 @@ impl Corrector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn number_pass_is_on_unless_the_file_says_off() {
+        let root = std::env::temp_dir().join(format!("phonon-win-numpass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(number_pass_on_in(&root)); // no file
+        for (text, on) in [
+            ("off\n", false),
+            (" OFF ", false),
+            ("on\n", true),
+            ("", true),
+        ] {
+            std::fs::write(root.join(NUMBER_PASS_FILE), text).unwrap();
+            assert_eq!(number_pass_on_in(&root), on, "{text:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn vulkan_is_listed_only_with_a_gpu_vendors_adapter() {
