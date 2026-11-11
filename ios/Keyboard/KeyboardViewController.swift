@@ -50,9 +50,15 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        model.visible = true
         model.showGlobe = needsInputModeSwitchKey
         model.mode = WritingMode(rawValue: IPC.string(IPC.modeKey) ?? "") ?? model.mode
         checkSession()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        model.visible = false  // stops the idle fluid's redraw
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -74,7 +80,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         pongTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self, self.model.phase == .needsSession || self.model.phase == .needsAccess else { return }
             self.model.phase = .needsSession
-            self.model.status = "Opens Phonon once to keep the mic ready"
+            self.model.status = ""  // the bar shows no text here; VoiceOver's hint explains (KeyboardUI hint)
         }
         if IPC.sessionAlive { gotPong() }
     }
