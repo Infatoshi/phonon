@@ -845,8 +845,8 @@ retrain gained.
 
 Number pass (shared output stage, `phonon_llm::numpass::apply(input, output)`, last, on the final text after the line
 breaks; settings.json `number_pass`, default OFF; Windows/Linux: `number_pass.txt` in the data folder, "on" turns it
-on. The default flips to on only in a later change, after the do-no-harm audit passes its frozen bar on the final
-rule): deterministic, driven by what was said. It converts spoken number WORDS the correction model left as words,
+on. v4.3.2 is the final revision of this after-model pass; no default-ON change is planned for it, and further
+number work goes to a pre-pass on the model input and to training rows): deterministic, driven by what was said. It converts spoken number WORDS the correction model left as words,
 and never rewrites, regroups or strips anything already written in digits or symbols (a leading "+", grouped digits,
 a "$" amount, a formatted date, a version, a time). Invariant, enforced per replacement and on the whole result (the
 model's text comes back unchanged on any failure): INV-1, the output's digits in order are a subsequence of the digits
@@ -872,8 +872,10 @@ final revision of this after-model pass (`fixtures/numpass_cases.json`: its outp
 523 public guard rows, 500 derived pairs and its 78 test cases). Worst-mode correct with the shipped model (a
 regression check: these sets were read while the rule was written): T14 0.823 -> 0.870, T14b 0.807 -> 0.837; most
 remaining failures are digits the model wrote wrong, which the invariant leaves alone, and the dates and slang
-currency it no longer rewrites. On public T13/T15/T16 outputs it changes nothing. Live text drafts get it too. iPhone
-and Android do not have it yet.
+currency it no longer rewrites. On public T13/T15/T16 outputs it changes nothing. Do-no-harm audit (protocol frozen
+before the rule existed): 2,076 changed rows over the public, development and laid-out sets, all number-bearing; two
+blind reviewers rated 0 of them worse (bar 2% per reviewer); no ordinary row changed; a 520-item held-out synthetic set
+was unchanged; INV-1..6 had 0 violations. Live text drafts get it too. iPhone and Android do not have it yet.
 
 Your own model endpoint (issue #24; settings.json `byok_enabled`, `byok_base_url`, `byok_model`; the API key in the
 login Keychain, service `com.infatoshi.phonon.byok`): off by default, no default endpoint, no Phonon-hosted service.
