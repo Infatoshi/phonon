@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-import sidecar.model_pins as model_pins
+from sidecar import model_pins
 from sidecar.model_pins import expected_files, load_pins, verified_snapshot
 from sidecar.polish_server import resolve_model_dir
 
@@ -79,7 +79,7 @@ def test_verifies_once_then_trusts_the_marker_until_a_size_changes(tmp_path, mon
     def fetch():
         return str(snap)
 
-    kwargs = dict(label="test", pins=_pins(), marker_dir=str(marker_dir))
+    kwargs = {"label": "test", "pins": _pins(), "marker_dir": str(marker_dir)}
     assert verified_snapshot(REPO, REV, fetch, **kwargs) == str(snap)
     assert sorted(hashed) == sorted(FILES)
     marker = json.loads((marker_dir / "Org--model.json").read_text())

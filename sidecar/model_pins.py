@@ -18,7 +18,7 @@ import hashlib
 import json
 import os
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 PINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_pins.json")
 MARKER_DIR_NAME = "model-verified"
