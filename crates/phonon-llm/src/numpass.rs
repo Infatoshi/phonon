@@ -40,15 +40,28 @@
 //!   ninety, hundred, thousand, million, billion, oh, double, triple, the ordinals
 //!   first..twentieth and thirtieth; hyphen-joined forms count by their parts), the output
 //!   is returned unchanged.
+//! - INV-5, whitespace (v2.3.1): whitespace outside a replaced span is byte-identical. The
+//!   output is split on any whitespace (space, tab, `\n`, `\r`, ...), every run is kept, and
+//!   a span never crosses a run holding a line break; checked as: the whitespace runs that
+//!   hold a line break are the same, in order.
+//! - INV-6, words (v2.3.1): no word outside the number vocabulary is removed. On whitespace
+//!   tokens (punctuation stripped, lowercased; a token with a digit or currency sign is a
+//!   value), the words that are not removable are the same, in order. Removable: number
+//!   words, "point", unit words (dollars, bucks, cents, euros, pounds, ...), hesitations;
+//!   "a" right before a scale word ("a thousand"); "and" between a number or unit token and
+//!   a number token; "the" before an ordinal; "of" between an ordinal and a month. A span
+//!   also stops at a token that ends a sentence, and its edges are trimmed to number, unit
+//!   or digit tokens ("$2,500 a night" keeps "a").
 //!
 //! So a wrong or missing digit the refiner wrote stays as written: that belongs to the
 //! refiner's training, not to a post-rule.
 //!
 //! # Version
 //!
-//! The final rule, numpass **v2.3 + v4**: a literal port of the research reference
-//! `passes_v4_3.numpass_v4_3` (frozen 2026-11-11, sha256 1f1c236d...; on `passes_v2_3`,
-//! sha256 744d7287...; regexes spelled out by hand here). It is v2 plus:
+//! The final rule, numpass **v2.3.1 + v4** (frozen as v4.3.1): a literal port of the
+//! research reference `passes_v4_3_1.numpass_v4_3_1` (frozen 2026-11-11, sha256
+//! fef013da...; on `passes_v2_3_1`, sha256 12ebecfc...; regexes spelled out by hand here).
+//! It is v2 plus:
 //! - v2.1: a hyphen-joined token whose parts are all number words ("forty-five",
 //!   "four-one-five", "twenty-first") belongs to phone and money spans and a span widens
 //!   over one directly beside it; dates accept hyphens between ordinal and year words. v2
@@ -56,14 +69,18 @@
 //! - v2.2: a phone run one digit past a complete length (7, 10, or 11 starting with 1)
 //!   that ends in a single digit word followed by another word leaves that word out, never
 //!   after "plus" ("... four two one more time"; v2 wrote "41555501421 more time").
-//! - v2.3: the invariant above.
+//! - v2.3: INV-1..INV-4.
+//! - v2.3.1: INV-5 and INV-6. v2.3 split the output on single spaces, so after the line
+//!   breaks a value ending a list item shared a token with the next line and the new digits
+//!   went in beside the old words ("$45 dollars", "forty $45"); and its money span took in
+//!   "a" and ran past a sentence end ("$2,500 night", "$52,000 step closer").
 //! - v4: "double" / "triple" before a digit word in a phone run.
 //!
 //! Percentages and plain cardinals have no rule and are never touched.
 //!
 //! `fixtures/numpass_cases.json` holds the reference's own outputs on the public T14/T14b
 //! refiner outputs (parity), the public T13/T15/T16 outputs (guard), pairs derived from the
-//! public ones that exercise each revision, and the reference's 49 test cases. Known
+//! public ones that exercise each revision, and the reference's 66 test cases. Known
 //! differences from the Python: digits are ASCII 0-9 (Python's `\d` also takes other
 //! scripts' decimal digits) and amounts above 10^38 are left alone.
 
@@ -402,18 +419,66 @@ fn context(ws: &[&str], i0: usize, i1: usize) -> Anchors {
     (left, right)
 }
 
+/// The output split on any whitespace (v2.3.1): `toks[i]` and `toks[i + 1]` are separated by
+/// `seps[i]`, kept byte for byte. Text that starts or ends with whitespace has an empty
+/// first or last token.
+struct Split<'a> {
+    toks: Vec<&'a str>,
+    seps: Vec<&'a str>,
+}
+
+fn split_ws(s: &str) -> Split<'_> {
+    let (mut toks, mut seps) = (Vec::new(), Vec::new());
+    let (mut start, mut chars) = (0, s.char_indices().peekable());
+    while let Some((i, c)) = chars.next() {
+        if !is_space(c) {
+            continue;
+        }
+        let mut end = i + c.len_utf8();
+        while let Some(&(k, d)) = chars.peek() {
+            if !is_space(d) {
+                break;
+            }
+            end = k + d.len_utf8();
+            chars.next();
+        }
+        toks.push(&s[start..i]);
+        seps.push(&s[i..end]);
+        start = end;
+    }
+    toks.push(&s[start..]);
+    Split { toks, seps }
+}
+
+/// A whitespace run that holds a line break.
+fn line_break(sep: &str) -> bool {
+    sep.contains(['\n', '\r'])
+}
+
+fn ends_mark(t: &str) -> bool {
+    t.ends_with(['.', ',', ';', ':', '!', '?'])
+}
+
+fn ends_sentence(t: &str) -> bool {
+    t.ends_with(['.', '!', '?'])
+}
+
 /// Output token span holding a value: after the unique left anchor (else before the unique
-/// right anchor), the maximal run of tokens accepted by `ok`; trailing "and"/"point"
-/// trimmed. Tokens are the output split on single spaces.
+/// right anchor), the maximal run of tokens accepted by `ok`, never across a line break or
+/// past a token that ends a sentence (v2.3.1); hyphenated number words beside it join it;
+/// trailing "and"/"point" trimmed; then its edges trimmed to number, unit or digit tokens
+/// and its inner words checked (INV-6), or no span.
 fn anchor_span<'a>(
     out: &'a str,
     (left, right): &Anchors,
     ok: fn(&str) -> bool,
-) -> (Vec<&'a str>, Option<(usize, usize)>) {
-    let toks: Vec<&str> = out.split(' ').collect();
+) -> (Split<'a>, Option<(usize, usize)>) {
+    let split = split_ws(out);
+    let (toks, seps) = (&split.toks, &split.seps);
     let words: Vec<String> = toks.iter().map(|t| norm(t)).collect();
     let n = toks.len();
-    let fits = |t: &str| ok(t) && !t.contains('\n');
+    // may token `i` join a span whose next token is `i + 1` / previous token is `i - 1`
+    let joins_back = |i: usize| !(line_break(seps[i - 1]) || ends_sentence(toks[i - 1]));
     let mut span = None;
     if !left.is_empty() {
         let l = left.len();
@@ -423,7 +488,7 @@ fn anchor_span<'a>(
         if let [p] = pos[..] {
             let j = p + 1;
             let mut k = j;
-            while k < n && fits(toks[k]) {
+            while k < n && ok(toks[k]) && (k == j || joins_back(k)) {
                 k += 1;
             }
             if k > j {
@@ -439,7 +504,7 @@ fn anchor_span<'a>(
         if let [p] = pos[..] {
             let k = p;
             let mut j = p;
-            while j > 0 && fits(toks[j - 1]) {
+            while j > 0 && ok(toks[j - 1]) && (j == k || joins_back(j)) {
                 j -= 1;
             }
             if k > j {
@@ -448,37 +513,189 @@ fn anchor_span<'a>(
         }
     }
     let Some((mut j, mut k)) = span else {
-        return (toks, None);
+        return (split, None);
     };
     // v2.1: a hyphenated number word directly beside the span joins it (plain number words
-    // are already inside), unless punctuation ends the token before the gap
-    let ends_mark = |t: &str| t.ends_with(['.', ',', ';', ':', '!', '?']);
-    while j > 0 && hyph_num(toks[j - 1].trim_matches(STRIP)) && !ends_mark(toks[j - 1]) {
+    // are already inside), unless punctuation or a line break comes between
+    while j > 0
+        && hyph_num(toks[j - 1].trim_matches(STRIP))
+        && !ends_mark(toks[j - 1])
+        && !line_break(seps[j - 1])
+    {
         j -= 1;
     }
-    while k < n && hyph_num(toks[k].trim_matches(STRIP)) && !ends_mark(toks[k - 1]) {
+    while k < n
+        && hyph_num(toks[k].trim_matches(STRIP))
+        && !ends_mark(toks[k - 1])
+        && !line_break(seps[k - 1])
+    {
         k += 1;
     }
     while k > j && matches!(norm(toks[k - 1]).as_str(), "and" | "point") {
         k -= 1;
     }
-    (toks, (k > j).then_some((j, k)))
+    let (j, k) = trim_span(toks, j, k);
+    let span = (k > j && span_words_ok(&toks[j..k])).then_some((j, k));
+    (split, span)
 }
 
-/// The tokens with `span` replaced by `new`, keeping the span's final punctuation mark.
-fn replace(toks: &[&str], (j, k): (usize, usize), new: &str) -> String {
+/// The text with `span` replaced by `new`, keeping the span's final punctuation mark and
+/// every whitespace run outside the span (INV-5).
+fn replace(split: &Split, (j, k): (usize, usize), new: &str) -> String {
     let mut new = new.to_string();
-    if let Some(c) = toks[k - 1]
+    if let Some(c) = split.toks[k - 1]
         .chars()
         .next_back()
         .filter(|c| ".,;:!?".contains(*c))
     {
         new.push(c);
     }
-    let mut parts: Vec<&str> = toks[..j].to_vec();
-    parts.push(&new);
-    parts.extend_from_slice(&toks[k..]);
-    parts.join(" ")
+    let mut out = String::new();
+    for i in 0..j {
+        out.push_str(split.toks[i]);
+        out.push_str(split.seps[i]);
+    }
+    out.push_str(&new);
+    for i in k..split.toks.len() {
+        out.push_str(split.seps[i - 1]);
+        out.push_str(split.toks[i]);
+    }
+    out
+}
+
+// ---------------------------------------------------------------- words (INV-6, v2.3.1)
+
+const SCALES: [&str; 4] = ["hundred", "thousand", "million", "billion"];
+const UNIT_WORDS: [&str; 9] = [
+    "dollars", "dollar", "bucks", "cents", "cent", "euros", "euro", "pounds", "usd",
+];
+
+/// A whitespace token as a word: punctuation stripped, lowercased; None for a value (a
+/// digit or currency sign in it) or nothing.
+fn word_of(t: &str) -> Option<String> {
+    let s = t.trim_matches(STRIP).to_lowercase();
+    (!s.is_empty() && !s.contains(|c: char| c.is_ascii_digit() || matches!(c, '$' | '€' | '£')))
+        .then_some(s)
+}
+
+/// A number word: units, tens, scales, oh, double, triple, ordinals, hyphen-joined.
+fn is_number_word(w: &str) -> bool {
+    is_unit_or_tens(w)
+        || SCALES.contains(&w)
+        || matches!(w, "oh" | "double" | "triple")
+        || ORDW.iter().any(|(o, _)| *o == w)
+        || hyph_num(w)
+}
+
+fn is_unit_word(w: &str) -> bool {
+    UNIT_WORDS.contains(&w)
+}
+
+/// A number token: a number word, or a value holding a digit.
+fn is_number_token(t: &str) -> bool {
+    match word_of(t) {
+        Some(w) => is_number_word(&w),
+        None => t.contains(|c: char| c.is_ascii_digit()),
+    }
+}
+
+/// Inside a span: "a" only right before a scale word, "and" only between a number or unit
+/// token and a number token, "point" and hesitations only between number tokens.
+fn span_words_ok(toks: &[&str]) -> bool {
+    (0..toks.len()).all(|i| {
+        let Some(w) = word_of(toks[i]) else {
+            return true;
+        };
+        if is_number_word(&w) || is_unit_word(&w) {
+            return true;
+        }
+        let prev = i.checked_sub(1).map(|p| toks[p]);
+        let next = toks.get(i + 1).copied();
+        let num_prev = prev.is_some_and(is_number_token);
+        let num_next = next.is_some_and(is_number_token);
+        match w.as_str() {
+            "a" => next
+                .and_then(word_of)
+                .is_some_and(|n| SCALES.contains(&n.as_str())),
+            "and" => {
+                (num_prev || prev.and_then(word_of).is_some_and(|p| is_unit_word(&p))) && num_next
+            }
+            w if w == "point" || is_hes(w) => num_prev && num_next,
+            _ => false,
+        }
+    })
+}
+
+/// Span edges start and end on a number, unit or digit token ("a" may start it right
+/// before a scale word).
+fn trim_span(toks: &[&str], mut j: usize, mut k: usize) -> (usize, usize) {
+    let edge_ok = |i: usize, start: bool, k: usize| match word_of(toks[i]) {
+        None => true,
+        Some(w) => {
+            is_number_word(&w)
+                || is_unit_word(&w)
+                || (start
+                    && w == "a"
+                    && i + 1 < k
+                    && word_of(toks[i + 1]).is_some_and(|n| SCALES.contains(&n.as_str())))
+        }
+    };
+    while k > j && !edge_ok(k - 1, false, k) {
+        k -= 1;
+    }
+    while k > j && !edge_ok(j, true, k) {
+        j += 1;
+    }
+    (j, k)
+}
+
+/// INV-6: the words of `text` no number conversion may remove, in order.
+fn kept_words(text: &str) -> Vec<String> {
+    let split = split_ws(text);
+    let toks: Vec<&str> = split.toks.into_iter().filter(|t| !t.is_empty()).collect();
+    let words: Vec<Option<String>> = toks.iter().map(|t| word_of(t)).collect();
+    let at = |i: usize| words.get(i).cloned().flatten();
+    let is_ord = |w: &Option<String>| {
+        w.as_deref()
+            .is_some_and(|w| ORDW.iter().any(|(o, _)| *o == w))
+    };
+    let mut kept = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        let Some(w) = w else { continue };
+        if is_number_word(w) || is_unit_word(w) || is_hes(w) || w == "point" {
+            continue;
+        }
+        let prev = i.checked_sub(1).and_then(at);
+        let (next, next2) = (at(i + 1), at(i + 2));
+        let removable = match w.as_str() {
+            "a" => next.as_deref().is_some_and(|n| SCALES.contains(&n)),
+            "and" => {
+                i > 0
+                    && i + 1 < toks.len()
+                    && (is_number_token(toks[i - 1]) || prev.as_deref().is_some_and(is_unit_word))
+                    && is_number_token(toks[i + 1])
+            }
+            "the" => {
+                is_ord(&next)
+                    || (matches!(next.as_deref(), Some("twenty" | "thirty")) && is_ord(&next2))
+            }
+            "of" => is_ord(&prev) && next.as_deref().is_some_and(|n| MONTHS.contains(&n)),
+            _ => false,
+        };
+        if !removable {
+            kept.push(w.clone());
+        }
+    }
+    kept
+}
+
+/// INV-5: the whitespace runs that hold a line break, in order.
+fn line_breaks(text: &str) -> Vec<&str> {
+    split_ws(text)
+        .seps
+        .into_iter()
+        .filter(|s| line_break(s))
+        .collect()
 }
 
 // ---------------------------------------------------------------- phone
@@ -601,7 +818,8 @@ fn digit_count(t: &str) -> usize {
 fn phone_fix(inp: &str, out: &str) -> String {
     let mut out = out.to_string();
     for (digs, anchors, cut) in phone_runs(inp) {
-        let (toks, mut span) = anchor_span(&out, &anchors, numish);
+        let (split, mut span) = anchor_span(&out, &anchors, numish);
+        let toks = &split.toks;
         if let (Some((j, mut k)), true) = (span, cut) {
             // the left-anchored span may run on over the cut-off digit word
             // ("415-555-0142 one more"): give it back
@@ -615,7 +833,7 @@ fn phone_fix(inp: &str, out: &str) -> String {
         }
         let Some((j, k)) = span else { continue };
         // INV-3: never touch a "+" run; the span must read exactly as the spoken run
-        if plus_near(&toks, j, k) || span_digits(&toks[j..k]).as_deref() != Some(digs.as_str()) {
+        if plus_near(toks, j, k) || span_digits(&toks[j..k]).as_deref() != Some(digs.as_str()) {
             continue;
         }
         // INV-2: a phone span may not hold $ % : . / ( ) beside its digits
@@ -625,7 +843,7 @@ fn phone_fix(inp: &str, out: &str) -> String {
         {
             continue;
         }
-        let new = replace(&toks, (j, k), &fmt_digits(&digs));
+        let new = replace(&split, (j, k), &fmt_digits(&digs));
         if inv_ok(&out, &new) {
             out = new;
         }
@@ -743,7 +961,8 @@ fn moneyish(w: &str) -> bool {
 fn money_fix(inp: &str, out: &str) -> String {
     let mut out = out.to_string();
     for (canon, anchors) in money_items(inp) {
-        let (toks, span) = anchor_span(&out, &anchors, moneyish);
+        let (split, span) = anchor_span(&out, &anchors, moneyish);
+        let toks = &split.toks;
         let Some((j, k)) = span else { continue };
         let has_value = toks[j..k].iter().any(|t| {
             norm(t)
@@ -751,7 +970,7 @@ fn money_fix(inp: &str, out: &str) -> String {
                 .chain(t.chars())
                 .any(|c| c.is_ascii_digit() || c.is_ascii_lowercase())
         });
-        if !has_value || plus_near(&toks, j, k) {
+        if !has_value || plus_near(toks, j, k) {
             continue;
         }
         let old = strip_tail(&toks[j..k].join(" ")).to_string();
@@ -769,7 +988,7 @@ fn money_fix(inp: &str, out: &str) -> String {
         if pc.iter().zip(po.iter()).any(|(c, o)| c < o) {
             continue;
         }
-        let new = replace(&toks, (j, k), &canon);
+        let new = replace(&split, (j, k), &canon);
         if inv_ok(&out, &new) {
             out = new;
         }
@@ -861,6 +1080,9 @@ fn inv_ok(before: &str, after: &str) -> bool {
         return false;
     }
     plus_runs(before).iter().all(|run| after.contains(run))
+        // v2.3.1: INV-5 line breaks kept, INV-6 words kept
+        && line_breaks(before) == line_breaks(after)
+        && kept_words(before) == kept_words(after)
 }
 
 /// A "+" in the span or in the token right before it.
@@ -1172,7 +1394,8 @@ mod tests {
         let (n, changed) = check("parity");
         assert_eq!(n, 1693);
         // v2 changed 571; the invariant leaves wrong or missing digits the refiner wrote alone
-        assert_eq!(changed, 236);
+        // (v2.3: 236; v2.3.1 also keeps "a" in "$2,500 a night" and a filler at a span edge)
+        assert_eq!(changed, 228);
     }
 
     /// Public T13/T15/T16 outputs whose input holds a digit, a digit word, a currency word
@@ -1186,18 +1409,19 @@ mod tests {
 
     /// The revisions' own parity: pairs derived from the public ones (hyphenated number
     /// words, a digit word after a phone run, double/triple, "+", brackets, dots, % and :
-    /// beside digits) on which the final rule and v2 differ, 100 per deciding revision.
+    /// beside digits, line breaks, tabs, CRLF, words after amounts, sentence ends) on which
+    /// the final rule and v2 differ, 100 per deciding revision.
     #[test]
     fn revision_fixes_match_the_reference() {
         let (n, _) = check("fixes");
-        assert_eq!(n, 300);
+        assert_eq!(n, 400);
     }
 
-    /// The reference's own test file (`test_numpass_v2_3.py`), all 49 cases.
+    /// The reference's own test file (`test_numpass_v2_3_1.py`), all 66 cases.
     #[test]
     fn reference_test_cases() {
         let (n, _) = check("reference_tests");
-        assert_eq!(n, 49);
+        assert_eq!(n, 66);
     }
 
     /// The swallowed digit word and the phone-length edges (v2.2), double/triple (v4).
@@ -1517,6 +1741,106 @@ mod tests {
         assert_eq!(apply("hello", "Hi  there"), "Hi  there");
     }
 
+    /// v2.3.1, INV-6: no ordinary word is lost. "a" and "and" go only inside a number
+    /// ("a thousand", "two hundred and five"), never after the unit; a span stops at a
+    /// sentence end. ("a hundred dollars" alone is not an amount the rule reads, as in v2.)
+    #[test]
+    fn words_beside_an_amount_are_kept() {
+        let cases = [
+            (
+                "the hotel was twenty five hundred dollars a night",
+                "The hotel was 2,500 dollars a night.",
+                "The hotel was $2,500 a night.",
+            ),
+            (
+                "the hotel was twenty five hundred dollars a night",
+                "The hotel was $2,500 a night.",
+                "The hotel was $2,500 a night.",
+            ),
+            (
+                "it costs a thousand two hundred dollars total",
+                "It costs a thousand two hundred dollars total.",
+                "It costs $1,200 total.",
+            ),
+            (
+                "it costs a hundred dollars total",
+                "It costs a hundred dollars total.",
+                "It costs a hundred dollars total.",
+            ),
+            (
+                "it costs two hundred and five dollars total",
+                "It costs two hundred and five dollars total.",
+                "It costs $205 total.",
+            ),
+            (
+                "we raised fifty two thousand dollars one step closer",
+                "We raised fifty two thousand dollars. One step closer.",
+                "We raised $52,000. One step closer.",
+            ),
+            (
+                "it was five dollars and change",
+                "It was five dollars and change.",
+                "It was $5 and change.",
+            ),
+        ];
+        for (input, output, want) in cases {
+            assert_eq!(apply(input, output), want, "{output}");
+        }
+    }
+
+    /// v2.3.1: the pass runs after the line breaks, so a value can end a list item or a
+    /// paragraph, or sit beside a tab or CRLF. The whole value is replaced and every line
+    /// break, tab and CRLF outside it stays byte for byte (INV-5).
+    #[test]
+    fn values_beside_line_breaks_tabs_and_crlf() {
+        let cases = [
+            // a list item ending in the amount
+            (
+                "pay forty five dollars then ship it",
+                "1. Pay forty five dollars\n2. Ship it.",
+                "1. Pay $45\n2. Ship it.",
+            ),
+            // a phone number ending a list item
+            (
+                "one call the desk at five five five zero one four two then ship it",
+                "1. Call the desk at five five five zero one four two\n2. Ship it.",
+                "1. Call the desk at 555-0142\n2. Ship it.",
+            ),
+            // the end of a paragraph
+            (
+                "it costs forty five dollars next we ship",
+                "It costs forty five dollars.\n\nNext we ship.",
+                "It costs $45.\n\nNext we ship.",
+            ),
+            // a blank line before the value
+            (
+                "pay forty five dollars now",
+                "Pay\n\nforty five dollars now",
+                "Pay\n\n$45 now",
+            ),
+            // a tab before it
+            (
+                "it costs forty five dollars for the room",
+                "It costs\tforty five dollars for the room.",
+                "It costs\t$45 for the room.",
+            ),
+            // CRLF after it
+            (
+                "it costs forty five dollars thanks",
+                "It costs forty five dollars.\r\nThanks",
+                "It costs $45.\r\nThanks",
+            ),
+        ];
+        let mut failed = Vec::new();
+        for (input, output, want) in cases {
+            let got = apply(input, output);
+            if got != want {
+                failed.push(format!("{output:?}\n  want {want:?}\n  got  {got:?}"));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
     // ------------------------------------------------------------ invariant properties
     // Written apart from the rule's own guard (`inv_ok`), as the reference's tests are.
 
@@ -1584,6 +1908,67 @@ mod tests {
         if symbols_lost || plus_lost {
             bad.push("INV-2");
         }
+        // INV-5: every whitespace run holding a line break, in order
+        let breaks = |s: &str| -> Vec<String> {
+            let mut runs = Vec::new();
+            let mut cur = String::new();
+            for c in s.chars().chain(std::iter::once('x')) {
+                if c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c) {
+                    cur.push(c);
+                } else {
+                    if cur.contains(['\n', '\r']) {
+                        runs.push(cur.clone());
+                    }
+                    cur.clear();
+                }
+            }
+            runs
+        };
+        if breaks(out) != breaks(new) {
+            bad.push("INV-5");
+        }
+        // INV-6: the plain words no conversion may remove, in order
+        let kept = |s: &str| -> Vec<String> {
+            let toks: Vec<String> = s
+                .split(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
+                .filter(|t| !t.is_empty())
+                .map(|t| t.trim_matches(STRIP).to_lowercase())
+                .collect();
+            let numw = |t: &str| !t.is_empty() && t.split('-').all(|p| words.contains(&p));
+            let num = |t: &str| t.contains(|c: char| c.is_ascii_digit()) || numw(t);
+            let losable = |t: &str| {
+                numw(t)
+                    || [
+                        "point", "dollars", "dollar", "bucks", "cents", "cent", "euros", "euro",
+                        "pounds", "usd", "um", "uh", "er", "erm", "uhm", "hmm", "ah", "umm", "uhh",
+                    ]
+                    .contains(&t)
+            };
+            let ord = |t: &str| ORDW.iter().any(|(o, _)| *o == t);
+            let get = |i: usize| toks.get(i).map(String::as_str).unwrap_or("");
+            let mut res = Vec::new();
+            for (i, w) in toks.iter().enumerate() {
+                if w.is_empty()
+                    || w.contains(['$', '€', '£'])
+                    || w.contains(|c: char| c.is_ascii_digit())
+                {
+                    continue;
+                }
+                let (p, n, n2) = (if i > 0 { get(i - 1) } else { "" }, get(i + 1), get(i + 2));
+                let skip = losable(w)
+                    || (w == "a" && ["hundred", "thousand", "million", "billion"].contains(&n))
+                    || (w == "and" && (num(p) || losable(p)) && num(n))
+                    || (w == "the" && (ord(n) || (["twenty", "thirty"].contains(&n) && ord(n2))))
+                    || (w == "of" && ord(p) && MONTHS.contains(&n));
+                if !skip {
+                    res.push(w.clone());
+                }
+            }
+            res
+        };
+        if kept(out) != kept(new) {
+            bad.push("INV-6");
+        }
         bad
     }
 
@@ -1600,6 +1985,10 @@ mod tests {
         assert_eq!(violations("one", "45% off", "45 off"), ["INV-2"]);
         assert_eq!(violations("one", "415 555", "555 415"), ["INV-1"]);
         assert!(violations("one", "415 555", "415-555 1").is_empty());
+        assert_eq!(violations("five", "five\n2. go", "5 2. go"), ["INV-5"]);
+        assert_eq!(violations("five", "$5 a night", "$5 night"), ["INV-6"]);
+        assert!(violations("five", "a hundred and five dollars", "$105").is_empty());
+        assert!(violations("one", "the first of May", "May 1").is_empty());
         let cases = cases();
         let mut n = 0;
         for set in ["parity", "guard", "fixes", "reference_tests"] {
@@ -1615,7 +2004,7 @@ mod tests {
                 n += 1;
             }
         }
-        assert_eq!(n, 1693 + 523 + 300 + 49);
+        assert_eq!(n, 1693 + 523 + 400 + 66);
     }
 
     /// Seeded random dictations (number words, digits already written, "+", $ % : . / ( ),
@@ -1684,6 +2073,13 @@ mod tests {
             "+",
             "(",
             ")",
+            "a",
+            "night",
+            "and",
+            "change",
+            "dollars.",
+            "One",
+            "2.",
         ];
         let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
         let mut next = move |n: usize| {
@@ -1715,8 +2111,19 @@ mod tests {
             for _ in 0..next(3) {
                 out.insert(next(out.len() + 1), WRITTEN[next(WRITTEN.len())]);
             }
-            let sep = [" ", " ", " ", ", ", "-"][next(5)];
-            let out = out.join(sep) + [".", "", "?"][next(3)];
+            // separators, with line breaks, blank lines, tabs and CRLF around and inside
+            // spans (v2.3.1)
+            let seps = [
+                " ", " ", " ", " ", ", ", "-", "\n", "\n\n", "\t", "\r\n", ".\n",
+            ];
+            let mut text = String::new();
+            for (i, t) in out.iter().enumerate() {
+                if i > 0 {
+                    text.push_str(seps[next(seps.len())]);
+                }
+                text.push_str(t);
+            }
+            let out = text + [".", "", "?", "\n"][next(4)];
             let new = apply(&input, &out);
             changed += usize::from(new != out);
             assert_eq!(

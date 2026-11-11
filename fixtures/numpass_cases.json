@@ -1,5 +1,5 @@
 {
-"about": "numpass final rule v2.3 + v4 reference outputs (passes_v4_3.numpass_v4_3, sha256 1f1c236d9260...; passes_v2_3 sha256 744d728701b0...). parity: every distinct (refiner input, refiner output) pair of the public synthetic T14 and T14b number sets, shipped and candidate refiners, after the opener rule and line breaks; expected = the reference's output. guard: public T13 (synthetic self-corrections), T15 (synthetic layout commands) and T16 (public speech clips) outputs whose input holds a digit, digit word, currency word or month (no other row can change); expected changes only 'April first' -> 'April 1' (T13) and 'the tenth of April 2013' -> 'April 10, 2013' (T16). fixes: pairs derived from those public pairs by mechanical edits (hyphenated number words, a digit word after a phone run, double/triple, '+', brackets, dots, percent and time symbols next to digits) on which the final rule differs from v2: up to 100 each where the v2.1 hyphen fix, the v2.2 run-length fix, or v2.3's invariant / v4's double-triple decides; expected = the final rule. reference_tests: the 49 cases of the reference's test_numpass_v2_3.py (25 reference, 24 generated), expected as written there (the final rule gives exactly these).",
+"about": "numpass final rule v2.3.1 + v4 reference outputs (passes_v4_3_1.numpass_v4_3_1, sha256 fef013da1f7f...; passes_v2_3_1 sha256 12ebecfc3364...). parity: every distinct (refiner input, refiner output) pair of the public synthetic T14 and T14b number sets, shipped and candidate refiners, after the opener rule and line breaks; expected = the reference's output. guard: public T13 (synthetic self-corrections), T15 (synthetic layout commands) and T16 (public speech clips) outputs whose input holds a digit, digit word, currency word or month (no other row can change); expected changes only 'April first' -> 'April 1' (T13) and 'the tenth of April 2013' -> 'April 10, 2013' (T16). fixes: pairs derived from those public pairs by mechanical edits (hyphenated number words, a digit word after a phone run, double/triple, '+', brackets, dots, percent and time symbols next to digits, line breaks, tabs and CRLF, words after amounts, sentence ends) on which the final rule differs from v2: up to 100 each where the v2.1 hyphen fix, the v2.2 run-length fix, v2.3's invariant / v4's double-triple, or v2.3.1's whitespace and word guards decide; expected = the final rule. reference_tests: the 66 cases of the reference's test_numpass_v2_3_1.py (49 from v2.3, 9 line-break, 8 word), expected as written there (the final rule gives exactly these).",
 "parity": [
 {
 "input": "Can we move the review to May twenty first?",
@@ -1139,17 +1139,17 @@
 {
 "input": "The hotel was two thousand five hundred dollars a night. Let's take it one step at a time.",
 "output": "The hotel was $2,500 a night. Let's take it one step at a time.",
-"expected": "The hotel was $2,500 night. Let's take it one step at a time."
+"expected": "The hotel was $2,500 a night. Let's take it one step at a time."
 },
 {
 "input": "The hotel was two thousand five hundred dollars a night. Let's take it one step at a time.",
 "output": "The hotel was 2,500 dollars a night. Let's take it one step at a time.",
-"expected": "The hotel was $2,500 night. Let's take it one step at a time."
+"expected": "The hotel was $2,500 a night. Let's take it one step at a time."
 },
 {
 "input": "The hotel was two thousand five hundred dollars a night. Let's take it one step at a time.",
 "output": "the hotel was 2500 dollars a night. let's take it one step at a time",
-"expected": "the hotel was $2,500 night. let's take it one step at a time"
+"expected": "the hotel was $2,500 a night. let's take it one step at a time"
 },
 {
 "input": "We spent ninety three dollars and seventy six cents on cloud credits last month.",
@@ -1299,17 +1299,17 @@
 {
 "input": "the hotel was uh, three thousand nine hundred dollars a night",
 "output": "The hotel was 3,900 dollars a night.",
-"expected": "The hotel was $3,900 night."
+"expected": "The hotel was $3,900 a night."
 },
 {
 "input": "the hotel was uh, three thousand nine hundred dollars a night",
 "output": "the hotel was 3,900 dollars a night",
-"expected": "the hotel was $3,900 night"
+"expected": "the hotel was $3,900 a night"
 },
 {
 "input": "the hotel was uh, three thousand nine hundred dollars a night",
 "output": "The hotel was $3,900 a night.",
-"expected": "The hotel was $3,900 night."
+"expected": "The hotel was $3,900 a night."
 },
 {
 "input": "we spent ninety seven uh, pounds on cloud credits last month",
@@ -1439,12 +1439,12 @@
 {
 "input": "The hotel was sixteen pounds a night.",
 "output": "The hotel was 16 pounds a night.",
-"expected": "The hotel was £16 night."
+"expected": "The hotel was £16 a night."
 },
 {
 "input": "The hotel was sixteen pounds a night.",
 "output": "the hotel was 16 pounds a night",
-"expected": "the hotel was £16 night"
+"expected": "the hotel was £16 a night"
 },
 {
 "input": "We spent twenty uh eight dollars and forty five cents on cloud credits last month.",
@@ -1584,12 +1584,12 @@
 {
 "input": "the hotel was seven hundred fifty euros a night",
 "output": "The hotel was 750 euros a night.",
-"expected": "The hotel was €750 night."
+"expected": "The hotel was €750 a night."
 },
 {
 "input": "the hotel was seven hundred fifty euros a night",
 "output": "the hotel was 750 euros a night",
-"expected": "the hotel was €750 night"
+"expected": "the hotel was €750 a night"
 },
 {
 "input": "We spent sixteen hundred dollars on cloud credits last month. This is the first time I've seen it.",
@@ -1719,17 +1719,17 @@
 {
 "input": "The hotel was twenty seven thousand dollars a night.",
 "output": "The hotel was 27,000 dollars a night.",
-"expected": "The hotel was $27,000 night."
+"expected": "The hotel was $27,000 a night."
 },
 {
 "input": "The hotel was twenty seven thousand dollars a night.",
 "output": "the hotel was 27,000 dollars a night",
-"expected": "the hotel was $27,000 night"
+"expected": "the hotel was $27,000 a night"
 },
 {
 "input": "The hotel was twenty seven thousand dollars a night.",
 "output": "The hotel was $27,000 a night.",
-"expected": "The hotel was $27,000 night."
+"expected": "The hotel was $27,000 a night."
 },
 {
 "input": "We spent um seventeen dollars on cloud credits last month.",
@@ -5434,12 +5434,12 @@
 {
 "input": "Parking downtown um is thirty euros a day.",
 "output": "Parking downtown is 30 euros a day.",
-"expected": "Parking downtown is €30 day."
+"expected": "Parking downtown is €30 a day."
 },
 {
 "input": "Parking downtown um is thirty euros a day.",
 "output": "parking downtown is 30 euros a day",
-"expected": "parking downtown is €30 day"
+"expected": "parking downtown is €30 a day"
 },
 {
 "input": "The grant covers up to eighteen hundred dollars. First things first, though.",
@@ -5569,17 +5569,17 @@
 {
 "input": "Parking downtown is nine point five million dollars a day.",
 "output": "Parking downtown is $9.5 million a day.",
-"expected": "Parking downtown is $9.5 million day."
+"expected": "Parking downtown is $9.5 million a day."
 },
 {
 "input": "Parking downtown is nine point five million dollars a day.",
 "output": "Parking downtown is 9.5 million dollars a day.",
-"expected": "Parking downtown is $9.5 million day."
+"expected": "Parking downtown is $9.5 million a day."
 },
 {
 "input": "Parking downtown is nine point five million dollars a day.",
 "output": "parking downtown is 9.5 million dollars a day",
-"expected": "parking downtown is $9.5 million day"
+"expected": "parking downtown is $9.5 million a day"
 },
 {
 "input": "the grant covers up to three hundred sixty dollars",
@@ -5694,17 +5694,17 @@
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
 "output": "Parking downtown is 168 bucks a day. It's one thing after another.",
-"expected": "Parking downtown is $168 day. It's one thing after another."
+"expected": "Parking downtown is $168 a day. It's one thing after another."
 },
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
 "output": "parking downtown is 168 bucks a day. it's one thing after another",
-"expected": "parking downtown is $168 day. it's one thing after another"
+"expected": "parking downtown is $168 a day. it's one thing after another"
 },
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
 "output": "Parking downtown is $168 a day. It is one thing after another.",
-"expected": "Parking downtown is $168 day. It is one thing after another."
+"expected": "Parking downtown is $168 a day. It is one thing after another."
 },
 {
 "input": "The grant covers up to seven thousand two hundred dollars.",
@@ -5834,17 +5834,17 @@
 {
 "input": "parking downtown is fourteen hundred dollars a day",
 "output": "Parking downtown is $1,400 a day.",
-"expected": "Parking downtown is $1,400 day."
+"expected": "Parking downtown is $1,400 a day."
 },
 {
 "input": "parking downtown is fourteen hundred dollars a day",
 "output": "Parking downtown is 1400 dollars a day.",
-"expected": "Parking downtown is $1,400 day."
+"expected": "Parking downtown is $1,400 a day."
 },
 {
 "input": "parking downtown is fourteen hundred dollars a day",
 "output": "parking downtown is 1400 dollars a day",
-"expected": "parking downtown is $1,400 day"
+"expected": "parking downtown is $1,400 a day"
 },
 {
 "input": "The grant covers up to ninety eight euros. First things first, though.",
@@ -5964,17 +5964,17 @@
 {
 "input": "Parking downtown is eight thousand two hundred dollars a day.",
 "output": "Parking downtown is 8,200 dollars a day.",
-"expected": "Parking downtown is $8,200 day."
+"expected": "Parking downtown is $8,200 a day."
 },
 {
 "input": "Parking downtown is eight thousand two hundred dollars a day.",
 "output": "parking downtown is 8,200 dollars a day",
-"expected": "parking downtown is $8,200 day"
+"expected": "parking downtown is $8,200 a day"
 },
 {
 "input": "Parking downtown is eight thousand two hundred dollars a day.",
 "output": "Parking downtown is $8,200 a day.",
-"expected": "Parking downtown is $8,200 day."
+"expected": "Parking downtown is $8,200 a day."
 },
 {
 "input": "The grant covers up um to eight point five million dollars. Back to square one, I guess.",
@@ -6784,7 +6784,7 @@
 {
 "input": "The landlord's number is uh, seven one three five five five oh one four four.",
 "output": "The landlord's number is uh, seven one three five five five oh one four four.",
-"expected": "The landlord's number is 713-555-0144."
+"expected": "The landlord's number is uh, 713-555-0144."
 },
 {
 "input": "The landlord's number is uh, seven one three five five five oh one four four.",
@@ -8114,7 +8114,7 @@
 {
 "input": "Parking downtown is one hundred and sixty eight bucks a day. It's one thing after another.",
 "output": "Parking downtown is $168 a day. It's one thing after another.",
-"expected": "Parking downtown is $168 day. It's one thing after another."
+"expected": "Parking downtown is $168 a day. It's one thing after another."
 },
 {
 "input": "Our AWS bill hit sixty eight dollars and seventy four cents this month.",
@@ -11086,454 +11086,109 @@
 ],
 "fixes": [
 {
-"input": "The quote from the contractor was ninety dollars.",
-"output": "THe quote from THe contractor was $9 twenty-one 0",
-"expected": "THe quote from THe contractor was $90"
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six. one more time",
+"expected": "The launch is on March 21, 2026. one more time"
 },
 {
-"input": "the launch is on march twenty first, twenty twenty six two of them",
-"output": "The launch is on March twenty-first, twenty-twenty-six.",
-"expected": "The launch is on March 21, 2026."
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "The\thotel was 2,5 twenty-one 00 dollars a night.",
+"expected": "The\thotel was $2,500 a night."
 },
 {
-"input": "We  spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits um 2013",
-"expected": "We spent $93.76 on credits um 2013"
-},
-{
-"input": "It costs forty five dollars for the tickets",
-"output": "It\tcosts forty-five dollars for THe tickets",
-"expected": "It\tcosts $45 for THe tickets"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "WE SPENT NINETY-THREE DOLLARS AND SEVENTY-SIX CENTS ON CREDITS",
-"expected": "WE SPENT $93.76 ON CREDITS"
-},
-{
-"input": "IT COSTS FORTY FIVE DOLLARS FOR THE TICKETS",
-"output": "It\tcosts forty-five dollars for the tickets",
-"expected": "It\tcosts $45 for the tickets"
-},
-{
-"input": "It costs forty-five dollars for the tickets",
-"output": "It costs forty-five four dollars for the tickets",
-"expected": "It costs $5 for the tickets"
-},
-{
-"input": "Our AWS bill hit forty seven dollars this month.",
-"output": "our AWS bill hit 4 twenty-one 7 dollars this month",
-"expected": "our AWS bill hit $47 this month"
-},
-{
-"input": "the  launch is on march twenty first twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "We spent ninety three nine dollars and seventy six cents on credits",
+"input": "We spent ninety-three dollars and seventy six cents on credits",
 "output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $102.76 on credits"
+"expected": "We spent $3.76 on credits"
 },
 {
-"input": "We ſpent ninety three dollars and seventy six cents on credits",
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "call the front desk at four one five five five five zero one four two",
+"output": "Call  the front desk at four-one-five 555-0142.",
+"expected": "Call  the front desk at 415-555-0142."
+},
+{
+"input": "THe launch is on march twenty first, twenty twenty six",
+"output": "The\tlaunch is on March twenty-first, twenty twenty-six.",
+"expected": "The\tlaunch is on March 21, 2026."
+},
+{
+"input": "We\n\nspent ninety\tthree\ndollars\tand\nseventy six\tcents on\tcredits",
 "output": "We spent ninety-three dollars and seventy-six cents on credits",
 "expected": "We spent $93.76 on credits"
 },
 {
-"input": "It  costs forty five dollars for the tickets",
+"input": "We\r\nspent\tninety\r\nthree dollars and\nchange\n\nand seventy\tsix\tcents\n\non credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93 on credits"
+},
+{
+"input": "we raised fifty two thousand-five dollars one step closer",
+"output": "We raised fifty-two thousand dollars. One step closer.",
+"expected": "We raised $5. One step closer."
+},
+{
+"input": "It costs forty five dollars for THe tickets",
 "output": "It costs forty-five dollars for the tickets",
 "expected": "It costs $45 for the tickets"
+},
+{
+"input": "THe launch iſ on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six. nine",
+"expected": "The launch is on March 21, 2026. nine"
+},
+{
+"input": "Can you approve thirteen pounds for the conference?",
+"output": "can you approve 1 twenty-one 3 pounds for the conference?",
+"expected": "can you approve £13 for the conference?"
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "1. We spent ninety-three dollars and seventy-six cents on credits\n2. Ship it.",
+"expected": "1. We spent $93.76 on credits\n2. Ship it."
+},
+{
+"input": "We\tspent\r\nninety three\r\ndollars and\r\nseventy\tsix cents on\r\ncredits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "we raiſed fifty two thousand dollars one step closer two of them",
+"output": "We raised fifty-two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "We spent ninety three dollars a day and seventy six cents on credits",
+"output": "We spent ninety-three-five dollars and seventy-six cents on credits",
+"expected": "We spent $93 on credits"
 },
 {
 "input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three-five dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "We  spent ninety three dollars and seventy six cents on credits",
-"output": "We\tspent ninety-three bucks and seventy-six cents on credits",
-"expected": "We\tspent $93.76 on credits"
-},
-{
-"input": "It costs forty five bucks for the tickets",
-"output": "it costs forty-five dollars for the tickets",
-"expected": "it costs $45 for the tickets"
-},
-{
-"input": "we spent ninety THree dollars and seventy six cents on credits",
-"output": "We spent ninety-THree dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "We spent ninety-three dollars and seventy six cents on credits",
-"output": "We   spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We   spent $3.76 on credits"
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty-twenty-six. um 2013",
-"expected": "The launch is on March 21, 2026. um 2013"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three two dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six two of them",
-"output": "The launch is on March twenty-first, twenty twenty-six. two of them",
-"expected": "The launch is on March 21, 2026. two of them"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three-five dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "It  costs forty five dollars for the tickets",
-"output": "It costs forty-five one dollars for the tickets",
-"expected": "It costs $45 for the tickets"
-},
-{
-"input": "We spent ninety-three dollars and seventy six cents on credits",
-"output": "We ſpent ninety-three dollars and seventy-six cents on credits um 2013",
-"expected": "We ſpent $3.76 on credits um 2013"
-},
-{
-"input": "We spent ninety three dollars and five cents and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.05 on credits"
-},
-{
-"input": "IT COSTS FORTY FIVE BUCKS FOR THE TICKETS",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs $45 for the tickets"
-},
-{
-"input": "the    launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "THE LAUNCH IS ON MARCH TWENTY FIRST TWENTY TWENTY SIX",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits one more time",
 "output": "We spent ninety-three bucks and seventy-six cents on credits",
 "expected": "We spent $93.76 on credits"
 },
 {
-"input": "It costs forty five-five dollars for the tickets",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs $5 for the tickets"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three nine dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "It costs forty five-five dollars for the tickets",
-"output": "It  costs forty-five dollars for the tickets",
-"expected": "It  costs $5 for the tickets"
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "i owe you two point nine million dollars for dinner.\nthis is the first time i've seen it",
-"output": "I owe you two point nine million-five dollars for dinner. This is the first time I've seen it.",
-"expected": "I owe you $2.9 million for dinner. This is the first time I've seen it."
-},
-{
-"input": "IT COSTS FORTY FIVE-FIVE DOLLARS FOR THE TICKETS",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs $5 for the tickets"
-},
-{
-"input": "it costs forty five dollars for the tickets one more time",
-"output": "It coſts forty-five dollars for the tickets",
-"expected": "It coſts $45 for the tickets"
-},
-{
-"input": "It\tcosts forty five dollars for the tickets",
-"output": "It\tcosts forty-five dollars for the tickets",
-"expected": "It\tcosts $45 for the tickets"
-},
-{
-"input": "We   spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "IT COSTS FORTY FIVE DOLLARS FOR THE TICKETS",
-"output": "It costs forty-five dollars and five cents for the tickets",
-"expected": "It costs $45 for the tickets"
-},
-{
-"input": "We spent ninety three-five dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent ninety-three $5.76 on credits"
-},
-{
-"input": "WE  SPENT NINETY THREE DOLLARS AND SEVENTY SIX CENTS ON CREDITS",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "it was twelve hundred bucks total",
-"output": "It was 1 twenty-one 200 bucks total.",
-"expected": "It was $1,200 total."
-},
-{
-"input": "the license costs fifteen pounds per seat. i'd rather do it all at once um 2013",
-"output": "The license costs 1 twenty-one 5 pounds per seat. I'd rather do it all at once.",
-"expected": "The license costs £15 per seat. I'd rather do it all at once."
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six nine",
+"input": "the launch iſ on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
 "expected": "The launch is on March 21, 2026."
-},
-{
-"input": "the launch is on march twenty first twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six. two of them",
-"expected": "The launch is on March 21, 2026. two of them"
-},
-{
-"input": "call the front desk at four one five five five five zero one four two",
-"output": "call the front desk at four-one five 555 0142.",
-"expected": "call the front desk at 415-555-0142."
-},
-{
-"input": "It costs forty five dollars for the tickets four people",
-"output": "It costs forty-five dollars for THe tickets",
-"expected": "It costs $45 for THe tickets"
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The  launch is on March twenty-first, twenty twenty-six. nine",
-"expected": "The  launch is on March 21, 2026. nine"
-},
-{
-"input": "It costs forty five dollars for the tickets",
-"output": "It costs forty-five dollars and five cents for the tickets",
-"expected": "It costs $45 for the tickets"
-},
-{
-"input": "call the front desk at four one five five five five zero one four two",
-"output": "Call the front desk at four-one-five 555-0142.",
-"expected": "Call the front desk at 415-555-0142."
-},
-{
-"input": "THe launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "Revenue came in at one point five million dollars for the quarter. That's one of the reasons I'm asking.",
-"output": "Revenue came in at one point five-million dollars for the quarter.\nThat's one of the reasons I'm asking.",
-"expected": "Revenue came in at $1.5 million for the quarter.\nThat's one of the reasons I'm asking."
-},
-{
-"input": "We spent ninety THree dollars and seventy six cents on credits one more time",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "It costs forty five dollars for the tickets um 2013",
-"output": "it costs forty-five dollars for the tickets",
-"expected": "it costs $45 for the tickets"
 },
 {
 "input": "It costs forty five nine dollars for the tickets",
-"output": "It  costs forty-five dollars for the tickets",
-"expected": "It  costs $54 for the tickets"
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $54 for the tickets"
 },
 {
-"input": "call the front desk at four-one five-five five-five zero-one four-two",
-"output": "Call\tthe front desk at four-one-five 555-0142.",
-"expected": "Call\tthe front desk at 415-555-0142."
-},
-{
-"input": "i owe you two point nine million dollars for dinner. this is the first time i've seen it",
-"output": "I owe you two point nine-million dollars for dinner. This is the first time I've seen it.",
-"expected": "I owe you $2.9 million for dinner. This is the first time I've seen it."
-},
-{
-"input": "We spent ninety three-five-five dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $5.76 on credits"
-},
-{
-"input": "call\tthe front desk at four one five five five five zero one four two",
-"output": "CALL\tTHE FRONT DESK AT FOUR-ONE-FIVE 555-0142.",
-"expected": "CALL\tTHE FRONT DESK AT 415-555-0142."
-},
-{
-"input": "call the front desk at four-one five-five five-five zero-one four-two",
-"output": "Call the front desk at four-one-five 555-0142.",
-"expected": "Call the front desk at 415-555-0142."
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three oh dollars and seventy-six cents on credits",
-"expected": "We spent ninety-three $93.76 on credits"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three bucks and seventy-six cents on credits two of them",
-"expected": "We spent $93.76 on credits two of them"
-},
-{
-"input": "the  launch is on march twenty first, twenty twenty six",
+"input": "the launch is on march twenty first, twenty twenty six two of them",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
 "expected": "The launch is on March 21, 2026."
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits um 2013:30",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six",
-"output": "The  launch is on March twenty-first, twenty twenty-six. two of them",
-"expected": "The  launch is on March 21, 2026. two of them"
-},
-{
-"input": "We spent ninety-three dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy six cents on credits",
-"expected": "We spent $3.76 on credits"
-},
-{
-"input": "We spent ninety  three dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits nine",
-"expected": "We spent $93.76 on credits nine"
-},
-{
-"input": "It\tcosts forty five bucks for the tickets",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs $45 for the tickets"
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The launch iſ on March twenty-first, twenty twenty-six.",
-"expected": "The launch iſ on March 21, 2026."
-},
-{
-"input": "We spent ninety three-five dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $5.76 on credits"
-},
-{
-"input": "call the front desk at four-one-five five five five zero one four two",
-"output": "Call the front desk at four-one-five 555-0142.",
-"expected": "Call the front desk at 415-555-0142."
-},
-{
-"input": "the launch is on march twenty first twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "We spent ninety three two dollars and seventy six cents on credits",
-"output": "we spent ninety-three dollars and seventy-six cents on credits",
-"expected": "we spent $95.76 on credits"
-},
-{
-"input": "the new keyboard was three hundred fifty euros",
-"output": "The new keyboard was 3 twenty-one 50 euros.",
-"expected": "The new keyboard was €350."
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "WE SPENT NINETY-THREE DOLLARS AND SEVENTY-SIX CENTS ON CREDITS oh well",
-"expected": "WE SPENT $93.76 ON CREDITS oh well"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits nine",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "the  launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty-twenty-six oh.",
-"expected": "The launch is on March 21, 2026 oh."
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six um 2013",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "THe\tlaunch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "It costs forty five-five dollars for the tickets",
-"output": "it costs forty-five dollars for the tickets",
-"expected": "it costs $5 for the tickets"
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty-twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "It costs forty five dollars for the tickets",
-"output": "It\tcosts forty-five-five dollars for the tickets",
-"expected": "It\tcosts $45 for the tickets"
-},
-{
-"input": "It costs forty-five dollars for the tickets",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs $5 for the tickets"
-},
-{
-"input": "it was twelve hundred bucks total",
-"output": "It was 1 twenty-one 200 bucks total. nine",
-"expected": "It was 1 $1,200 total. nine"
-},
-{
-"input": "It costs forty five dollars for the tickets",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs $45 for the tickets"
-},
-{
-"input": "WE SPENT NINETY THREE DOLLARS AND SEVENTY SIX CENTS ON CREDITS",
-"output": "We spent ninety-THree dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "THe launch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six.",
-"expected": "The launch is on March 21, 2026."
-},
-{
-"input": "the launch is on march twenty first, twenty twenty six",
-"output": "The launch iſ on March twenty-first, twenty-twenty-six.",
-"expected": "The launch iſ on March 21, 2026."
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits um 2013",
-"output": "we spent ninety-three dollars and seventy-six cents on credits",
-"expected": "we spent $93.76 on credits"
-},
-{
-"input": "The refund should be twelve hundred dollars. This is the first time I've seen it.",
-"output": "The refund should be forty-five dollars 1,200. This is the first time I have seen it.",
-"expected": "The refund should be $1,200. This is the first time I have seen it."
+"output": "The launch iſ on March twenty-first, twenty twenty-six. um 2013",
+"expected": "The launch iſ on March 21, 2026. um 2013"
 },
 {
 "input": "It costs forty five dollars for the tickets oh well",
@@ -11541,359 +11196,504 @@
 "expected": "It costs $45 for the tickets"
 },
 {
-"input": "Revenue came in at uh, nine thousand eight hundred dollars for the quarter. Let's take it one step at a time.",
-"output": "Revenue  came in at $9,8 twenty-one 00 for the quarter. Let's take it one step at a time.",
-"expected": "Revenue  came in at $9,800 for the quarter. Let's take it one step at a time."
+"input": "1. It costs forty-five dollars for the tickets\n2. Ship it.",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $5 for the tickets"
 },
 {
-"input": "the\tlaunch is on march twenty first, twenty twenty six",
-"output": "The launch is on March twenty-first, twenty twenty-six two.",
-"expected": "The launch is on March 21, 2026 two."
+"input": "We spent ninety three dollars. One and seventy six cents on credits",
+"output": "1. We spent ninety-three dollars and seventy-six cents on credits\n2. Ship it.",
+"expected": "1. We spent $93 on credits\n2. Ship it."
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six two",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "it costs a thousand two\thundred\ndollars\ttotal",
+"output": "It costs a thousand two hundred-five dollars total.",
+"expected": "It costs $1,200 total."
+},
+{
+"input": "We spent ninety three two dollars and seventy six cents on credits",
+"output": "We\tspent ninety-three dollars and seventy-six cents on credits",
+"expected": "We\tspent $95.76 on credits"
+},
+{
+"input": "we spent ninety-three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $3.76 on credits"
+},
+{
+"input": "call the\n\nfront\n\ndesk\n\nat\r\nfour\n\none\nfive\nfive\r\nfive five zero one four\r\ntwo",
+"output": "Call the front desk at four-one-five 555-0142.",
+"expected": "Call the front desk at 415-555-0142."
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It coſts forty-five dollars for THe tickets",
+"expected": "It coſts $45 for THe tickets"
+},
+{
+"input": "the launch\nis on march\ttwenty first,\r\ntwenty\n\ntwenty\n\nsix",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "The quote from the contractor was ninety dollars.",
+"output": "THe quote from THe contractor was $9 twenty-one 0",
+"expected": "THe quote from THe contractor was $90"
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It costs forty-five dollars and five cents for the tickets",
+"expected": "It costs $45 for the tickets"
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "WE\n\nSPENT\nNINETY\tTHREE DOLLARS\r\nAND\r\nSEVENTY\nSIX\r\nCENTS ON CREDITS",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "It costs\r\nforty\n\nfive dollars for\n\nthe tickets",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We ſpent ninety-three-five dollars and seventy-six cents on credits",
+"expected": "We ſpent $93.76 on credits"
+},
+{
+"input": "THe\tlaunch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "Can you approve twenty six dollars and twelve cents for the conference? That's one of the reasons I'm asking.",
+"output": "can you approve 2 twenty-one 6 dollars and 12 cents for the conference? that's one of the reasons i'm asking",
+"expected": "can you approve $26.12 for the conference? that's one of the reasons i'm asking"
+},
+{
+"input": "It\tcosts forty five dollars for the tickets",
+"output": "It costs forty-five-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "It costs forty five dollars. A for the tickets",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits four people",
+"expected": "We spent $93.76 on credits four people"
+},
+{
+"input": "We spent\r\nninety three\ndollars\r\nand seventy\r\nsix\tcents\r\non\ncredits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "call the front desk at four one five five five five zero one four two",
+"output": "CALL THE FRONT DESK AT FOUR-ONE-FIVE 555-0142.",
+"expected": "CALL THE FRONT DESK AT 415-555-0142."
+},
+{
+"input": "1. the launch is on march twenty first, twenty twenty six\n2. Ship it.",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "THe launch iſ on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "We spent\n\nninety three\ndollars\r\nand\r\nseventy\nsix cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is\r\non March twenty-first, twenty\ttwenty-six.",
+"expected": "The launch is\r\non March 21, 2026."
+},
+{
+"input": "Can you approve twenty six dollars and twelve cents for the conference? That's one of the reasons I'm asking.",
+"output": "Can you approve $2 twenty-one 6.12 for the conference? That's one of the reasons I'm asking.",
+"expected": "Can you approve $26.12 for the conference? That's one of the reasons I'm asking."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "the launch is on\n\nmarch\r\ntwenty\n\nfirst, twenty\r\ntwenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "call the front\tdesk\n\nat\r\nfour one\r\nfive\r\nfive five five\n\nzero one four two",
+"output": "Call the front desk at four-one-five 555-0142.",
+"expected": "Call the front desk at 415-555-0142."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We  spent ninety-three bucks and seventy-six cents on credits",
+"expected": "We  spent $93.76 on credits"
+},
+{
+"input": "1:30. It costs forty five dollars for the tickets\n2. Ship it.",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty-twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "the\tlaunch is on march twenty first, twenty twenty six",
 "output": "The\tlaunch is on March twenty-first, twenty twenty-six.",
 "expected": "The\tlaunch is on March 21, 2026."
 },
 {
-"input": "the launch is on march twenty first, twenty twenty six oh well",
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first twenty-twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "We\tspent ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits oh well",
+"expected": "We spent $93.76 on credits oh well"
+},
+{
+"input": "It costs forty\tfive dollars for the tickets",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "It coſts forty five dollars for the tickets",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "We spent ninety-three dollars and seventy six cents on credits",
+"output": "We spent ninety-three bucks and seventy-six cents on credits",
+"expected": "We spent $3.76 on credits"
+},
+{
+"input": "we spent ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and five cents and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "We\tspent ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-THree dollars and seventy-six two cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "We spent ninety three bucks and seventy six cents on credits",
+"output": "We  spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We  spent $93.76 on credits"
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits um +2013",
+"output": "WE SPENT NINETY-THREE DOLLARS AND SEVENTY-SIX CENTS ON CREDITS",
+"expected": "WE SPENT $93.76 ON CREDITS"
+},
+{
+"input": "We\tspent  ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "The quote from the contractor was forty pounds. I'd rather do it all at once.",
+"output": "The quote from the contractor was 4 twenty-one 0 pounds. I'd rather do it all at once.",
+"expected": "The quote from the contractor was £40. I'd rather do it all at once."
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six four people",
+"output": "The launch is on March twenty-first, twenty twenty-six. one more time",
+"expected": "The launch is on March 21, 2026. one more time"
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It costs forty-five dollars for the tickets two of them",
+"expected": "It costs $45 for the tickets two of them"
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "IT COSTS FORTY-FIVE-FIVE DOLLARS FOR THE TICKETS",
+"expected": "IT COSTS $45 FOR THE TICKETS"
+},
+{
+"input": "It costs forty five dollars. And for the tickets",
+"output": "It costs forty-five dollars for the tickets um 2013",
+"expected": "It costs $45 for the tickets um 2013"
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It costs forty-five dollars. And for the tickets",
+"expected": "It costs $45. And for the tickets"
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It coſts forty-five-five dollars for the tickets",
+"expected": "It coſts $45 for the tickets"
+},
+{
+"input": "we spent ninety three dollars and seventy six cents on credits",
+"output": "WE SPENT NINETY-THREE DOLLARS AND SEVENTY-SIX CENTS ON CREDITS",
+"expected": "WE SPENT $93.76 ON CREDITS"
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "1. we spent ninety-three dollars and seventy-six cents on credits\n2. Ship it.",
+"expected": "1. we spent $93.76 on credits\n2. Ship it."
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "the launch is on march twenty-first, twenty twenty-six. um 2013",
+"expected": "the launch is on March 21, 2026. um 2013"
+},
+{
+"input": "We  spent ninety three one dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $94.76 on credits"
+},
+{
+"input": "the launch is on march twenty first twenty twenty six four",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "We spent ninety three dollars and change and seventy six cents on credits",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93 on credits"
+},
+{
+"input": "the\tlaunch is\n\non\n\nmarch twenty\nfirst, twenty\r\ntwenty\tsix",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "the\tlaunch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "WE SPENT NINETY THREE BUCKS AND SEVENTY SIX CENTS ON CREDITS",
+"output": "We spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "call THe front desk at four one five five five five zero one four two",
+"output": "Call the front desk at four-one-five 555-0142.",
+"expected": "Call the front desk at 415-555-0142."
+},
+{
+"input": "the launch is on march twenty first twenty twenty six",
+"output": "The launch is on March twenty-first twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We spent ninety-three dollars and five cents and seventy-six cents on credits",
+"expected": "We spent $93.76 on credits"
+},
+{
+"input": "The\nrefund\n\nshould\tbe twelve hundred dollars. This is\n\nthe\nfirst\ntime\n\nI've seen it.",
+"output": "The refund should be forty-five dollars 1,200. This is the first time I have seen it.",
+"expected": "The refund should be $1,200. This is the first time I have seen it."
+},
+{
+"input": "It coſts forty five dollars for the tickets",
+"output": "it costs forty-five dollars for the tickets",
+"expected": "it costs $45 for the tickets"
+},
+{
+"input": "it\tcosts\r\na\r\nthousand\ntwo\nhundred\tdollars\r\ntotal",
+"output": "It costs a thousand two hundred-five dollars total.",
+"expected": "It costs $1,200 total."
+},
+{
+"input": "call\nTHe\tfront desk\nat four one\tfive\n\nfive\nfive\tfive zero\tone\r\nfour two",
+"output": "Call the front desk at four-one-five 555-0142.",
+"expected": "Call the front desk at 415-555-0142."
+},
+{
+"input": "It\r\ncosts forty\n\nfive\ndollars for\n\nthe\r\ntickets",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $45 for the tickets"
+},
+{
+"input": "It costs forty five five dollars for the tickets",
+"output": "It costs forty-five dollars for the tickets",
+"expected": "It costs $50 for the tickets"
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six",
+"output": "The launch is on March twenty-first, twenty twenty-six. nine",
+"expected": "The launch is on March 21, 2026. nine"
+},
+{
+"input": "the launch is on\r\nmarch\r\ntwenty first,\r\ntwenty twenty\n\nsix um 2013",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "call the front desk at four-one five-five five-five zero-one four-two",
+"output": "Call the front desk at four-one-five 555-0142.",
+"expected": "Call the front desk at 415-555-0142."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We  spent ninety-three dollars and seventy-six cents on credits",
+"expected": "We  spent $93.76 on credits"
+},
+{
+"input": "It costs forty five two dollars for the tickets",
+"output": "It costs forty-five dollars and five cents for the tickets",
+"expected": "It costs $47 for the tickets"
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six four people",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
+"expected": "The launch is on March 21, 2026."
+},
+{
+"input": "the launch is on march twenty first, twenty twenty six two",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
 "expected": "The launch is on March 21, 2026."
 },
 {
 "input": "the launch is on march twenty first, twenty twenty six",
-"output": "The  launch is on March twenty-first, twenty twenty-six. oh well",
-"expected": "The  launch is on March 21, 2026. oh well"
-},
-{
-"input": "We  spent ninety three dollars and seventy six cents on credits",
-"output": "We ſpent ninety-three dollarſ and seventy-six cents on credits",
-"expected": "We ſpent ninety-three dollarſ $93.76 on credits"
+"output": "The launch is on March twenty-first, twenty twenty-six four.",
+"expected": "The launch is on March 21, 2026 four."
 },
 {
 "input": "THE LAUNCH IS ON MARCH TWENTY FIRST, TWENTY TWENTY SIX",
-"output": "The launch is on March twenty-first twenty twenty-six.",
+"output": "The launch is on March twenty-first, twenty twenty-six.",
 "expected": "The launch is on March 21, 2026."
 },
 {
-"input": "We\tspent ninety three dollars and seventy six cents on credits",
-"output": "We spent ninety-three dollars and seventy-six cents on credits",
-"expected": "We spent $93.76 on credits"
-},
-{
-"input": "We spent ninety three dollars and seventy six cents on credits",
-"output": "we ſpent ninety-three dollars and seventy-six cents on credits",
-"expected": "we ſpent $93.76 on credits"
-},
-{
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "text 415 555 0142, two of them are mine.",
-"expected": "text 415-555-0142, two of them are mine."
-},
-{
-"input": "book  the room at five-five five zero one four two four people are coming",
-"output": "Book the room at 555-0142, four people are coming.",
-"expected": "Book the room at 555-0142, four people are coming."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time um 2013 um 2013",
-"output": "Call me at four one five five five five zero one four two one more time.",
+"input": "call\nme\tat\r\nfour one\n\nfive\r\nfive\tfive\r\nfive\r\nzero\r\none four\ntwo\none\nmore\n\ntime",
+"output": "Call me at 415-555-0142 one more time.",
 "expected": "Call me at 415-555-0142 one more time."
 },
 {
-"input": "call\tme at four one five five five five zero one four two one more time",
-"output": "CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME.",
-"expected": "CALL ME AT 415-555-0142 ONE MORE TIME."
-},
-{
-"input": "text four one five five five five zero one four two two of them are mine um 2013",
-"output": "TEXT 415-555-0142, TWO OF THEM ARE MINE.",
-"expected": "TEXT 415-555-0142, TWO OF THEM ARE MINE."
-},
-{
-"input": "TEXT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO TWO OF THEM ARE MINE",
+"input": "text\tfour one\r\nfive\nfive five\tfive\n\nzero one four two two\nof\nthem\tare mine",
 "output": "Text 415-555-0142, two of them are mine.",
 "expected": "Text 415-555-0142, two of them are mine."
 },
 {
 "input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one more time. um 2013",
-"expected": "Call me at 415-555-0142 one more time. um 2013"
+"output": "Call\tme at 415-555-0142 two one more time.",
+"expected": "Call\tme at 415-555-0142 two one more time."
 },
 {
-"input": "dial  one four one five five five five zero one four two one more time four people",
-"output": "Dial 1 415 555 0142 one more time. nine",
-"expected": "Dial 1-415-555-0142 one more time. nine"
-},
-{
-"input": "call me at four one five five five five zero one four two one more time oh well",
+"input": "call\n\nme\tat four one\r\nfive five five five\tzero one four\ttwo one more time",
 "output": "Call me at four one five five five five zero one four two one more time.",
 "expected": "Call me at 415-555-0142 one more time."
 },
 {
-"input": "call me at four-one five-five five-five zero-one four-two one more time",
-"output": "call me at 415-555-0142 one more time.",
-"expected": "call me at 415-555-0142 one more time."
-},
-{
 "input": "call me at four one five five five five zero one four two one more time",
-"output": "call me at 415-555-0142 one more time.",
-"expected": "call me at 415-555-0142 one more time."
+"output": "Call  me at 415-555-0142 one more time.",
+"expected": "Call  me at 415-555-0142 one more time."
 },
 {
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "CALL ME AT 415-555-0142 two ONE MORE TIME.",
-"expected": "CALL ME AT 415-555-0142 two ONE MORE TIME."
+"input": "book  THe room at five five five zero one four two four people are coming",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
 },
 {
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415 555 0142 one more time. um 2013",
-"expected": "Call me at 415-555-0142 one more time. um 2013"
-},
-{
-"input": "call  me at four-one five-five five-five zero-one four-two one more time",
+"input": "1. call me at four one five five five five zero one four two one more time\n2. ship it.",
 "output": "Call me at four one five five five five zero one four two one more time.",
 "expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call\r\nme\n\nat four\n\none\tfive five\n\nfive five zero one four\ntwo\r\none more time",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call me at four\n\none\n\nfive five five five zero one four\r\ntwo\n\none\nmore time",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at 415-555-0142 one nine more time.",
+"expected": "Call me at 415-555-0142 one nine more time."
+},
+{
+"input": "1. dial one four one five five five five zero one four two one more time\n2. Ship it.",
+"output": "Dial 1 415 555 0142 one four more time.",
+"expected": "Dial 1-415-555-0142 one four more time."
+},
+{
+"input": "book the room at five five five zero one four two four people are coming um 2013",
+"output": "BOOK THE ROOM AT 555-0142, FOUR PEOPLE ARE COMING.",
+"expected": "BOOK THE ROOM AT 555-0142, FOUR PEOPLE ARE COMING."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at four-one five five five five zero one four two one nine more time.",
+"expected": "Call me at 415-555-0142 one nine more time."
 },
 {
 "input": "book the room at five five five zero one four two four people are coming",
-"output": "Book the room at 555-0142, four nine people are coming.",
-"expected": "Book the room at 555-0142, four nine people are coming."
+"output": "Book  the room at 555-0142. Two four people are coming.",
+"expected": "Book  the room at 555-0142. Two four people are coming."
 },
 {
-"input": "text four one five five five five zero one four two two of THem are mine",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "1. Book the room at 555-0142, four people are coming.\n2. Ship it.",
+"expected": "1. Book the room at 555-0142, four people are coming.\n2. Ship it."
 },
 {
-"input": "call me at four-one five five five five zero one four two one more time",
-"output": "Call me at four one five five five five zero one four two one more time. um 2013",
-"expected": "Call me at 415-555-0142 one more time. um 2013"
+"input": "1. book the room at five five five zero one four two four people are coming\n2. Ship it.",
+"output": "Book THe room at 555-0142, four people are coming.",
+"expected": "Book THe room at 555-0142, four people are coming."
 },
 {
-"input": "BOOK THE ROOM AT FIVE FIVE FIVE ZERO ONE FOUR TWO FOUR PEOPLE ARE COMING",
-"output": "Book the room at 555-0142, four people are coming.",
-"expected": "Book the room at 555-0142, four people are coming."
+"input": "CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME",
+"output": "call\tme at four one five five five five zero one four two one more time.",
+"expected": "call\tme at 415-555-0142 one more time."
 },
 {
-"input": "text   four one five five five five zero one four two two of them are mine",
+"input": "text four one\r\nfive five\n\nfive\n\nfive\tzero\none\nfour\ntwo two\nof\nthem\tare\nmine oh well",
 "output": "Text 415-555-0142, two of them are mine.",
 "expected": "Text 415-555-0142, two of them are mine."
 },
 {
 "input": "dial one four one five five five five zero one four two one more time um 2013",
-"output": "Dial 1 415 555 0142 one oh more time.",
-"expected": "Dial 1-415-555-0142 one oh more time."
-},
-{
-"input": "call me at four-one five five five five zero one four two one more time",
-"output": "call me at four one five five five five zero one four two one more time.",
-"expected": "call me at 415-555-0142 one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time four people",
-"output": "Call me at plus four one five five five five zero one four two one more time.",
-"expected": "Call me at plus 415-555-0142 one more time."
-},
-{
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "text 415-555-0142, two of them are mine.",
-"expected": "text 415-555-0142, two of them are mine."
-},
-{
-"input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one two more time.",
-"expected": "Dial 1-415-555-0142 one two more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one four more time.",
-"expected": "Call me at 415-555-0142 one four more time."
-},
-{
-"input": "call me at four-one five-five five-five zero-one four-two one more time",
-"output": "Call me at 415-555-0142 one oh more time.",
-"expected": "Call me at 415-555-0142 one oh more time."
-},
-{
-"input": "text four-one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142, two of them are mine. um 2013",
-"expected": "Text 415-555-0142, two of them are mine. um 2013"
-},
-{
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142, two of them are mine. one more time",
-"expected": "Text 415-555-0142, two of them are mine. one more time"
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at four-one five five five five zero one four two one more time.",
-"expected": "Call me at 415-555-0142 one more time."
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
 },
 {
 "input": "book  the room at five five five zero one four two four people are coming",
-"output": "book the room at 555-0142, four people are coming.",
-"expected": "book the room at 555-0142, four people are coming."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book\tthe room at plus 555-0142, four people are coming.",
-"expected": "Book\tthe room at plus 555-0142, four people are coming."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming um 2013",
 "output": "Book the room at 555-0142, four people are coming.",
 "expected": "Book the room at 555-0142, four people are coming."
 },
 {
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book THe room at 555-0142 one one, four people are coming.",
-"expected": "Book THe room at 555-0142 one one, four people are coming."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at four one five five five five zero one four two one four more time.",
-"expected": "Call me at 415-555-0142 one four more time."
-},
-{
-"input": "text\tfour one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming one more time",
-"output": "Book the room at plus 555-0142, four people are coming.",
-"expected": "Book the room at plus 555-0142, four people are coming."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book  the room at 555-0142, four people are coming.",
-"expected": "Book  the room at 555-0142, four people are coming."
-},
-{
-"input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one more time. um 2013",
-"expected": "Dial 1-415-555-0142 one more time. um 2013"
-},
-{
-"input": "call me at four one five five five five zero one four two one more time two of them",
-"output": "Call me at 415-555-0142 one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book the room at plus 555-0142, four people are coming.",
-"expected": "Book the room at plus 555-0142, four people are coming."
-},
-{
-"input": "text four-one five-five five-five zero-one four-two two of them are mine",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book THe room at 555-0142, four people are coming.",
-"expected": "Book THe room at 555-0142, four people are coming."
-},
-{
-"input": "dial one-four one-five five-five five-zero one-four two-one more time",
-"output": "Dial 1 415 555 0142 one more time.",
-"expected": "Dial 1-415-555-0142 one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call  me at 415-555-0142 four one more time.",
-"expected": "Call  me at 415-555-0142 four one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one one more time.",
-"expected": "Call me at 415-555-0142 one one more time."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "book the room at 555-0142, four people are coming.",
-"expected": "book the room at 555-0142, four people are coming."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time um 2013",
-"output": "Call me at plus 415-555-0142 one more time.",
-"expected": "Call me at plus 415-555-0142 one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at four-one five-five five-five zero-one four-two one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
 "input": "text four one five five five five zero one four two two of them are mine",
-"output": "Text  415-555-0142, two of them are mine.",
-"expected": "Text  415-555-0142, two of them are mine."
-},
-{
-"input": "book\tthe room at five five five zero one four two four people are coming",
-"output": "Book\tthe room at 555-0142, four people are coming.",
-"expected": "Book\tthe room at 555-0142, four people are coming."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book the room at plus 555-0142, four four people are coming.",
-"expected": "Book the room at plus 555-0142, four four people are coming."
-},
-{
-"input": "CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME",
-"output": "call me at four one five five five five zero one four two one more time.",
-"expected": "call me at 415-555-0142 one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at four one five five five five zero one four two one more time. four people",
-"expected": "Call me at 415-555-0142 one more time. four people"
-},
-{
-"input": "call me at four one five five five five zero one four two one more time two of them",
-"output": "Call  me at 415-555-0142 one more time.",
-"expected": "Call  me at 415-555-0142 one more time."
-},
-{
-"input": "call the front desk at four one five five five five zero one four two oh well",
-"output": "Call the front desk at four one five 555 0142.",
-"expected": "Call the front desk at 415-555-0142."
-},
-{
-"input": "call  me at four-one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "book the room at 555-0142, four oh people are coming.",
-"expected": "book the room at 555-0142, four oh people are coming."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at four one five five five five zero one four two one nine more time.",
-"expected": "Call me at 415-555-0142 one nine more time."
-},
-{
-"input": "TEXT\tFOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO TWO OF THEM ARE MINE",
 "output": "Text 415-555-0142, two of them are mine.",
 "expected": "Text 415-555-0142, two of them are mine."
 },
 {
-"input": "dial one four one five five five five zero one four two one more time",
-"output": "dial 1 415 555 0142 one more time.",
-"expected": "dial 1-415-555-0142 one more time."
-},
-{
-"input": "DIAL ONE FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME",
-"output": "Dial 1 415 555 0142 one more time.",
-"expected": "Dial 1-415-555-0142 one more time."
+"input": "book the room at five-five five-zero one-four two-four people are coming",
+"output": "Book the room at plus 555-0142 four people are coming.",
+"expected": "Book the room at plus 555-0142 four people are coming."
 },
 {
 "input": "call me at four one five five five five zero one four two one more time",
@@ -11901,89 +11701,214 @@
 "expected": "Call me at 415-555-0142 four one more time."
 },
 {
-"input": "text four one five five five five zero one four two two of them are mine oh well",
+"input": "text four one five five five five zero one four two two of them are mine",
+"output": "Text 415-555-0142, two four of them are mine.",
+"expected": "Text 415-555-0142, two four of them are mine."
+},
+{
+"input": "1. text four one five five five five zero one four two two of them are mine\n2. Ship it.",
 "output": "Text 415-555-0142, two of them are mine.",
 "expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "text four one five five five five zero one four two two of THem are mine oh well",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME",
-"output": "Call me at four one five five five five zero one four two one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one million point two nine more time.",
-"expected": "Call me at 415-555-0142 one million point two nine more time."
-},
-{
-"input": "text four one five five five five zero one four two two of THem are mine",
-"output": "Text  415-555-0142, two of them are mine.",
-"expected": "Text  415-555-0142, two of them are mine."
-},
-{
-"input": "BOOK THE ROOM AT FIVE FIVE FIVE ZERO ONE FOUR TWO FOUR PEOPLE ARE COMING",
-"output": "book the room at 555-0142, four people are coming.",
-"expected": "book the room at 555-0142, four people are coming."
 },
 {
 "input": "book the room at five five five zero one four two four people are coming",
-"output": "Book the room at 555-0142, four people are coming. um 2013",
-"expected": "Book the room at 555-0142, four people are coming. um 2013"
+"output": "1. Book the room at 555-0142, four people are coming.\n2. Ship it.",
+"expected": "1. Book the room at 555-0142, four people are coming.\n2. Ship it."
 },
 {
-"input": "call  the front desk at four one five five five five zero one four two four people",
-"output": "Call the front desk at four-one-five 555-0142.",
-"expected": "Call the front desk at 415-555-0142."
-},
-{
-"input": "text four one five five five five zero one four two two of THem are mine",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "book the room at five-five five-zero one-four two-four people are coming",
+"input": "book\nthe\r\nroom\tat\tfive\nfive\n\nfive zero one four two four\tpeople\tare\n\ncoming",
 "output": "Book the room at 555-0142, four people are coming.",
 "expected": "Book the room at 555-0142, four people are coming."
 },
 {
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "Book the room at 555-0142. Two One four people are coming.",
+"expected": "Book the room at 555-0142. Two One four people are coming."
+},
+{
+"input": "call\tme at four one five five five five zero one four two one more time",
+"output": "Call me at four one five five five five zero one four two one two more time.",
+"expected": "Call me at 415-555-0142 one two more time."
+},
+{
 "input": "call me at four one five five five five zero one four two one more time",
-"output": "Call  me at four-one-five five five five zero one four two one more time.",
-"expected": "Call  me at 415-555-0142 one more time."
+"output": "1. Call me at four one five five five five zero one four two one more time.\n2. Ship it.",
+"expected": "1. Call me at 415-555-0142 one more time.\n2. Ship it."
 },
 {
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142, two of them are mine. oh well",
-"expected": "Text 415-555-0142, two of them are mine. oh well"
-},
-{
-"input": "CALL ME AT FOUR-ONE FIVE-FIVE FIVE-FIVE ZERO-ONE FOUR-TWO ONE MORE TIME",
-"output": "Call me at four one five five five five zero one four two one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
-"input": "dial  one-four one-five five-five five-zero one-four two-one more time um 2013",
+"input": "dial\none four one\tfive\tfive\nfive\n\nfive\n\nzero\r\none four two\r\none more\ntime",
 "output": "Dial 1 415 555 0142 one more time.",
 "expected": "Dial 1-415-555-0142 one more time."
 },
 {
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one million point two more time.",
-"expected": "Call me at 415-555-0142 one million point two more time."
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "1.\nBook the room at 555-0142, four people are coming.\n2.\nShip it.",
+"expected": "1.\nBook the room at 555-0142, four people are coming.\n2.\nShip it."
 },
 {
 "input": "call me at four one five five five five zero one four two one more time",
-"output": "Call\tme at four one million point two five five five five zero one million point two four two one million point two more time.",
-"expected": "Call\tme at four one million point two five five five five zero one million point two four two one million point two more time."
+"output": "Call me at 415-555-0142 four one more time.",
+"expected": "Call me at 415-555-0142 four one more time."
 },
 {
-"input": "call me at four one five five five five zero one four two one more time",
+"input": "CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME um 2013",
 "output": "Call me at four one five five five five zero one four two one more time.",
 "expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call  me at four one five five five five zero one four two one more time",
+"output": "Call me at 415-555-0142 one more time. oh well",
+"expected": "Call me at 415-555-0142 one more time. oh well"
+},
+{
+"input": "text\tfour one five five five five zero one four two two of them are mine",
+"output": "Text 415-555-0142, two of THem are mine.",
+"expected": "Text 415-555-0142, two of THem are mine."
+},
+{
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "BOOK\tTHE ROOM AT 555-0142, FOUR PEOPLE ARE COMING.",
+"expected": "BOOK\tTHE ROOM AT 555-0142, FOUR PEOPLE ARE COMING."
+},
+{
+"input": "book\nthe room\nat\nfive\n\nfive five\r\nzero one four two\nfour\r\npeople\r\nare\n\ncoming",
+"output": "Book the room at 555-0142 one, four people are coming.",
+"expected": "Book the room at 555-0142 one, four people are coming."
+},
+{
+"input": "call\tme at four one five five five five zero one four two one more time",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "dial one\r\nfour one five\nfive five five\n\nzero one four two one\r\nmore time",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
+},
+{
+"input": "text four one five five five five zero one four two two of THem are mine",
+"output": "Text 415-555-0142, two of them are mine. four people",
+"expected": "Text 415-555-0142, two of them are mine. four people"
+},
+{
+"input": "text four one five five five five zero one four two two of them are mine",
+"output": "Text 415-555-0142, two of them are mine. nine",
+"expected": "Text 415-555-0142, two of them are mine. nine"
+},
+{
+"input": "1. dial one four one five five five five zero one four two one more time\n2. Ship it.",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "call me at 415-555-0142 one million point two more time.",
+"expected": "call me at 415-555-0142 one million point two more time."
+},
+{
+"input": "call  me at four one five five five five zero one four two one more time",
+"output": "CALL ME AT 415-555-0142 ONE MORE TIME.",
+"expected": "CALL ME AT 415-555-0142 ONE MORE TIME."
+},
+{
+"input": "dial  one four one five five five five zero one four two one more time",
+"output": "1. Dial 1 415 555 0142 one more time.\n2. Ship it.",
+"expected": "1. Dial 1-415-555-0142 one more time.\n2. Ship it."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 one one more time.",
+"expected": "Dial 1-415-555-0142 one one more time."
+},
+{
+"input": "text four-one five-five five-five zero-one four-two two of them are mine",
+"output": "text 415-555-0142, two of them are mine.",
+"expected": "text 415-555-0142, two of them are mine."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at 415-555-0142 one more time. oh well",
+"expected": "Call me at 415-555-0142 one more time. oh well"
+},
+{
+"input": "text four-one five five five five zero one four two two of them are mine",
+"output": "1. Text 415-555-0142, two of them are mine.\n2. Ship it.",
+"expected": "1. Text 415-555-0142, two of them are mine.\n2. Ship it."
+},
+{
+"input": "call me\r\nat\tfour\r\none\nfive\nfive five five zero\none four two one\tmore time",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "book the room at five five five zero one four two four people are coming nine",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 one more time. um 2013",
+"expected": "Dial 1-415-555-0142 one more time. um 2013"
+},
+{
+"input": "call me at four one double five five five zero one four two one more time",
+"output": "Call me at 415-555-0142. A one more time.",
+"expected": "Call me at 415-555-0142. A one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time um 2013",
+"output": "1. Call me at 415-555-0142 one more time.\n2. Ship it.",
+"expected": "1. Call me at 415-555-0142 one more time.\n2. Ship it."
+},
+{
+"input": "call me at four-one five-five five-five zero-one four-two one more time",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "text four one five five five five zero one four two two of THem are mine",
+"output": "Text 415-555-0142, two of them are mine.",
+"expected": "Text 415-555-0142, two of them are mine."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at plus 415-555-0142 one more time.",
+"expected": "Call me at plus 415-555-0142 one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time one more time",
+"output": "Call\tme at 415-555-0142 one more time.",
+"expected": "Call\tme at 415-555-0142 one more time."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 one million point two more time.",
+"expected": "Dial 1-415-555-0142 one million point two more time."
+},
+{
+"input": "call me at four-one five-five five-five zero-one four-two one more time",
+"output": "Call me at 415-555-0142 one more time. nine",
+"expected": "Call me at 415-555-0142 one more time. nine"
+},
+{
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "Book the room at plus 555-0142, four people are coming. um 2013",
+"expected": "Book the room at plus 555-0142, four people are coming. um 2013"
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "call me at 415-555-0142 one more time. um 2013",
+"expected": "call me at 415-555-0142 one more time. um 2013"
+},
+{
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "Book the room at 555-0142, four one people are coming.",
+"expected": "Book the room at 555-0142, four one people are coming."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at 415-555-0142. Two one more time.",
+"expected": "Call me at 415-555-0142. Two one more time."
 },
 {
 "input": "Text the pickup code to four one six five five five zero one three one. Two heads are better than one.",
@@ -11991,49 +11916,54 @@
 "expected": "text the pickup code to 416-555-0131. two heads are better than one"
 },
 {
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call  me at four one five five five five zero one four two one more time.",
-"expected": "Call  me at 415-555-0142 one more time."
+"input": "text  four one five five five five zero one four two two of THem are mine",
+"output": "Text 415-555-0142, two of them are mine.",
+"expected": "Text 415-555-0142, two of them are mine."
 },
 {
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142 two of them are mine.",
-"expected": "Text 415-555-0142 two of them are mine."
+"input": "call me at\n\nfour one\n\nfive\n\nfive five\n\nfive zero\none four\n\ntwo\tone more\ntime",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
 },
 {
-"input": "call me at four one five five five five zero one four two one more time oh well",
+"input": "call me at four-one five five five five zero one four two one more time",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "1. CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME.\n2. Ship it.",
+"expected": "1. CALL ME AT 415-555-0142 ONE MORE TIME.\n2. Ship it."
+},
+{
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "Book the room at 555-0142 four, four people are coming.",
+"expected": "Book the room at 555-0142 four, four people are coming."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call\tme at four one five five five five zero one four two one more time.",
+"expected": "Call\tme at 415-555-0142 one more time."
+},
+{
+"input": "1:30. call me at four one five five five five zero one four two one more time\n2. Ship it.",
 "output": "Call me at 415-555-0142 one more time.",
 "expected": "Call me at 415-555-0142 one more time."
 },
 {
 "input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one nine more time.",
-"expected": "Dial 1-415-555-0142 one nine more time."
+"output": "Dial  1 415 555 0142 one more time.",
+"expected": "Dial  1-415-555-0142 one more time."
 },
 {
-"input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one more time.",
-"expected": "Dial 1-415-555-0142 one more time."
-},
-{
-"input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one more time. nine",
-"expected": "Dial 1-415-555-0142 one more time. nine"
+"input": "text four-one five five five five zero one four two two of them are mine",
+"output": "Text   415-555-0142, two of them are mine.",
+"expected": "Text   415-555-0142, two of them are mine."
 },
 {
 "input": "call me at four one five five five five zero one four two one more time",
-"output": "CALL ME AT 415-555-0142 ONE MORE TIME.",
-"expected": "CALL ME AT 415-555-0142 ONE MORE TIME."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book the room at plus 555 0142 four people are coming.",
-"expected": "Book the room at plus 555-0142 four people are coming."
-},
-{
-"input": "dial one four\tone five five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one more time.",
-"expected": "Dial 1-415-555-0142 one more time."
+"output": "Call me at 415-555-0142 one one more time.",
+"expected": "Call me at 415-555-0142 one one more time."
 },
 {
 "input": "text four one five five five five zero one four two two of them are mine",
@@ -12041,339 +11971,384 @@
 "expected": "Text 415-555-0142, two nine of them are mine."
 },
 {
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "text 415-555-0142 four, two of them are mine.",
-"expected": "text 415-555-0142 four, two of them are mine."
-},
-{
-"input": "text  four one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
+"input": "book the room at five five five zero one four two four people are coming oh well",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
 },
 {
 "input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at 415-555-0142 one more time.\noh well",
-"expected": "Call me at 415-555-0142 one more time.\noh well"
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
 },
 {
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at four one five five five five zero one four two one more time. oh well",
-"expected": "Call me at 415-555-0142 one more time. oh well"
-},
-{
-"input": "call me at four-one five five five five zero one four two one more time",
-"output": "Call\tme at 415-555-0142 one more time.",
-"expected": "Call\tme at 415-555-0142 one more time."
-},
-{
-"input": "dial one four one five five five five zero one four two one more time oh well",
-"output": "Dial 1 415 555 0142 one more time.",
-"expected": "Dial 1-415-555-0142 one more time."
-},
-{
-"input": "text\tfour one five five five five zero one four two two of them are mine um 2013",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "call me at four one five five five five zero one four two one more time",
-"output": "Call me at plus 415-555-0142 one more time.",
-"expected": "Call me at plus 415-555-0142 one more time."
-},
-{
-"input": "text  four one five five five five zero one four two two of them are mine",
-"output": "Text 415-555-0142 one, two of them are mine. um 2013",
-"expected": "Text 415-555-0142 one, two of them are mine. um 2013"
-},
-{
-"input": "You can text me at four one five five five five zero one one THree if anyTHing breaks.",
-"output": "You can text me at 415555013 if anything breaks.",
-"expected": "You can text me at 415555013 if anything breaks."
-},
-{
-"input": "Leave a message at two zero six, five five five, zero one nine two. On second thought, ask Priya too.",
-"output": "Leave a message at 2065, 0912. Ask Priya too.",
-"expected": "Leave a message at 2065, 0912. Ask Priya too."
-},
-{
-"input": "Leave a message at two oh six, five five five, oh one eight five.",
-"output": "Leave a message at 2:05, 1:85.",
-"expected": "Leave a message at 2:05, 1:85."
-},
-{
-"input": "leave a uh message at six oh four five five five oh one six oh",
-"output": "Leave a message at 6:30:45, 6:55, 6:65, 6:75, 6:85.",
-"expected": "Leave a message at 6:30:45, 6:55, 6:65, 6:75, 6:85."
-},
-{
-"input": "YOU CAN TEXT ME UH AT THREE ONE TWO, FIVE FIVE FIVE, OH ONE ONE EIGHT IF ANYTHING BREAKS. LET'S TAKE IT ONE STEP AT A TIME um 2013",
-"output": "You can text me at 312, 555, 818 if anything breaks. Let's take it one step at a time.",
-"expected": "You can text me at 312, 555, 818 if anything breaks. Let's take it one step at a time."
-},
-{
-"input": "reach me on plus one eight two five five five five oh one six three after six um 2013",
-"output": "Reach me on +1 8255 5555, oh one six three after six.",
-"expected": "Reach me on +1 8255 5555, oh one six three after six."
-},
-{
-"input": "paris is plus three three one two three four five six seven eight nine please",
-"output": "PARIS IS +3 TWENTY-ONE 3 1 23 45 67 89 PLEASE.",
-"expected": "PARIS IS +3 TWENTY-ONE 3 1 23 45 67 89 PLEASE."
-},
-{
-"input": "it was twelve hundred bucks total",
-"output": "IT WAS 1200 BUCKS TOTAL. two of them",
-"expected": "IT WAS 1200 BUCKS TOTAL. two of them"
-},
-{
-"input": "paris  is plus THree THree one two nine THree four five six seven eight nine please",
-"output": "Paris is +33 1 23 45 67 89 please.",
-"expected": "Paris is +33 1 23 45 67 89 please."
-},
-{
-"input": "The landlord's number is four one six, five five five, oh one four seven. First things first, though.",
-"output": "the landlord's number is +416, 555, oh 147. first things first, though",
-"expected": "the landlord's number is +416, 555, oh 147. first things first, though"
-},
-{
-"input": "Reach me on eight two five five five five oh one two eight after six.",
-"output": "Reach me on 8255, 8285 after six.",
-"expected": "Reach me on 8255, 8285 after six."
-},
-{
-"input": "you can text me at four one five five five five oh one three four if anything breaks",
-"output": "You can text me at +4155 or 8134 if anything breaks.",
-"expected": "You can text me at +4155 or 8134 if anything breaks."
-},
-{
-"input": "Front office is nine oh five, five five five, oh one one nine, ask for Lena.",
-"output": "Front office is 9-05, 555, 819, ask for Lena.",
-"expected": "Front office is 9-05, 555, 819, ask for Lena."
-},
-{
-"input": "Front office is nine-oh five, five-five five, oh-one one-nine, ask for Lena.",
-"output": "Front office is 9:05, 5:55, 9:11. Ask for Lena.",
-"expected": "Front office is 9:05, 5:55, 9:11. Ask for Lena."
-},
-{
-"input": "It costs forty five bucks for the tickets",
-"output": "It costs forty-five dollars for the tickets",
-"expected": "It costs forty-five dollars for the tickets"
-},
-{
-"input": "If the door is locked, ring area code three oh five five five five oh one five six two.",
-"output": "If the door is locked, ring area code 3055, 156.",
-"expected": "If the door is locked, ring area code 3055, 156."
-},
-{
-"input": "Have the courier call six zero four five five five zero one eight three when he arrives.",
-"output": "have the courier call 6045 when he arrives",
-"expected": "have the courier call 6045 when he arrives"
-},
-{
-"input": "Revenue came in at uh, nine thousand eight hundred-five dollars for the quarter. Let's take it one step at a time.",
-"output": "Revenue came in at $9,800 for the quarter. Let's take it one step at a time.",
-"expected": "Revenue came in at $9,800 for the quarter. Let's take it one step at a time."
-},
-{
-"input": "text four one five five five five zero one four two two of THem are mine",
-"output": "Text +1 415 555 0142, two of them are mine.",
-"expected": "Text +1 415 555 0142, two of them are mine."
-},
-{
-"input": "leave um a message at six zero four, five five five, zero one three three. let's take it one step at a time",
-"output": "Leave a message at 640 555 0133. Let's take it one step at a time.",
-"expected": "Leave a message at 640 555 0133. Let's take it one step at a time."
-},
-{
-"input": "Text\tthe pickup code to five eight seven, five five five, zero one eight zero.",
-"output": "Text the pickup code to 5587, 555, 0180.",
-"expected": "Text the pickup code to 5587, 555, 0180."
-},
-{
-"input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1 4 twenty-one 15 555 0142 one one more time.",
-"expected": "Dial 1 4 twenty-one 15 555 0142 one one more time."
-},
-{
-"input": "Dial area code seven one three, five five five, oh one four nine for the conference bridge. We'll cross that bridge when we get there, one way or another.",
-"output": "Dial area code 713, 555, 149 for the conference bridge. We'll cross that bridge when we get there, one million point two way or another.",
-"expected": "Dial area code 713, 555, 149 for the conference bridge. We'll cross that bridge when we get there, one million point two way or another."
-},
-{
-"input": "have the courier call two-zero six, five five five, zero one two zero when he arrives one more time",
-"output": "Have the courier call 206, 555, 1020 when he arrives.",
-"expected": "Have the courier call 206, 555, 1020 when he arrives."
-},
-{
-"input": "dial seven uh oh two five five five oh one three four for the conference bridge. two heads are better than one",
-"output": "dial 7, oh 2.5.5.5, oh 1.3.4 for the conference bridge. two heads are better than one",
-"expected": "dial 7, oh 2.5.5.5, oh 1.3.4 for the conference bridge. two heads are better than one"
-},
-{
-"input": "If the door is locked, ring two zero two, five five five, zero one zero five.",
-"output": "if the door is locked, ring 2025 four, 0105",
-"expected": "if the door is locked, ring 2025 four, 0105"
-},
-{
-"input": "Leave a message at two zero six, five five five, zero one nine two. On second thought, ask Priya too.",
-"output": "LEAVE A MESSAGE AT 206, 555, 129. ASK PRIYA TOO.",
-"expected": "LEAVE A MESSAGE AT 206, 555, 129. ASK PRIYA TOO."
-},
-{
-"input": "Dial area code seven um one three, five five five, oh one two nine for the conference bridge.",
-"output": "Dial area code 7 1 3, 555, 1 229 for the conference bridge.",
-"expected": "Dial area code 7 1 3, 555, 1 229 for the conference bridge."
-},
-{
-"input": "we spent ninety seven two uh, pounds on cloud credits last month",
-"output": "We spent 97 pounds on cloud credits last month.",
-"expected": "We spent 97 pounds on cloud credits last month."
-},
-{
-"input": "We spent ninety-three dollars and seventy six cents on cloud credits last month.",
-"output": "We spent $97.36 on cloud credits last month.",
-"expected": "We spent $97.36 on cloud credits last month."
-},
-{
-"input": "The support line is six oh four five five five oh one three five.",
-"output": "The support line is 6065, 8153.",
-"expected": "The support line is 6065, 8153."
-},
-{
-"input": "call four one five triple five zero one four two now one more time",
-"output": "Call 415 555 0142 now.",
-"expected": "Call 415-555-0142 now."
-},
-{
-"input": "call me at four one triple five five zero one four two one more time",
-"output": "Call me at four one double five five five zero one four two one more time.",
-"expected": "Call me at four one double five five five zero one four two one more time."
-},
-{
-"input": "Have the courier uh call four one five five five five zero one two seven when he arrives.\nOn second thought, ask Priya too.",
-"output": "Have the courier call 4155-127 when he arrives. On second thought, ask Priya too.",
-"expected": "Have the courier call 4155-127 when he arrives. On second thought, ask Priya too."
-},
-{
-"input": "Reach me on plus one seven one three five five five oh one four two after six. We'll cross that bridge when we get there, one way or another.",
-"output": "reach me on +12735, 415 after six. we'll cross that bridge when we get there, one way or another",
-"expected": "reach me on +12735, 415 after six. we'll cross that bridge when we get there, one way or another"
-},
-{
-"input": "call four one five triple five zero one four two now",
-"output": "CALL  FOUR ONE FIVE TRIPLE FIVE ZERO ONE FOUR TWO NOW.",
-"expected": "CALL  415-555-0142 NOW."
-},
-{
-"input": "dial one four one double five five five zero one four two one more time",
-"output": "Dial 1 415 555 0142 one four more time. oh well",
-"expected": "Dial 1-415-555-0142 one four more time. oh well"
-},
-{
-"input": "Call the front desk at five oh three five five five oh one five oh. um 2013 um 2013",
-"output": "Call the front desk at 5-3-5-5, 5-1-5.",
-"expected": "Call the front desk at 5-3-5-5, 5-1-5."
-},
-{
-"input": "my number is two uh, one two five five five oh one seven oh",
-"output": "my number is 2255, oh one seven",
-"expected": "my number is 2255, oh one seven"
-},
-{
-"input": "call the front desk at four one triple five five zero one four two",
-"output": "Call the front desk at four-one-five 555-0142.",
-"expected": "Call the front desk at 415-555-0142."
-},
-{
-"input": "call four one five triple five zero one four two now um 2013 oh well",
-"output": "Call 415 555 0142 now.",
-"expected": "Call 415-555-0142 now."
-},
-{
-"input": "Have the courier call four one five, five five five, oh one eight two when he arrives.",
-"output": "have the courier call 415, 555, 1822 when he arrives",
-"expected": "have the courier call 415, 555, 1822 when he arrives"
-},
-{
-"input": "Text the pickup code to three oh five, five five five, oh one one six.",
-"output": "text the pickup code to 3055, 8116",
-"expected": "text the pickup code to 3055, 8116"
-},
-{
-"input": "We raised seventy-one thousand dollars in the seed round.",
-"output": "We raised $71,000 in the seed round.",
-"expected": "We raised $71,000 in the seed round."
-},
-{
-"input": "Our budget uh for the trip is seventy three nine pounds. um 2013",
-"output": "our budget for the trip is 73 pounds",
-"expected": "our budget for the trip is 73 pounds"
-},
-{
-"input": "his new work number is three oh five five five five oh one six oh",
-"output": "His new work number is 3055 106.",
-"expected": "His new work number is 3055 106."
-},
-{
-"input": "text four one five five five five zero one four two two of them are mine",
-"output": "TEXT\t415-555-0142, TWO OF THEM ARE MINE.",
-"expected": "TEXT\t415-555-0142, TWO OF THEM ARE MINE."
-},
-{
-"input": "book the room at five five five zero one four two four people are coming",
-"output": "Book the room at plus 555:30-0142, four people are coming.",
-"expected": "Book the room at plus 555:30-0142, four people are coming."
-},
-{
-"input": "call me at four one triple five five zero one four two one more time",
+"input": "call me at four one five five five five zero one four two one more time four people",
 "output": "Call me at 415-555-0142 one more time.",
 "expected": "Call me at 415-555-0142 one more time."
 },
 {
-"input": "call me at four-one triple five-five zero-one four-two one more time",
-"output": "Call me at 415-555-0142 one more time. oh well",
-"expected": "Call me at 415-555-0142 one more time. oh well"
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "1. Dial 1 415 555 0142 one more time.\n2. Ship it.",
+"expected": "1. Dial 1-415-555-0142 one more time.\n2. Ship it."
 },
 {
-"input": "Have the courier uh call four one five five five five zero one two seven when he arrives. On second thought, ask Priya too.",
-"output": "Have the courier call 4 twenty-one 1 twenty-one 52 when he arrives. Ask Priya too.",
-"expected": "Have the courier call 4 twenty-one 1 twenty-one 52 when he arrives. Ask Priya too."
+"input": "dial\r\none\r\nfour\tone\tfive\nfive five\r\nfive\tzero\none\nfour two\tone\n\nmore\n\ntime two of them",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
 },
 {
-"input": "my number is two uh, one two five five five oh one seven oh",
-"output": "my number is 2255 four. oh, one seven.",
-"expected": "my number is 2255 four. oh, one seven."
+"input": "call me at four-one five five five five zero one four two one more time",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
 },
 {
-"input": "her cell is four oh three five five five oh one nine three if you can't reach me",
-"output": "her cell is 4035:30, 8091 if you can't reach me",
-"expected": "her cell is 4035:30, 8091 if you can't reach me"
+"input": "text four one five five five five zero one four two two of them are mine two of them",
+"output": "1. Text 415-555-0142, two of them are mine.\n2. Ship it.",
+"expected": "1. Text 415-555-0142, two of them are mine.\n2. Ship it."
 },
 {
-"input": "You can text me at four one double five five five zero one one three if anything breaks.",
-"output": "you can text me at 415555013 two if anything breaks",
-"expected": "you can text me at 415555013 two if anything breaks"
+"input": "book the room at five-five-five-zero one-four two-four people are coming",
+"output": "1. Book the room at 555-0142, four people are coming.\n2. Ship it.",
+"expected": "1. Book the room at 555-0142, four people are coming.\n2. Ship it."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call  me at 415-555-0142 one more time.",
+"expected": "Call  me at 415-555-0142 one more time."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 four one more time.",
+"expected": "Dial 1-415-555-0142 four one more time."
+},
+{
+"input": "dial  one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
+},
+{
+"input": "dial one four\none\n\nfive five\tfive five\r\nzero one four two\none\n\nmore\ttime",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
+},
+{
+"input": "1. call me at four one five five five five zero one four two one more time\n2. Ship it.",
+"output": "call me at 415-555-0142 one more time.",
+"expected": "call me at 415-555-0142 one more time."
+},
+{
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time um 2013 four",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call me\r\nat\r\nfour one\r\nfive five five\n\nfive\r\nzero one\r\nfour\r\ntwo\r\none more time",
+"output": "Call me at four-one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time um 2013",
+"output": "CALL ME AT FOUR ONE FIVE FIVE FIVE FIVE ZERO ONE FOUR TWO ONE MORE TIME.",
+"expected": "CALL ME AT 415-555-0142 ONE MORE TIME."
+},
+{
+"input": "1. book the room at five five five zero one four two four people are coming\n2. Ship it.",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
+},
+{
+"input": "text four one five five five five zero one four two two of them are mine",
+"output": "Text 415-555-0142 two of them are mine.",
+"expected": "Text 415-555-0142 two of them are mine."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at 415 555 0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "text four-one five five five five zero one four two two of them are mine",
+"output": "Text 415-555-0142 two of them are mine.",
+"expected": "Text 415-555-0142 two of them are mine."
+},
+{
+"input": "call me\r\nat\r\nfour\r\none five\n\nfive\tfive five\r\nzero one\tfour two one\tmore\r\ntime",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call\n\nme at\t415-555-0142 one more time.",
+"expected": "Call\n\nme at\t415-555-0142 one more time."
+},
+{
+"input": "The office number\n\nchanged to four\tone\nfive,\tfive five five, oh\tone\r\noh\tfive.",
+"output": "the office number changed to 415, 555, 1-555",
+"expected": "the office number changed to 415, 555, 1-555"
+},
+{
+"input": "his\n\nnew\twork\nnumber is three\noh five\tfive five five\n\noh\r\none\n\nsix\toh",
+"output": "his new work number is 3055, 106",
+"expected": "his new work number is 3055, 106"
+},
+{
+"input": "call me at four one triple five five zero one four two one more time",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "Leave a message at six one seven five five five oh one one four.",
+"output": "leave a message at 6175, oh one one four",
+"expected": "leave a message at 6175, oh one one four"
+},
+{
+"input": "paris is plus three three one two three four five six seven eight nine four please",
+"output": "Pariſ is +33 1 23 45 67 89 please.",
+"expected": "Pariſ is +33 1 23 45 67 89 please."
+},
+{
+"input": "Dinner came to fifty-two dollars with tip.",
+"output": "dinner came to 52 dollars with tip",
+"expected": "dinner came to 52 dollars with tip"
+},
+{
+"input": "1. the office number changed to seven eight zero, five five five, zero one zero one\n2. Ship it.",
+"output": "the office number changed to 7805, 5010",
+"expected": "the office number changed to 7805, 5010"
+},
+{
+"input": "her\tcell is four oh three five five five oh one nine three if you can't reach me",
+"output": "Her cell is 4035, 8091 if you can't reach me. one more time",
+"expected": "Her cell is 4035, 8091 if you can't reach me. one more time"
+},
+{
+"input": "The support uh line is three-one two-five five-five oh-one eight-oh. I'd rather do it all at once.",
+"output": "The support line is 3125, 5180. I'd rather do it all at once.",
+"expected": "The support line is 3125, 5180. I'd rather do it all at once."
+},
+{
+"input": "paris is\tplus three three\tone two three four\n\nfive\nsix seven eight\r\nnine please",
+"output": "Paris is +33 1 23 45 67 89 please.",
+"expected": "Paris is +33 1 23 45 67 89 please."
 },
 {
 "input": "We spent twenty uh eight dollars and forty five cents on cloud credits last month.",
-"output": "we spent 20.85 dollars and 45 cents on cloud credits last month",
-"expected": "we spent 20.85 dollars and 45 cents on cloud credits last month"
+"output": "we spent 20.85 dollars and 45 cents on cloud credits last month one more time",
+"expected": "we spent 20.85 dollars and 45 cents on cloud credits last month one more time"
 },
 {
-"input": "Put plus one um nine zero five five five five zero one two seven on the emergency sheet. Two heads are better than one.",
-"output": "Put +1, 95055, 1027 on the emergency sheet. Two heads are better than one.",
-"expected": "Put +1, 95055, 1027 on the emergency sheet. Two heads are better than one."
+"input": "Front office is nine oh five five five five oh one one nine ask for Lena.",
+"output": "Front office is 9-05, 555, 819, ask for Lena.",
+"expected": "Front office is 9-05, 555, 819, ask for Lena."
+},
+{
+"input": "Front office is nine oh five, five five five, oh one one nine, ask for Lena.",
+"output": "front office is 9-0 twenty-one 5, 555, 819, ask for Lena",
+"expected": "front office is 9-0 twenty-one 5, 555, 819, ask for Lena"
+},
+{
+"input": "the hotel was twenty-five hundred dollars a night",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was 2,500 dollars a night."
 },
 {
 "input": "reach me on area code nine zero five five five five zero one four five after six. first things first, though",
-"output": "Reach  me on area code 9055-0145 after six. First things first though.",
-"expected": "Reach  me on area code 9055-0145 after six. First things first though."
+"output": "Reach me on area code +9055550101 after six. First things first, though.",
+"expected": "Reach me on area code +9055550101 after six. First things first, though."
+},
+{
+"input": "call four one\tfive\ntriple five zero one\tfour two\r\nnow",
+"output": "Call 415 555 0142 now.",
+"expected": "Call 415-555-0142 now."
+},
+{
+"input": "call\tfour one five triple five zero one four two now",
+"output": "Call 415 555 0142 now.",
+"expected": "Call 415-555-0142 now."
+},
+{
+"input": "The landlord's number is five eight seven five five five oh one two one.",
+"output": "The landlord's number is 5675, 555, 8112.",
+"expected": "The landlord's number is 5675, 555, 8112."
+},
+{
+"input": "book the room at five oh-five five-zero one-four two-four people are coming",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
+},
+{
+"input": "the support line is six four seven five five five oh one one oh. this is the first time i've seen it",
+"output": "The ſupport line is 6465-5551. This is the first time I have seen it.",
+"expected": "The ſupport line is 6465-5551. This is the first time I have seen it."
+},
+{
+"input": "text the um pickup code to five eight seven, five five five, zero one six nine",
+"output": "text the pickup code to 567, 555, 0169",
+"expected": "text the pickup code to 567, 555, 0169"
+},
+{
+"input": "call four-one five triple five-zero one-four two now",
+"output": "Call four one five triple five zero one four two now. one more time",
+"expected": "Call 415-555-0142 now. one more time"
+},
+{
+"input": "book the room at five five five zero one four two four people are coming",
+"output": "Book\tthe room at +555-0142, four people are coming.",
+"expected": "Book\tthe room at +555-0142, four people are coming."
+},
+{
+"input": "call me at four one triple five five zero one four two one more time",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1. A 415 555 0142 one more time.",
+"expected": "Dial 1. A 415 555 0142 one more time."
+},
+{
+"input": "her cell is four oh three five five five oh one nine three if you can't reach me",
+"output": "her cell is 4035, 8093 if you can't reach me",
+"expected": "her cell is 4035, 8093 if you can't reach me"
+},
+{
+"input": "Put area code two oh two, five five five, oh one four six on the emergency sheet.",
+"output": "PUT AREA CODE 202, 555, 146 ON THE EMERGENCY SHEET.",
+"expected": "PUT AREA CODE 202, 555, 146 ON THE EMERGENCY SHEET."
+},
+{
+"input": "call four-one five triple five zero one four two now four people",
+"output": "Call 415 555 0142 now.",
+"expected": "Call 415-555-0142 now."
+},
+{
+"input": "Have the courier call two one two, five five five, oh one four three when he arrives. On second thought, ask Priya too.",
+"output": "Have  the courier call 212, 555, 1034 when he arrives. On second thought, ask Priya too.",
+"expected": "Have  the courier call 212, 555, 1034 when he arrives. On second thought, ask Priya too."
+},
+{
+"input": "His new work number is seven zero two, five five five, zero one six eight. Back to square one, I guess.",
+"output": "his new work number is 7025, 1068. back to square one, i guess.",
+"expected": "his new work number is 7025, 1068. back to square one, i guess."
+},
+{
+"input": "The new keyboard was um nine one hundred fifty euros. Back to square one, I guess.",
+"output": "The new keyboard was 950 euros. Back to square one, I guess.",
+"expected": "The new keyboard was 950 euros. Back to square one, I guess."
+},
+{
+"input": "leave\r\num a message at six zero\nfour,\r\nfive five five,\tzero one\r\nthree\r\nthree.\r\nlet's\ttake\n\nit\none step at a\n\ntime",
+"output": "leave a message at 640, 555, 0133. let's take it one step at a time oh well",
+"expected": "leave a message at 640, 555, 0133. let's take it one step at a time oh well"
+},
+{
+"input": "Put seven one three five five five zero one two six on the emergency sheet. two of them",
+"output": "Put 7135, 5206 on the emergency sheet.",
+"expected": "Put 7135, 5206 on the emergency sheet."
+},
+{
+"input": "call\nfour\tone five triple five\r\nzero one four\ntwo now",
+"output": "Call 415 555 0142 now.",
+"expected": "Call 415-555-0142 now."
+},
+{
+"input": "dial one four one five five five five zero one four two one nine more time um 2013",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1 415 555 0142 one more time."
+},
+{
+"input": "we raised thirty two dollars and ninety eight cents in the seed round. back to square one, i guess.",
+"output": "We raised $32,098 in the seed round. Back to square one, I guess.",
+"expected": "We raised $32,098 in the seed round. Back to square one, I guess."
+},
+{
+"input": "call me at four one five five five five zero one four two one two more time",
+"output": "Call me at 415-555-0142 one more time.",
+"expected": "Call me at 415-555-0142 one more time."
+},
+{
+"input": "her cell is THree one two five five five zero one seven one if you can't reach me",
+"output": "Her cell is 3125, 1051 if you can't reach me.",
+"expected": "Her cell is 3125, 1051 if you can't reach me."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at four one four double five five five zero one four two one more time. oh well",
+"expected": "Call me at four one four double five five five zero one four two one more time. oh well"
+},
+{
+"input": "call me at four one five five five five zero one four two one more time oh well",
+"output": "Call\tme\nat\nfour one five five five\tfive\r\nzero one four two one more time.",
+"expected": "Call\tme\nat\nfour one five five five\tfive\r\nzero one four two one more time."
 },
 {
 "input": "Put seven one three five five five zero one two six on the emergency sheet.",
-"output": "Put  7135 5201 26 on the emergency sheet.",
-"expected": "Put  7135 5201 26 on the emergency sheet."
+"output": "Put 7135, 1026 on the emergency sheet. um 2013",
+"expected": "Put 7135, 1026 on the emergency sheet. um 2013"
+},
+{
+"input": "the support line is six four seven five five five oh one one oh. this is the fırst time i've seen it",
+"output": "The support line is 6465. This is the first time I've seen it.",
+"expected": "The support line is 6465. This is the first time I've seen it."
+},
+{
+"input": "dial one four one triple five five zero one four two one more time",
+"output": "Dial 1 +1 415 555 0142 one more time.",
+"expected": "Dial 1 +1 415 555 0142 one more time."
+},
+{
+"input": "text four-one five-five five-five zero-one four-two two-oh of them are mine",
+"output": "Text 415-555-0142, two of them are mine.",
+"expected": "Text 415-555-0142, two of them are mine."
+},
+{
+"input": "call me at four one five five five five zero one four two one one more time",
+"output": "Call me at four one five five five five zero one four two one more time.",
+"expected": "Call me at four one five five five five zero one four two one more time."
+},
+{
+"input": "call the front uh, desk at plus two oh six, five five five, oh one six eight. that's one of the reasons i'm asking",
+"output": "Call the front desk at 2-806, 555, 168. That's one of the reasons I'm asking.",
+"expected": "Call the front desk at 2-806, 555, 168. That's one of the reasons I'm asking."
+},
+{
+"input": "Text the pickup code to seven-one three-five five-five zero-one one-two.",
+"output": "text the pickup code to 713550120",
+"expected": "text the pickup code to 713550120"
+},
+{
+"input": "text four one five five five five zero one four two two four of them are mine",
+"output": "Text 415-555-0142, two of them are mine.",
+"expected": "Text 415-555-0142, two of them are mine."
+},
+{
+"input": "We raised thirty two dollars and ninety eight cents in the seed round. Back to square one, I guess.",
+"output": "we raised 32-five dollars and 98 cents in the seed round. back to square one, I guess",
+"expected": "we raised 32-five dollars and 98 cents in the seed round. back to square one, I guess"
+},
+{
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "The hotel was 2:30,500 bucks a night.",
+"expected": "The hotel was 2:30,500 bucks a night."
+},
+{
+"input": "paris is plus three three one two three four five six seven eight nine please",
+"output": "Paris\tis +33 1 23 45 67 89 please.",
+"expected": "Paris\tis +33 1 23 45 67 89 please."
+},
+{
+"input": "paris is plus three three one two three four five six seven eight nine please",
+"output": "Paris is +33. One 1 23 45 67 89 please.",
+"expected": "Paris is +33. One 1 23 45 67 89 please."
+},
+{
+"input": "text four one five five five five zero one four two two of them are mine",
+"output": "Text 4 twenty-one 15-555-0142, two of them are mine.",
+"expected": "Text 4 twenty-one 15-555-0142, two of them are mine."
 },
 {
 "input": "If the door is locked, ring area code three oh five five five five oh one five six.",
@@ -12381,554 +12356,1198 @@
 "expected": "If the door is locked, ring area code 3055-1556."
 },
 {
-"input": "front uh office is seven one three five five five zero one five two, ask for lena. we'll cross that bridge when we get there, one way or another",
-"output": "front office is 7135, 1052, ask for Lena. we'll cross that bridge when we get there, one one way or another two of them",
-"expected": "front office is 7135, 1052, ask for Lena. we'll cross that bridge when we get there, one one way or another two of them"
+"input": "her\tcell is two oh six, five five five, oh one million point two three nine if you can't reach me",
+"output": "Her cell is 2265, 555, 8139 if you can't reach me.",
+"expected": "Her cell is 2265, 555, 8139 if you can't reach me."
 },
 {
-"input": "the support line is six four seven five five five oh one one oh. this is the first time i've seen it",
-"output": "The support line is 6465-5551. This is the first time I have seen it.",
-"expected": "The support line is 6465-5551. This is the first time I have seen it."
+"input": "reach me on area code nine zero five five five five zero one four five after six. first things first though oh well",
+"output": "Reach me on area code 9-0-5-5-5-0-1-4-5 after six. First things first, though.",
+"expected": "Reach me on area code 9-0-5-5-5-0-1-4-5 after six. First things first, though."
 },
 {
-"input": "If the door is locked, ring two zero two, five five five, zero one zero five.",
-"output": "If the door is locked, ring 2025, 0105.",
-"expected": "If the door is locked, ring 2025, 0105."
+"input": "reach me on nine oh five five five five oh one two two after six",
+"output": "reach me on 9505, 1122 after six",
+"expected": "reach me on 9505, 1122 after six"
 },
 {
-"input": "dial seven uh oh two five five five oh one three four for the conference bridge. two heads are better than one",
-"output": "dial 7 oh 2.5.5.5 oh 1.3.4 for the conference bridge. two heads are better than one",
-"expected": "dial 7 oh 2.5.5.5 oh 1.3.4 for the conference bridge. two heads are better than one"
+"input": "have the courier call two zero six, five five five, zero one two zero when he arrives",
+"output": "Have the courier call 206, 555, 1020 when he arrives.",
+"expected": "Have the courier call 206, 555, 1020 when he arrives."
 },
 {
-"input": "LEAVE A MESSAGE AT TWO OH SIX, FIVE FIVE FIVE, OH ONE EIGHT FIVE.",
-"output": "Leave a message at 2:05, 1:85.",
-"expected": "Leave a message at 2:05, 1:85."
+"input": "The new keyboard was fifty seven thousand dollars and five cents. Back to square one, I guess.",
+"output": "THE NEW KEYBOARD WAS 57,000 DOLLARS. BACK TO SQUARE ONE, I GUESS",
+"expected": "THE NEW KEYBOARD WAS 57,000 DOLLARS. BACK TO SQUARE ONE, I GUESS"
 },
 {
-"input": "paris is plus double three one two three four five six seven eight nine please",
-"output": "paris is +33 1 23 45 67 89 please.",
-"expected": "paris is +33 1 23 45 67 89 please."
+"input": "the office number changed to six oh four five five five oh one million point two four two",
+"output": "The office number changed to 6045, 1042.",
+"expected": "The office number changed to 6045, 1042."
 },
 {
-"input": "Call the front desk at five oh three five five five oh one five oh. um 2013",
-"output": "call the front desk at 5055, 515",
-"expected": "call the front desk at 5055, 515"
+"input": "Put seven one three five five five zero one two six on the emergency sheet.",
+"output": "1. put 7135, 1026 on the emergency sheet\n2. Ship it.",
+"expected": "1. put 7135, 1026 on the emergency sheet\n2. Ship it."
 },
 {
 "input": "dial one four one five five five five zero one four two one more time",
-"output": "Dial 1:30 (415) 555-0142 one more time.",
-"expected": "Dial 1:30 (415) 555-0142 one more time."
+"output": "Dial  +1 415 555 0142 one more time.",
+"expected": "Dial  +1 415 555 0142 one more time."
 },
 {
-"input": "my number is two uh, one two five five five oh one seven oh",
-"output": "My number is 2, 1, 2, 5, 5, 1, 7. nine",
-"expected": "My number is 2, 1, 2, 5, 5, 1, 7. nine"
+"input": "Reach me on eight two five five five five oh one two eight after six.",
+"output": "Reach me on 8255, oh, one, two, eight after six.",
+"expected": "Reach me on 8255, oh, one, two, eight after six."
 },
 {
-"input": "call me at four one five five five five zero one four two one two more time",
-"output": "Call me at plus four one five five five five zero one four two one more time.",
-"expected": "Call me at plus four one five five five five zero one four two one more time."
+"input": "his\n\nnew work\nnumber is\n\nthree two\noh\n\nfive five\n\nfive five oh\n\none six\noh",
+"output": "His new work number is 3055, 106.",
+"expected": "His new work number is 3055, 106."
 },
 {
-"input": "If the door uh is locked, ring area code eight two five, five five five, oh one six eight. First things first, though.",
-"output": "if the door is locked, ring area code 825, 555, 168. first things first, though",
-"expected": "if the door is locked, ring area code 825, 555, 168. first things first, though"
+"input": "reach\r\nme on\nplus\n\none eight two\nfive five\n\nfive\nfive\r\noh\tone\nsix\r\nthree\nafter six",
+"output": "Reach me on +1 8255 four 5555, oh one six three after six.",
+"expected": "Reach me on +1 8255 four 5555, oh one six three after six."
 },
 {
-"input": "Put three-oh five, five-five five, oh-one three-two on the emergency sheet.",
-"output": "Put 305, 555, 8132 on the emergency sheet.",
-"expected": "Put 305, 555, 8132 on the emergency sheet."
-},
-{
-"input": "call four-one five triple five-zero one-four two now oh well",
-"output": "Call four one five triple five zero one four two now.",
-"expected": "Call 415-555-0142 now."
-},
-{
-"input": "reach me on plus one eight two five five five five oh one six three after six",
-"output": "reach me on +1825 or +136 after six",
-"expected": "reach me on +1825 or +136 after six"
-},
-{
-"input": "they're asking five-thousand um six hundred dollars for the used monitor",
-"output": "They're asking $5,600 for the used monitor.",
-"expected": "They're asking $5,600 for the used monitor."
-},
-{
-"input": "call me at four one double five five five zero one four two one more time",
-"output": "Call me at 415 555 0142 one more time.",
-"expected": "Call me at 415-555-0142 one more time."
-},
-{
-"input": "The support uh line is three one two five five five oh one eight oh. I'd rather do it all at once.",
-"output": "The support line is 3125, 515, 808. I'd raTHer do it all at once.",
-"expected": "The support line is 3125, 515, 808. I'd raTHer do it all at once."
-},
-{
-"input": "Can uh you approve twenty one thousand-five dollars for the conference? On second thought, ask Priya too.",
-"output": "Can you approve $21,000 for the conference? Ask Priya too.",
-"expected": "Can you approve $21,000 for the conference? Ask Priya too."
-},
-{
-"input": "text four one five five five five zero one four two two nine of them are mine",
-"output": "Text 415-555-0142, two of them are mine.",
-"expected": "Text 415-555-0142, two of them are mine."
-},
-{
-"input": "front office is five-eight seven five five five oh one oh seven, ask for lena",
-"output": "Front office is 5675, oh one million point two, oh seven, ask for Lena.",
-"expected": "Front office is 5675, oh one million point two, oh seven, ask for Lena."
-},
-{
-"input": "dial one four one double double five five zero one four two one more time",
-"output": "Dial\t1 415 555 0142 one more time.",
-"expected": "Dial\t1 415 555 0142 one more time."
-},
-{
-"input": "Our  budget uh for the trip is seventy three pounds.",
-"output": "our budget for the trip is 73 pounds. um 2013",
-"expected": "our budget for the trip is 73 pounds. um 2013"
+"input": "call\tthe desk at five-five five zero one four two then ship it",
+"output": "1. Call the desk at 5 twenty-one 55 0142\n2. Ship it.",
+"expected": "1. Call the desk at 5 twenty-one 55 0142\n2. Ship it."
 },
 {
 "input": "Put area code two oh two, five five five, oh one four six on the emergency sheet.",
-"output": "put\tarea code 202, 555, 146 on the emergency sheet",
-"expected": "put\tarea code 202, 555, 146 on the emergency sheet"
-},
-{
-"input": "the support line is um two one two five five five oh one six seven",
-"output": "the support line is 2215 856 one six seven",
-"expected": "the support line is 2215 856 one six seven"
-},
-{
-"input": "Put plus one um nine zero five five five five zero one two seven on the emergency sheet. Two heads are better than one.",
-"output": "Put plus one, 9, 0, 5, 5, 5, 0, 1, 2, 7 on the emergency sheet. Two heads are better than one.",
-"expected": "Put plus one, 9, 0, 5, 5, 5, 0, 1, 2, 7 on the emergency sheet. Two heads are better than one."
-},
-{
-"input": "PARIS IS PLUS THREE-THREE ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE PLEASE",
-"output": "Paris is +33 1 23 45 67 89 please.",
-"expected": "Paris is +33 1 23 45 67 89 please."
-},
-{
-"input": "put five eight uh seven, five five five, oh one four two on the emergency sheet.\ntwo heads are better than one",
-"output": "Put 5, 8, 7, 5, 5, 5, 1, 4, 2 on the emergency sheet. Two heads are better than one.",
-"expected": "Put 5, 8, 7, 5, 5, 5, 1, 4, 2 on the emergency sheet. Two heads are better than one."
-},
-{
-"input": "The license costs four thousand seven hundred-five dollars per seat.",
-"output": "The license costs $4,700 per seat.",
-"expected": "The license costs $4,700 per seat."
-},
-{
-"input": "revenue came in at nine point five million-five dollars for the quarter",
-"output": "Revenue came in at $9.5 million for the quarter.",
-"expected": "Revenue came in at $9.5 million for the quarter."
-},
-{
-"input": "Put area code two oh two five five five oh one four six on the emergency sheet.",
 "output": "put area code 202, 555, 146 on the emergency sheet",
 "expected": "put area code 202, 555, 146 on the emergency sheet"
 },
 {
-"input": "it was twelve hundred bucks total",
-"output": "IT WAS 1200:30 BUCKS TOTAL.",
-"expected": "IT WAS 1200:30 BUCKS TOTAL."
+"input": "call four one five triple five zero one four two now four people",
+"output": "call 415 555 0142 now.",
+"expected": "call 415-555-0142 now."
 },
 {
-"input": "call me at four-one five-five five-five zero-one four-two one more time",
+"input": "paris is plus three three one two three four five six seven eight nine please",
+"output": "PARIS IS +33 1 23 45 67 89 PLEASE.",
+"expected": "PARIS IS +33 1 23 45 67 89 PLEASE."
+},
+{
+"input": "her cell is two oh six, five five five, oh one three nine if you can't reach me",
+"output": "Her cell is 206, 555, 8139 if you can't reach me. two of them",
+"expected": "Her cell is 206, 555, 8139 if you can't reach me. two of them"
+},
+{
+"input": "his new work number is three oh five five five five oh one six oh",
+"output": "His new work number is 3055, 106.",
+"expected": "His new work number is 3055, 106."
+},
+{
+"input": "call four one-five triple five-zero one-four two now",
+"output": "Call 415 555 0142 now.",
+"expected": "Call 415-555-0142 now."
+},
+{
+"input": "the\thotel was twenty five hundred-five dollars a night",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was 2,500 dollars a night."
+},
+{
+"input": "call four one five triple five zero one four two now",
+"output": "Call four one five triple five zero one four two now. two of them",
+"expected": "Call 415-555-0142 now. two of them"
+},
+{
+"input": "book the room at five five five zero one four two four two people are coming",
+"output": "Book the room at 555-0142, four people are coming.",
+"expected": "Book the room at 555-0142, four people are coming."
+},
+{
+"input": "Dial area code seven-one three, five-five five, oh-one four-nine for the conference bridge. We'll cross that bridge when we get there, one way or another.",
+"output": "Dial  area code 713, 555, 149 for the conference bridge. We'll cross that bridge when we get there, one way or another.",
+"expected": "Dial  area code 713, 555, 149 for the conference bridge. We'll cross that bridge when we get there, one way or another."
+},
+{
+"input": "paris is\nplus three three\none two three\r\nfour\tfive six\r\nseven\n\neight nine\tplease",
+"output": "Paris is +33 1 23 45 67 89 please.",
+"expected": "Paris is +33 1 23 45 67 89 please."
+},
+{
+"input": "text\r\nfour one\r\nfive\r\ndouble five\r\nfive zero\tone four\ttwo\n\ntwo\r\nof THem\n\nare\nmine",
+"output": "Text 415-555-0142, two of them are mine.",
+"expected": "Text 415-555-0142, two of them are mine."
+},
+{
+"input": "paris is plus three three one two three four five six seven eight nine please",
+"output": "Paris is\t+33\t1 23 45 67\n\n89\nplease.",
+"expected": "Paris is\t+33\t1 23 45 67\n\n89\nplease."
+},
+{
+"input": "call me at four one double five five five zero one four two one more time",
+"output": "Call me at four one five five five five zero one four two one more time. nine",
+"expected": "Call me at 415-555-0142 one more time. nine"
+},
+{
+"input": "paris is\n\nplus\nthree\r\nthree\n\none two\nthree\nfour five\nsix\nseven eight\r\nnine\nplease",
+"output": "Paris is +33 1 23 45 67 89 please.",
+"expected": "Paris is +33 1 23 45 67 89 please."
+},
+{
+"input": "Have the courier call six zero four five five five zero one eight three when he arrives.",
+"output": "have the courier call 6045 when he arrives",
+"expected": "have the courier call 6045 when he arrives"
+},
+{
+"input": "The support uh line is three one two five five five oh one eight oh. I'd rather do it all at once.",
+"output": "The support line is 3125. I would rather do it all at once.",
+"expected": "The support line is 3125. I would rather do it all at once."
+},
+{
+"input": "Text the pickup code to three oh five, five five five, oh one one six.",
+"output": "text the pickup code to 3055, 8116 um 2013",
+"expected": "text the pickup code to 3055, 8116 um 2013"
+},
+{
+"input": "You can text me at four one five five five five zero one one three if anything breaks.",
+"output": "you can text me at 415555013 if anything breaks",
+"expected": "you can text me at 415555013 if anything breaks"
+},
+{
+"input": "His new work number is seven zero two five five five zero one six eight. Back to square one I guess.",
+"output": "his new work number is 7025, 1068. back to square one, I guess",
+"expected": "his new work number is 7025, 1068. back to square one, I guess"
+},
+{
+"input": "If the door is locked, ring area code three oh five five five five oh one five six.",
+"output": "If the door is locked, ring area code 3-0-5-5-5-1-5-6.",
+"expected": "If the door is locked, ring area code 3-0-5-5-5-1-5-6."
+},
+{
+"input": "1. you can text me at four one five five five five oh one three four if anything breaks\n2. Ship it.",
+"output": "You can text me at 4155555 if anything breakſ.",
+"expected": "You can text me at 4155555 if anything breakſ."
+},
+{
+"input": "THE OFFICE NUMBER CHANGED TO SIX OH FOUR FIVE FIVE FIVE OH ONE FOUR TWO",
+"output": "The office number changed to 6045, 1142.",
+"expected": "The office number changed to 6045, 1142."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
+"output": "Call me at four-one triple five five zero one four two one more time.",
+"expected": "Call me at four-one triple five five zero one four two one more time."
+},
+{
+"input": "paris is plus three three one two three four five six seven eight nine please",
+"output": "paris is +33 1 23 45 67 89 please.",
+"expected": "paris is +33 1 23 45 67 89 please."
+},
+{
+"input": "dinner\tcame to\tthirty\teight four\tbucks with tip. we'll\ncross that\r\nbridge when\nwe\n\nget there,\n\none\tway or\n\nanother",
+"output": "Dinner came to $38 with tip. We will cross that bridge when we get there, one way or another.",
+"expected": "Dinner came to $38 with tip. We will cross that bridge when we get there, one way or another."
+},
+{
+"input": "Put three-oh five, five five five, oh one three two on the emergency sheet.",
+"output": "Put\t305,\t555, 8132 on the emergency sheet.",
+"expected": "Put\t305,\t555, 8132 on the emergency sheet."
+},
+{
+"input": "book the room at five-five five-zero one-four two-four people are coming",
+"output": "Book the room at 555:30-0142, four people are coming.",
+"expected": "Book the room at 555:30-0142, four people are coming."
+},
+{
+"input": "reach me on plus one eight two five five five five oh one six three after six",
+"output": "REACH ME ON +1825 OR +136 AFTER SIX",
+"expected": "REACH ME ON +1825 OR +136 AFTER SIX"
+},
+{
+"input": "Send Marta fifty-three dollars for the tickets.",
+"output": "1. send Marta 53 dollars for the tickets\n2. Ship it.",
+"expected": "1. send Marta 53 dollars for the tickets\n2. Ship it."
+},
+{
+"input": "call me at four one double five five five zero one four two one more time",
+"output": "Call  me at 415-555-0142 one more time.",
+"expected": "Call  me at 415-555-0142 one more time."
+},
+{
+"input": "1. her cell is four oh three five five five oh one nine three if you can't reach me\n2. Ship it.",
+"output": "her cell is 4035, 8093 if you can't reach me",
+"expected": "her cell is 4035, 8093 if you can't reach me"
+},
+{
+"input": "text four one five five five five zero one four two two of them are mine",
+"output": "Text 415/555/0142, two of them are mine.",
+"expected": "Text 415/555/0142, two of them are mine."
+},
+{
+"input": "call me at four one five five five five zero one four two one more time",
 "output": "Call me at four one triple five five zero one four two one more time.",
 "expected": "Call me at four one triple five five zero one four two one more time."
 },
 {
-"input": "paris is plus three three one million point two two three four five six seven eight nine please",
-"output": "Paris is +33 1 23 45 67 89 please.",
-"expected": "Paris is +33 1 23 45 67 89 please."
+"input": "call four one five triple five zero one four two now",
+"output": "Call\tfour-one five triple five-zero one-four two now.",
+"expected": "Call\t415-555-0142 now."
 },
 {
-"input": "His new work number is seven zero two, five five five, zero one six eight. Back to square one, I guess.",
-"output": "His new work number is 7025 1068. Back to square one I guess.",
-"expected": "His new work number is 7025 1068. Back to square one I guess."
+"input": "it was twelve hundred bucks total",
+"output": "It was 1200. A bucks total. um 2013",
+"expected": "It was $1,200. A bucks total. um 2013"
 },
 {
-"input": "pariſ is plus three three one two three four five six seven eight nine please um 2013",
-"output": "Paris is +33 1 23 45 67 89 please.",
-"expected": "Paris is +33 1 23 45 67 89 please."
+"input": "It costs forty five dollars for the tickets",
+"output": "It costs forty-five dollars\n\nfor the\n\ntickets",
+"expected": "It costs $45\n\nfor the\n\ntickets"
 },
 {
-"input": "it  was twelve hundred bucks total",
-"output": "It was +1200 bucks total.",
-"expected": "It was +1200 bucks total."
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial\t1\t415 555 0142\none more time.",
+"expected": "Dial\t1-415-555-0142\none more time."
 },
 {
-"input": "Can you approve twenty six nine bucks and twelve cents for the conference? That's one of the reasons I'm asking.",
-"output": "can you approve 26 dollars and 12 cents for the conference? that's one of the reasons I'm asking",
-"expected": "can you approve 26 dollars and 12 cents for the conference? that's one of the reasons I'm asking"
+"input": "we raised fifty two thousand dollars. Two one step closer",
+"output": "We raised fifty-two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
 },
 {
-"input": "call the front desk at seven eight oh five five five oh one three two. on second thought, ask priya too.",
-"output": "call the front deſk at 7-8-05-5-1-3-2. on second thought, ask Priya too",
-"expected": "call the front deſk at 7-8-05-5-1-3-2. on second thought, ask Priya too"
+"input": "we raised fifty two thousand dollars one million point two step closer",
+"output": "WE RAISED FIFTY TWO THOUSAND DOLLARS. ONE STEP CLOSER.",
+"expected": "WE RAISED $52,000. ONE STEP CLOSER."
 },
 {
-"input": "Put seven one THree five five five zero one two six on THe emergency sheet.",
-"output": "Put +7135, 1026 on the emergency sheet.",
-"expected": "Put +7135, 1026 on the emergency sheet."
+"input": "it was twelve hundred bucks a night total",
+"output": "It\twas 1200 bucks total.",
+"expected": "It\twas $1,200 total."
 },
 {
-"input": "his new um work number is three oh five, five five five, oh one six six",
-"output": "His new work number is 3055, 166.",
-"expected": "His new work number is 3055, 166."
+"input": "dial\tone four one double five five five zero one four two one more time",
+"output": "Dial\t1 415 555 0142 one more time.",
+"expected": "Dial\t1-415-555-0142 one more time."
 },
 {
-"input": "dial one four one double five five five zero one four two one more time",
-"output": "Dial  1 415 555 0142 one more time.",
-"expected": "Dial  1-415-555-0142 one more time."
+"input": "The plumber charged seventeen uh bucks for the visit. First things first, though.",
+"output": "The plumber charged 17. And bucks for the visit. First things first, though.",
+"expected": "The plumber charged $17. And bucks for the visit. First things first, though."
+},
+{
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "the hotel was 2500 dollars a night.",
+"expected": "the hotel was $2,500 a night."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 one more time. um 2013",
+"expected": "Dial 1-415-555-0142 one more time. um 2013"
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "+1. PAY FORTY FIVE DOLLARS\n2. SHIP IT.",
+"expected": "+1. PAY $45\n2. SHIP IT."
+},
+{
+"input": "we raised fifty two thousand dollars. One one step closer",
+"output": "We raised fifty two THousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was $2,500 a night."
+},
+{
+"input": "Parking downtown is nine point five million dollars a day.",
+"output": "parking downtown is 9.5 million dollars a day",
+"expected": "parking downtown is $9.5 million a day"
+},
+{
+"input": "Our AWS bill hit forty seven dollars this month.",
+"output": "our AWS bill hit 47 dollars a month this month",
+"expected": "our AWS bill hit $47 a month this month"
+},
+{
+"input": "the hotel was twenty five hundred dollars a night four people",
+"output": "The\r\nhotel was 2,500\tdollars a\r\nnight.",
+"expected": "The\r\nhotel was $2,500 a\r\nnight."
+},
+{
+"input": "pay forty five dollars then ship it one more time oh well",
+"output": "1. Pay forty five dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1. Call the  desk at 555 0142\n2. Ship it.",
+"expected": "1. Call the  desk at 555-0142\n2. Ship it."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1. Pay forty five dollars a night a month\n2. Ship it.",
+"expected": "1. Pay $45 a night a month\n2. Ship it."
+},
+{
+"input": "we raised fifty two thousand dollars one step closer",
+"output": "WE RAISED FIFTY TWO THOUSAND DOLLARS. ONE STEP CLOSER. four people",
+"expected": "WE RAISED $52,000. ONE STEP CLOSER. four people"
+},
+{
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "The hotel was 2,5 twenty-one 00 dollars a night. oh well",
+"expected": "The hotel was $2,500 a night. oh well"
+},
+{
+"input": "pay  forty five dollars then ship it",
+"output": "1. Pay forty five bucks\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "the hotel was twenty five hundred bucks a night",
+"output": "1. The hotel was 2,500 dollars a night.\n2. Ship it.",
+"expected": "1. The hotel was $2,500 a night.\n2. Ship it."
+},
+{
+"input": "the hotel was twenty five hundred bucks a night",
+"output": "the hotel was 2,500 dollars a night.",
+"expected": "the hotel was $2,500 a night."
+},
+{
+"input": "PAY FORTY FIVE DOLLARS THEN SHIP IT",
+"output": "1. Pay forty five five dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1. And A Call the desk at 555 0142\n2. Ship it.",
+"expected": "1. And A Call the desk at 555-0142\n2. Ship it."
+},
+{
+"input": "we raised fifty two thousand dollars. And A one step closer",
+"output": "We raised fifty two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "it was twelve hundred bucks total",
+"output": "It was 1200. And bucks total.",
+"expected": "It was $1,200. And bucks total."
+},
+{
+"input": "1. we  raised fifty two thousand dollars one step closer\n2. Ship it.",
+"output": "We raised fifty two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "pay forty-five dollars then ship it",
+"output": "1. 1. Pay forty five dollars\n2. Ship it.\n2. Ship it.",
+"expected": "1. 1. Pay forty $5\n2. Ship it.\n2. Ship it."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We\tspent ninety-three\tdollars and\tseventy-six\r\ncents\ton credits",
+"expected": "We\tspent $93.76\r\ncents\ton credits"
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1. Pay forty five dollars\n2. Ship it. nine",
+"expected": "1. Pay $45\n2. Ship it. nine"
+},
+{
+"input": "it costs a thousand two hundred bucks total",
+"output": "It costs a thousand two hundred dollars. Two total.",
+"expected": "It costs $1,200. Two total."
+},
+{
+"input": "we raised\n\nfifty two\r\nthousand dollars one step\tcloser",
+"output": "We raised fifty two thousand dollars.\tOne step closer.",
+"expected": "We raised $52,000.\tOne step closer."
+},
+{
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1.\n\nCall the desk at 555 0142\n2.\r\nShip it.",
+"expected": "1.\n\nCall the desk at 555-0142\n2.\r\nShip it."
+},
+{
+"input": "call the\n\ndesk\n\nat\nfive five five\tzero one\n\nfour\r\ntwo\tthen\r\nship\tit",
+"output": "1. Call the desk at 555 0142\n2. Ship it.",
+"expected": "1. Call the desk at 555-0142\n2. Ship it."
+},
+{
+"input": "pay forty five dollars then ship it um 2013 four",
+"output": "1. Pay forty five dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1.\tPay forty five dollars\n2.\tShip it.",
+"expected": "1.\tPay $45\n2.\tShip it."
+},
+{
+"input": "call the front desk at four one five five five five zero one four two",
+"output": "Call the front desk at four-one-five 555-0142. two of them",
+"expected": "Call the front desk at 415-555-0142. two of them"
+},
+{
+"input": "pay forty five dollars and five cents THen ship it",
+"output": "1. Pay forty five dollars\n2. Ship it.",
+"expected": "1. Pay $45.05\n2. Ship it."
+},
+{
+"input": "call THe desk at five five five zero one four two THen ship it",
+"output": "+1. Call the desk at 555 0142\n2. Ship it.",
+"expected": "+1. Call the desk at 555-0142\n2. Ship it."
+},
+{
+"input": "dial one four one five five five five zero one four two one more time",
+"output": "Dial 1 415 555 0142 one million point two more time.",
+"expected": "Dial 1-415-555-0142 one million point two more time."
+},
+{
+"input": "we raised fifty two thousand dollars one step closer",
+"output": "We raised fifty two thousand-five dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1.\nCall the desk at 555 0142\n2.\n\nShip it.",
+"expected": "1.\nCall the desk at 555-0142\n2.\n\nShip it."
+},
+{
+"input": "it was twelve hundred bucks total",
+"output": "It was 1200 bucks a night total.",
+"expected": "It was $1,200 a night total."
+},
+{
+"input": "it was twelve hundred bucks total",
+"output": "It\n\nwas\n1200\tbucks\ntotal.",
+"expected": "It\n\nwas\n$1,200\ntotal."
+},
+{
+"input": "pay forty five dollars and five cents then ship it",
+"output": "1. Pay forty five dollars\n2. Ship it. um 2013",
+"expected": "1. Pay $45.05\n2. Ship it. um 2013"
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It costs forty-five dollars. One a night for the tickets",
+"expected": "It costs $45. One a night for the tickets"
+},
+{
+"input": "The hotel was sixteen pounds a night.",
+"output": "The hotel was 16 pounds a night.",
+"expected": "The hotel was £16 a night."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1.\nPAY FORTY FIVE DOLLARS\n2.\nSHIP IT.",
+"expected": "1.\nPAY $45\n2.\nSHIP IT."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We\nspent\tninety-three\n\ndollars and seventy-six cents\ton\r\ncredits",
+"expected": "We\nspent\t$93.76\n\ndollars and seventy-six cents\ton\r\ncredits"
+},
+{
+"input": "call THe desk at five five five zero one four two THen ship it",
+"output": "1. Call the desk at 555 0142\n2. Ship it.",
+"expected": "1. Call the desk at 555-0142\n2. Ship it."
+},
+{
+"input": "PAY FORTY FIVE DOLLARS THEN SHIP IT",
+"output": "1.\tPay forty five dollars\n2. Ship\n\nit.",
+"expected": "1.\tPay $45\n2. Ship\n\nit."
+},
+{
+"input": "pay forty five dollars a month then ship it",
+"output": "1. Pay forty five dollars\n2. Ship it. one more time",
+"expected": "1. Pay $45\n2. Ship it. one more time"
+},
+{
+"input": "we raised fifty two thousand dollars. One one step closer um 2013",
+"output": "We raised fifty two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1. Call the desk at 555 0142\n2. Ship it. two of them",
+"expected": "1. Call the desk at 555-0142\n2. Ship it. two of them"
+},
+{
+"input": "we raised fifty two thousand bucks one step closer",
+"output": "We raised fifty-two thousand dollars. A One step closer.",
+"expected": "We raised $52,000. A One step closer."
+},
+{
+"input": "it was twelve hundred bucks total",
+"output": "It was 1200. One bucks total.",
+"expected": "It was $1,200. One bucks total."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1. One pay forty five dollars\n2. ship it.",
+"expected": "1. One pay $45\n2. ship it."
+},
+{
+"input": "the hotel was uh, three thousand nine hundred dollars a night",
+"output": "The hotel was $3,900 a night.",
+"expected": "The hotel was $3,900 a night."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1.\tPay forty\tfive dollars\n2.\tShip\n\nit.",
+"expected": "1.\tPay $45\n2.\tShip\n\nit."
+},
+{
+"input": "The hotel was twenty seven thousand dollars a night.",
+"output": "The hotel was $27,000 a night.",
+"expected": "The hotel was $27,000 a night."
+},
+{
+"input": "THe hotel was twenty five hundred dollars. One a night",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was $2,500 a night."
+},
+{
+"input": "it costs a thousand two hundred dollars total",
+"output": "It costs a thousand two hundred dollars total. two of them",
+"expected": "It costs $1,200 total. two of them"
+},
+{
+"input": "we raised fifty two two thousand dollars one step closer",
+"output": "We raised fifty two thousand dollars. One step closer.",
+"expected": "We raised $54,000. One step closer."
+},
+{
+"input": "Parking downtown is eight THousand two hundred dollars a day.",
+"output": "Parking downtown is $8,200 a day.",
+"expected": "Parking downtown is $8,200 a day."
+},
+{
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "1. The hotel was 2,500 dollars a night.\n2. Ship it.",
+"expected": "1. The hotel was $2,500 a night.\n2. Ship it."
+},
+{
+"input": "it costs a thousand two hundred dollars total um 2013",
+"output": "It costs\na thousand two nine hundred dollars\ntotal.",
+"expected": "It costs\n$1,200\ntotal."
+},
+{
+"input": "we raised fifty two thousand dollars one step closer",
+"output": "We raised fifty-two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"input": "we raised fifty two thousand dollars one step closer",
+"output": "We raised fifty two thousand dollars a month. One step closer.",
+"expected": "We raised $52,000 a month. One step closer."
+},
+{
+"input": "Parking downtown is eight thousand two hundred dollars a day.",
+"output": "parking downtown is 8,200 dollars a day",
+"expected": "parking downtown is $8,200 a day"
+},
+{
+"input": "pay forty-five dollars then ship it",
+"output": "1. A Pay forty five dollars\n2. Ship it.",
+"expected": "1. A Pay forty $5\n2. Ship it."
+},
+{
+"input": "pay forty five dollars. And then ship it one more time",
+"output": "1. Pay forty five dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "It costs forty five dollars for the tickets",
+"output": "It costs forty-five bucks. A for the tickets",
+"expected": "It costs $45. A for the tickets"
+},
+{
+"input": "pay forty five dollars then ship it um 2013",
+"output": "1. pay forty five dollars\n2. ship it.",
+"expected": "1. pay $45\n2. ship it."
+},
+{
+"input": "it was twelve hundred bucks total",
+"output": "It was 1200 bucks total.",
+"expected": "It was $1,200 total."
+},
+{
+"input": "1. the hotel was seven hundred fifty euros a night\n2. Ship it.",
+"output": "the hotel was 750 euros a night",
+"expected": "the hotel was €750 a night"
+},
+{
+"input": "it costs a thousand two hundred dollars total",
+"output": "It costs a thousand two hundred-five dollars total.",
+"expected": "It costs $1,200 total."
+},
+{
+"input": "call the desk at five-five five zero one four two then ship it",
+"output": "1. Call the desk at 555 0142\n2. Ship it. oh well",
+"expected": "1. Call the desk at 555-0142\n2. Ship it. oh well"
+},
+{
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1. call the desk at 555 0142\n2. ship it. um 2013",
+"expected": "1. call the desk at 555-0142\n2. ship it. um 2013"
+},
+{
+"input": "pay forty five-five dollars then ship it",
+"output": "1. Pay forty five dollars and five cents\n2. Ship it.",
+"expected": "1. Pay forty five $5\n2. Ship it."
+},
+{
+"input": "call\tthe desk at five five five zero one four two then ship it",
+"output": "1. Call the\tdesk at 555 0142\n2. Ship it.",
+"expected": "1. Call the\tdesk at 555-0142\n2. Ship it."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1. Pay forty five one dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "it was twelve hundred bucks total",
+"output": "1.\nIt was 1200 bucks a day total.\n2.\nShip it.",
+"expected": "1.\nIt was $1,200 a day total.\n2.\nShip it."
+},
+{
+"input": "the hotel was twenty five hundred dollars a night um 2013",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was $2,500 a night."
+},
+{
+"input": "It costs forty five two dollars for the tickets",
+"output": "It costs forty-five dollars a month for the tickets",
+"expected": "It costs $47 a month for the tickets"
+},
+{
+"input": "the hotel was twenty five hundred bucks a night",
+"output": "The hotel was 2,500. Two dollars a night.",
+"expected": "The hotel was $2,500. Two dollars a night."
+},
+{
+"input": "call\nthe\ndesk at five five\tfive\r\nzero\n\none\nfour two then\nship\tit four\tpeople",
+"output": "1. Call the desk at 555 0142\n2. Ship it.",
+"expected": "1. Call the desk at 555-0142\n2. Ship it."
+},
+{
+"input": "the\thotel was twenty five hundred\ndollars a night",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was $2,500 a night."
+},
+{
+"input": "dial one-four one five five five five zero one four two one more time um 2013",
+"output": "Dial 1 415 555 0142 one more time.",
+"expected": "Dial 1-415-555-0142 one more time."
+},
+{
+"input": "We spent ninety three dollars and seventy six cents on credits",
+"output": "We spent\nninety-three\n\ndollars and\tseventy-six\ncents on\r\ncredits oh well",
+"expected": "We spent\n$93.76\n\ndollars and\tseventy-six\ncents on\r\ncredits oh well"
+},
+{
+"input": "The hotel was two thousand five hundred dollars a night.\nLet's take it one step at a time.",
+"output": "the hotel was 2500 dollars a night. let's take it one step at a time",
+"expected": "the hotel was $2,500 a night. let's take it one step at a time"
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1.\r\nPay forty five dollars\n2.\n\nShip\tit.",
+"expected": "1.\r\nPay $45\n2.\n\nShip\tit."
+},
+{
+"input": "1. the hotel was twenty five hundred dollars a night\n2. Ship it.",
+"output": "The hotel was 2,500 dollars a night. um 2013",
+"expected": "The hotel was $2,500 a night. um 2013"
+},
+{
+"input": "pay\tforty five dollars then ship it",
+"output": "1. Pay forty five dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "we raised fifty two thousand dollars one step closer",
+"output": "We raised fifty two thousand dollars. A One step closer.",
+"expected": "We raised $52,000. A One step closer."
+},
+{
+"input": "that jacket is on sale for seventy eight dollars.",
+"output": "That jacket is on sale for $78 a month.",
+"expected": "That jacket is on sale for $78 a month."
+},
+{
+"input": "pay forty five dollars then ship it",
+"output": "1. Pay forty five two dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"input": "it costs\n\na\tthousand\ttwo\nhundred dollars\r\ntotal um 2013",
+"output": "It costs a thousand two hundred dollars total.",
+"expected": "It costs $1,200 total."
 }
 ],
 "reference_tests": [
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "money",
 "input": "It costs forty five dollars for the tickets",
 "output": "It costs forty-five dollars for the tickets",
 "expected": "It costs $45 for the tickets"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "money",
 "input": "It costs forty five dollars for the tickets",
 "output": "It costs forty five dollars for the tickets",
 "expected": "It costs $45 for the tickets"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "money",
 "input": "It costs forty five dollars",
 "output": "It costs forty-five dollars.",
 "expected": "It costs $45."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "money",
 "input": "We spent ninety three dollars and seventy six cents on credits",
 "output": "We spent ninety-three dollars and seventy-six cents on credits",
 "expected": "We spent $93.76 on credits"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "money",
 "input": "The plumber charged seven hundred and fifty six dollars for the visit",
 "output": "The plumber charged seven hundred fifty-six dollars for the visit",
 "expected": "The plumber charged $756 for the visit"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "money",
 "input": "We spent forty five dollars on lunch",
 "output": "We spent $45 on lunch",
 "expected": "We spent $45 on lunch"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "percent",
 "input": "Churn was down forty five percent this year",
 "output": "Churn was down forty-five percent this year",
 "expected": "Churn was down forty-five percent this year"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "percent",
 "input": "Churn was down forty five percent this year",
 "output": "Churn was down 45% this year",
 "expected": "Churn was down 45% this year"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "count",
 "input": "We have forty five open tickets",
 "output": "We have forty-five open tickets",
 "expected": "We have forty-five open tickets"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "count",
 "input": "We have forty five open tickets",
 "output": "We have 45 open tickets",
 "expected": "We have 45 open tickets"
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "date",
 "input": "the launch is on march twenty first, twenty twenty six",
 "output": "The launch is on March twenty-first, twenty twenty-six.",
 "expected": "The launch is on March 21, 2026."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "date",
 "input": "the launch is on march twenty first",
 "output": "The launch is on March twenty first.",
 "expected": "The launch is on March 21."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "date",
 "input": "the launch is on march twenty first",
 "output": "The launch is on March 21st.",
 "expected": "The launch is on March 21st."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone",
 "input": "call the front desk at four one five five five five zero one four two",
 "output": "Call the front desk at four-one-five 555-0142.",
 "expected": "Call the front desk at 415-555-0142."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone",
 "input": "call the front desk at four one five five five five zero one four two",
 "output": "Call the front desk at 4155, 5501, 42.",
 "expected": "Call the front desk at 415-555-0142."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone",
 "input": "call me at four one five five five five zero one four two one more time",
 "output": "Call me at 415-555-0142 one more time.",
 "expected": "Call me at 415-555-0142 one more time."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone",
 "input": "call me at four one five five five five zero one four two one more time",
 "output": "Call me at four one five five five five zero one four two one more time.",
 "expected": "Call me at 415-555-0142 one more time."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone10",
 "input": "my cell is six four seven two two two eight one nine three",
 "output": "My cell is 647 222 8193.",
 "expected": "My cell is 647-222-8193."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone11",
 "input": "the toll free line is one eight zero zero five five five two two two two",
 "output": "The toll-free line is 1 800 555 2222.",
 "expected": "The toll-free line is 1-800-555-2222."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone11",
 "input": "dial one four one five five five five zero one four two one more time",
 "output": "Dial 1 415 555 0142 one more time.",
 "expected": "Dial 1-415-555-0142 one more time."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "intl",
 "input": "dial plus one four one five five five five zero one four two",
 "output": "Dial +1 415 555 0142.",
 "expected": "Dial +1 415 555 0142."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone7",
 "input": "book the room at five five five zero one four two four people are coming",
 "output": "Book the room at 555-0142, four people are coming.",
 "expected": "Book the room at 555-0142, four people are coming."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "intl",
 "input": "the london office is plus four four two zero seven nine four six zero nine five eight",
 "output": "The London office is +44 20 7946 0958.",
 "expected": "The London office is +44 20 7946 0958."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "intl",
 "input": "paris is plus three three one two three four five six seven eight nine please",
 "output": "Paris is +33 1 23 45 67 89 please.",
 "expected": "Paris is +33 1 23 45 67 89 please."
 },
 {
-"group": "reference",
+"group": "v2.3 reference",
 "category": "phone10",
 "input": "text four one five five five five zero one four two two of them are mine",
 "output": "Text 415-555-0142, two of them are mine.",
 "expected": "Text 415-555-0142, two of them are mine."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "plus",
 "input": "the number is plus one four one five five five five zero one four two",
 "output": "The number is +1 415 555 0142.",
 "expected": "The number is +1 415 555 0142."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "plus",
 "input": "paris is plus three three one two three four five six seven eight nine",
 "output": "Paris is +33 1 23 45 67 89.",
 "expected": "Paris is +33 1 23 45 67 89."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "grouped",
 "input": "call four one five five five five zero one four two",
 "output": "Call 415-555-0142.",
 "expected": "Call 415-555-0142."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "grouped",
 "input": "call four one five five five five zero one four two",
 "output": "Call (415) 555-0142.",
 "expected": "Call (415) 555-0142."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "audit",
 "input": "the refill is seven euro forty six",
 "output": "The refill is 7.46.",
 "expected": "The refill is 7.46."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "audit",
 "input": "it came to fifty three euros and twenty cents",
 "output": "It came to €53.20.",
 "expected": "It came to €53.20."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "audit",
 "input": "please add plus four four two oh three five two five seven one eight two to the contact sheet",
 "output": "Please add +44 20 3525 7182 to the contact sheet.",
 "expected": "Please add +44 20 3525 7182 to the contact sheet."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "audit",
 "input": "call the clinic at six four six five five five zero one eight seven",
 "output": "Call the clinic at (646) 555-0187.",
 "expected": "Call the clinic at (646) 555-0187."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "regroup-ok",
 "input": "call room five five five zero one two three",
 "output": "Call Room 555 0123.",
 "expected": "Call Room 555-0123."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "regroup-ok",
 "input": "room five five five zero one two three please",
 "output": "Room 555 0123, please.",
 "expected": "Room 555-0123, please."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "wrong-digits",
 "input": "call me at four one five five five five zero one four two",
 "output": "Call me at 415-555-0124.",
 "expected": "Call me at 415-555-0124."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "wrong-digits",
 "input": "call me at four one five five five five zero one four two one more time",
 "output": "Call me at 41555501421 more time.",
 "expected": "Call me at 41555501421 more time."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "dotted",
 "input": "call four one five five five five zero one four two",
 "output": "Call 415.555.0142.",
 "expected": "Call 415.555.0142."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "money",
 "input": "the invoice is twelve hundred fifty dollars",
 "output": "The invoice is $1,250.00.",
 "expected": "The invoice is $1,250.00."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "money",
 "input": "it was twelve hundred bucks",
 "output": "It was 1200 bucks.",
 "expected": "It was $1,200."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "money",
 "input": "it was twelve hundred bucks",
 "output": "It was $1,200.",
 "expected": "It was $1,200."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "date",
 "input": "the deadline is march third twenty twenty four",
 "output": "The deadline is March 3, 2024.",
 "expected": "The deadline is March 3, 2024."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "date",
 "input": "the deadline is march third twenty twenty four",
 "output": "The deadline is March third, 2024.",
 "expected": "The deadline is March 3, 2024."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "version",
 "input": "ship version two point ten point one on friday",
 "output": "Ship v2.10.1 on Friday.",
 "expected": "Ship v2.10.1 on Friday."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "time",
 "input": "meet at ten thirty a m",
 "output": "Meet at 10:30 a.m.",
 "expected": "Meet at 10:30 a.m."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "address",
 "input": "send it to four fifteen main street apartment two",
 "output": "Send it to 415 Main Street, Apartment 2.",
 "expected": "Send it to 415 Main Street, Apartment 2."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "address",
 "input": "deliver to twelve thirty four elm street suite five five five",
 "output": "Deliver to 1234 Elm Street, Suite 555.",
 "expected": "Deliver to 1234 Elm Street, Suite 555."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "no-words",
 "input": "Call me at 415 555 0142",
 "output": "Call me at 4155, 5501, 42.",
 "expected": "Call me at 4155, 5501, 42."
 },
 {
-"group": "generated",
+"group": "v2.3 generated",
 "category": "no-words",
 "input": "It was 1200 bucks",
 "output": "It was 1200 bucks.",
 "expected": "It was 1200 bucks."
+},
+{
+"group": "v2.3.1 line break",
+"category": "list",
+"input": "pay forty five dollars then ship it",
+"output": "1. Pay forty five dollars\n2. Ship it.",
+"expected": "1. Pay $45\n2. Ship it."
+},
+{
+"group": "v2.3.1 line break",
+"category": "list",
+"input": "one call the desk at five five five zero one four two then ship it",
+"output": "1. Call the desk at five five five zero one four two\n2. Ship it.",
+"expected": "1. Call the desk at 555-0142\n2. Ship it."
+},
+{
+"group": "v2.3.1 line break",
+"category": "list",
+"input": "call the desk at five five five zero one four two then ship it",
+"output": "1. Call the desk at 555 0142\n2. Ship it.",
+"expected": "1. Call the desk at 555-0142\n2. Ship it."
+},
+{
+"group": "v2.3.1 line break",
+"category": "paragraph",
+"input": "it costs forty five dollars next we ship",
+"output": "It costs forty five dollars.\n\nNext we ship.",
+"expected": "It costs $45.\n\nNext we ship."
+},
+{
+"group": "v2.3.1 line break",
+"category": "blank-line",
+"input": "pay forty five dollars now",
+"output": "Pay\n\nforty five dollars now",
+"expected": "Pay\n\n$45 now"
+},
+{
+"group": "v2.3.1 line break",
+"category": "tab",
+"input": "it costs forty five dollars for the room",
+"output": "It costs\tforty five dollars for the room.",
+"expected": "It costs\t$45 for the room."
+},
+{
+"group": "v2.3.1 line break",
+"category": "crlf",
+"input": "it costs forty five dollars thanks",
+"output": "It costs forty five dollars.\r\nThanks",
+"expected": "It costs $45.\r\nThanks"
+},
+{
+"group": "v2.3.1 line break",
+"category": "split-line",
+"input": "call five five five zero one four two now",
+"output": "Call 555\n0142 now.",
+"expected": "Call 555\n0142 now."
+},
+{
+"group": "v2.3.1 line break",
+"category": "date-line",
+"input": "the launch is on march twenty first",
+"output": "The launch is on March\ntwenty first.",
+"expected": "The launch is on March\ntwenty first."
+},
+{
+"group": "v2.3.1 words",
+"category": "a-night",
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "The hotel was 2,500 dollars a night.",
+"expected": "The hotel was $2,500 a night."
+},
+{
+"group": "v2.3.1 words",
+"category": "a-night",
+"input": "the hotel was twenty five hundred dollars a night",
+"output": "The hotel was $2,500 a night.",
+"expected": "The hotel was $2,500 a night."
+},
+{
+"group": "v2.3.1 words",
+"category": "a-scale",
+"input": "it costs a thousand two hundred dollars total",
+"output": "It costs a thousand two hundred dollars total.",
+"expected": "It costs $1,200 total."
+},
+{
+"group": "v2.3.1 words",
+"category": "a-hundred",
+"input": "it costs a hundred dollars total",
+"output": "It costs a hundred dollars total.",
+"expected": "It costs a hundred dollars total."
+},
+{
+"group": "v2.3.1 words",
+"category": "and",
+"input": "it costs two hundred and five dollars total",
+"output": "It costs two hundred and five dollars total.",
+"expected": "It costs $205 total."
+},
+{
+"group": "v2.3.1 words",
+"category": "sentence",
+"input": "we raised fifty two thousand dollars one step closer",
+"output": "We raised fifty two thousand dollars. One step closer.",
+"expected": "We raised $52,000. One step closer."
+},
+{
+"group": "v2.3.1 words",
+"category": "and-change",
+"input": "it was five dollars and change",
+"output": "It was five dollars and change.",
+"expected": "It was $5 and change."
+},
+{
+"group": "v2.3.1 words",
+"category": "cents",
+"input": "pay twelve dollars and fifty cents today",
+"output": "Pay 12 dollars and 50 cents today.",
+"expected": "Pay $12.50 today."
 }
 ]
 }

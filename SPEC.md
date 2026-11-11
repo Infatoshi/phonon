@@ -852,7 +852,11 @@ a "$" amount, a formatted date, a version, a time). Invariant, enforced per repl
 model's text comes back unchanged on any failure): INV-1, the output's digits in order are a subsequence of the digits
 after; INV-2, no `+ $ € £ % : . / ( )` beside a digit is lost; INV-3, existing digits are regrouped only when the
 spoken words give exactly the same digits, and never a run with a leading "+"; INV-4, a transcript with no spoken
-number word leaves the output unchanged. So a wrong or missing digit the model wrote stays: that is the model's
+number word leaves the output unchanged; INV-5, whitespace outside a replaced span is byte-identical (the output is
+split on any whitespace and every run kept; a value never spans a line break, so a number ending a list item or a
+paragraph is replaced whole); INV-6, no word outside the number vocabulary is removed ("$2,500 a night" keeps "a";
+"a" and "and" go only inside a number, "a thousand", "two hundred and five"; a value stops at a sentence end, so
+"...dollars. One step closer" keeps "One"). So a wrong or missing digit the model wrote stays: that is the model's
 training to fix. Conversions: a digit-by-digit run in the transcript (zero/oh/one..nine or digits, "double"/"triple"
 before a digit word, hesitations like "um" inside it; at least 4 digit words and 7 digits; not starting with "oh";
 stopping at a complete length, 7, 10 or 11 starting with 1, when the next digit word starts other words: "... four
@@ -862,8 +866,8 @@ two one more time") becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC` or `BBB-CCCC`; a sp
 in words, spaces or hyphens, becomes "May 5, 2026". A hyphenated number word ("forty-five") belongs to the value.
 Phone and money replace the output span after the two transcript words before the value (they must occur exactly once
 in the output), else before the two words after it; no unique anchor, no change. A literal port of the research
-numpass v2.3 + v4 (`fixtures/numpass_cases.json`: its outputs on 1,693 public T14/T14b pairs, 523 public guard rows,
-300 derived pairs and its 49 test cases). Worst-mode correct with the shipped model (a regression check: these sets
+numpass v2.3.1 + v4 (`fixtures/numpass_cases.json`: its outputs on 1,693 public T14/T14b pairs, 523 public guard rows,
+400 derived pairs and its 66 test cases). Worst-mode correct with the shipped model (a regression check: these sets
 were read while the rule was written): T14 0.823 -> 0.880, T14b 0.807 -> 0.860; most remaining failures are digits the
 model wrote wrong, which the invariant leaves alone. On public T13/T15/T16 outputs it changes only two dates ("April
 first" -> "April 1", "the tenth of April 2013" -> "April 10, 2013"). Live text drafts get it too. iPhone and Android
