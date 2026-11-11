@@ -187,7 +187,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
             let get = NSSelectorFromString("handleForIdentifier:error:")
             if idCls.responds(to: mk), hCls.responds(to: get) {
                 typealias Mk = @convention(c) (AnyObject, Selector, Int32) -> AnyObject?
-                typealias Get = @convention(c) (AnyObject, Selector, AnyObject, UnsafeMutablePointer<NSError?>?) -> AnyObject?
+                // NSError ** is autoreleasing: a plain UnsafeMutablePointer makes Swift release the error it does not
+                // own, and the keyboard dies at the next autorelease pool pop (the Start tap, 2026-11-07, 08, 11)
+                typealias Get = @convention(c) (AnyObject, Selector, AnyObject, AutoreleasingUnsafeMutablePointer<NSError?>?) -> AnyObject?
                 if let ident = unsafeBitCast(idCls.method(for: mk), to: Mk.self)(idCls, mk, pid) {
                     var err: NSError?
                     if let handle = unsafeBitCast(hCls.method(for: get), to: Get.self)(hCls, get, ident, &err) as? NSObject {
