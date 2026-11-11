@@ -825,20 +825,23 @@ impl Corrector {
                 self.server.clone(),
                 self.model.clone(),
             );
+            let threads = lean_threads(
+                std::thread::available_parallelism()
+                    .map(|count| count.get())
+                    .unwrap_or(2),
+            );
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let next = match Server::spawn(&server, &model, LEAN_THREADS, None, &[]) {
+                let next = match Server::spawn(&server, &model, threads, None, &[]) {
                     Ok(server) => {
                         eprintln!(
-                            "phonon: {LEAN_THREADS}-thread corrector ready in {} ms",
+                            "phonon: {threads}-thread corrector ready in {} ms",
                             started.elapsed().as_millis()
                         );
                         Lean::Ready(server)
                     }
                     Err(error) => {
-                        eprintln!(
-                            "phonon: {LEAN_THREADS}-thread corrector did not start: {error:#}"
-                        );
+                        eprintln!("phonon: {threads}-thread corrector did not start: {error:#}");
                         Lean::Failed
                     }
                 };
@@ -1052,5 +1055,16 @@ mod tests {
         assert_eq!(thread_count(16), 8);
         assert_eq!(thread_count(32), 16);
         assert_eq!(thread_count(64), 16);
+    }
+
+    #[test]
+    fn fallback_threads_never_exceed_the_main_server() {
+        for logical_cpus in [1, 2, 3, 4, 8, 16, 64] {
+            let lean = lean_threads(logical_cpus);
+            assert!(lean >= 1);
+            assert!(lean <= LEAN_THREADS);
+            assert!(lean <= thread_count(logical_cpus));
+        }
+        assert_eq!(lean_threads(2), 1);
     }
 }
