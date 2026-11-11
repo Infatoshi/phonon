@@ -23,7 +23,9 @@ enum KeyboardPhase: Equatable {
 
 final class KeyboardModel: ObservableObject {
     @Published var phase: KeyboardPhase = .needsSession
-    @Published var status = ""
+    @Published var status = "" { didSet { statusSeq += 1 } }
+    /// Bumped on every `status` assignment, so the bar shows a status again even when its text repeats.
+    @Published var statusSeq = 0
     @Published var levels: [CGFloat] = Array(repeating: 0, count: 28)
     @Published var mode: WritingMode = .minimal
     @Published var canUndo = false
@@ -113,33 +115,41 @@ struct KeyboardView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// A status shown over the ready bar for about 2 s ("Didn't catch that", "Cancelled"), then faded out; `flashID`
+    /// tells a stale timer from the current one.
+    @State private var flash: String?
+    @State private var flashID = 0
+
     /// At rest the bar is a grey, softly blurred fluid that drifts inside the capsule (no label). Pressed, it becomes
     /// the Mac's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2.6x: the black capsule whose ember
-    /// centre lights and swells with your voice, then breathes while the text is written. Only the off states (no
-    /// Full Access, app not running) keep a short label over the fluid, since they need an instruction.
+    /// centre lights and swells with your voice, then breathes while the text is written. The off states (no Full
+    /// Access, app not running) keep a short label over the fluid, since they need an instruction; in the ready
+    /// state a new status shows the same way for about 2 s.
     private var talkBar: some View {
         let active = model.phase == .listening || model.phase == .working
         let pillMode: MacPill.Mode = model.phase == .listening ? .listening : .working
+        let animate = model.visible && !model.lowPower && !reduceMotion
         return ZStack {
             if active {
-                MacPill(mode: pillMode, level: voiceLevel, scale: 2.6)
-                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                MacPill(mode: pillMode, level: voiceLevel, scale: 2.6, animate: animate)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)))
             } else {
-                IdleFluid(animate: model.visible && !model.lowPower && !reduceMotion, dim: off)
+                IdleFluid(animate: animate, dim: off)
                     .overlay {
                         if off {
-                            Text(barLabel)
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Ember.soft)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                                .padding(.horizontal, 16)
+                            barText(barLabel)
+                        } else if let flash, model.phase == .ready {
+                            barText(flash).transition(.opacity)
                         }
                     }
                     .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.18), value: active)
+        .onChange(of: model.statusSeq) { _, _ in showStatus() }
+        .onChange(of: model.phase) { _, phase in
+            if phase != .ready { clearFlash() }
+        }
         .frame(maxWidth: .infinity)
         .frame(height: 42)
         .contentShape(Capsule())
@@ -153,6 +163,7 @@ struct KeyboardView: View {
                     } else if model.phase == .listening {
                         press = .stopping  // locked on: this tap finishes it
                     } else if model.phase == .ready {
+                        clearFlash()
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         press = .starting
                         model.latched = false
@@ -183,6 +194,37 @@ struct KeyboardView: View {
         .accessibilityLabel(model.phase == .listening ? "Finish dictation" : (off ? barLabel : "Dictate"))
         .accessibilityHint(hint)
         .accessibilityAddTraits(.isButton)
+    }
+
+    private func barText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Ember.soft)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .padding(.horizontal, 16)
+    }
+
+    /// Show the new status over the ready bar for about 2 s; a newer one replaces it and restarts the timer.
+    private func showStatus() {
+        guard model.phase == .ready, !model.status.isEmpty else {
+            clearFlash()
+            return
+        }
+        flashID += 1
+        let id = flashID
+        withAnimation(.easeOut(duration: 0.18)) { flash = model.status }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard flashID == id else { return }
+            withAnimation(.easeOut(duration: 0.4)) { flash = nil }
+        }
+    }
+
+    /// Hide the status at once (a recording is starting) and void any pending fade.
+    private func clearFlash() {
+        flashID += 1
+        flash = nil
     }
 
     /// The live input level the capsule lights with: the mean of the newest three meter samples.
@@ -429,9 +471,11 @@ struct MacPill: View {
     let mode: Mode
     let level: Double
     var scale: CGFloat = 1
+    /// False with Reduce Motion, Low Power Mode or the keyboard off screen: the working breath holds still.
+    var animate = true
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: mode != .working)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: mode != .working || !animate)) { context in
             let energy = energy(at: context.date)
             let size = shellSize(energy: energy)
             Capsule(style: .continuous)
