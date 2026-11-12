@@ -3,6 +3,8 @@
 # usage: scripts/package-deb.sh [path/to/phonon-win]   -> target/deb/phonon_<version>_amd64.deb
 # Installs /usr/bin/phonon, the udev rule that lets the signed-in user read keyboards and use /dev/uinput
 # (no group change, no logout), uinput autoload, a menu entry, and login autostart. Models download on first run.
+# The settings window opens EGL (or GLX), xkbcommon, Wayland and the X11 libraries at run time; the resident app
+# needs none of them, so they are Recommends, not Depends (Ubuntu and Debian desktops have them).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BIN=${1:-target/release/phonon-win}
@@ -36,7 +38,7 @@ Homepage: https://github.com/Infatoshi/phonon
 Section: utils
 Priority: optional
 Depends: libc6 (>= $GLIBC), pipewire-bin | pulseaudio-utils | alsa-utils
-Recommends: libnotify-bin, gnome-shell-extension-appindicator
+Recommends: libnotify-bin, gnome-shell-extension-appindicator, libegl1 | libgl1, libxkbcommon-x11-0, libxcursor1, libxi6, libwayland-egl1
 Description: Local dictation: hold Right Ctrl, speak, and the text appears where you type
  Speech recognition (Parakeet) and correction (Phonon's refiner) run on this computer's CPU.
  About 1.6 GB of models download on first start; everything after that is offline.
