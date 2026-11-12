@@ -107,6 +107,7 @@ pub fn run(page: Option<Page>) -> Result<()> {
         options,
         Box::new(move |cc| {
             text_sizes(&cc.egui_ctx);
+            theme::apply(&cc.egui_ctx);
             cc.egui_ctx.set_theme(egui::ThemePreference::System);
             #[cfg(target_os = "linux")]
             linux_theme::follow(&cc.egui_ctx);
@@ -136,6 +137,209 @@ fn text_sizes(ctx: &egui::Context) {
         style.spacing.interact_size.y = 24.0;
         style.spacing.item_spacing.y = 6.0;
     });
+}
+
+/// Phonon's warm "ember" palette instead of egui's cold grey: the Mac app's
+/// dark colours (bar/Sources/MainWindow.swift EmberTheme, ios/Shared/Theme.swift)
+/// and the Android app's light counterparts (android/.../TestActivity.kt).
+/// Body and help text meet WCAG AA (4.5:1) on every surface they sit on.
+mod theme {
+    use eframe::egui::{
+        self, style::TextCursorStyle, Color32, CornerRadius, Margin, Shadow, Stroke, Theme,
+    };
+
+    pub struct Palette {
+        /// The page background.
+        pub window: Color32,
+        /// The page list on the left.
+        pub side: Color32,
+        /// History cards, text fields.
+        pub card: Color32,
+        /// Buttons, drop-downs, check boxes.
+        raised: Color32,
+        /// A control's outline: 3:1 against the page (WCAG 1.4.11), so an
+        /// unticked check box still shows.
+        raised_border: Color32,
+        hover: Color32,
+        hover_border: Color32,
+        pressed: Color32,
+        /// Separators and card borders.
+        pub line: Color32,
+        ink: Color32,
+        /// Button text.
+        soft: Color32,
+        /// Help text and other secondary text.
+        mute: Color32,
+        pub ember: Color32,
+        /// The selected page and other accent text.
+        selected: Color32,
+        selected_ink: Color32,
+        error: Color32,
+        warn: Color32,
+        shadow: u8,
+    }
+
+    const fn hex(rgb: u32) -> Color32 {
+        Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    }
+
+    pub const DARK: Palette = Palette {
+        window: hex(0x12100E),
+        side: hex(0x0F0D0B),
+        card: hex(0x1A1512),
+        raised: hex(0x231C17),
+        raised_border: hex(0x6F6559),
+        hover: hex(0x2A221C),
+        hover_border: hex(0x4A2A16),
+        pressed: hex(0x3A1E10),
+        line: hex(0x2A221C),
+        ink: hex(0xEEE6DC),
+        soft: hex(0xCDBFB2),
+        mute: hex(0x8F8377),
+        ember: hex(0xE8692C),
+        selected: hex(0x2A1A10),
+        selected_ink: hex(0xF08A4B),
+        error: hex(0xF2766B),
+        warn: hex(0xF2C14E),
+        shadow: 110,
+    };
+
+    pub const LIGHT: Palette = Palette {
+        window: hex(0xF7F3EE),
+        side: hex(0xF0E9E2),
+        card: hex(0xFFFFFF),
+        raised: hex(0xEDE5DC),
+        raised_border: hex(0x8F8174),
+        hover: hex(0xE6DCD2),
+        hover_border: hex(0xE3B79A),
+        pressed: hex(0xF6D2BB),
+        line: hex(0xE6DCD2),
+        ink: hex(0x1E1914),
+        soft: hex(0x3A3029),
+        mute: hex(0x6B5F55),
+        ember: hex(0xD2561A),
+        selected: hex(0xFBE5D6),
+        selected_ink: hex(0x9A3A0C),
+        error: hex(0xB3261E),
+        warn: hex(0x8A5A00),
+        shadow: 28,
+    };
+
+    pub fn of(dark: bool) -> &'static Palette {
+        if dark {
+            &DARK
+        } else {
+            &LIGHT
+        }
+    }
+
+    fn visuals(p: &Palette, dark: bool) -> egui::Visuals {
+        let mut v = if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        let radius = CornerRadius::same(8);
+        let state = |fill: Color32, border: Color32, text: Color32, stroke_width: f32| {
+            egui::style::WidgetVisuals {
+                bg_fill: fill,
+                weak_bg_fill: fill,
+                bg_stroke: Stroke::new(stroke_width, border),
+                corner_radius: radius,
+                fg_stroke: Stroke::new(1.5, text),
+                expansion: 0.0,
+            }
+        };
+        v.widgets.noninteractive = state(p.window, p.line, p.ink, 1.0);
+        v.widgets.inactive = state(p.raised, p.raised_border, p.soft, 1.0);
+        v.widgets.hovered = state(p.hover, p.hover_border, p.ink, 1.0);
+        v.widgets.active = state(p.pressed, p.ember, p.ink, 1.0);
+        v.widgets.open = state(p.hover, p.hover_border, p.ink, 1.0);
+        v.weak_text_color = Some(p.mute);
+        v.selection.bg_fill = p.selected;
+        v.selection.stroke = Stroke::new(1.0, p.selected_ink);
+        v.hyperlink_color = p.selected_ink;
+        v.faint_bg_color = p.card;
+        v.extreme_bg_color = p.card;
+        v.text_edit_bg_color = Some(p.card);
+        v.code_bg_color = p.raised;
+        v.warn_fg_color = p.warn;
+        v.error_fg_color = p.error;
+        v.window_fill = p.card;
+        v.window_stroke = Stroke::new(1.0, p.line);
+        v.window_corner_radius = CornerRadius::same(10);
+        v.menu_corner_radius = CornerRadius::same(10);
+        v.panel_fill = p.window;
+        let shadow = Shadow {
+            offset: [0, 6],
+            blur: 18,
+            spread: 0,
+            color: Color32::from_black_alpha(p.shadow),
+        };
+        v.window_shadow = shadow;
+        v.popup_shadow = shadow;
+        v.text_cursor = TextCursorStyle {
+            stroke: Stroke::new(2.0, p.ember),
+            ..v.text_cursor
+        };
+        v
+    }
+
+    /// Both palettes, so the window follows the system theme as it switches.
+    pub fn apply(ctx: &egui::Context) {
+        ctx.set_visuals_of(Theme::Dark, visuals(&DARK, true));
+        ctx.set_visuals_of(Theme::Light, visuals(&LIGHT, false));
+        ctx.all_styles_mut(|style| {
+            style.spacing.button_padding = egui::vec2(10.0, 4.0);
+            style.spacing.item_spacing.x = 8.0;
+            style.spacing.menu_margin = Margin::same(6);
+        });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// WCAG 2 contrast ratio.
+        fn contrast(a: Color32, b: Color32) -> f32 {
+            fn luminance(c: Color32) -> f32 {
+                let channel = |v: u8| {
+                    let v = v as f32 / 255.0;
+                    if v <= 0.03928 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+            }
+            let (x, y) = (luminance(a), luminance(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        }
+
+        #[test]
+        fn text_meets_wcag_aa_in_both_themes() {
+            for p in [&DARK, &LIGHT] {
+                for surface in [p.window, p.side, p.card] {
+                    assert!(contrast(p.ink, surface) >= 7.0);
+                    assert!(contrast(p.mute, surface) >= 4.5, "help text");
+                    assert!(contrast(p.error, surface) >= 4.5, "error text");
+                    assert!(contrast(p.raised_border, surface) >= 3.0, "control outline");
+                }
+                for surface in [p.raised, p.hover, p.pressed] {
+                    assert!(contrast(p.soft, surface) >= 4.5, "button text");
+                    assert!(contrast(p.ink, surface) >= 4.5, "button text");
+                }
+                assert!(
+                    contrast(p.selected_ink, p.selected) >= 4.5,
+                    "the selected page"
+                );
+                assert!(contrast(p.mute, p.raised) >= 4.5, "a disabled-looking hint");
+                // the "Phonon" heading is large text: 3:1
+                assert!(contrast(p.ember, p.side) >= 3.0);
+            }
+        }
+    }
 }
 
 /// GNOME draws no title bar for a Wayland window that does not draw its own,
@@ -768,11 +972,17 @@ impl App {
         }
         let now = history::now_ms();
         let mut copied = None;
+        let palette = theme::of(ui.visuals().dark_mode);
+        let card = egui::Frame::new()
+            .fill(palette.card)
+            .stroke(egui::Stroke::new(1.0, palette.line))
+            .corner_radius(10)
+            .inner_margin(egui::Margin::symmetric(12, 8));
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (index, entry) in self.history.iter().enumerate() {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                    card.show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             ui.label(
@@ -795,7 +1005,7 @@ impl App {
                         });
                         ui.add(egui::Label::new(entry.final_text.trim()).wrap());
                     });
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                 }
             });
         if let Some(index) = copied {
@@ -868,19 +1078,39 @@ impl eframe::App for App {
         self.poll();
         // poll for outside changes even when the mouse is still
         ui.ctx().request_repaint_after(Duration::from_secs(1));
+        let palette = theme::of(ui.visuals().dark_mode);
         egui::Panel::left("pages")
             .resizable(false)
             .exact_size(150.0)
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .fill(palette.side)
+                    .inner_margin(egui::Margin::symmetric(10, 0)),
+            )
             .show(ui, |ui| {
-                ui.add_space(12.0);
-                ui.heading("Phonon");
-                ui.add_space(8.0);
+                ui.add_space(14.0);
+                ui.label(
+                    egui::RichText::new("Phonon")
+                        .heading()
+                        .strong()
+                        .color(palette.ember),
+                );
+                ui.add_space(10.0);
+                // page rows are filled, not outlined, as in the Mac's sidebar
+                let widgets = &mut ui.visuals_mut().widgets;
+                widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                widgets.active.bg_stroke = egui::Stroke::NONE;
                 for (page, label) in [
                     (Page::General, "Settings"),
                     (Page::History, "History"),
                     (Page::Dictionary, "Dictionary"),
                 ] {
-                    if ui.selectable_label(self.page == page, label).clicked() {
+                    // the whole row is the target, text on the left, as the Mac's sidebar
+                    let item =
+                        egui::Button::selectable(self.page == page, (label, egui::Atom::grow()))
+                            .min_size(egui::vec2(ui.available_width(), 30.0));
+                    if ui.add(item).clicked() {
                         self.page = page;
                         self.confirm_clear = false;
                     }
@@ -888,6 +1118,16 @@ impl eframe::App for App {
             });
         egui::Panel::bottom("message")
             .show_separator_line(false)
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .fill(palette.window)
+                    .inner_margin(egui::Margin {
+                        left: 18,
+                        right: 18,
+                        top: 4,
+                        bottom: 6,
+                    }),
+            )
             .show(ui, |ui| {
                 let (text, error) = self
                     .message
@@ -900,15 +1140,26 @@ impl eframe::App for App {
                     text.weak()
                 });
             });
-        egui::CentralPanel::default().show(ui, |ui| match self.page {
-            Page::General => {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.general(ui));
-            }
-            Page::History => self.history_page(ui),
-            Page::Dictionary => self.dictionary_page(ui),
-        });
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::central_panel(ui.style())
+                    .fill(palette.window)
+                    .inner_margin(egui::Margin {
+                        left: 18,
+                        right: 18,
+                        top: 12,
+                        bottom: 4,
+                    }),
+            )
+            .show(ui, |ui| match self.page {
+                Page::General => {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.general(ui));
+                }
+                Page::History => self.history_page(ui),
+                Page::Dictionary => self.dictionary_page(ui),
+            });
     }
 }
 
