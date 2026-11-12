@@ -330,7 +330,10 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Menu(tray::Command::Quit) => break,
+            Event::Menu(tray::Command::Quit) => {
+                tray::set_last(None);
+                break;
+            }
             Event::Menu(tray::Command::OpenFolder) => {
                 let root = paths::data_root();
                 let _ = std::process::Command::new("explorer").arg(&root).spawn();
@@ -464,18 +467,23 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
             if result.polished.trim().is_empty() {
                 tray::set_status("nothing was said");
             } else {
+                // Before the paste, so the tray has it whatever happens next.
+                tray::set_last(Some(result.polished.trim().to_string()));
                 // Every insertion ends with a space, as on macOS, so the next
                 // dictation does not run into this one ("afternoon?I think").
                 let text = format!("{} ", result.polished.trim());
-                let after = crate::settings::Settings::load().clipboard_after_paste();
-                match inject::insert(&text, after) {
-                    Ok(path) => tray::set_status(&format!("inserted ({path})")),
-                    Err(error) => {
-                        tray::notify(
-                            "Phonon could not insert the text",
-                            &format!("{error:#}"),
-                            true,
-                        );
+                if inject::nowhere_to_paste() {
+                    eprintln!("phonon: no window to paste into; keeping the text");
+                    keep_unpasted(result.polished.trim());
+                } else {
+                    let after = crate::settings::Settings::load().clipboard_after_paste();
+                    match inject::insert(&text, after) {
+                        Ok(path) => tray::set_status(&format!("inserted ({path})")),
+                        Err(error) => {
+                            // the error names the step that failed, never the text
+                            eprintln!("phonon: could not insert the text: {error:#}");
+                            keep_unpasted(result.polished.trim());
+                        }
                     }
                 }
             }
@@ -549,6 +557,26 @@ fn clear_history() {
         Err(error) => tray::notify(
             "Phonon could not clear history",
             &format!("{error:#}"),
+            true,
+        ),
+    }
+}
+
+/// A dictation that could not be pasted stays on the clipboard (no restore) and
+/// in the tray's "Copy last dictation", and the balloon says where it is.
+fn keep_unpasted(text: &str) {
+    match inject::copy(text) {
+        Ok(()) => {
+            tray::set_status("kept on the clipboard");
+            tray::notify(
+                crate::pipeline::NOT_PASTED_TITLE,
+                crate::pipeline::NOT_PASTED_BODY,
+                false,
+            );
+        }
+        Err(error) => tray::notify(
+            "Phonon could not insert the text",
+            &format!("{error:#}. It is in the tray: Copy last dictation."),
             true,
         ),
     }

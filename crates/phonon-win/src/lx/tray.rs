@@ -18,7 +18,8 @@ pub enum Command {
     ToggleHistory,
     /// Delete the history log and the kept recordings.
     ClearHistory,
-    /// Copy this text, the full text of the "Recent dictations" item clicked, to the clipboard.
+    /// Copy this text to the clipboard: the full text of the "Recent dictations"
+    /// item clicked, or the last dictation.
     CopyRecent(String),
 }
 
@@ -32,9 +33,29 @@ struct PhononTray {
     /// Local history as the menu shows it; the worker owns the files (`set_history`).
     history: bool,
     recent: Vec<String>,
+    /// The last dictation's final text, for "Copy last dictation": in memory
+    /// only, whatever Keep history says, so a paste that went nowhere is never
+    /// lost and nothing is written to disk. Gone when Phonon quits.
+    last: Option<String>,
 }
 
 impl PhononTray {
+    /// "Copy last dictation", greyed until there is one.
+    fn copy_last_item(&self) -> ksni::MenuItem<Self> {
+        let last = self.last.clone();
+        ksni::menu::StandardItem {
+            label: "Copy last dictation".into(),
+            enabled: last.is_some(),
+            activate: Box::new(move |t: &mut Self| {
+                if let Some(text) = &last {
+                    let _ = t.commands.send(Command::CopyRecent(text.clone()));
+                }
+            }),
+            ..Default::default()
+        }
+        .into()
+    }
+
     /// "Keep history", "Recent dictations" and "Clear history".
     fn history_items(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
@@ -171,6 +192,7 @@ impl ksni::Tray for PhononTray {
                 },
                 Command::Toggle,
             ),
+            self.copy_last_item(),
             SubMenu {
                 label: format!("Writing mode: {}", crate::mode::label(self.mode)),
                 submenu: vec![RadioGroup {
@@ -251,6 +273,7 @@ pub fn create(commands: Sender<Command>) {
         commands,
         history: false,
         recent: Vec::new(),
+        last: None,
     };
     // At login Phonon can start before the shell's tray host (Ubuntu's AppIndicator extension) is up;
     // without this the icon never appeared (Ubuntu 26.04 VM, 2026-11-06). ksni registers once the host appears.
@@ -308,12 +331,34 @@ pub fn set_history(on: bool, recent: Vec<String>) {
     }
 }
 
+/// Remember (or, with `None`, forget) the last dictation for "Copy last dictation".
+pub fn set_last(text: Option<String>) {
+    if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
+        if let Some(handle) = guard.as_ref() {
+            handle.update(move |t| t.last = text);
+        }
+    }
+}
+
 pub fn status() -> String {
     STATUS.lock().unwrap().clone()
 }
 
+/// A notification, also logged to stderr in full. stderr is the systemd user
+/// journal for an autostarted Phonon, so a body that could hold dictated text
+/// goes through `notify_private` instead.
 pub fn notify(title: &str, body: &str, is_error: bool) {
     eprintln!("phonon: {title}: {body}");
+    show(title, body, is_error);
+}
+
+/// A notification whose body stays out of the log: only the title is logged.
+pub fn notify_private(title: &str, body: &str, is_error: bool) {
+    eprintln!("phonon: {title}");
+    show(title, body, is_error);
+}
+
+fn show(title: &str, body: &str, is_error: bool) {
     let urgency = if is_error { "critical" } else { "normal" };
     let icon = match idle_icon() {
         "phonon" => "--icon=phonon",

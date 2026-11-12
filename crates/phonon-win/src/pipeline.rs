@@ -37,6 +37,27 @@ impl PassResult {
     }
 }
 
+/// The notice for a dictation Phonon could not paste, in the words of the Mac's
+/// card (bar/Sources/NotPasted.swift): the text is never lost, it waits on the
+/// clipboard and in the tray.
+pub const NOT_PASTED_TITLE: &str = "Nothing was focused, so Phonon kept your text";
+pub const NOT_PASTED_BODY: &str =
+    "It's on your clipboard: click a text box and press Ctrl+V. Also in the tray: Copy last dictation.";
+
+/// Whether the foreground window cannot take a paste, so Control-V would drop
+/// the text: no window, the desktop (`Progman`, or `WorkerW` once the wallpaper
+/// slideshow or Win+D has run), the taskbar on any monitor, or Phonon's own
+/// hidden window (focused after a tray-menu stop). Windows only; here so the
+/// rule is tested on every platform.
+pub fn nowhere_to_paste(class: &str, is_own_process: bool, is_null: bool) -> bool {
+    is_null
+        || is_own_process
+        || matches!(
+            class,
+            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+        )
+}
+
 /// The warm engine: a located recogniser and a running correction server.
 pub struct Engine {
     recognizer: Recognizer,
@@ -224,5 +245,19 @@ mod tests {
         for word in ["zebra", "quartz", "dictation", "polished"] {
             assert!(!line.contains(word), "{word} reached the log line: {line}");
         }
+    }
+
+    #[test]
+    fn nowhere_to_paste_is_the_desktop_the_taskbar_or_phonon() {
+        assert!(nowhere_to_paste("", false, true));
+        assert!(nowhere_to_paste("Progman", false, false));
+        assert!(nowhere_to_paste("WorkerW", false, false));
+        assert!(nowhere_to_paste("Shell_TrayWnd", false, false));
+        assert!(nowhere_to_paste("Shell_SecondaryTrayWnd", false, false));
+        assert!(nowhere_to_paste("PhononTrayWindow", true, false));
+        assert!(!nowhere_to_paste("Notepad", false, false));
+        assert!(!nowhere_to_paste("Chrome_WidgetWin_1", false, false));
+        // class names compare exactly, as GetClassNameW returns them
+        assert!(!nowhere_to_paste("progman2", false, false));
     }
 }

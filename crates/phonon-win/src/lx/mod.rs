@@ -258,7 +258,10 @@ fn app() -> Result<()> {
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            Event::Menu(tray::Command::Quit) => break,
+            Event::Menu(tray::Command::Quit) => {
+                tray::set_last(None);
+                break;
+            }
             Event::Menu(tray::Command::OpenFolder) => {
                 let _ = std::process::Command::new("xdg-open")
                     .arg(paths::data_root())
@@ -345,22 +348,27 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {
                 tray::set_status("nothing was said");
-            } else if session_locked() {
-                eprintln!("phonon: screen locked while recording; text not inserted");
             } else {
-                let text = format!("{} ", result.polished.trim());
-                let after = crate::settings::Settings::load().clipboard_after_paste();
-                match inject::insert(&text, after) {
-                    Ok(path) => eprintln!(
-                        "phonon: {path} {} chars, key-up to insert {} ms",
-                        text.len(),
-                        key_up.elapsed().as_millis()
-                    ),
-                    Err(error) => tray::notify(
-                        "Phonon could not insert the text",
-                        &format!("{error:#}"),
-                        true,
-                    ),
+                // Before the paste, so the tray has it whatever happens next,
+                // including a screen that locked while recording.
+                tray::set_last(Some(result.polished.trim().to_string()));
+                if session_locked() {
+                    eprintln!("phonon: screen locked while recording; text not inserted");
+                } else {
+                    let text = format!("{} ", result.polished.trim());
+                    let after = crate::settings::Settings::load().clipboard_after_paste();
+                    match inject::insert(&text, after) {
+                        Ok(path) => eprintln!(
+                            "phonon: {path} {} chars, key-up to insert {} ms",
+                            text.len(),
+                            key_up.elapsed().as_millis()
+                        ),
+                        Err(error) => {
+                            // the error names the step that failed, never the text
+                            eprintln!("phonon: could not insert the text: {error:#}");
+                            keep_unpasted(result.polished.trim());
+                        }
+                    }
                 }
             }
         }
@@ -425,6 +433,23 @@ fn clear_history(active: Option<&std::path::Path>) {
         Err(error) => tray::notify(
             "Phonon could not clear history",
             &format!("{error:#}"),
+            true,
+        ),
+    }
+}
+
+/// A dictation that could not be pasted stays on the clipboard and in the
+/// tray's "Copy last dictation", and the notification says where it is.
+fn keep_unpasted(text: &str) {
+    match inject::copy(text) {
+        Ok(()) => tray::notify_private(
+            crate::pipeline::NOT_PASTED_TITLE,
+            crate::pipeline::NOT_PASTED_BODY,
+            false,
+        ),
+        Err(error) => tray::notify(
+            "Phonon could not insert the text",
+            &format!("{error:#}. It is in the tray: Copy last dictation."),
             true,
         ),
     }

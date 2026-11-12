@@ -51,6 +51,8 @@ const ID_CLEAR_HISTORY: usize = 5;
 const ID_SETTINGS: usize = 6;
 /// "Download Phonon X..." once an update check found a newer release (`update::available`).
 const ID_UPDATE: usize = 7;
+/// "Copy last dictation": the last dictation's text, held in memory only.
+const ID_COPY_LAST: usize = 8;
 /// "Recent dictations" submenu items: ID_RECENT + index into the recent list.
 const ID_RECENT: usize = 300;
 /// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
@@ -73,7 +75,8 @@ pub enum Command {
     ToggleHistory,
     /// Delete the history log and the kept recordings.
     ClearHistory,
-    /// Copy this text, the full text of the "Recent dictations" item clicked, to the clipboard.
+    /// Copy this text to the clipboard: the full text of the "Recent dictations"
+    /// item clicked, or the last dictation.
     CopyRecent(String),
 }
 
@@ -87,6 +90,18 @@ pub fn set_history(on: bool, recent: Vec<String>) {
     HISTORY_ON.store(on, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut list) = RECENT.lock() {
         *list = recent;
+    }
+}
+
+/// The last dictation's final text, for "Copy last dictation": in memory only,
+/// whatever Keep history says, so a paste that went nowhere is never lost and
+/// nothing is written to disk. Gone when Phonon quits.
+static LAST: Mutex<Option<String>> = Mutex::new(None);
+
+/// Remember (or, with `None`, forget) the last dictation.
+pub fn set_last(text: Option<String>) {
+    if let Ok(mut last) = LAST.lock() {
+        *last = text;
     }
 }
 
@@ -472,6 +487,8 @@ fn show_menu(hwnd: HWND) {
     }
     let heading = wide(&format!("Phonon: {}", status()));
     let toggle = wide("Start or stop dictation");
+    let copy_last = wide("Copy last dictation");
+    let has_last = LAST.lock().map(|last| last.is_some()).unwrap_or(false);
     let folder = wide("Open the Phonon folder");
     let settings = wide("Settings\u{2026}");
     let quit = wide("Quit Phonon");
@@ -507,6 +524,8 @@ fn show_menu(hwnd: HWND) {
         );
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
         AppendMenuW(menu, MF_STRING, ID_TOGGLE, toggle.as_ptr());
+        let greyed = if has_last { 0 } else { MF_GRAYED };
+        AppendMenuW(menu, MF_STRING | greyed, ID_COPY_LAST, copy_last.as_ptr());
         AppendMenuW(
             menu,
             MF_STRING | MF_POPUP,
@@ -574,6 +593,12 @@ unsafe extern "system" fn window_proc(
                 // A separate process, started off this thread (it runs the keyboard hook).
                 ID_SETTINGS => {
                     std::thread::spawn(crate::window::open);
+                }
+                ID_COPY_LAST => {
+                    let text = LAST.lock().ok().and_then(|last| last.clone());
+                    if let Some(text) = text {
+                        send(Command::CopyRecent(text))
+                    }
                 }
                 id if (ID_RECENT..ID_RECENT + crate::history::RECENT).contains(&id) => {
                     let text = SHOWN.lock().ok().and_then(|s| s.text(id - ID_RECENT));

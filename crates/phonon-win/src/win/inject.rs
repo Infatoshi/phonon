@@ -20,10 +20,29 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL,
     VK_V,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
+};
 
 use crate::settings::ClipboardAfterPaste;
 
 const CF_UNICODETEXT: u32 = 13;
+
+/// Whether a paste now would land nowhere (see `pipeline::nowhere_to_paste`):
+/// Control-V into the desktop, the taskbar or no window at all is dropped
+/// without a word, and the clipboard restore then took the text away too.
+pub fn nowhere_to_paste() -> bool {
+    let window = unsafe { GetForegroundWindow() };
+    if window.is_null() {
+        return crate::pipeline::nowhere_to_paste("", false, true);
+    }
+    let mut class = [0u16; 256];
+    let length = unsafe { GetClassNameW(window, class.as_mut_ptr(), class.len() as i32) };
+    let class = String::from_utf16_lossy(&class[..length.max(0) as usize]);
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    crate::pipeline::nowhere_to_paste(&class, pid == std::process::id(), false)
+}
 
 /// Insert `text` into the focused window. `after` says what the clipboard holds
 /// afterwards (settings.json `clipboard_after_paste`). Returns the path that was used.
