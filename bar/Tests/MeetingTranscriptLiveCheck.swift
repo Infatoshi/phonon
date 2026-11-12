@@ -41,7 +41,15 @@ final class MeetingTranscriptLiveCheck: XCTestCase {
         let output = Pipe()
         sidecar.standardInput = input
         sidecar.standardOutput = output
-        sidecar.standardError = FileHandle.nullDevice
+        // PHONON_MEETING_CHECK_STDERR=<file>: keep the sidecar's log (a run that stops early)
+        if let log = env["PHONON_MEETING_CHECK_STDERR"],
+            FileManager.default.createFile(atPath: log, contents: nil),
+            let handle = FileHandle(forWritingAtPath: log)
+        {
+            sidecar.standardError = handle
+        } else {
+            sidecar.standardError = FileHandle.nullDevice
+        }
         try sidecar.run()
         defer {
             sidecar.terminate()
