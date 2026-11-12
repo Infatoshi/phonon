@@ -44,6 +44,7 @@ mod resident {
             joiner: *const c_char,
             tokens: *const c_char,
             threads: c_int,
+            provider: *const c_char,
         ) -> *const c_void;
         fn phonon_asr_file(recognizer: *const c_void, wav: *const c_char) -> *mut c_char;
         fn phonon_asr_samples(
@@ -124,6 +125,25 @@ mod resident {
             .map_err(|e| anyhow!("load {}: {e}", path.display()))
     }
 
+    /// ONNX Runtime session options for the resident model, read by sherpa-onnx from the file named after
+    /// "cpu:" in the provider string. With its CPU arena and memory patterns on (the default), ONNX Runtime
+    /// keeps the activation memory of the longest pass so far for the life of the process: on the Ubuntu QA VM
+    /// Phonon grew from 0.70 GB to 1.24 GB RSS after one 68 s dictation and never came back (2026-11-10).
+    const SESSION_CONFIG: &str = "EnableCpuMemArena=0\nEnableMemPattern=0\n";
+
+    /// "cpu:<config>", or plain "cpu" (the old behaviour) when the file cannot be written.
+    fn provider(runtime: &Path) -> String {
+        let path = runtime.join("phonon-session.cfg");
+        let current = std::fs::read_to_string(&path).ok();
+        if current.as_deref() == Some(SESSION_CONFIG)
+            || std::fs::write(&path, SESSION_CONFIG).is_ok()
+        {
+            format!("cpu:{}", path.display())
+        } else {
+            "cpu".to_string()
+        }
+    }
+
     impl Resident {
         pub fn load(runtime: &Path, model_dir: &Path, threads: usize) -> Result<Self> {
             if LIBRARY.get().is_none() {
@@ -142,6 +162,7 @@ mod resident {
                 c("joiner.int8.onnx"),
                 c("tokens.txt"),
             );
+            let provider = CString::new(provider(runtime).as_bytes()).unwrap();
             let handle = unsafe {
                 phonon_asr_create(
                     enc.as_ptr(),
@@ -149,6 +170,7 @@ mod resident {
                     joi.as_ptr(),
                     tok.as_ptr(),
                     threads as c_int,
+                    provider.as_ptr(),
                 )
             };
             if handle.is_null() {
@@ -181,6 +203,7 @@ mod resident {
                 .trim()
                 .to_string();
             unsafe { phonon_asr_free(text) };
+            release_freed_memory();
             Ok(out)
         }
 
@@ -206,7 +229,18 @@ mod resident {
                 .trim()
                 .to_string();
             unsafe { phonon_asr_free(text) };
+            release_freed_memory();
             Ok(out)
+        }
+    }
+
+    /// Give the pages a pass freed back to the system. With the arena off, ONNX Runtime frees a pass's
+    /// activations, but glibc keeps the freed heap: after one 68 s dictation Phonon stayed at 0.90-1.05 GB
+    /// RSS instead of 0.71 GB (Ubuntu QA VM, 2026-11-10). A few ms, once per pass.
+    fn release_freed_memory() {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_trim(0);
         }
     }
 }

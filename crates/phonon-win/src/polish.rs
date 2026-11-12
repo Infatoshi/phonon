@@ -431,6 +431,12 @@ impl Server {
             // 16-token prefill 480 vs 548 t/s (about 4 ms per dictation), 64-token
             // prefill 1072 vs 704 t/s.
             .arg("--no-repack")
+            // No host-memory prompt cache (default up to 8 GiB): one client and one
+            // prompt prefix, which the slot's own KV cache already reuses. The server's
+            // private memory grew 125 -> 174 MB over ten dictations without this
+            // (Ubuntu QA VM, 2026-11-10).
+            .arg("--cache-ram")
+            .arg("0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         match gpu {
