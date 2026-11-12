@@ -174,7 +174,9 @@ fn app() -> Result<()> {
     tray::set_status(&idle);
     tray::notify(
         "Phonon is ready",
-        &format!("Hold {name} to dictate, or tap it to start and tap again to stop."),
+        // one line in a GNOME notification (about 45 characters): the longer
+        // "or tap it to start and tap again to stop" was cut off mid-word
+        &format!("Hold {name} to dictate, or tap to toggle."),
         false,
     );
 

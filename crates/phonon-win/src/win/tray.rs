@@ -306,7 +306,7 @@ fn pick_key(index: usize) {
             let label = super::hook::key_label(code);
             notify(
                 &format!("Dictation key: {label}"),
-                &format!("Hold {label} to dictate, or tap it to start and tap again to stop."),
+                &format!("Hold {label} to dictate, or tap to toggle."),
                 false,
             );
             send(Command::KeyChanged);
