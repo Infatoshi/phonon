@@ -7,6 +7,8 @@
 #     on E cores about 2/3 of the time while the caller was User Initiated)
 #   - repack-path decode matmuls split into about 64-row chunks (stock: 4 per thread)
 #   - ggml_cpu_phonon_set(inherit_qos, repack_rows) to switch both back to stock at run time for A/B runs
+# then ios/llama-b12132-shortlist.patch: the shortlist output head (llama_phonon_sl_*), inert unless the model file
+# carries phonon.sl.k, phonon.sl.order and output.slx (built by ios/shortlist_gguf.py)
 # usage: ./build_llama.sh [work dir, default $TMPDIR/phonon-llama-b12132]
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -18,6 +20,7 @@ fi
 cd "$WORK"
 git checkout --quiet -- . && git clean -fdq -e 'build-*'
 git apply "$HERE/llama-b12132-phonon.patch"
+git apply "$HERE/llama-b12132-shortlist.patch"
 ./build-xcframework.sh ios-device ios-sim > "$HERE/build-llama.log" 2>&1 || { tail -30 "$HERE/build-llama.log"; exit 1; }
 rm -rf "$HERE/Frameworks/llama.xcframework"
 mkdir -p "$HERE/Frameworks"

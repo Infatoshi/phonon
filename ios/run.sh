@@ -5,10 +5,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 DEVICE=${PHONON_IOS_DEVICE:?set PHONON_IOS_DEVICE to the iPhone UDID}
 : "${PHONON_TEAM_ID:?set PHONON_TEAM_ID to your Apple team ID}"
-# The refiner needs the patched llama build (ggml_cpu_phonon_set), not the stock release; process substitution
-# rather than a pipe, so grep -q closing early cannot fail the check under pipefail.
-if ! grep -q ggml_cpu_phonon_set < <(nm -gU Frameworks/llama.xcframework/ios-arm64/llama.framework/llama 2>/dev/null); then
-  echo "Frameworks/llama.xcframework is missing or unpatched (no ggml_cpu_phonon_set); building it with ./build_llama.sh"
+# The refiner needs the patched llama build (ggml_cpu_phonon_set from the threadpool patch, llama_phonon_sl_sample
+# from the shortlist patch), not the stock release; a here-string rather than a pipe, so grep -q closing early cannot
+# fail the check under pipefail.
+SYMS=$(nm -gU Frameworks/llama.xcframework/ios-arm64/llama.framework/llama 2>/dev/null || true)
+if ! grep -q ggml_cpu_phonon_set <<< "$SYMS" || ! grep -q llama_phonon_sl_sample <<< "$SYMS"; then
+  echo "Frameworks/llama.xcframework is missing or unpatched (no ggml_cpu_phonon_set or llama_phonon_sl_sample); building it with ./build_llama.sh"
   ./build_llama.sh
 fi
 xcodegen generate --quiet

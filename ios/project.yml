@@ -96,6 +96,10 @@ targets:
           test -f "$PHONON_SELFTEST_MODEL" || { echo "error: no model at $PHONON_SELFTEST_MODEL"; exit 1; }
           cp -c "$PHONON_SELFTEST_MODEL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner.gguf" 2>/dev/null \
             || cp "$PHONON_SELFTEST_MODEL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner.gguf"
+          # shortlist-head experiment: optional second model next to it (testShortlistHeadTokenIdentical)
+          SL="$(dirname "$PHONON_SELFTEST_MODEL")/refiner-sl.gguf"
+          if [ -f "$SL" ]; then cp -c "$SL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner-sl.gguf" 2>/dev/null \
+            || cp "$SL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner-sl.gguf"; fi
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/refiner.gguf
   PhononKeyboard:

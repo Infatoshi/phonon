@@ -1,0 +1,297 @@
+diff --git a/include/llama.h b/include/llama.h
+index 3877b69..d993c54 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -504,6 +504,27 @@ extern "C" {
+ 
+     LLAMA_API void llama_detach_threadpool(struct llama_context * ctx);
+ 
++    // Phonon shortlist head (ios/llama-b12132-shortlist.patch). A model built by ios/shortlist_gguf.py has its output
++    // rows reordered (static shortlist first) and its logits are in slot space; use these instead of a sampler.
++    // The context keeps the final hidden state of the last output for the fallback (no embeddings setting needed).
++    // Number of static shortlist rows, 0 if the model has no shortlist head.
++    LLAMA_API int32_t llama_phonon_sl_k(const struct llama_context * ctx);
++    // Per dictation: make the rows of these token ids available (the transcript's own ids, vocabulary-line ids).
++    // Returns the number of extra 8-row groups used; -1 if they did not fit (every step then falls back).
++    LLAMA_API int32_t llama_phonon_sl_set_extras(struct llama_context * ctx, const llama_token * ids, int32_t n_ids);
++    // Greedy token for the last output. Rule R1: if the best in-list logit is below `threshold`, compute every other
++    // row and take the full argmax (ties: lowest id). debug != 0: always compute every row and return the full
++    // argmax; *out_sl gets what the shortlist rule alone would have returned. Outputs may be NULL.
++    LLAMA_API llama_token llama_phonon_sl_sample(
++            struct llama_context * ctx,
++                           float   threshold,
++                         int32_t   debug,
++                         int32_t * out_fallback,
++                           float * out_best_logit,
++                     llama_token * out_sl);
++    // Logit of every token id for the last output in id space (n_vocab floats, computes every row). For checks.
++    LLAMA_API int32_t llama_phonon_sl_full_logits(struct llama_context * ctx, float * out_n_vocab);
++
+     typedef void (*llama_model_set_tensor_data_t)(struct ggml_tensor * tensor, void * userdata);
+ 
+     // Create a new model from GGUF metadata as well as a function to set the tensor data
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 63b2032..b2499a1 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2263,6 +2263,15 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+             }
+         }
+ 
++        // Phonon shortlist head: keep the final hidden state of the last output for the fallback
++        if (model.output_slx && res->get_embd() && n_outputs > 0) {
++            ggml_tensor * te = res->get_embd();
++            const int64_t ne = te->ne[0];
++            phonon_sl_h.resize(ne);
++            ggml_backend_t backend_te = ggml_backend_sched_get_tensor_backend(sched.get(), te);
++            ggml_backend_tensor_get_async(backend_te, te, phonon_sl_h.data(), (n_outputs - 1)*ne*sizeof(float), ne*sizeof(float));
++        }
++
+         // extract embeddings
+         if (embd.data && t_embd && n_outputs > 0) {
+             ggml_backend_t backend_embd = ggml_backend_sched_get_tensor_backend(sched.get(), t_embd);
+@@ -4449,6 +4458,146 @@ void llama_detach_threadpool(llama_context * ctx) {
+     ctx->detach_threadpool();
+ }
+ 
++// ---------- Phonon shortlist head ----------
++
++int32_t llama_context::phonon_sl_set_extras(const llama_token * ids, int32_t n_ids) {
++    ggml_tensor * slx = model.output_slx;
++    if (!slx) {
++        return 0;
++    }
++    const int64_t K   = model.phonon_sl_k;
++    const int64_t E   = slx->ne[1];
++    const int64_t n_v = model.output->ne[1];
++    const auto &  ord = model.phonon_sl_order;
++    if ((int64_t) phonon_sl_pos.size() != n_v) {
++        phonon_sl_pos.assign(n_v, -1);
++        for (int64_t s = 0; s < n_v; ++s) {
++            phonon_sl_pos[ord[s]] = (int32_t) s;
++        }
++    }
++    std::vector<int64_t> groups;
++    for (int32_t i = 0; i < n_ids; ++i) {
++        if (ids[i] < 0 || ids[i] >= n_v) {
++            continue;
++        }
++        const int64_t s = phonon_sl_pos[ids[i]];
++        if (s < K) {
++            continue;
++        }
++        const int64_t g = s / 8;
++        if (std::find(groups.begin(), groups.end(), g) == groups.end()) {
++            groups.push_back(g);
++        }
++    }
++    phonon_sl_extra_ids.assign(E, -1);
++    phonon_sl_overflow = (int64_t) groups.size() * 8 > E;
++    if (phonon_sl_overflow) {
++        return -1;
++    }
++    // 8 consecutive rows are one contiguous block both in plain Q4_K and in the repacked 8-row interleaved layout
++    const size_t gbytes = 8 * model.output->nb[1];
++    for (size_t i = 0; i < groups.size(); ++i) {
++        memcpy((char *) slx->data + i * gbytes, (const char *) model.output->data + groups[i] * gbytes, gbytes);
++        for (int j = 0; j < 8; ++j) {
++            phonon_sl_extra_ids[i * 8 + j] = ord[groups[i] * 8 + j];
++        }
++    }
++    return (int32_t) groups.size();
++}
++
++bool llama_context::phonon_sl_rest(const float * h, float * out) {
++    ggml_tensor * W = model.output;
++    const int64_t K      = model.phonon_sl_k;
++    const int64_t n_embd = W->ne[0];
++    const int64_t n_rest = W->ne[1] - K;
++    ggml_init_params ip = { ggml_tensor_overhead() * 8 + ggml_graph_overhead(), nullptr, true };
++    ggml_context * gctx = ggml_init(ip);
++    ggml_tensor * Wr = ggml_view_2d(gctx, W, n_embd, n_rest, W->nb[1], K * W->nb[1]);
++    ggml_tensor * x  = ggml_new_tensor_2d(gctx, GGML_TYPE_F32, n_embd, 1);
++    ggml_tensor * y  = ggml_mul_mat(gctx, Wr, x);
++    std::vector<float> xbuf(h, h + n_embd);
++    x->data = xbuf.data();
++    y->data = out;
++    Wr->data = nullptr;
++    ggml_backend_view_init(Wr);  // buffer, data and the repack traits of the parent weight
++    ggml_cgraph * gf = ggml_new_graph(gctx);
++    ggml_build_forward_expand(gf, y);
++    const bool ok = ggml_backend_graph_compute(backend_cpu, gf) == GGML_STATUS_SUCCESS;
++    ggml_free(gctx);
++    return ok;
++}
++
++llama_token llama_context::phonon_sl_sample(float threshold, int32_t debug, int32_t * out_fallback, float * out_best,
++                                            llama_token * out_sl) {
++    const auto &  ord = model.phonon_sl_order;
++    const int64_t K   = model.phonon_sl_k;
++    const int64_t n_v = (int64_t) ord.size();
++    const float * lg  = get_logits_ith(-1);
++    int32_t best_id = -1;
++    float   best    = -INFINITY;
++    auto consider = [&](float v, int32_t id) {
++        if (v > best || (v == best && id < best_id)) {
++            best    = v;
++            best_id = id;
++        }
++    };
++    for (int64_t s = 0; s < K; ++s) {
++        consider(lg[s], ord[s]);
++    }
++    for (size_t i = 0; i < phonon_sl_extra_ids.size(); ++i) {
++        if (phonon_sl_extra_ids[i] >= 0) {
++            consider(lg[K + i], phonon_sl_extra_ids[i]);
++        }
++    }
++    const bool fb = phonon_sl_overflow || !(best >= threshold);
++    if (out_sl)       *out_sl       = best_id;
++    if (out_best)     *out_best     = best;
++    if (out_fallback) *out_fallback = fb ? 1 : 0;
++    if (!fb && !debug) {
++        return best_id;
++    }
++    phonon_sl_rest_buf.resize(n_v - K);
++    if (phonon_sl_h.empty() || !phonon_sl_rest(phonon_sl_h.data(), phonon_sl_rest_buf.data())) {
++        return best_id;
++    }
++    for (int64_t s = K; s < n_v; ++s) {
++        consider(phonon_sl_rest_buf[s - K], ord[s]);
++    }
++    return best_id;
++}
++
++int32_t llama_context::phonon_sl_full_logits(float * out) {
++    const auto &  ord = model.phonon_sl_order;
++    const int64_t K   = model.phonon_sl_k;
++    const int64_t n_v = (int64_t) ord.size();
++    const float * lg  = get_logits_ith(-1);
++    phonon_sl_rest_buf.resize(n_v - K);
++    if (phonon_sl_h.empty() || !phonon_sl_rest(phonon_sl_h.data(), phonon_sl_rest_buf.data())) {
++        return -1;
++    }
++    for (int64_t s = 0; s < n_v; ++s) {
++        out[ord[s]] = s < K ? lg[s] : phonon_sl_rest_buf[s - K];
++    }
++    return 0;
++}
++
++int32_t llama_phonon_sl_k(const llama_context * ctx) {
++    return (int32_t) ctx->get_model().phonon_sl_k;
++}
++
++int32_t llama_phonon_sl_set_extras(llama_context * ctx, const llama_token * ids, int32_t n_ids) {
++    return ctx->phonon_sl_set_extras(ids, n_ids);
++}
++
++llama_token llama_phonon_sl_sample(llama_context * ctx, float threshold, int32_t debug, int32_t * out_fallback,
++                                   float * out_best_logit, llama_token * out_sl) {
++    return ctx->phonon_sl_sample(threshold, debug, out_fallback, out_best_logit, out_sl);
++}
++
++int32_t llama_phonon_sl_full_logits(llama_context * ctx, float * out_n_vocab) {
++    return ctx->phonon_sl_full_logits(out_n_vocab);
++}
++
+ void llama_set_n_threads(llama_context * ctx, int32_t n_threads, int32_t n_threads_batch) {
+     ctx->set_n_threads(n_threads, n_threads_batch);
+ }
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 39c5619..67d0b5f 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -115,6 +115,19 @@ struct llama_context {
+ 
+     void detach_threadpool();
+ 
++    // Phonon shortlist head (see llama.h llama_phonon_sl_*)
++    int32_t phonon_sl_set_extras(const llama_token * ids, int32_t n_ids);
++    // logits of the rows [K, n_vocab) of the reordered output for hidden state h -> out (n_vocab - K floats)
++    bool    phonon_sl_rest(const float * h, float * out);
++    llama_token phonon_sl_sample(float threshold, int32_t debug, int32_t * out_fallback, float * out_best,
++                                 llama_token * out_sl);
++    int32_t phonon_sl_full_logits(float * out);
++    std::vector<int32_t> phonon_sl_extra_ids; // slot K + i -> token id, -1 = unused
++    bool                 phonon_sl_overflow = false;
++    std::vector<float>   phonon_sl_rest_buf;
++    std::vector<int32_t> phonon_sl_pos;       // token id -> slot
++    std::vector<float>   phonon_sl_h;         // final hidden state of the last output of the last decode
++
+     void set_n_threads(int32_t n_threads, int32_t n_threads_batch);
+ 
+     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
+diff --git a/src/llama-model.h b/src/llama-model.h
+index 45d2b86..3523839 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -777,6 +777,11 @@ struct llama_model {
+     struct ggml_tensor * output_res_score = nullptr; // kimi-k3: final cross-layer residual mix
+     struct ggml_tensor * output_norm_b   = nullptr;
+     struct ggml_tensor * output          = nullptr;
++    // Phonon shortlist head (ios/llama-b12132-shortlist.patch): output rows reordered, the first phonon_sl_k are
++    // the static shortlist; phonon_sl_order maps row (slot) -> token id; output_slx holds per-dictation extra rows
++    struct ggml_tensor * output_slx      = nullptr;
++    int64_t              phonon_sl_k     = 0;
++    std::vector<int32_t> phonon_sl_order;
+     struct ggml_tensor * output_b        = nullptr;
+     struct ggml_tensor * output_norm_enc = nullptr;
+ 
+diff --git a/src/models/lfm3.cpp b/src/models/lfm3.cpp
+index 20838f8..2e913c4 100644
+--- a/src/models/lfm3.cpp
++++ b/src/models/lfm3.cpp
+@@ -30,7 +30,7 @@ void llama_model_lfm3::load_arch_hparams(llama_model_loader & ml) {
+     }
+ }
+ 
+-void llama_model_lfm3::load_arch_tensors(llama_model_loader &) {
++void llama_model_lfm3::load_arch_tensors(llama_model_loader & ml) {
+     LLAMA_LOAD_LOCALS;
+ 
+     tok_embd    = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,  "weight"), {n_embd, n_vocab}, 0);
+@@ -40,6 +40,22 @@ void llama_model_lfm3::load_arch_tensors(llama_model_loader &) {
+         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
+     }
+ 
++    // Phonon shortlist head: phonon.sl.k + phonon.sl.order in the metadata, reordered untied output, output.slx rows
++    {
++        const int64_t kid = gguf_find_key(ml.metadata, "phonon.sl.k");
++        const int64_t oid = gguf_find_key(ml.metadata, "phonon.sl.order");
++        const ggml_tensor * slx_meta = ml.get_tensor_meta(tn(LLM_TENSOR_OUTPUT, "slx").str().c_str());
++        if (kid >= 0 && oid >= 0 && slx_meta) {
++            GGML_ASSERT((int64_t) gguf_get_arr_n(ml.metadata, oid) == n_vocab);
++            phonon_sl_k = gguf_get_val_u32(ml.metadata, kid);
++            const int32_t * ord = (const int32_t *) gguf_get_arr_data(ml.metadata, oid);
++            phonon_sl_order.assign(ord, ord + n_vocab);
++            output_slx = create_tensor(tn(LLM_TENSOR_OUTPUT, "slx"), {n_embd, slx_meta->ne[1]}, 0);
++            GGML_ASSERT(phonon_sl_k % 8 == 0 && slx_meta->ne[1] % 8 == 0);
++            GGML_ASSERT(phonon_sl_k + slx_meta->ne[1] <= n_vocab);
++        }
++    }
++
+     int rope_freqs_flag = 0;
+ 
+     for (int i = 0; i < n_layer; ++i) {
+@@ -209,7 +225,20 @@ llama_model_lfm3::graph<decision>::graph(const llama_model & model, const llm_gr
+     cb(cur, "result_norm", -1);
+     res->t_embd = cur;
+ 
+-    cur = build_lora_mm(model.output, cur, model.output_s);
++    if (model.output_slx) {
++        // Phonon shortlist head: logits in slot space = [K static rows | output_slx rows | zeros]. Each row is the
++        // same quantised data and the same mul_mat kernel as the full head, so these logits equal the full head's.
++        const int64_t K   = model.phonon_sl_k;
++        const int64_t E   = model.output_slx->ne[1];
++        const int64_t n_v = model.output->ne[1];
++        ggml_tensor * ws = ggml_view_2d(ctx0, model.output, model.output->ne[0], K, model.output->nb[1], 0);
++        ggml_tensor * ls = ggml_mul_mat(ctx0, ws, cur);
++        ggml_tensor * lx = ggml_mul_mat(ctx0, model.output_slx, cur);
++        cur = ggml_concat(ctx0, ls, lx, 0);
++        cur = ggml_pad(ctx0, cur, (int) (n_v - K - E), 0, 0, 0);
++    } else {
++        cur = build_lora_mm(model.output, cur, model.output_s);
++    }
+     cb(cur, "result_output", -1);
+ 
+     res->t_logits = cur;
