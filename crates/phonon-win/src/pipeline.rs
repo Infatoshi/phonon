@@ -44,6 +44,29 @@ pub const NOT_PASTED_TITLE: &str = "Nothing was focused, so Phonon kept your tex
 pub const NOT_PASTED_BODY: &str =
     "It's on your clipboard: click a text box and press Ctrl+V. Also in the tray: Copy last dictation.";
 
+/// The notice for a dictation Phonon kept instead of pasting: `nothing_focused`
+/// says why (no window to paste into, or the paste itself failed, such as a
+/// clipboard held by another app), `on_clipboard` whether the text could be left
+/// on the clipboard. The text itself is never in the notice: Windows keeps
+/// notifications on disk. Returns (title, body).
+pub fn kept_notice(nothing_focused: bool, on_clipboard: bool) -> (&'static str, &'static str) {
+    match (nothing_focused, on_clipboard) {
+        (true, true) => (NOT_PASTED_TITLE, NOT_PASTED_BODY),
+        (false, true) => (
+            "Phonon could not paste, so it kept your text",
+            NOT_PASTED_BODY,
+        ),
+        (true, false) => (
+            NOT_PASTED_TITLE,
+            "Another app is holding the clipboard. Your text is in the tray: Copy last dictation.",
+        ),
+        (false, false) => (
+            "The clipboard was busy, so Phonon kept your text",
+            "Another app is holding the clipboard. Your text is in the tray: Copy last dictation.",
+        ),
+    }
+}
+
 /// Whether the foreground window cannot take a paste, so Control-V would drop
 /// the text: no window, the desktop (`Progman`, or `WorkerW` once the wallpaper
 /// slideshow or Win+D has run), the taskbar on any monitor, or Phonon's own
@@ -245,6 +268,17 @@ mod tests {
         for word in ["zebra", "quartz", "dictation", "polished"] {
             assert!(!line.contains(word), "{word} reached the log line: {line}");
         }
+    }
+
+    #[test]
+    fn a_kept_dictation_says_why_and_where_it_is() {
+        assert_eq!(kept_notice(true, true), (NOT_PASTED_TITLE, NOT_PASTED_BODY));
+        let (title, body) = kept_notice(false, false);
+        assert!(title.contains("clipboard was busy"));
+        assert!(body.contains("Copy last dictation") && !body.contains("Ctrl+V"));
+        // whenever the text is not on the clipboard, the notice points at the tray only
+        assert!(!kept_notice(true, false).1.contains("Ctrl+V"));
+        assert!(kept_notice(false, true).1.contains("Ctrl+V"));
     }
 
     #[test]

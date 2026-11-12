@@ -2,11 +2,10 @@
 //!
 //! The clipboard and Control-V, as on macOS; the previous clipboard text is put
 //! back afterwards, unless settings.json `clipboard_after_paste` is "dictation",
-//! which leaves the dictation there. Typing with `SendInput` Unicode key events is only the
-//! fallback for when the clipboard cannot be used: Windows 11's Notepad turns a
-//! burst of those events into "Can ??????" (everything after the first word
-//! became question marks, 2026-11-05 on 26100), while the same text pasted, or
-//! typed one character per call with a pause, arrives intact.
+//! which leaves the dictation there. Nothing is typed key by key: Windows 11's
+//! Notepad turns typed key events into "Can ??????", repeats and gaps
+//! (2026-11-05 and 2026-11-12), while the same text pasted arrives intact. When
+//! the clipboard cannot be used, the caller keeps the text for the user.
 
 use std::ffi::c_void;
 
@@ -17,8 +16,7 @@ use windows_sys::Win32::System::DataExchange::{
 };
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_CONTROL,
-    VK_V,
+    SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
@@ -53,70 +51,31 @@ pub fn insert(text: &str, after: ClipboardAfterPaste) -> Result<&'static str> {
     // The clipboard work runs on its own thread with a time limit: GetClipboardData
     // and EmptyClipboard wait on the clipboard's current owner without one, and an
     // owner that stops answering held the dictation until it recovered (25 s in the
-    // Windows 11 QA VM with a hung OLE owner, 2026-11-12). Past the limit Phonon
-    // types the text instead. The stuck thread may still put the dictation on the
-    // clipboard later, but only this thread presses Control-V, so it cannot paste twice.
+    // Windows 11 QA VM with a hung OLE owner, 2026-11-12). Past the limit the
+    // caller keeps the text for the user (tray: Copy last dictation) and says so.
+    // Phonon does not type it instead: typed key events reached Windows 11 Notepad
+    // with characters lost or changed in 2 of 6 idle trials (Unicode events) and
+    // 2 of 2 under CPU load (real key presses), where a paste is exact. The stuck thread
+    // may still put the dictation on the clipboard later; nothing presses
+    // Control-V after this returns, so it cannot paste late.
     let owned = text.to_string();
-    let error = match bounded(CLIPBOARD_WAIT, move || load_clipboard(&owned, after)) {
-        Some(Ok(previous)) => match press_paste().context("send Control-V") {
-            Ok(()) => {
-                if let Some(previous) = after.to_restore(previous) {
-                    // The target window reads the clipboard on its own schedule.
-                    // Restoring it instantly would race the paste.
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    let _ = set_clipboard_text(&previous);
-                }
-                return Ok("pasted");
+    match bounded(CLIPBOARD_WAIT, move || load_clipboard(&owned, after)) {
+        Some(Ok(previous)) => {
+            press_paste().context("send Control-V")?;
+            if let Some(previous) = after.to_restore(previous) {
+                // The target window reads the clipboard on its own schedule.
+                // Restoring it instantly would race the paste.
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let _ = set_clipboard_text(&previous);
             }
-            Err(error) => error,
-        },
-        Some(Err(error)) => error,
-        None => anyhow::anyhow!(
+            Ok("pasted")
+        }
+        Some(Err(error)) => Err(error),
+        None => Err(anyhow::anyhow!(
             "the clipboard did not answer within {} ms",
             CLIPBOARD_WAIT.as_millis()
-        ),
-    };
-    eprintln!("phonon: pasting failed, typing instead: {error:#}");
-    let units: Vec<u16> = text.encode_utf16().collect();
-    type_text(&units)?;
-    Ok("typed")
-}
-
-/// Send every code unit as a Unicode key press and release, one character per
-/// call with a short pause, which is what Windows 11 Notepad needs to keep them.
-fn type_text(units: &[u16]) -> Result<()> {
-    for unit in units {
-        type_unit(*unit)?;
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        )),
     }
-    Ok(())
-}
-
-fn type_unit(unit: u16) -> Result<()> {
-    let mut events: Vec<INPUT> = Vec::with_capacity(2);
-    for up in [false, true] {
-        let mut input: INPUT = unsafe { std::mem::zeroed() };
-        input.r#type = INPUT_KEYBOARD;
-        input.Anonymous.ki = KEYBDINPUT {
-            wVk: 0,
-            wScan: unit,
-            dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 },
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        events.push(input);
-    }
-    let sent = unsafe {
-        SendInput(
-            events.len() as u32,
-            events.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        )
-    };
-    if sent as usize != events.len() {
-        bail!("SendInput accepted {sent} of {} events", events.len());
-    }
-    Ok(())
 }
 
 /// Read the text to restore later (unless the user keeps the dictation on the
@@ -131,8 +90,9 @@ fn load_clipboard(text: &str, after: ClipboardAfterPaste) -> Result<Option<Strin
 }
 
 /// How long reading the previous clipboard and writing the dictation may take
-/// together. Both normally finish in a few milliseconds.
-const CLIPBOARD_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
+/// together. Both normally finish in a few milliseconds; a clipboard manager or
+/// remote-desktop client that holds it open briefly gets a few seconds.
+const CLIPBOARD_WAIT: std::time::Duration = std::time::Duration::from_millis(3000);
 
 /// Run `work` on its own thread and give up waiting after `wait`. A thread
 /// that is still stuck is left behind.
@@ -148,13 +108,24 @@ fn bounded<T: Send + 'static>(
 }
 
 /// Leave `text` on the clipboard, for the user to paste (the tray's recent list).
+/// Bounded like the paste: a hung clipboard owner must not hold up the caller.
 pub fn copy(text: &str) -> Result<()> {
-    set_clipboard_text(text).context("write the clipboard")
+    let owned = text.to_string();
+    match bounded(COPY_WAIT, move || set_clipboard_text(&owned)) {
+        Some(result) => result.context("write the clipboard"),
+        None => bail!(
+            "the clipboard did not answer within {} ms",
+            COPY_WAIT.as_millis()
+        ),
+    }
 }
 
-/// Open the clipboard, retrying briefly: another process may hold it.
+const COPY_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// Open the clipboard, retrying for up to 2 s: another process may hold it
+/// (the paste as a whole is bounded by `CLIPBOARD_WAIT`).
 fn open_clipboard() -> Result<()> {
-    for _ in 0..20 {
+    for _ in 0..80 {
         if unsafe { OpenClipboard(std::ptr::null_mut()) } != 0 {
             return Ok(());
         }

@@ -474,7 +474,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                 let text = format!("{} ", result.polished.trim());
                 if inject::nowhere_to_paste() {
                     eprintln!("phonon: no window to paste into; keeping the text");
-                    keep_unpasted(result.polished.trim());
+                    keep_unpasted(result.polished.trim(), true);
                 } else {
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
@@ -482,7 +482,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                         Err(error) => {
                             // the error names the step that failed, never the text
                             eprintln!("phonon: could not insert the text: {error:#}");
-                            keep_unpasted(result.polished.trim());
+                            keep_unpasted(result.polished.trim(), false);
                         }
                     }
                 }
@@ -562,24 +562,24 @@ fn clear_history() {
     }
 }
 
-/// A dictation that could not be pasted stays on the clipboard (no restore) and
-/// in the tray's "Copy last dictation", and the balloon says where it is.
-fn keep_unpasted(text: &str) {
-    match inject::copy(text) {
-        Ok(()) => {
-            tray::set_status("kept on the clipboard");
-            tray::notify(
-                crate::pipeline::NOT_PASTED_TITLE,
-                crate::pipeline::NOT_PASTED_BODY,
-                false,
-            );
+/// A dictation that could not be pasted stays on the clipboard (no restore) when
+/// the clipboard answers, and always in the tray's "Copy last dictation"; the
+/// balloon says why and where it is (`pipeline::kept_notice`).
+fn keep_unpasted(text: &str, nothing_focused: bool) {
+    let on_clipboard = match inject::copy(text) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("phonon: could not leave the text on the clipboard: {error:#}");
+            false
         }
-        Err(error) => tray::notify(
-            "Phonon could not insert the text",
-            &format!("{error:#}. It is in the tray: Copy last dictation."),
-            true,
-        ),
-    }
+    };
+    tray::set_status(if on_clipboard {
+        "kept on the clipboard"
+    } else {
+        "kept in the tray"
+    });
+    let (title, body) = crate::pipeline::kept_notice(nothing_focused, on_clipboard);
+    tray::notify(title, body, false);
 }
 
 fn copy_recent(text: String) {
