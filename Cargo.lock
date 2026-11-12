@@ -1661,6 +1661,7 @@ dependencies = [
  "libc",
  "libloading",
  "native-tls",
+ "phonon-core",
  "phonon-hotkey",
  "phonon-llm",
  "serde",

@@ -53,15 +53,25 @@ impl Default for DictionaryFile {
 
 impl DictionaryFile {
     pub fn load() -> Result<Self> {
-        let path = dictionary_path()?;
+        Self::load_from(&dictionary_path()?)
+    }
+
+    /// `load` from a file of the caller's choosing (Windows and Linux keep
+    /// `dictionary.json` in their own data root); no file is an empty dictionary.
+    pub fn load_from(path: &Path) -> Result<Self> {
         if !path.is_file() {
             return Ok(Self::default());
         }
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
     }
 
     pub fn save(&mut self) -> Result<()> {
+        self.save_to(&dictionary_path()?)
+    }
+
+    /// `save` to a file of the caller's choosing: sorted, stamped, written atomically.
+    pub fn save_to(&mut self, path: &Path) -> Result<()> {
         self.schema_version = DATA_SCHEMA_VERSION;
         self.updated_at_unix_ms = now_unix_ms();
         self.entries.sort_by(|a, b| {
@@ -70,7 +80,7 @@ impl DictionaryFile {
                 .cmp(&b.phrase.to_lowercase())
                 .then_with(|| a.replacement.cmp(&b.replacement))
         });
-        write_json_atomic(&dictionary_path()?, self)
+        write_json_atomic(path, self)
     }
 
     pub fn merge(&mut self, incoming: impl IntoIterator<Item = DictionaryEntry>) -> usize {
@@ -965,20 +975,36 @@ fn plausibly_same_word(left: &str, right: &str) -> bool {
 /// Loaded once; an install missing the file falls back to no phonetic guessing,
 /// which is the safe direction — a missed term repair beats a corrupted word.
 fn english_words() -> &'static std::collections::HashSet<String> {
-    static WORDS: std::sync::OnceLock<std::collections::HashSet<String>> =
-        std::sync::OnceLock::new();
-    WORDS.get_or_init(|| {
+    ENGLISH_WORDS.get_or_init(|| {
         let path = crate::paths::project_root().join("assets/english_words.txt");
         fs::read_to_string(path)
-            .map(|text| {
-                text.lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
+            .map(|text| word_set(&text))
             .unwrap_or_default()
     })
+}
+
+static ENGLISH_WORDS: std::sync::OnceLock<std::collections::HashSet<String>> =
+    std::sync::OnceLock::new();
+
+fn word_set(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Supply the word list (`assets/english_words.txt`'s text) from somewhere other than
+/// the project root: the Windows and Linux app carries it inside its executable. Only
+/// the first supply, before any lookup, counts; false when the list was already set.
+/// The macOS app never calls this and reads the file as before.
+pub fn supply_english_words(text: &str) -> bool {
+    let mut supplied = false;
+    ENGLISH_WORDS.get_or_init(|| {
+        supplied = true;
+        word_set(text)
+    });
+    supplied
 }
 
 /// First names from the system's word lists (`/usr/share/dict/propernames`

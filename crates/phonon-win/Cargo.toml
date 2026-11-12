@@ -27,6 +27,8 @@ libloading = "0.8"
 # Backend manifest signatures (backends.rs). Pure Rust, no dependencies without its default features.
 ed25519-compact = { version = "2", default-features = false, features = ["std"] }
 phonon-hotkey = { path = "../phonon-hotkey" }
+# The personal dictionary's file format and matching (dictionary.rs), shared with the Mac.
+phonon-core = { path = "../phonon-core" }
 phonon-llm = { path = "../phonon-llm" }
 serde.workspace = true
 serde_json.workspace = true

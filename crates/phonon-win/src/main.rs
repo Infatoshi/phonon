@@ -15,6 +15,7 @@
 
 mod asr;
 mod backends;
+mod dictionary;
 mod fetch;
 mod history;
 mod http;
@@ -82,6 +83,13 @@ enum Command {
         #[arg(long)]
         backends: Option<String>,
     },
+    /// Internal: run one wave file through the dictation path (the tray's writing
+    /// mode and the personal dictionary) and print both texts.
+    #[command(hide = true)]
+    Dictate {
+        #[arg(long)]
+        wav: PathBuf,
+    },
     /// Internal: list the CUDA devices this environment shows (see backends.rs).
     #[command(hide = true)]
     CudaDevices,
@@ -99,6 +107,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
         Command::CudaDevices => backends::print_cuda_devices(),
+        Command::Dictate { wav } => dictate(&wav),
         Command::SignBackends { key, manifest } => sign_backends(&key, &manifest),
         Command::Run => {
             let Some(_guard) = single::claim(&paths::data_root())? else {
@@ -287,6 +296,22 @@ fn selftest(wav: Option<PathBuf>, any_audio: bool, backends: Option<&str>) -> Re
         engine.device()
     );
     println!("selftest passed");
+    Ok(())
+}
+
+/// One wave file through the dictation path, as a dictation from the hotkey runs it.
+fn dictate(wav: &std::path::Path) -> Result<()> {
+    fetch_all()?;
+    let engine = pipeline::Engine::start(backends::DEFAULT_MANIFEST)?;
+    let entries = dictionary::load().entries.len();
+    let result = engine.dictate(wav)?;
+    println!("  dictionary entries: {entries}");
+    println!("  raw:      {:?}", result.raw);
+    println!("  polished: {:?}", result.polished);
+    println!(
+        "  asr {:.0} ms, correction {:.0} ms",
+        result.asr_ms, result.polish_ms
+    );
     Ok(())
 }
 

@@ -78,8 +78,24 @@ pub fn mode_line(mode: &str) -> &'static str {
 
 /// The whole prompt for one transcript, as the iPhone builds it.
 pub fn prompt(raw: &str, mode: &str) -> String {
+    prompt_with(raw, mode, &[])
+}
+
+/// The prompt with the personal dictionary's vocabulary line after the mode line, as
+/// the Mac's sidecar builds it for this refiner (`refiner_system_prompt`); no line
+/// for an empty vocabulary.
+pub fn prompt_with(raw: &str, mode: &str, vocabulary: &[String]) -> String {
+    let vocabulary = if vocabulary.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n{}{}",
+            crate::dictionary::VOCAB_PREFIX,
+            vocabulary.join(", ")
+        )
+    };
     format!(
-        "<|startoftext|><|im_start|>system\n{SYSTEM_PROMPT}\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n\
+        "<|startoftext|><|im_start|>system\n{SYSTEM_PROMPT}\n{}{vocabulary}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n\
          <|im_start|>assistant\n<think></think>",
         mode_line(mode),
         raw.trim()
@@ -616,7 +632,7 @@ impl Server {
         };
         // warm-up, as on the iPhone and Android: loads the weights' pages and caches the prompt head
         if !limits.warm_up.is_zero() {
-            let _ = correct_one_within(&server.base, "warm up", DEFAULT_MODE, limits.warm_up);
+            let _ = correct_one_within(&server.base, "warm up", DEFAULT_MODE, &[], limits.warm_up);
         }
         Ok(server)
     }
@@ -649,38 +665,82 @@ fn tokenize(base: &str, text: &str) -> Result<Vec<serde_json::Value>> {
         .ok_or_else(|| anyhow!("tokenize reply has no tokens: {value}"))
 }
 
-/// Correct one transcript on the server at `base`.
-fn correct_at(base: &str, raw: &str, mode: &str) -> Result<String> {
+/// Correct one transcript on the server at `base`, with the personal dictionary
+/// when there is one (`crate::dictionary`; an empty one changes nothing).
+fn correct_at(
+    base: &str,
+    raw: &str,
+    mode: &str,
+    dictionary: Option<&crate::dictionary::DictionaryFile>,
+) -> Result<String> {
     if raw.trim().is_empty() {
         return Ok(String::new());
     }
+    let prepared = dictionary.and_then(|dictionary| crate::dictionary::prepare(dictionary, raw));
+    let (input, vocabulary) = match &prepared {
+        Some(prepared) => (prepared.input.as_str(), prepared.vocabulary.as_slice()),
+        None => (raw, &[][..]),
+    };
     // A long transcript is corrected in sentence groups: the prompt plus its output
     // budget must fit the server's context, or the answer stops mid-text (410 s
     // dictation: "n_tokens = 2047, truncated = 1", the tail lost) or the request
     // fails (900 s: "request (3239 tokens) exceeds the available context size").
     let mut parts = Vec::new();
     let mut guard_fired = false;
-    for group in sentence_groups(raw, GROUP_WORDS) {
-        let (text, fired) = correct_one(base, &group, mode)?;
+    for group in sentence_groups(input, GROUP_WORDS) {
+        let (text, fired) = correct_one(base, &group, mode, vocabulary)?;
         guard_fired |= fired;
         parts.push(text);
     }
-    let text = parts.join(" ");
+    Ok(finish(
+        raw,
+        parts.join(" "),
+        guard_fired,
+        mode,
+        dictionary.zip(prepared.as_ref()),
+        number_pass_on_in(&crate::paths::data_root()),
+    ))
+}
+
+/// The output stage after the refiner. `dictionary`: the personal dictionary and
+/// what `dictionary::prepare` sent, `None` without one.
+pub fn finish(
+    raw: &str,
+    text: String,
+    guard_fired: bool,
+    mode: &str,
+    dictionary: Option<(
+        &crate::dictionary::DictionaryFile,
+        &crate::dictionary::Prepared,
+    )>,
+    number_pass: bool,
+) -> String {
+    let mut text = text;
+    // a one-word term the refiner swapped for another goes back (the sidecar does this
+    // right after its guard), then the exact replacements, as safe_polish_output does
+    let replace = |text: String| match dictionary {
+        Some((dictionary, _)) => crate::dictionary::apply_replacements(dictionary, &text),
+        None => text,
+    };
+    if let Some((_, prepared)) = dictionary {
+        text = crate::dictionary::restore_terms(&prepared.input, &text, &prepared.vocabulary);
+    }
     // a length-guard fallback is the raw transcript and stays as it is, as on the Mac
     if guard_fired {
-        return Ok(text);
+        return replace(text);
     }
     // the shared output stage, same as the Mac engine: the opener the refiner dropped
     // back in front (phonon_llm::opener), then numbered steps one per line
     // (phonon_llm::linebreak); greeting and sign-off lines are for email only, and
     // this corrector does not know the target app, so it never splits them
     let text = phonon_llm::opener::restore(raw, &text, mode);
+    let text = replace(text);
     let text = phonon_llm::linebreak::layout(&text, mode, false);
     // then spoken phone numbers, money and dates as digits (phonon_llm::numpass)
-    if number_pass_on_in(&crate::paths::data_root()) {
-        return Ok(phonon_llm::numpass::apply(raw, &text));
+    if number_pass {
+        return phonon_llm::numpass::apply(raw, &text);
     }
-    Ok(text)
+    text
 }
 
 /// The number pass switch, the Mac's settings.json `number_pass`: one word in this file in
@@ -733,8 +793,8 @@ fn sentence_groups(raw: &str, max_words: usize) -> Vec<String> {
 
 /// One correction request, with the length guard (true when it kept the raw
 /// text); no layout.
-fn correct_one(base: &str, raw: &str, mode: &str) -> Result<(String, bool)> {
-    correct_one_within(base, raw, mode, CORRECTION_TIMEOUT)
+fn correct_one(base: &str, raw: &str, mode: &str, vocabulary: &[String]) -> Result<(String, bool)> {
+    correct_one_within(base, raw, mode, vocabulary, CORRECTION_TIMEOUT)
 }
 
 /// `correct_one` with the completion request bounded by `timeout`.
@@ -742,9 +802,10 @@ fn correct_one_within(
     base: &str,
     raw: &str,
     mode: &str,
+    vocabulary: &[String],
     timeout: Duration,
 ) -> Result<(String, bool)> {
-    let tokens = tokenize(base, &prompt(raw, mode))?;
+    let tokens = tokenize(base, &prompt_with(raw, mode, vocabulary))?;
     let budget = output_budget(tokenize(base, raw.trim())?.len() as u32);
     let value: serde_json::Value = http::agent()
         .post(&format!("{base}/completion"))
@@ -1022,7 +1083,17 @@ impl Corrector {
 
     /// Correct one transcript in a writing mode (minimal, casual, formal, prompt).
     pub fn correct_in(&self, raw: &str, mode: &str) -> Result<String> {
-        correct_at(&self.base(), raw, mode)
+        correct_at(&self.base(), raw, mode, None)
+    }
+
+    /// `correct_in` with the personal dictionary (a dictation).
+    pub fn correct_with(
+        &self,
+        raw: &str,
+        mode: &str,
+        dictionary: &crate::dictionary::DictionaryFile,
+    ) -> Result<String> {
+        correct_at(&self.base(), raw, mode, Some(dictionary))
     }
 }
 

@@ -35,6 +35,8 @@ impl PassResult {
 pub struct Engine {
     recognizer: Recognizer,
     corrector: Corrector,
+    /// The personal dictionary dictations use (not the startup check).
+    dictionary: std::sync::Mutex<crate::dictionary::Live>,
 }
 
 impl Engine {
@@ -46,9 +48,13 @@ impl Engine {
             Recognizer::installed().context("speech recognition is not installed")?;
         recognizer.load_resident();
         let corrector = Corrector::start(backends).context("correction model did not start")?;
+        crate::dictionary::warm();
         Ok(Self {
             recognizer,
             corrector,
+            dictionary: std::sync::Mutex::new(crate::dictionary::Live::new(
+                crate::dictionary::path(),
+            )),
         })
     }
 
@@ -128,7 +134,15 @@ impl Engine {
         // the mode's name only, never the text
         eprintln!("phonon: correcting in writing mode {mode}");
         let started = Instant::now();
-        let polished = match self.corrector.correct_in(&raw, mode) {
+        // the personal dictionary as saved now (re-read when the file changed)
+        let mut dictionary = self
+            .dictionary
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let polished = match self
+            .corrector
+            .correct_with(&raw, mode, dictionary.current())
+        {
             Ok(polished) => polished,
             Err(error) => {
                 eprintln!("phonon: correction failed, inserting the raw transcript: {error:#}");
