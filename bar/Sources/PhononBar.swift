@@ -2269,6 +2269,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var hotkeyRepresses = 0
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
+    /// The tap runs on its own thread (M13); the callback re-enables it from there.
+    nonisolated private let eventTapThread = EventTapThread()
+    nonisolated private let eventTapPort = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
     private var toggleHotKey: EventHotKeyRef?
     private var toggleHandler: EventHandlerRef?
     private var enginesReady = false
@@ -3908,14 +3911,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             guard let refcon else { return Unmanaged.passUnretained(event) }
             let app = Unmanaged<AppController>.fromOpaque(refcon).takeUnretainedValue()
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                if let tap = app.eventTap {
+                if let tap = app.eventTapPort.withLockUnchecked({ $0 }) {
                     CGEvent.tapEnable(tap: tap, enable: true)
                 }
                 // Key events while the tap was off are gone, a release among them
                 // perhaps: re-read which modifiers are held now.
                 let held = CGEventSource.flagsState(.combinedSessionState)
                 let reason = type == .tapDisabledByTimeout ? "timeout" : "user input"
-                Task { @MainActor in app.resyncHoldKeys(held: held, reason: reason) }
+                AppController.onMain { app.resyncHoldKeys(held: held, reason: reason) }
                 return Unmanaged.passUnretained(event)
             }
             app.handleCGEvent(type: type, event: event)
@@ -3945,11 +3948,18 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         eventTap = tap
+        eventTapPort.withLockUnchecked { $0 = tap }
         appStore.inputMonitoringAvailable = true
         let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         eventTapSource = src
-        CFRunLoopAddSource(CFRunLoopGetMain(), src, .commonModes)
+        eventTapThread.add(src!)
         CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    /// Runs `body` on the main thread after everything posted before it, in posting order
+    /// (the tap thread posts key edges: a release must never overtake its press).
+    nonisolated static func onMain(_ body: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { body() } }
     }
 
     private func refreshPermissionDependentServices() {
@@ -3972,8 +3982,9 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func removeEventTap() {
         if let eventTapSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
+            eventTapThread.remove(eventTapSource)
         }
+        eventTapPort.withLockUnchecked { $0 = nil }
         if let eventTap { CFMachPortInvalidate(eventTap) }
         eventTapSource = nil
         eventTap = nil
@@ -3984,7 +3995,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             guard editKeyWatch.withLock({ $0 }) else { return }
             let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
             let flags = event.flags
-            Task { @MainActor in
+            Self.onMain {
                 self.editLearning.noteKey(
                     keyCode: keyCode, command: flags.contains(.maskCommand),
                     option: flags.contains(.maskAlternate), shift: flags.contains(.maskShift))
@@ -4009,7 +4020,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 && !flags.contains(.maskShift)
             let eventNs = event.timestamp
             let callbackNs = DispatchTime.now().uptimeNanoseconds
-            Task { @MainActor in
+            Self.onMain {
                 if self.shortcutAllows(source: "right-option") {
                     // Same logic as the Globe key: hold to talk, or tap to start
                     // and tap again to stop.
