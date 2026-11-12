@@ -48,7 +48,12 @@ targets:
   Phonon:
     type: application
     platform: iOS
-    sources: [App, Shared]
+    sources:
+      - App
+      - Shared
+      # the dictionary's English word list (UserDictionary phonetic matching), shared with the desktop
+      - path: ../assets/english_words.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.phonon.ios
@@ -123,9 +128,17 @@ targets:
       - App/LineBreaks.swift
       - App/ModelStore.swift
       - App/ParakeetModel.swift
+      - App/Dictionary.swift
+      - App/DictionaryView.swift
+      - App/RefinerPrompt.swift
+      - Shared/Theme.swift
       - path: ../crates/phonon-llm/src/opener_cases.json
         buildPhase: resources
       - path: ../crates/phonon-llm/src/linebreak_cases.json
+        buildPhase: resources
+      - path: ../crates/phonon-core/src/dictionary_cases.json
+        buildPhase: resources
+      - path: ../assets/english_words.txt
         buildPhase: resources
     settings:
       base:

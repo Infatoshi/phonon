@@ -66,6 +66,29 @@ final class Session: ObservableObject {
     }()
     @Published var sessionStarted: Date?
 
+    // MARK: dictionary
+
+    /// The personal dictionary (Application Support/dictionary.json, the desktop's schema). Empty: dictation is
+    /// exactly as without one.
+    @Published private(set) var dictionary = UserDictionary()
+
+    static var dictionaryDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
+
+    func addToDictionary(phrase: String, replacement: String?) {
+        var d = dictionary
+        if d.words == nil { d = d.withWords(WordList.bundled()) }
+        saveDictionary(d.with(.init(phrase: phrase, replacement: replacement, source: "phone")))
+    }
+
+    func removeFromDictionary(_ entry: UserDictionary.Entry) { saveDictionary(dictionary.without(entry)) }
+
+    private func saveDictionary(_ d: UserDictionary) {
+        dictionary = d
+        do { try UserDictionary.save(dir: Self.dictionaryDir, d) } catch { print("dictionary save failed", error) }
+    }
+
     init() {
         IPC.observe(IPC.start) { [weak self] in self?.beginUtterance() }
         IPC.observe(IPC.stop) { [weak self] in self?.endUtterance() }
@@ -82,6 +105,7 @@ final class Session: ObservableObject {
             }
         }
         if let m = IPC.string(IPC.modeKey), WritingMode(rawValue: m) != nil { mode = m }
+        dictionary = UserDictionary.load(dir: Self.dictionaryDir) { WordList.bundled() }
         // a model downloaded earlier: load it right away so the first dictation uses it
         if FileManager.default.fileExists(atPath: Self.parakeetMarker.path) { loadParakeet() }
     }
@@ -391,8 +415,12 @@ final class Session: ObservableObject {
 
     private func refineAndDeliver(_ raw: String) {
         asrDoneAt = IPC.now()
+        // the dictionary, as on the Mac and Android: exact replacements and phonetic pre-corrections before the
+        // refiner, its vocabulary line in the refiner's prompt; an empty dictionary leaves raw and the prompt as they are
+        let dict = dictionary
+        let prepared = raw.isEmpty ? UserDictionary.Prepared(text: raw, vocab: []) : dict.prepare(raw)
         guard useRefiner, let r = refiner, !raw.isEmpty else {
-            deliver(raw, raw: raw, refined: nil)
+            deliver(dict.isEmpty ? raw : dict.applyExact(prepared.text), raw: raw, refined: nil)
             return
         }
         setStatus("Refining")
@@ -400,7 +428,8 @@ final class Session: ObservableObject {
         if let m = IPC.string(IPC.modeKey), WritingMode(rawValue: m) != nil, m != self.mode { self.mode = m }
         let mode = self.mode
         refineQueue.async {
-            let out = r.refine(raw, mode: mode)
+            let out = r.refine(prepared.text, mode: mode, vocab: prepared.vocab, spoken: raw,
+                               dictionary: dict.isEmpty ? nil : dict)
             DispatchQueue.main.async { self.deliver(out.text, raw: raw, refined: out) }
         }
     }

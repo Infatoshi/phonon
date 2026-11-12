@@ -191,6 +191,7 @@ struct HomeView: View {
     @State private var keyboardAdded = false
     @State private var fullAccess = false
     @State private var copied: UUID?
+    @State private var showDictionary = false
 
     var body: some View {
         ScrollView {
@@ -199,6 +200,7 @@ struct HomeView: View {
                 sessionCard
                 if !(keyboardAdded && fullAccess && session.parakeetReady) { setupCard }
                 modeCard
+                dictionaryCard
                 historyCard
                 modelsFooter
             }
@@ -211,6 +213,40 @@ struct HomeView: View {
         .foregroundStyle(Ember.ink)
         .onAppear(perform: refreshSetup)
         .onChange(of: phase) { _, p in if p == .active { refreshSetup() } }
+        .sheet(isPresented: $showDictionary) {
+            DictionaryView(entries: session.dictionary.entries,
+                           onAdd: { session.addToDictionary(phrase: $0, replacement: $1) },
+                           onRemove: { session.removeFromDictionary($0) },
+                           onClose: { showDictionary = false })
+                .preferredColorScheme(.dark)
+                .tint(Ember.ember)
+        }
+    }
+
+    // MARK: dictionary
+
+    private var dictionaryCard: some View {
+        Card(title: "Dictionary") {
+            Button {
+                showDictionary = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "character.book.closed").frame(width: 22).foregroundStyle(Ember.ember)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(session.dictionary.isEmpty ? "Add your words"
+                             : "\(session.dictionary.entries.count) word\(session.dictionary.entries.count == 1 ? "" : "s")")
+                            .font(.system(size: 15, weight: .medium))
+                        Text("Names and jargon Phonon should spell your way.")
+                            .font(.system(size: 12)).foregroundStyle(Ember.mute)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Ember.mute)
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var header: some View {
@@ -393,33 +429,7 @@ struct HomeView: View {
     }
 }
 
-// MARK: pieces
-
-struct Card<Content: View>: View {
-    var title: String?
-    @ViewBuilder var content: Content
-
-    init(title: String? = nil, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let title {
-                Text(title.uppercased())
-                    .font(.system(size: 11, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(Ember.mute)
-            }
-            content
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Ember.panel))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Ember.line, lineWidth: 1))
-    }
-}
+// MARK: pieces (Card is in DictionaryView.swift, so the unit tests can render that screen)
 
 struct SetupRow: View {
     let n: Int

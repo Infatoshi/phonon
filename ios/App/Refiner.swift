@@ -6,15 +6,6 @@ import llama
 /// intent_v0's gen_llama.py: the refiner system prompt + the writing-mode line, the raw transcript as the user turn,
 /// the chat template with thinking off, greedy, output capped at 1.5 x input tokens + 32, and the length guard.
 final class Refiner: @unchecked Sendable {
-    static let systemPrompt =
-        "Rewrite the raw dictation transcript into the exact text the speaker intended. Fix recognition errors "
-        + "and technical terms, keep the speaker's wording and casing style, do not add or drop content."
-    static let modeLines = [
-        "minimal": "Writing mode: minimal (notes and documents).",
-        "casual": "Writing mode: casual (a chat message).",
-        "formal": "Writing mode: formal (an email or document).",
-        "prompt": "Writing mode: prompt (an instruction to an AI assistant).",
-    ]
 
     struct Output {
         let text: String
@@ -123,9 +114,15 @@ final class Refiner: @unchecked Sendable {
     private var cachedHead: [llama_token] = []
     private var headState: [UInt8] = []
 
-    func refine(_ raw: String, mode: String) -> Output {
-        let system = Self.systemPrompt + "\n" + (Self.modeLines[mode] ?? Self.modeLines["minimal"]!)
-        let head = tokenize("<|startoftext|><|im_start|>system\n\(system)<|im_end|>\n<|im_start|>user\n")
+    /// `raw` is the refiner's input: the transcript, or with a dictionary its prepared text (UserDictionary.prepare).
+    /// `vocab` is the dictionary's vocabulary line terms: "Vocabulary the speaker may use: ..." goes after the mode
+    /// line (sidecar/polish_server.py refiner_system_prompt; Android refiner_jni.cpp headText), so it is part of the
+    /// cached head, whose key is the head's tokens. Empty: the prompt is byte-identical to the one without a
+    /// dictionary. `spoken` is the transcript as heard (for the opener; default `raw`) and `dictionary` gives the
+    /// output its restored terms and exact replacements; a guard fallback is `raw` unchanged.
+    func refine(_ raw: String, mode: String, vocab terms: [String] = [], spoken: String? = nil,
+                dictionary: UserDictionary? = nil) -> Output {
+        let head = tokenize(RefinerPrompt.headText(mode: mode, vocab: terms))
         var tail = tokenize("\(raw)<|im_end|>\n<|im_start|>assistant\n<think></think>")
         let tokens = head + tail
         let inputTokens = tokenize(raw).count
@@ -195,7 +192,15 @@ final class Refiner: @unchecked Sendable {
         // the shared output stage: the opener the refiner dropped back in front (crates/phonon-llm opener), then
         // numbered steps one per line, and in formal mode the greeting and sign-off on their own lines (linebreak);
         // the refiner itself never writes a newline
-        if fired { text = raw } else { text = LineBreaks.apply(Opener.restore(raw: raw, refined: text, mode: mode), mode: mode) }
+        // with a dictionary, first a one-word term the refiner swapped is put back (polish_server restore_terms)
+        // and after the opener the exact replacements run again, as on Android (PhononIME.refinedText)
+        if fired {
+            text = raw
+        } else {
+            let restored = UserDictionary.restoreTerms(spoken: raw, output: text, vocab: terms)
+            let opened = Opener.restore(raw: spoken ?? raw, refined: restored, mode: mode)
+            text = LineBreaks.apply(dictionary?.applyExact(opened) ?? opened, mode: mode)
+        }
         return Output(text: text, promptTokens: tokens.count, genTokens: gen,
                       prefillMs: Int(t1.timeIntervalSince(t0) * 1000), decodeMs: Int(t2.timeIntervalSince(t1) * 1000),
                       guardFired: fired, tokenHash: hash, fallbacks: fallbacks)
