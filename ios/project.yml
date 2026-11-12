@@ -34,6 +34,16 @@ schemes:
     test:
       config: Debug
       targets: [PhononSelftest]
+  # Pure-logic unit tests (CI job ios-unit): no app host, no model, no llama.xcframework, no FluidAudio.
+  #   xcodebuild test -project PhononiOS.xcodeproj -scheme PhononUnitTests \
+  #     -destination 'platform=iOS Simulator,name=<any iPhone>' CODE_SIGNING_ALLOWED=NO
+  PhononUnitTests:
+    build:
+      targets:
+        PhononUnitTests: [test]
+    test:
+      config: Debug
+      targets: [PhononUnitTests]
 targets:
   Phonon:
     type: application
@@ -102,6 +112,24 @@ targets:
             || cp "$SL" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/refiner-sl.gguf"; fi
         outputFiles:
           - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/refiner.gguf
+  # Hostless unit tests of the App files that are plain Swift + Foundation, compiled straight into the test bundle
+  # (no TEST_HOST), checked against the shared reference cases in crates/ (bundled by path, not copied).
+  PhononUnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - UnitTests
+      - App/Opener.swift
+      - App/LineBreaks.swift
+      - path: ../crates/phonon-llm/src/opener_cases.json
+        buildPhase: resources
+      - path: ../crates/phonon-llm/src/linebreak_cases.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.phonon.ios.unittests
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
   PhononKeyboard:
     type: app-extension
     platform: iOS
