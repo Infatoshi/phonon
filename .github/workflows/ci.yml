@@ -23,6 +23,59 @@ jobs:
       - run: uv run --with ruff ruff check sidecar tests scripts
       - run: swift test --package-path bar
 
+  # Android JVM unit tests (app/src/test). testDebugUnitTest compiles the Kotlin and runs no CMake task, so neither
+  # llama.cpp nor the sherpa-onnx JNI libraries are needed; only sherpa-onnx's Kotlin API sources, which
+  # android/scripts/build.sh copies in for real builds, pinned here to the v2.0.1 tag's commit.
+  android-unit:
+    name: android-unit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    env:
+      SHERPA_REF: af2d8d81dbfa61c4cea4c568da78f3982edca005 # sherpa-onnx v2.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+      - name: sherpa-onnx Kotlin API (v2.0.1)
+        run: |
+          K=app/src/main/java/com/k2fsa/sherpa/onnx
+          mkdir -p "$K"
+          for f in OfflineRecognizer OfflineStream FeatureConfig QnnConfig HomophoneReplacerConfig; do
+            curl -fsSL --retry 3 -o "$K/$f.kt" \
+              "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/$SHERPA_REF/sherpa-onnx/kotlin-api/$f.kt"
+          done
+      - run: echo "sdk.dir=$ANDROID_HOME" > local.properties
+      # phonon.llamaDir only feeds the CMake arguments, which unit tests never run
+      - run: gradle --no-daemon testDebugUnitTest -Pphonon.llamaDir=/nonexistent
+
+  # iPhone pure-logic unit tests (ios/UnitTests, scheme PhononUnitTests): hostless, unsigned, on a simulator.
+  ios-unit:
+    name: ios-unit
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: xcodebuild test
+        run: |
+          SIM=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries | sort_by(.key) | reverse | .[] | select(.key | test("iOS"))
+                       | .value[] | select(.name | startswith("iPhone"))][0].udid')
+          echo "simulator $SIM"
+          test -n "$SIM" && test "$SIM" != null
+          xcodebuild test -project PhononiOS.xcodeproj -scheme PhononUnitTests \
+            -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+
   website:
     runs-on: ubuntu-latest
     defaults:
