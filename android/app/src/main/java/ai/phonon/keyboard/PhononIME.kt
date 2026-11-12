@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.media.AudioFormat
@@ -21,17 +20,20 @@ import android.os.SystemClock
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.EditorInfo
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * Phonon keyboard: QWERTY plus a hold-to-talk bar. The IME records the mic itself, transcribes with sherpa-onnx
+ * Phonon keyboard: the talk bar (TalkBar: hold to talk, or tap to latch) over letter, number and symbol keys
+ * (KeyPanel), the iPhone keyboard's design. The IME records the mic itself, transcribes with sherpa-onnx
  * Parakeet and refines with the LFM3-1.7B GGUF through llama.cpp, all in this process, then commits the text.
  * The models are downloaded on first use (ModelFetch); each loads as soon as its files are verified.
  *
@@ -47,9 +49,20 @@ class PhononIME : InputMethodService() {
     @Volatile private var asr: Asr? = null
     /** The writing mode chosen in the app (WritingModes, default minimal), read for every dictation. */
     private val mode: String get() = WritingModes.get(this)
-    private var shift = false
-    private var status: TextView? = null
-    private val keyViews = mutableListOf<Pair<String, View>>()
+    private var bar: TalkBar? = null
+    private var cancel: View? = null
+    private var keys: KeyPanel? = null
+    private var micView: View? = null
+
+    /** The talk bar's state, as on the iPhone: at rest, listening (held, or latched on by a tap) or writing. */
+    private enum class Phase { READY, LISTENING, WORKING }
+    private var phase = Phase.READY
+    private var latched = false
+    /** Bumped by cancel: a dictation already in the engines whose generation is stale is not committed. */
+    @Volatile private var generation = 0
+    private var flashText: String? = null
+    @Volatile private var asrError: String? = null
+    private var flashId = 0
 
     // mic capture
     @Volatile private var recording = false
@@ -102,7 +115,7 @@ class PhononIME : InputMethodService() {
     private val onModels: (ModelFetch.State) -> Unit = { s ->
         if (s.asrDir != null && asrRequested.compareAndSet(false, true)) worker.post { loadAsr(s.asrDir) }
         if (s.done && refinerRequested.compareAndSet(false, true)) worker.post { loadRefiner(s.refinerPath) }
-        if (!s.done || s.error != null) main.post { setStatus(modelStatus()) }
+        if (!s.done || s.error != null) main.post { setStatus(modelStatus() ?: "ready") }
     }
 
     private fun loadAsr(dir: String) {
@@ -113,7 +126,8 @@ class PhononIME : InputMethodService() {
             it.transcribe(FloatArray(16000))
             Log.i(TAG, "ASR_WARMUP ms=${SystemClock.elapsedRealtime() - t}")
         }
-        main.post { setStatus(if (asr != null) modelStatus() else "speech model failed to load") }
+        if (asr == null) asrError = "The speech model failed to load"
+        main.post { setStatus(modelStatus() ?: "ready") }
     }
 
     private fun loadRefiner(gguf: String?) {
@@ -150,17 +164,22 @@ class PhononIME : InputMethodService() {
         super.onDestroy()
     }
 
-    private fun setStatus(s: String) { status?.text = s }
+    /** Models changed: the resting bar's label follows them (the status itself is in the log). */
+    private fun setStatus(s: String) {
+        Log.i(TAG, "STATUS_LINE $s")
+        paintBar()
+    }
 
-    /** The keyboard's status line while models arrive: a download in progress or failed stays visible after the
-     *  recogniser is ready, so a refiner that never arrives does not look like success. */
-    private fun modelStatus(): String {
+    /** The bar's label while models arrive: a download in progress or failed stays visible after the recogniser is
+     *  ready, so a refiner that never arrives does not look like success. Null once both models are loaded (or the
+     *  refiner is gated off by RAM and the download is finished). */
+    private fun modelStatus(): String? {
         val s = ModelFetch.state
         return when {
-            refiner != null -> "ready"
-            asr == null -> s.message
-            s.done && s.error == null -> "dictation ready"
-            else -> "dictation ready; ${s.message}"
+            refiner != null -> null
+            asr == null -> asrError ?: s.message
+            s.done && s.error == null -> null
+            else -> "Hold to talk · ${s.message}"
         }
     }
 
@@ -168,16 +187,61 @@ class PhononIME : InputMethodService() {
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         if (ModelFetch.state.error != null) ModelFetch.start(this)
+        keys?.reset()
+        bar?.animate = !lowPower()
+        paintBar()
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        bar?.animate = false
+        if (recording) cancelDictation(null)  // the keyboard went away mid-dictation
+    }
+
+    private fun lowPower() = (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isPowerSaveMode
+
+    /** The bar for the current phase: the Mac capsule while listening or writing, else the resting fluid with the
+     *  model status (dimmed while the speech model is missing) or a status flashed for about 2 s. */
+    private fun paintBar() {
+        val b = bar ?: return
+        b.mode = when (phase) {
+            Phase.LISTENING -> TalkBar.Mode.LISTENING
+            Phase.WORKING -> TalkBar.Mode.WORKING
+            Phase.READY -> TalkBar.Mode.REST
+        }
+        b.dim = asr == null
+        b.label = if (phase == Phase.READY) (modelStatus() ?: flashText) else null
+        cancel?.visibility = if (phase == Phase.READY) View.GONE else View.VISIBLE
+        micView?.contentDescription = when (phase) {
+            Phase.LISTENING -> if (latched) "Finish dictation (tap)" else "Finish dictation (let go)"
+            Phase.WORKING -> "Writing it down"
+            Phase.READY -> modelStatus() ?: "Dictate: hold to talk, or tap"
+        }
+    }
+
+    private fun setPhase(p: Phase) {
+        phase = p
+        if (p != Phase.READY) { flashId++; flashText = null }
+        paintBar()
+    }
+
+    /** A status over the resting bar for about 2 s ("Didn't catch that", "Cancelled", the word count). */
+    private fun flash(s: String) {
+        Log.i(TAG, "FLASH $s")
+        val id = ++flashId
+        flashText = s
+        paintBar()
+        main.postDelayed({ if (flashId == id) { flashText = null; paintBar() } }, 2000)
     }
 
     /** Runs on the worker thread: ASR, refine, then commit on the main thread. */
-    private fun process(samples: FloatArray, tUp: Long, source: String) {
+    private fun process(samples: FloatArray, tUp: Long, source: String, gen: Int = generation) {
         val a = asr ?: run {
             Log.w(TAG, "ASR not loaded")
-            main.post { setStatus("the speech model is not ready yet: ${ModelFetch.state.message}") }
+            main.post { setPhase(Phase.READY); flash("The speech model is not ready yet") }
             return
         }
-        main.post { setStatus("transcribing...") }
+        main.post { if (gen == generation) setPhase(Phase.WORKING) }
         val t0 = SystemClock.elapsedRealtime()
         val raw = a.transcribe(samples)
         val t1 = SystemClock.elapsedRealtime()
@@ -185,7 +249,10 @@ class PhononIME : InputMethodService() {
         val t2 = SystemClock.elapsedRealtime()
         Log.i(TAG, "PIPELINE source=$source audio_ms=${samples.size / 16} asr_ms=${t1 - t0} refine_ms=${t2 - t1} " +
             "raw=\"$raw\" refined=${json ?: "null"} ${Mem.snapshot()}")
-        main.post { commitResult(text, tUp, source) }
+        main.post {
+            if (gen != generation) { Log.i(TAG, "E2E source=$source cancelled"); return@post }
+            commitResult(text, tUp, source)
+        }
     }
 
     @Volatile private var dict: Dictionary = Dictionary(emptyList(), null)
@@ -255,34 +322,70 @@ class PhononIME : InputMethodService() {
         val ok = (ic?.commitText(text, 1) ?: false) && bound
         Log.i(TAG, "E2E source=$source key_up_to_commit_ms=${SystemClock.elapsedRealtime() - tUp} committed=$ok " +
             "bound=$bound text=\"$text\"")
-        setStatus(if (ok) "committed" else "no field")
+        setPhase(Phase.READY)
+        val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
+        flash(when {
+            words == 0 -> "Didn't catch that"
+            !ok -> "No text field here"
+            else -> "$words ${if (words == 1) "word" else "words"} · ${"%.1f".format((SystemClock.elapsedRealtime() - tUp) / 1000.0)} s"
+        })
     }
 
     @SuppressLint("MissingPermission")
-    private fun startRecording() {
+    private fun startRecording(): Boolean {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            setStatus("mic permission missing: open the Phonon app once"); return
+            flash("Open Phonon once to allow the microphone"); return false
         }
         pcm.reset()
         recording = true
-        setStatus("listening...")
+        setPhase(Phase.LISTENING)
         recThread = thread(name = "phonon-mic") {
             val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
                 AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 3200) * 2)
-            val buf = ByteArray(3200)
+            val buf = ByteArray(1600)  // 50 ms: the level the capsule lights with updates 20 times a second
             rec.startRecording()
             while (recording) {
                 val n = rec.read(buf, 0, buf.size)
-                if (n > 0) synchronized(pcm) { pcm.write(buf, 0, n) }
+                if (n > 0) {
+                    synchronized(pcm) { pcm.write(buf, 0, n) }
+                    val level = level(buf, n)
+                    main.post { if (phase == Phase.LISTENING) bar?.level = level }
+                }
             }
             rec.stop(); rec.release()
         }
+        return true
+    }
+
+    /** RMS of the chunk in dBFS, -55..-15 mapped to 0..1 (the iPhone keyboard's meter). */
+    private fun level(buf: ByteArray, n: Int): Double {
+        var sum = 0.0
+        var i = 0
+        while (i + 1 < n) {
+            val s = ((buf[i].toInt() and 0xff) or (buf[i + 1].toInt() shl 8)).toShort() / 32768.0
+            sum += s * s; i += 2
+        }
+        val rms = kotlin.math.sqrt(sum / maxOf(1, n / 2))
+        val db = 20 * kotlin.math.log10(maxOf(rms, 1e-6))
+        return ((db + 55) / 40).coerceIn(0.0, 1.0)
+    }
+
+    /** Drop the recording, or a dictation still in the engines (its result is not committed). */
+    private fun cancelDictation(message: String?) {
+        generation++
+        if (recording) { recording = false; recThread?.join(500) }
+        latched = false
+        Log.i(TAG, "CANCEL phase=$phase")
+        setPhase(Phase.READY)
+        message?.let { flash(it) }
     }
 
     private fun stopRecording() {
         val tUp = SystemClock.elapsedRealtime()
         recording = false
+        latched = false
+        setPhase(Phase.WORKING)
         recThread?.join(500)
         val bytes = synchronized(pcm) { pcm.toByteArray() }
         val samples = FloatArray(bytes.size / 2) {
@@ -291,7 +394,8 @@ class PhononIME : InputMethodService() {
         var peak = 0f
         for (s in samples) peak = maxOf(peak, kotlin.math.abs(s))
         Log.i(TAG, "MIC_UP samples=${samples.size} peak=$peak")
-        worker.post { process(samples, tUp, "mic") }
+        val gen = generation
+        worker.post { process(samples, tUp, "mic", gen) }
     }
 
     // ---------- keyboard view ----------
@@ -301,8 +405,8 @@ class PhononIME : InputMethodService() {
         val dp = resources.displayMetrics.density
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(28, 28, 30))
-            setPadding((4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (8 * dp).toInt())
+            setBackgroundColor(KeyPanel.BG)  // the iPhone keyboard's ember palette, in light and dark alike
+            setPadding(0, 0, 0, (8 * dp).toInt())
             // Android 15 (targetSdk 35) draws the keyboard window edge to edge: without the navigation bar's inset
             // the gesture handle and the IME switcher sat on top of the bottom key row
             setOnApplyWindowInsetsListener { v, insets ->
@@ -313,82 +417,145 @@ class PhononIME : InputMethodService() {
                 insets
             }
         }
-        status = TextView(this).apply {
-            setTextColor(Color.LTGRAY); textSize = 12f; gravity = Gravity.CENTER
-            text = modelStatus()
-            contentDescription = "status"
-            // while the refiner waits for Wi-Fi, one tap allows mobile data (remembered)
-            setOnClickListener { if (ModelFetch.state.waitingForWifi) ModelFetch.allowCellular(this@PhononIME) }
+        // the toolbar: a cancel button while listening or writing, then the talk bar (KeyboardUI.swift toolbar)
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding((6 * dp).toInt(), (4 * dp).toInt(), (6 * dp).toInt(), 0)
         }
-        root.addView(status)
-        val mic = TextView(this).apply {
-            text = "Hold to talk"; contentDescription = "mic"; gravity = Gravity.CENTER
-            setTextColor(Color.WHITE); textSize = 16f
-            background = pill(Color.rgb(10, 132, 255), dp)
-            setOnTouchListener { v, e ->
-                when (e.action) {
-                    MotionEvent.ACTION_DOWN -> { v.alpha = 0.6f; startRecording() }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { v.alpha = 1f; if (recording) stopRecording() }
-                }
-                true
+        val x = TextView(this).apply {
+            text = "✕"; gravity = Gravity.CENTER; setTextColor(KeyPanel.SOFT); textSize = 14f
+            contentDescription = "Cancel dictation"
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(KeyPanel.RAISED) }
+            visibility = View.GONE
+            setOnClickListener { v ->
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                cancelDictation("Cancelled")
             }
         }
-        root.addView(mic, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (48 * dp).toInt()).apply {
-            setMargins((4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (6 * dp).toInt())
+        cancel = x
+        toolbar.addView(x, LinearLayout.LayoutParams((40 * dp).toInt(), (40 * dp).toInt()).apply {
+            marginEnd = (8 * dp).toInt()
         })
-        keyViews.clear()
-        keyViews += "mic" to mic
-        val rows = listOf("qwertyuiop", "asdfghjkl", "^zxcvbnm<", "_,␣.⏎")
-        for (row in rows) {
-            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-            for (ch in row) {
-                val label = when (ch) { '^' -> "⇧"; '<' -> "⌫"; '␣' -> "space"; '⏎' -> "⏎"; '_' -> ""; else -> ch.toString() }
-                if (ch == '_') { line.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f)); continue }
-                val key = TextView(this).apply {
-                    text = label; gravity = Gravity.CENTER; setTextColor(Color.WHITE); textSize = 18f
-                    contentDescription = "key_$label"
-                    background = pill(Color.rgb(72, 72, 74), dp)
-                    setOnClickListener { onKey(ch) }
-                }
-                val w = if (ch == '␣') 5f else if (ch == '^' || ch == '<' || ch == '⏎') 1.5f else 1f
-                line.addView(key, LinearLayout.LayoutParams(0, (46 * dp).toInt(), w).apply {
-                    setMargins((3 * dp).toInt(), (4 * dp).toInt(), (3 * dp).toInt(), (4 * dp).toInt())
-                })
-                keyViews += label to key
-            }
-            root.addView(line)
-        }
-        root.viewTreeObserver.addOnGlobalLayoutListener {
-            // key centres in screen pixels, so adb `input tap` can press real keys headlessly
-            val loc = IntArray(2)
-            val sb = StringBuilder("KEYPOS")
-            for ((l, v) in keyViews) {
-                v.getLocationOnScreen(loc)
-                sb.append(" ").append(if (l == "space") "space" else l).append("=")
-                    .append(loc[0] + v.width / 2).append(",").append(loc[1] + v.height / 2)
-            }
-            Log.i(TAG, sb.toString())
-        }
+        val talk = TalkBar(this)
+        talk.isClickable = true
+        talk.setOnTouchListener { v, e -> talkTouch(v, e); true }
+        bar = talk
+        micView = talk
+        toolbar.addView(talk, LinearLayout.LayoutParams(0, (42 * dp).toInt(), 1f))
+        root.addView(toolbar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (48 * dp).toInt() + (4 * dp).toInt()))
+        val panel = KeyPanel(this, keyHost).apply { setPadding((3 * dp).toInt(), (10 * dp).toInt(), (3 * dp).toInt(), 0) }
+        keys = panel
+        root.addView(panel)
+        panel.onLayout = { logKeys() }
+        root.viewTreeObserver.addOnGlobalLayoutListener { logKeys() }
+        paintBar()
         return root
     }
 
-    private fun pill(c: Int, dp: Float) = GradientDrawable().apply { setColor(c); cornerRadius = 8 * dp }
+    private var lastKeyPos = ""
 
-    private fun onKey(ch: Char) {
-        val ic = currentInputConnection ?: return
-        when (ch) {
-            '^' -> { shift = !shift; return }
-            '<' -> ic.deleteSurroundingText(1, 0)
-            '␣' -> ic.commitText(" ", 1)
-            '⏎' -> ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)).also {
-                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+    /** Key centres in screen pixels, so adb `input tap` can press real keys headlessly (scripts/m2_type.sh, m4_mic.sh). */
+    private fun logKeys() {
+        val panel = keys ?: return
+        val loc = IntArray(2)
+        val sb = StringBuilder("KEYPOS")
+        val all = listOfNotNull(micView?.let { "mic" to it }) + panel.keyViews
+        for ((l, v) in all) {
+            v.getLocationOnScreen(loc)
+            sb.append(" ").append(l).append("=").append(loc[0] + v.width / 2).append(",").append(loc[1] + v.height / 2)
+        }
+        val s = sb.toString()
+        if (s != lastKeyPos) { lastKeyPos = s; Log.i(TAG, s) }
+    }
+
+    private var pressedAt = 0L
+    private enum class Press { NONE, STARTING, STOPPING }
+    private var press = Press.NONE
+
+    /** Hold to talk and let go to finish, or tap once to latch it on and tap again to finish (KeyboardUI.swift
+     *  talkBar): a release within 0.35 s of the press latches. Before the speech model is ready a tap does what the
+     *  label asks (allow mobile data while the text model waits for Wi-Fi). */
+    private fun talkTouch(v: View, e: MotionEvent) {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pressedAt = SystemClock.uptimeMillis()
+                press = Press.NONE
+                when {
+                    phase == Phase.LISTENING -> press = Press.STOPPING
+                    phase == Phase.WORKING -> {}
+                    ModelFetch.state.waitingForWifi && asr == null -> ModelFetch.allowCellular(this)
+                    asr == null -> flash(modelStatus() ?: "The speech model is not ready yet")
+                    else -> {
+                        if (ModelFetch.state.waitingForWifi) ModelFetch.allowCellular(this)
+                        v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        latched = false
+                        if (startRecording()) press = Press.STARTING
+                    }
+                }
             }
-            else -> {
-                ic.commitText(if (shift) ch.uppercase() else ch.toString(), 1)
-                shift = false
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val held = SystemClock.uptimeMillis() - pressedAt
+                when (press) {
+                    Press.STOPPING -> if (recording) stopRecording()
+                    Press.STARTING -> if (held < 350 && e.actionMasked == MotionEvent.ACTION_UP) {
+                        latched = true  // a quick tap: stay on until the next tap
+                        paintBar()
+                    } else if (recording) stopRecording()
+                    Press.NONE -> {}
+                }
+                press = Press.NONE
             }
         }
-        Log.i(TAG, "KEY $ch")
+    }
+
+    private val keyHost = object : KeyPanel.Host {
+        override fun type(s: String) {
+            currentInputConnection?.commitText(s, 1)
+            Log.i(TAG, "KEY $s")
+        }
+
+        override fun deleteBackward() {
+            val ic = currentInputConnection ?: return
+            // a selection goes as a whole; otherwise one character (a surrogate pair counts as one)
+            if (!ic.getSelectedText(0).isNullOrEmpty()) ic.commitText("", 1)
+            else {
+                val b = ic.getTextBeforeCursor(2, 0)
+                val n = if (b != null && b.length == 2 && Character.isSurrogatePair(b[0], b[1])) 2 else 1
+                ic.deleteSurroundingText(n, 0)
+            }
+            Log.i(TAG, "KEY ⌫")
+        }
+
+        override fun enter() {
+            val ic = currentInputConnection ?: return
+            val info = currentInputEditorInfo
+            val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+            val multiLine = ((info?.inputType ?: 0) and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
+            val noEnterAction = ((info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+            // a single-line field with an action (search, send, go) gets the action; otherwise a newline
+            if (!multiLine && !noEnterAction && action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+                ic.performEditorAction(action)
+            } else {
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            }
+            Log.i(TAG, "KEY ⏎")
+        }
+
+        override fun nextKeyboard() { switchToNextInputMethod(false) }
+
+        override fun showGlobe() = shouldOfferSwitchingToNextInputMethod()
+
+        override fun before() = currentInputConnection?.getTextBeforeCursor(4, 0)?.toString() ?: ""
+
+        override fun autoCaps(): Boolean {
+            val t = currentInputEditorInfo?.inputType ?: return false
+            if ((t and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_TEXT) return false
+            val v = t and InputType.TYPE_MASK_VARIATION
+            return v !in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
+                InputType.TYPE_TEXT_VARIATION_URI, InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)
+        }
     }
 
     companion object {
