@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
@@ -177,7 +176,7 @@ class ImeE2ETest {
     }
 
     private val dismiss = listOf("Phone", "Device", "Device & Google", "Don't Show Again", "OK", "Got it", "Skip",
-        "Not now", "No thanks", "Continue", "Start chat", "Close sheet")
+        "Not now", "No thanks", "Continue", "Start chat", "Close sheet", "Take me to Gmail")
 
     /** The clickable node (or its clickable ancestor) whose text or description is in [dismiss], by list order. */
     private fun clickTarget(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
@@ -190,7 +189,8 @@ class ImeE2ETest {
         }
         walk(root, 0)
         for (want in dismiss) {
-            val hit = all.firstOrNull { (it.text ?: it.contentDescription)?.toString()?.trim() == want } ?: continue
+            val hit = all.firstOrNull { (it.text ?: it.contentDescription)?.toString()?.trim().equals(want, ignoreCase = true) }
+                ?: continue
             var c: AccessibilityNodeInfo? = hit
             while (c != null && !c.isClickable) c = c.parent
             return c ?: hit
@@ -207,17 +207,27 @@ class ImeE2ETest {
         return out
     }
 
-    /** Another app's field: launch [intent], let it settle, dictate, read the focused field back. */
-    private fun otherApp(label: String, intent: Intent) {
-        try {
-            ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        } catch (e: Throwable) {
-            log("APP $label launch_failed=${e.javaClass.simpleName}"); return
-        }
+    /** Another app's field: launch it with `am start [amArgs]` (the shell's start: MIUI aborts this app's own
+     *  starts as background starts), let it settle, dictate, read the focused field back. */
+    private fun otherApp(label: String, amArgs: String) {
+        val res = sh("am start -W $amArgs")
+        log("APP $label start=${res.lines().firstOrNull { it.startsWith("Status") || it.startsWith("Error") }?.trim()}")
         SystemClock.sleep(8000)
+        val home = sh("cmd package resolve-activity --brief -c android.intent.category.HOME -a android.intent.action.MAIN")
+            .lines().lastOrNull { it.contains('/') }?.substringBefore('/')?.trim()
         var root = appRoot()
-        for (attempt in 1..5) {
+        var relaunched = false
+        for (attempt in 1..6) {
             if (findFocusedEditable(root) != null) break
+            if (root?.packageName?.toString() == home) {  // never press anything on the launcher
+                log("APP $label not_started foreground=launcher($home)"); break
+            }
+            // a welcome tour that was skipped leaves the app on its main screen: ask for the editor again, once
+            if (attempt > 2 && !relaunched && clickTarget(root) == null && findEditable(root, false) == null) {
+                relaunched = true
+                log("APP $label relaunch")
+                sh("am start -W $amArgs"); SystemClock.sleep(5000); root = appRoot(); continue
+            }
             val field = findEditable(root, false)
             if (field != null) {
                 // tap the first text field, as a user would
@@ -235,15 +245,61 @@ class ImeE2ETest {
         }
         val before = findFocusedEditable(root)
         val shown = sh("dumpsys input_method").lines().firstOrNull { it.contains("mInputShown") }?.trim()
-        log("APP $label foreground=${root?.packageName} focused_editable=${before != null} imm=$shown")
+        log("APP $label foreground=${root?.packageName} focused_editable=${before != null} imm=$shown " +
+            "root_children=${root?.childCount} focus=${sh("dumpsys window").lines().firstOrNull { it.contains("mCurrentFocus") }?.trim()}")
         if (before == null) log("APP $label outline=${outline(root).joinToString(" | ")}")
+        shot("$label-settled")
+        // an app whose fields the accessibility tree does not show (Google Messages gave an empty tree on both Test
+        // Lab phones): tap where a compose box sits, above the navigation bar, as a user would, until the keyboard
+        // starts on a text field of that app
+        val app = root?.packageName?.toString()
+        val tapped = if (before == null && app != null) tapBottomField(label, app) else false
         val e2e = dictateWav("s1.wav")
         SystemClock.sleep(1000)
+        shot("$label-dictated")
         val after = findFocusedEditable(appRoot())
-        log("APP $label e2e=${e2e?.substringAfter("E2E ")} field=\"${esc(after?.text?.toString() ?: "")}\"")
+        // the field as the keyboard reads it back through its own input connection (works where the tree is empty)
+        val back = phononLog().lastOrNull { it.contains("E2E_READBACK") }
+        log("APP $label e2e=${e2e?.substringAfter("E2E ")} tapped_bottom=$tapped field=\"${esc(after?.text?.toString() ?: "")}\" " +
+            "readback=${back?.substringAfter("E2E_READBACK ")?.take(200)}")
+        val ok = e2e?.contains("committed=true") == true && back?.contains("app=$app ") == true && back.contains("landed=true")
+        log("APP_RESULT $label app=$app ok=$ok")
         sh("input keyevent KEYCODE_BACK"); SystemClock.sleep(500)
         sh("input keyevent KEYCODE_BACK"); SystemClock.sleep(500)
         sh("input keyevent KEYCODE_HOME"); SystemClock.sleep(1000)
+    }
+
+    /** Screenshot to the app's files/shots (pulled by Test Lab with --directories-to-pull). */
+    private fun shot(name: String) {
+        try {
+            val b = inst.uiAutomation.takeScreenshot() ?: return
+            val f = File(dir, "shots/$name.png")
+            f.parentFile!!.mkdirs()
+            f.outputStream().use { b.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            log("SHOT ${f.path}")
+        } catch (e: Throwable) {
+            log("SHOT $name failed=${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Tap up the screen from just above the navigation bar until the IME starts on a text field of [app]. */
+    private fun tapBottomField(label: String, app: String): Boolean {
+        val m = ctx.resources.displayMetrics
+        val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        val bounds = wm.maximumWindowMetrics.bounds
+        val navId = ctx.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        val nav = if (navId > 0) ctx.resources.getDimensionPixelSize(navId) else (48 * m.density).toInt()
+        for (dpUp in listOf(32, 48, 64, 80, 100, 124)) {
+            val y = bounds.height() - nav - (dpUp * m.density).toInt()
+            val x = bounds.width() * 0.45f
+            val n = phononLog().count { it.contains("INPUT_VIEW app=$app") && !it.contains("inputType=0x0") }
+            sh("input tap ${x.toInt()} $y")
+            val ok = waitLog(3) { l -> l.count { it.contains("INPUT_VIEW app=$app") && !it.contains("inputType=0x0") } > n }
+                .count { it.contains("INPUT_VIEW app=$app") && !it.contains("inputType=0x0") } > n
+            log("APP $label tap_bottom x=${x.toInt()} y=$y dp_up=$dpUp input_view=$ok")
+            if (ok) { SystemClock.sleep(800); return true }
+        }
+        return false
     }
 
     private fun status(key: String): String =
@@ -384,8 +440,11 @@ class ImeE2ETest {
         smaps("after_dictation")
 
         // other apps
-        otherApp("messages", Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:5550100")))
-        otherApp("contacts", Intent(Intent.ACTION_INSERT).setType("vnd.android.cursor.dir/contact"))
+        // Google Messages: Test Lab phones have no SIM, so the conversation shows "Please insert a SIM card to
+        // continue" where the compose box would be (screenshots, 2026-11-12) and there is no field: committed=false
+        // is the right answer there. Gmail is no way round it: past its tour it asks for an email account to be added.
+        otherApp("messages", "-a android.intent.action.SENDTO -d smsto:5550100")
+        otherApp("contacts", "-a android.intent.action.INSERT -t vnd.android.cursor.dir/contact")
         // no field at all (home screen): the IME must not report the dictation as committed
         sh("input keyevent KEYCODE_HOME"); SystemClock.sleep(2000)
         log("NOFIELD e2e=${dictateWav("s1.wav")?.substringAfter("E2E ")?.substringBefore(" text=")}")

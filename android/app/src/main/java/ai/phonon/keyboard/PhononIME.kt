@@ -186,6 +186,7 @@ class PhononIME : InputMethodService() {
     /** Each time the keyboard opens: retries a download that failed (a running or finished one is left alone). */
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        Log.i(TAG, "INPUT_VIEW app=${info?.packageName} inputType=0x${Integer.toHexString(info?.inputType ?: 0)}")
         if (ModelFetch.state.error != null) ModelFetch.start(this)
         keys?.reset()
         bar?.animate = !lowPower()
@@ -322,6 +323,13 @@ class PhononIME : InputMethodService() {
         val ok = (ic?.commitText(text, 1) ?: false) && bound
         Log.i(TAG, "E2E source=$source key_up_to_commit_ms=${SystemClock.elapsedRealtime() - tUp} committed=$ok " +
             "bound=$bound text=\"$text\"")
+        if (ok) {
+            // what the field now holds before the cursor, read through the same connection: proof the text landed in
+            // apps whose fields a test cannot read (ImeE2ETest's Messages check)
+            val back = ic?.getTextBeforeCursor(text.length + 40, 0)?.toString()
+            Log.i(TAG, "E2E_READBACK app=${currentInputEditorInfo?.packageName} landed=${back?.endsWith(text) == true} " +
+                "before=\"${back?.replace("\n", "\\n")}\"")
+        }
         setPhase(Phase.READY)
         val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
         flash(when {
