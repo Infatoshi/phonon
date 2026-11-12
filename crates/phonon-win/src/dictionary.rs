@@ -21,10 +21,6 @@
 //! correction prompt and its answer stay byte-identical to a build without this
 //! module.
 
-// load / save / add_word / add_replacement / remove are the settings window's API;
-// on Windows they are unused until its Dictionary page calls them.
-#![cfg_attr(windows, allow(dead_code))]
-
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -57,7 +53,9 @@ pub fn load() -> DictionaryFile {
 }
 
 /// Save atomically (a temporary file renamed over the old one), sorted and stamped
-/// as the Mac saves it.
+/// as the Mac saves it. (The settings window saves with `save_at` into the data
+/// root it was opened on.)
+#[cfg_attr(windows, allow(dead_code))]
 pub fn save(dictionary: &mut DictionaryFile) -> Result<()> {
     save_at(dictionary, &path())
 }

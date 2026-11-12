@@ -189,6 +189,12 @@ impl ksni::Tray for PhononTray {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: "Settings\u{2026}".into(),
+                activate: Box::new(|_: &mut Self| crate::window::open()),
+                ..Default::default()
+            }
+            .into(),
             item("Open Phonon folder", Command::OpenFolder),
         ];
         items.extend(self.history_items());
@@ -258,6 +264,15 @@ pub fn set_status(text: &str) {
                 t.status = text;
                 t.recording = recording;
             });
+        }
+    }
+}
+
+/// Show this writing mode checked (it may have changed in the settings window).
+pub fn set_mode(mode: &'static str) {
+    if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
+        if let Some(handle) = guard.as_ref() {
+            handle.update(move |t| t.mode = mode);
         }
     }
 }

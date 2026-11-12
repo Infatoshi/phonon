@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -56,16 +57,46 @@ pub fn key_label(code: u16) -> &'static str {
     }
 }
 
-/// The key from `PHONON_HOTKEY` (or the Windows name `PHONON_WIN_HOTKEY`), default Right Ctrl.
+/// The key from `PHONON_HOTKEY` (or the Windows name `PHONON_WIN_HOTKEY`), then
+/// `shortcut_mode` in settings.json (the settings window), default Right Ctrl.
 pub fn configured_key() -> (&'static str, u16) {
     let name = std::env::var("PHONON_HOTKEY")
         .or_else(|_| std::env::var("PHONON_WIN_HOTKEY"))
-        .unwrap_or_else(|_| "rightctrl".into());
+        .ok()
+        .or_else(|| crate::settings::Settings::load().shortcut())
+        .unwrap_or_else(|| crate::settings::DEFAULT_SHORTCUT.into());
     let code = key_code(&name).unwrap_or_else(|error| {
         eprintln!("phonon: {error:#}; falling back to rightctrl");
         KEY_RIGHTCTRL
     });
     (key_label(code), code)
+}
+
+/// The key the readers act on; it can change while Phonon runs.
+static WATCHED: AtomicU16 = AtomicU16::new(KEY_RIGHTCTRL);
+
+/// The key in use right now.
+pub fn current_key() -> (&'static str, u16) {
+    let code = WATCHED.load(Ordering::Relaxed);
+    (key_label(code), code)
+}
+
+/// Called on the worker's tick when settings.json changed: follow a key picked
+/// in the settings window. Returns the new key's label when it moved.
+pub fn follow_settings() -> Option<&'static str> {
+    let (label, code) = configured_key();
+    if code == WATCHED.swap(code, Ordering::SeqCst) {
+        return None;
+    }
+    // a press of the old key may be half done; start clean on the new one
+    if let Some(state) = STATE.get() {
+        if let Ok(mut s) = state.lock() {
+            s.held = false;
+            s.latch.reset();
+        }
+    }
+    eprintln!("phonon: dictation key is now {label}");
+    Some(label)
 }
 
 struct State {
@@ -162,20 +193,21 @@ pub fn install(watched: u16, sender: Sender<Action>) -> Result<()> {
             super::command_name()
         );
     }
+    WATCHED.store(watched, Ordering::SeqCst);
     let open: Arc<Mutex<HashSet<PathBuf>>> = Arc::default();
     for path in readable {
-        spawn_reader(path, watched, open.clone());
+        spawn_reader(path, open.clone());
     }
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(3));
         for path in devices().0 {
-            spawn_reader(path, watched, open.clone());
+            spawn_reader(path, open.clone());
         }
     });
     Ok(())
 }
 
-fn spawn_reader(path: PathBuf, watched: u16, open: Arc<Mutex<HashSet<PathBuf>>>) {
+fn spawn_reader(path: PathBuf, open: Arc<Mutex<HashSet<PathBuf>>>) {
     if !open.lock().unwrap().insert(path.clone()) {
         return;
     }
@@ -187,7 +219,7 @@ fn spawn_reader(path: PathBuf, watched: u16, open: Arc<Mutex<HashSet<PathBuf>>>)
                 let kind = u16::from_ne_bytes([buf[16], buf[17]]);
                 let code = u16::from_ne_bytes([buf[18], buf[19]]);
                 let value = i32::from_ne_bytes([buf[20], buf[21], buf[22], buf[23]]);
-                if kind == EV_KEY && code == watched {
+                if kind == EV_KEY && code == WATCHED.load(Ordering::Relaxed) {
                     key(value);
                 }
             }
@@ -244,6 +276,14 @@ mod tests {
         assert_eq!(key_code(" Right_Ctrl ").unwrap(), KEY_RIGHTCTRL);
         assert_eq!(key_label(key_code("capslock").unwrap()), "Caps Lock");
         assert!(key_code("rihgtctrl").is_err());
+    }
+
+    /// Each key the settings window offers is one the reader can watch, with the same label.
+    #[test]
+    fn the_settings_window_offers_readable_keys() {
+        for (name, label) in crate::settings::SHORTCUTS {
+            assert_eq!(key_label(key_code(name).unwrap()), *label);
+        }
     }
 
     #[test]

@@ -251,6 +251,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     // On the CPU, the fallback corrector for a saturated machine starts now, not
     // at the first busy moment, so the first dictation under load does not wait.
     engine.start_lean();
+    crate::settings::record_engine(engine.device());
 
     let (name, _) = hook::current_key();
     tray::set_status(&idle_text());
@@ -262,10 +263,28 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     );
 
     let mut recording: Option<capture::Recording> = None;
+    let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);
+    let _ = settings_watch.changed_in(&paths::data_root());
+    // the settings window can clear the history; the tray's recent list follows
+    let mut history_watch = crate::settings::Watch::of(history::LOG_FILE);
+    let _ = history_watch.changed_in(&paths::data_root());
     loop {
         let event = match inbox.recv_timeout(Duration::from_millis(500)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => {
+                // The settings window writes settings.json; a new key applies here,
+                // between dictations. Mode, history and the clipboard rule are read
+                // at each dictation.
+                if recording.is_none() {
+                    let root = paths::data_root();
+                    let settings_changed = settings_watch.changed_in(&root);
+                    if settings_changed && hook::follow_settings().is_some() {
+                        tray::set_status(&idle_text());
+                    }
+                    if history_watch.changed_in(&root) || settings_changed {
+                        refresh_history();
+                    }
+                }
                 match &mut recording {
                     Some(active) => match active.auto_stop(hook::latched()) {
                         Decision::KeepRecording => {
@@ -440,7 +459,8 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                 // Every insertion ends with a space, as on macOS, so the next
                 // dictation does not run into this one ("afternoon?I think").
                 let text = format!("{} ", result.polished.trim());
-                match inject::insert(&text) {
+                let after = crate::settings::Settings::load().clipboard_after_paste();
+                match inject::insert(&text, after) {
                     Ok(path) => tray::set_status(&format!("inserted ({path})")),
                     Err(error) => {
                         tray::notify(

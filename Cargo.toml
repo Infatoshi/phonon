@@ -12,6 +12,33 @@ members = [
 ]
 resolver = "2"
 
+# The settings window's toolkit (crates/phonon-win/src/window.rs) is built for size: it draws a few
+# rows, and every megabyte lands in the Windows installer and the .deb. Dictation code is untouched.
+[profile.release.package.egui]
+opt-level = "s"
+[profile.release.package.epaint]
+opt-level = "s"
+[profile.release.package.eframe]
+opt-level = "s"
+[profile.release.package.egui-winit]
+opt-level = "s"
+[profile.release.package.egui_glow]
+opt-level = "s"
+[profile.release.package.egui-wgpu]
+opt-level = "s"
+[profile.release.package.winit]
+opt-level = "s"
+[profile.release.package.glutin]
+opt-level = "s"
+[profile.release.package.wgpu]
+opt-level = "s"
+[profile.release.package.wgpu-core]
+opt-level = "s"
+[profile.release.package.wgpu-hal]
+opt-level = "s"
+[profile.release.package.naga]
+opt-level = "s"
+
 [workspace.package]
 version = "1.0.0"
 edition = "2021"

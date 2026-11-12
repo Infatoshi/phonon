@@ -19,15 +19,45 @@ pub struct Guard {
 /// Claim the single-instance lock for the data root `root`. `Ok(None)` means
 /// another Phonon already holds it.
 pub fn claim(root: &Path) -> Result<Option<Guard>> {
-    claim_impl(root)
+    claim_impl(root, Kind::App)
+}
+
+/// Claim the settings window's own lock: one window per data root, apart from
+/// the tray app's lock.
+pub fn claim_settings_window(root: &Path) -> Result<Option<Guard>> {
+    claim_impl(root, Kind::SettingsWindow)
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    App,
+    SettingsWindow,
+}
+
+impl Kind {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn lock_file(self) -> &'static str {
+        match self {
+            Kind::App => "phonon.lock",
+            Kind::SettingsWindow => "settings-window.lock",
+        }
+    }
+
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    fn mutex_prefix(self) -> &'static str {
+        match self {
+            Kind::App => "single-instance",
+            Kind::SettingsWindow => "settings-window",
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn claim_impl(root: &Path) -> Result<Option<Guard>> {
+fn claim_impl(root: &Path, kind: Kind) -> Result<Option<Guard>> {
     use anyhow::Context;
     use std::os::fd::AsRawFd;
     std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
-    let path = root.join("phonon.lock");
+    let path = root.join(kind.lock_file());
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -48,8 +78,14 @@ fn claim_impl(root: &Path) -> Result<Option<Guard>> {
 
 /// The mutex name for a data root: per session ("Local\"), one per data root so a
 /// test copy with its own PHONON_WIN_HOME does not collide with the user's.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn mutex_name(root: &Path) -> String {
+    mutex_name_for(root, Kind::App)
+}
+
+/// The mutex name for one kind of lock in a data root.
+#[cfg(any(windows, test))]
+fn mutex_name_for(root: &Path, kind: Kind) -> String {
     let tail: String = root
         .to_string_lossy()
         .to_lowercase()
@@ -57,14 +93,17 @@ fn mutex_name(root: &Path) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     let tail = &tail[tail.len().saturating_sub(180)..];
-    format!("Local\\Phonon.single-instance.{tail}")
+    format!("Local\\Phonon.{}.{tail}", kind.mutex_prefix())
 }
 
 #[cfg(windows)]
-fn claim_impl(root: &Path) -> Result<Option<Guard>> {
+fn claim_impl(root: &Path, kind: Kind) -> Result<Option<Guard>> {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
     use windows_sys::Win32::System::Threading::CreateMutexW;
-    let name: Vec<u16> = mutex_name(root).encode_utf16().chain([0]).collect();
+    let name: Vec<u16> = mutex_name_for(root, kind)
+        .encode_utf16()
+        .chain([0])
+        .collect();
     // SAFETY: a NUL-terminated name; the handle is closed or kept below.
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
@@ -83,7 +122,7 @@ fn claim_impl(root: &Path) -> Result<Option<Guard>> {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-fn claim_impl(_root: &Path) -> Result<Option<Guard>> {
+fn claim_impl(_root: &Path, _kind: Kind) -> Result<Option<Guard>> {
     Ok(Some(Guard {}))
 }
 
@@ -111,6 +150,32 @@ mod tests {
             "the lock goes with the guard"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settings window has its own lock: it opens while the tray app runs,
+    /// and only one window opens per data root.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_settings_window_lock_is_separate_from_the_apps() {
+        let dir = std::env::temp_dir().join(format!("phonon-single-w-{}", std::process::id()));
+        let app = claim(&dir).unwrap();
+        assert!(app.is_some());
+        let window = claim_settings_window(&dir).unwrap();
+        assert!(window.is_some(), "the tray app does not block the window");
+        assert!(claim_settings_window(&dir).unwrap().is_none());
+        drop(window);
+        assert!(claim_settings_window(&dir).unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_settings_window_mutex_differs_from_the_apps() {
+        let root = Path::new(r"C:\Users\qa\AppData\Local\Phonon");
+        assert_eq!(mutex_name(root), mutex_name_for(root, Kind::App));
+        assert_ne!(
+            mutex_name_for(root, Kind::SettingsWindow),
+            mutex_name_for(root, Kind::App)
+        );
     }
 
     #[test]

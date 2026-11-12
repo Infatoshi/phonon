@@ -40,6 +40,28 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 native-tls = "0.2"
 ureq = { version = "2", default-features = false, features = ["json", "gzip", "native-tls"] }
 
+# The settings window (src/window.rs), a separate `settings` process; the resident app never calls it.
+# Linux: OpenGL through glow; winit and glutin open libEGL/libGL, libxkbcommon, libwayland-client and
+# the X11 libraries at run time (dlopen), so the binary links nothing new.
+[target.'cfg(target_os = "linux")'.dependencies.eframe]
+version = "0.37"
+default-features = false
+# no "clipboard": its Wayland half adds a megabyte; Copy uses arboard, which the app already links
+features = ["glow", "default_fonts", "x11", "wayland"]
+
+# Windows: Direct3D 12 through wgpu. A Windows without a GPU driver (a VM, a basic display adapter) has
+# only OpenGL 1.1, which glow cannot use; Direct3D 12 falls back to the WARP software rasterizer.
+# Only the Direct3D 12 backend and the WGSL front end are built (wgpu's defaults add Vulkan and GLES).
+[target.'cfg(windows)'.dependencies.eframe]
+version = "0.37"
+default-features = false
+features = ["wgpu_no_default_features", "default_fonts", "clipboard"]
+
+[target.'cfg(windows)'.dependencies.wgpu]
+version = "30"
+default-features = false
+features = ["std", "dx12", "wgsl"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
@@ -64,6 +86,7 @@ features = [
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
     "Win32_UI_Input_KeyboardAndMouse",

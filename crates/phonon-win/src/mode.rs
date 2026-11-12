@@ -3,21 +3,23 @@
 //! The refiner rewrites a transcript in one of its four modes (`polish::MODES`).
 //! The Mac follows the focused app; Windows and Linux do not know the focused app
 //! yet, so the user picks one mode from the tray's "Writing mode" submenu, and
-//! every dictation uses it. The pick is one word in `writing_mode.txt` in the data
-//! folder, next to `hotkey.txt`. It is read at each dictation, so a pick (or an
-//! edit of the file) applies from the next one without a restart.
+//! every dictation uses it. The pick is `writing_style` in `settings.json` (see
+//! settings.rs; `writing_mode.txt`, the file before it, is the fallback). It is read
+//! at each dictation, so a pick from the tray or the settings window applies from
+//! the next one without a restart.
 //!
 //! The startup check and the warm-up stay on `polish::DEFAULT_MODE`: they prove
 //! the model against a fixed expected answer.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{anyhow, Result};
 
 use crate::polish::{DEFAULT_MODE, MODES};
 
-/// The file name in the data folder.
-const FILE: &str = "writing_mode.txt";
+/// The legacy file name in the data folder.
+#[cfg(test)]
+const FILE: &str = crate::settings::LEGACY_MODE;
 
 /// The tray menu's names, in `MODES` order (the Mac's titles, bar/Sources/AppData.swift).
 pub fn label(mode: &str) -> &'static str {
@@ -50,10 +52,6 @@ pub fn parse(text: &str) -> Option<&'static str> {
     names().find(|name| *name == wanted)
 }
 
-fn saved_path() -> PathBuf {
-    crate::paths::data_root().join(FILE)
-}
-
 /// The mode saved at `path`: minimal when the file is missing, unreadable or
 /// names no mode.
 pub fn load_from(path: &Path) -> &'static str {
@@ -69,7 +67,8 @@ pub fn load_from(path: &Path) -> &'static str {
     })
 }
 
-/// Save `mode` at `path`, creating the folder.
+/// Save `mode` at `path` in the legacy format, creating the folder.
+#[cfg(test)]
 pub fn save_to(path: &Path, mode: &str) -> Result<()> {
     let mode = parse(mode).ok_or_else(|| anyhow!("not a writing mode: {mode:?}"))?;
     if let Some(dir) = path.parent() {
@@ -81,12 +80,13 @@ pub fn save_to(path: &Path, mode: &str) -> Result<()> {
 
 /// The mode the next dictation uses.
 pub fn current() -> &'static str {
-    load_from(&saved_path())
+    crate::settings::Settings::load().writing_style()
 }
 
 /// Use `mode` from the next dictation on, and remember it across restarts.
 pub fn choose(mode: &str) -> Result<()> {
-    save_to(&saved_path(), mode)?;
+    let mode = parse(mode).ok_or_else(|| anyhow!("not a writing mode: {mode:?}"))?;
+    crate::settings::set(crate::settings::WRITING_STYLE, mode.into())?;
     eprintln!("phonon: writing mode set to {mode}");
     Ok(())
 }
@@ -95,6 +95,7 @@ pub fn choose(mode: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::polish::{mode_line, prompt};
+    use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

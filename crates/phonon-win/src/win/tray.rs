@@ -48,6 +48,7 @@ const ID_OPEN_FOLDER: usize = 2;
 const ID_QUIT: usize = 3;
 const ID_HISTORY: usize = 4;
 const ID_CLEAR_HISTORY: usize = 5;
+const ID_SETTINGS: usize = 6;
 /// "Recent dictations" submenu items: ID_RECENT + index into the recent list.
 const ID_RECENT: usize = 300;
 /// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
@@ -470,6 +471,7 @@ fn show_menu(hwnd: HWND) {
     let heading = wide(&format!("Phonon: {}", status()));
     let toggle = wide("Start or stop dictation");
     let folder = wide("Open the Phonon folder");
+    let settings = wide("Settings\u{2026}");
     let quit = wide("Quit Phonon");
     let keys_title = wide(&format!("Dictation key: {}", super::hook::current_key().0));
     let keys: HMENU = unsafe { CreatePopupMenu() };
@@ -513,6 +515,7 @@ fn show_menu(hwnd: HWND) {
             modes as usize,
             modes_title.as_ptr(),
         );
+        AppendMenuW(menu, MF_STRING, ID_SETTINGS, settings.as_ptr());
         AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, folder.as_ptr());
         append_history_items(menu);
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
@@ -556,6 +559,10 @@ unsafe extern "system" fn window_proc(
                 ID_QUIT => send(Command::Quit),
                 ID_HISTORY => send(Command::ToggleHistory),
                 ID_CLEAR_HISTORY => send(Command::ClearHistory),
+                // A separate process, started off this thread (it runs the keyboard hook).
+                ID_SETTINGS => {
+                    std::thread::spawn(crate::window::open);
+                }
                 id if (ID_RECENT..ID_RECENT + crate::history::RECENT).contains(&id) => {
                     let text = SHOWN.lock().ok().and_then(|s| s.text(id - ID_RECENT));
                     if let Some(text) = text {

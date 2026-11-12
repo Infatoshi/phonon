@@ -14,6 +14,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod asr;
+mod autostart;
 mod backends;
 mod dictionary;
 mod fetch;
@@ -24,8 +25,11 @@ mod mode;
 mod paths;
 mod pipeline;
 mod polish;
+mod settings;
 mod single;
 mod smoke;
+#[cfg(any(windows, target_os = "linux"))]
+mod window;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -63,6 +67,12 @@ struct Cli {
 enum Command {
     /// Run the tray application. This is the default.
     Run,
+    /// Open the settings window (the tray's "Settings..." does this).
+    Settings {
+        /// The page to open: general or history.
+        #[arg(long)]
+        page: Option<String>,
+    },
     /// Download and verify the runtimes and models, then stop.
     Fetch,
     /// Linux: check keyboard and paste access and print the one-time fix.
@@ -116,6 +126,7 @@ fn main() -> Result<()> {
             };
             run()
         }
+        Command::Settings { page } => settings_window(page.as_deref()),
         Command::Fetch => fetch_all(),
         Command::Setup => setup(),
         Command::Info => {
@@ -142,6 +153,23 @@ fn run() -> Result<()> {
 #[cfg(target_os = "linux")]
 fn run() -> Result<()> {
     lx::run()
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn settings_window(page: Option<&str>) -> Result<()> {
+    let page =
+        match page {
+            None => None,
+            Some(text) => Some(window::Page::parse(text).ok_or_else(|| {
+                anyhow::anyhow!("no settings page {text:?}; use general or history")
+            })?),
+        };
+    window::run(page)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn settings_window(_page: Option<&str>) -> Result<()> {
+    bail!("the settings window is for Windows and Linux. On macOS use the Phonon app.")
 }
 
 #[cfg(target_os = "linux")]

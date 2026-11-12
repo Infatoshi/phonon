@@ -1,7 +1,8 @@
 //! Put finished text into whatever window has focus.
 //!
 //! The clipboard and Control-V, as on macOS; the previous clipboard text is put
-//! back afterwards. Typing with `SendInput` Unicode key events is only the
+//! back afterwards, unless settings.json `clipboard_after_paste` is "dictation",
+//! which leaves the dictation there. Typing with `SendInput` Unicode key events is only the
 //! fallback for when the clipboard cannot be used: Windows 11's Notepad turns a
 //! burst of those events into "Can ??????" (everything after the first word
 //! became question marks, 2026-11-05 on 26100), while the same text pasted, or
@@ -20,14 +21,17 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_V,
 };
 
+use crate::settings::ClipboardAfterPaste;
+
 const CF_UNICODETEXT: u32 = 13;
 
-/// Insert `text` into the focused window. Returns the path that was used.
-pub fn insert(text: &str) -> Result<&'static str> {
+/// Insert `text` into the focused window. `after` says what the clipboard holds
+/// afterwards (settings.json `clipboard_after_paste`). Returns the path that was used.
+pub fn insert(text: &str, after: ClipboardAfterPaste) -> Result<&'static str> {
     if text.is_empty() {
         return Ok("skipped");
     }
-    match paste_text(text) {
+    match paste_text(text, after) {
         Ok(()) => Ok("pasted"),
         Err(error) => {
             eprintln!("phonon: pasting failed, typing instead: {error:#}");
@@ -75,15 +79,19 @@ fn type_unit(unit: u16) -> Result<()> {
     Ok(())
 }
 
-/// Put `text` on the clipboard, press Control-V, then put the old text back.
-fn paste_text(text: &str) -> Result<()> {
-    let previous = read_clipboard_text();
+/// Put `text` on the clipboard, press Control-V, then put the old text back
+/// unless the user asked to keep the dictation there.
+fn paste_text(text: &str, after: ClipboardAfterPaste) -> Result<()> {
+    let previous = match after {
+        ClipboardAfterPaste::Restore => read_clipboard_text(),
+        ClipboardAfterPaste::Dictation => None,
+    };
     set_clipboard_text(text).context("write the clipboard")?;
     press_paste().context("send Control-V")?;
-    // The target window reads the clipboard on its own schedule. Restoring it
-    // instantly would race the paste.
-    std::thread::sleep(std::time::Duration::from_millis(250));
-    if let Some(previous) = previous {
+    if let Some(previous) = after.to_restore(previous) {
+        // The target window reads the clipboard on its own schedule. Restoring it
+        // instantly would race the paste.
+        std::thread::sleep(std::time::Duration::from_millis(250));
         let _ = set_clipboard_text(&previous);
     }
     Ok(())

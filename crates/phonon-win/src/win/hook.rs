@@ -9,7 +9,9 @@
 //! Control stops acting as a modifier while Phonon runs. Left Control is untouched.
 //!
 //! The key comes from, in order: `PHONON_WIN_HOTKEY`, the choice saved from the tray
-//! menu (`hotkey.txt` in the data folder), the default. Laptops with a Copilot key
+//! menu or the settings window (`shortcut_mode` in settings.json, else the older
+//! `hotkey.txt`), the default. A change in settings.json applies on the worker's
+//! next 500 ms tick (`follow_settings`). Laptops with a Copilot key
 //! have no Right Control: when the hook sees the Copilot key (it sends F23) and the
 //! user never chose a key, Phonon moves to Right Alt (or Ctrl+Space where Right Alt
 //! is AltGr) and says so.
@@ -87,22 +89,23 @@ pub fn key_label(code: u32) -> &'static str {
     }
 }
 
-fn saved_path() -> std::path::PathBuf {
-    crate::paths::data_root().join("hotkey.txt")
+/// The saved key: `shortcut_mode` in settings.json, or `hotkey.txt` from before it.
+fn saved_name() -> Option<String> {
+    crate::settings::Settings::load().shortcut()
 }
 
-/// Whether the key was picked by the user (environment or tray menu), so the
-/// Copilot-key fallback must leave it alone.
+/// Whether the key was picked by the user (environment, tray menu or settings
+/// window), so the Copilot-key fallback must leave it alone.
 fn user_chose() -> bool {
-    std::env::var_os("PHONON_WIN_HOTKEY").is_some() || saved_path().is_file()
+    std::env::var_os("PHONON_WIN_HOTKEY").is_some() || saved_name().is_some()
 }
 
 /// The key Phonon starts with, as its display label and code.
 pub fn configured_key() -> (&'static str, u32) {
     let name = std::env::var("PHONON_WIN_HOTKEY")
         .ok()
-        .or_else(|| std::fs::read_to_string(saved_path()).ok())
-        .unwrap_or_else(|| "rightctrl".into());
+        .or_else(saved_name)
+        .unwrap_or_else(|| crate::settings::DEFAULT_SHORTCUT.into());
     let code = match key_code(&name) {
         Ok(code) => code,
         Err(error) => {
@@ -126,13 +129,21 @@ pub fn choose(code: u32) -> Result<()> {
         .find(|(_, c)| *c == code)
         .map(|(name, _)| *name)
         .ok_or_else(|| anyhow::anyhow!("not a menu key: {code:#x}"))?;
-    let path = saved_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, name)?;
+    crate::settings::set(crate::settings::SHORTCUT_MODE, name.into())?;
     switch_to(code);
     Ok(())
+}
+
+/// Called on the worker's tick when settings.json changed: follow a key picked
+/// in the settings window. Returns the new key's label when it moved.
+pub fn follow_settings() -> Option<&'static str> {
+    let (label, code) = configured_key();
+    if code == WATCHED.load(Ordering::Relaxed) {
+        return None;
+    }
+    switch_to(code);
+    eprintln!("phonon: dictation key is now {label}");
+    Some(label)
 }
 
 fn switch_to(code: u32) {
@@ -373,6 +384,18 @@ mod tests {
         for (name, code) in CHOICES {
             assert_eq!(key_code(name).unwrap(), code);
             assert_ne!(key_label(code), "the dictation key");
+        }
+    }
+
+    /// The settings window offers `settings::SHORTCUTS`; each must be a key the
+    /// hook installs, with the label the tray shows.
+    #[test]
+    fn the_settings_window_offers_the_tray_keys() {
+        assert_eq!(crate::settings::SHORTCUTS.len(), CHOICES.len());
+        for ((name, label), (menu_name, code)) in crate::settings::SHORTCUTS.iter().zip(CHOICES) {
+            assert_eq!(*name, menu_name);
+            assert_eq!(key_label(key_code(name).unwrap()), *label);
+            assert_eq!(key_code(name).unwrap(), code);
         }
     }
 

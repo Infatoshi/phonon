@@ -25,5 +25,22 @@ fn main() {
             .set("LegalCopyright", "GPL-3.0");
         res.compile()
             .expect("phonon-win: compiling the Windows version resource");
+        // The settings window (src/window.rs) is the only user of these system DLLs.
+        // Delay-loaded, they are mapped when the window process first calls them,
+        // never into the resident dictation process.
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            for dll in [
+                "dxgi.dll",
+                "dwmapi.dll",
+                "uxtheme.dll",
+                "imm32.dll",
+                "setupapi.dll",
+                "gdi32.dll",
+                "combase.dll",
+            ] {
+                println!("cargo:rustc-link-arg-bins=/DELAYLOAD:{dll}");
+            }
+            println!("cargo:rustc-link-arg-bins=delayimp.lib");
+        }
     }
 }

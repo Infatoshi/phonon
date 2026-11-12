@@ -1,18 +1,17 @@
 //! Local dictation history, the Windows and Linux counterpart of the Mac's
 //! `local_history` setting.
 //!
-//! Off by default, as on the Mac since settings schema 2. The switch is one
-//! word in `history.txt` in the data root, next to `hotkey.txt`: this crate has
-//! no settings file, and a single-purpose file needs no schema, no migration and
-//! no read-modify-write shared with other settings. When it is off Phonon keeps
+//! Off by default, as on the Mac since settings schema 2. The switch is
+//! `local_history` in settings.json (settings.rs); `history.txt`, the one-word
+//! file before it, is read when that key is absent. When it is off Phonon keeps
 //! no transcript and no recording (see `keep_wav`).
 //!
 //! When it is on, each dictation appends one JSON line to `history.jsonl` in the
 //! data root, and its recording stays in `recordings/`. The log keeps the newest
 //! `MAX_ENTRIES` dictations; older lines are dropped together with their
-//! recordings. The Mac keeps history until the owner deletes it, with an
-//! optional 7, 30 or 90 day window; a tray has no room for that picker, so this
-//! is a fixed count instead.
+//! recordings. As on the Mac, `history_retention_days` (7, 30 or 90; 0 keeps
+//! everything) also drops entries older than that, at each new dictation and
+//! when the setting changes.
 //!
 //! Nothing here writes dictated text anywhere but `history.jsonl`, and nothing
 //! here logs it.
@@ -26,8 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths;
 
-/// The on/off switch, in the data root.
-pub const SWITCH_FILE: &str = "history.txt";
+/// The on/off switch before settings.json, in the data root (still read when
+/// settings.json has no `local_history`).
+#[cfg(test)]
+pub const SWITCH_FILE: &str = crate::settings::LEGACY_HISTORY;
 /// One JSON object per line, oldest first, in the data root.
 pub const LOG_FILE: &str = "history.jsonl";
 /// Dictations kept; at about ten seconds each that is some 320 MB of 16 kHz recordings.
@@ -95,17 +96,13 @@ pub fn parse_switch(text: &str) -> bool {
     )
 }
 
+/// `local_history` in settings.json, or the legacy switch file when that key is absent.
 pub fn enabled_in(root: &Path) -> bool {
-    fs::read_to_string(root.join(SWITCH_FILE))
-        .map(|text| parse_switch(&text))
-        .unwrap_or(false)
+    crate::settings::Settings::load_in(root).local_history()
 }
 
 pub fn set_enabled_in(root: &Path, on: bool) -> Result<()> {
-    fs::create_dir_all(root)?;
-    let path = root.join(SWITCH_FILE);
-    fs::write(&path, if on { "on\n" } else { "off\n" })
-        .with_context(|| format!("write {}", path.display()))
+    crate::settings::set_in(root, crate::settings::LOCAL_HISTORY, on.into())
 }
 
 /// Whether history is on, in the real data root.
@@ -142,6 +139,12 @@ pub fn append_in(root: &Path, entry: &Entry, cap: usize) -> Result<()> {
         return Ok(());
     }
     let (dropped, kept) = entries.split_at(entries.len() - cap);
+    rewrite(root, kept, dropped)
+}
+
+/// Replace the log with `kept`, and delete the recordings of `dropped`.
+fn rewrite(root: &Path, kept: &[Entry], dropped: &[Entry]) -> Result<()> {
+    let path = root.join(LOG_FILE);
     let mut text = String::new();
     for entry in kept {
         text.push_str(&serde_json::to_string(entry)?);
@@ -161,9 +164,35 @@ pub fn append_in(root: &Path, entry: &Entry, cap: usize) -> Result<()> {
     Ok(())
 }
 
-/// Append to the real history.
+/// Drop the entries older than `days` days before `now_ms`, with their
+/// recordings. `days` 0 keeps everything. Returns how many were dropped.
+pub fn prune_older_in(root: &Path, days: u32, now_ms: u64) -> Result<usize> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now_ms.saturating_sub(u64::from(days) * 86_400_000);
+    let entries = read_in(root);
+    let (kept, dropped): (Vec<Entry>, Vec<Entry>) = entries
+        .into_iter()
+        .partition(|entry| entry.time_unix_ms >= cutoff);
+    if dropped.is_empty() {
+        return Ok(0);
+    }
+    rewrite(root, &kept, &dropped)?;
+    Ok(dropped.len())
+}
+
+/// Apply the retention setting to the real history.
+pub fn prune_expired() -> Result<usize> {
+    let root = paths::data_root();
+    let days = crate::settings::Settings::load_in(&root).history_retention_days();
+    prune_older_in(&root, days, now_ms())
+}
+
+/// Append to the real history, then apply the retention setting.
 pub fn append(entry: &Entry) -> Result<()> {
-    append_in(&paths::data_root(), entry, MAX_ENTRIES)
+    append_in(&paths::data_root(), entry, MAX_ENTRIES)?;
+    prune_expired().map(|_| ())
 }
 
 /// The newest `RECENT` non-empty finals, newest first.
@@ -322,6 +351,49 @@ mod tests {
         assert!(enabled_in(&root));
         set_enabled_in(&root, false).unwrap();
         assert!(!enabled_in(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_switch_lives_in_settings_and_falls_back_to_history_txt() {
+        let root = scratch("switch-legacy");
+        fs::write(root.join(SWITCH_FILE), "on\n").unwrap();
+        assert!(
+            enabled_in(&root),
+            "an old install's history.txt still counts"
+        );
+        set_enabled_in(&root, false).unwrap();
+        assert!(!enabled_in(&root), "settings.json wins once written");
+        let raw = fs::read_to_string(root.join(crate::settings::FILE)).unwrap();
+        assert!(raw.contains("\"local_history\": false"), "{raw}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn retention_drops_old_entries_with_their_recordings() {
+        let root = scratch("retention");
+        let recordings = root.join(paths::RECORDINGS);
+        fs::create_dir_all(&recordings).unwrap();
+        let day = 86_400_000u64;
+        let now = 100 * day;
+        for (age, name) in [(40u64, "old.wav"), (8, "week.wav"), (1, "new.wav")] {
+            fs::write(recordings.join(name), b"RIFF").unwrap();
+            append_in(&root, &entry(now - age * day, "Text.", Some(name)), 10).unwrap();
+        }
+        assert_eq!(
+            prune_older_in(&root, 0, now).unwrap(),
+            0,
+            "0 keeps everything"
+        );
+        assert_eq!(read_in(&root).len(), 3);
+        assert_eq!(prune_older_in(&root, 30, now).unwrap(), 1);
+        assert!(!recordings.join("old.wav").exists());
+        assert!(recordings.join("week.wav").exists());
+        assert_eq!(prune_older_in(&root, 7, now).unwrap(), 1);
+        let left: Vec<u64> = read_in(&root).iter().map(|e| e.time_unix_ms).collect();
+        assert_eq!(left, vec![now - day]);
+        assert!(recordings.join("new.wav").exists());
+        assert_eq!(prune_older_in(&root, 7, now).unwrap(), 0);
         let _ = fs::remove_dir_all(&root);
     }
 

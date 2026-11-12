@@ -83,8 +83,14 @@ Section "Phonon" SecMain
   ${EndIf}
 
   CreateShortcut "$SMPROGRAMS\Phonon.lnk" "$INSTDIR\phonon-win.exe"
-  ; start at sign-in, like the macOS app
-  CreateShortcut "$SMSTARTUP\Phonon.lnk" "$INSTDIR\phonon-win.exe"
+  ; start at sign-in, like the macOS app, unless the user turned that off in Phonon's settings
+  ; (src/autostart.rs sets NoLaunchAtLogin), so an upgrade does not turn it back on
+  ClearErrors
+  ReadRegDWORD $1 HKCU "Software\Phonon" "NoLaunchAtLogin"
+  ${If} ${Errors}
+  ${OrIf} $1 != 1
+    CreateShortcut "$SMSTARTUP\Phonon.lnk" "$INSTDIR\phonon-win.exe"
+  ${EndIf}
 
   WriteUninstaller "$INSTDIR\Uninstall Phonon.exe"
   WriteRegStr HKCU "Software\Phonon" "InstallDir" "$INSTDIR"
@@ -110,6 +116,7 @@ Section "Uninstall"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\Phonon.lnk"
   Delete "$SMSTARTUP\Phonon.lnk"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Phonon"
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "Software\Phonon"
   ; the speech and correction models (about 1.6 GB) and recordings live in %LOCALAPPDATA%\Phonon

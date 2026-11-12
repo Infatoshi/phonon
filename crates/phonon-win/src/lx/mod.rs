@@ -168,8 +168,9 @@ fn app() -> Result<()> {
     std::fs::write(&wav, crate::STARTUP_WAV).context("write the startup fixture")?;
     let check = crate::startup_check_with_fallback(&mut engine, &wav, false)?;
     eprintln!("phonon: startup check passed: {}", check.polished);
+    crate::settings::record_engine(engine.device());
 
-    let idle = format!("ready. Hold {name} to dictate");
+    let mut idle = format!("ready. Hold {name} to dictate");
     tray::set_status(&idle);
     tray::notify(
         "Phonon is ready",
@@ -178,10 +179,32 @@ fn app() -> Result<()> {
     );
 
     let mut recording: Option<capture::Recording> = None;
+    let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);
+    let _ = settings_watch.changed_in(&paths::data_root());
+    // the settings window can clear the history; the tray's recent list follows
+    let mut history_watch = crate::settings::Watch::of(history::LOG_FILE);
+    let _ = history_watch.changed_in(&paths::data_root());
     loop {
         let event = match inbox.recv_timeout(Duration::from_millis(500)) {
             Ok(e) => e,
             Err(RecvTimeoutError::Timeout) => {
+                // The settings window writes settings.json; a new key applies here,
+                // between dictations. Mode, history and the clipboard rule are read
+                // at each dictation.
+                if recording.is_none() {
+                    let root = paths::data_root();
+                    let settings_changed = settings_watch.changed_in(&root);
+                    if settings_changed {
+                        if let Some(label) = hook::follow_settings() {
+                            idle = format!("ready. Hold {label} to dictate");
+                            tray::set_status(&idle);
+                        }
+                        tray::set_mode(crate::mode::current());
+                    }
+                    if history_watch.changed_in(&root) || settings_changed {
+                        refresh_history();
+                    }
+                }
                 if let Some(r) = &mut recording {
                     match r.auto_stop(hook::latched()) {
                         Decision::KeepRecording => {
@@ -306,7 +329,8 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
                 eprintln!("phonon: screen locked while recording; text not inserted");
             } else {
                 let text = format!("{} ", result.polished.trim());
-                match inject::insert(&text) {
+                let after = crate::settings::Settings::load().clipboard_after_paste();
+                match inject::insert(&text, after) {
                     Ok(path) => eprintln!(
                         "phonon: {path} {} chars, key-up to insert {} ms",
                         text.len(),

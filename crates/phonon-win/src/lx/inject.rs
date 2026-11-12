@@ -4,7 +4,8 @@
 //! from a uinput virtual keyboard, which every compositor and X server treats as
 //! real hardware. The clipboard goes through arboard (Wayland data-control where
 //! the compositor offers it, otherwise X11, which GNOME and KDE bridge to their
-//! Wayland clipboard). The previous clipboard text is put back afterwards.
+//! Wayland clipboard). The previous clipboard text is put back afterwards, unless
+//! settings.json `clipboard_after_paste` is "dictation", which leaves the dictation there.
 //! Terminals paste with Control-Shift-V, so in a terminal the text stays on the
 //! clipboard instead of appearing.
 
@@ -17,6 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 
 use super::hook::KEY_LEFTCTRL;
+use crate::settings::ClipboardAfterPaste;
 
 /// Phonon's virtual keyboard, which the key reader skips.
 pub const VIRTUAL_KEYBOARD_NAME: &str = "Phonon virtual keyboard";
@@ -118,8 +120,9 @@ pub fn copy(text: &str) -> Result<()> {
         .map_err(|e| anyhow!("set the clipboard: {e}"))
 }
 
-/// Insert `text` into the focused window. Returns the path used.
-pub fn insert(text: &str) -> Result<&'static str> {
+/// Insert `text` into the focused window. `after` says what the clipboard holds
+/// afterwards (settings.json `clipboard_after_paste`). Returns the path used.
+pub fn insert(text: &str, after: ClipboardAfterPaste) -> Result<&'static str> {
     if text.is_empty() {
         return Ok("skipped");
     }
@@ -128,7 +131,10 @@ pub fn insert(text: &str) -> Result<&'static str> {
         let mut c = clipboard
             .lock()
             .map_err(|_| anyhow!("clipboard lock poisoned"))?;
-        let previous = c.get_text().ok();
+        let previous = match after {
+            ClipboardAfterPaste::Restore => c.get_text().ok(),
+            ClipboardAfterPaste::Dictation => None,
+        };
         c.set_text(text.to_string())
             .map_err(|e| anyhow!("set the clipboard: {e}"))?;
         previous
@@ -137,7 +143,7 @@ pub fn insert(text: &str) -> Result<&'static str> {
     std::thread::sleep(Duration::from_millis(40));
     control_v()?;
     // apps fetch the pasted data asynchronously; restore only after they had time
-    if let Some(previous) = previous {
+    if let Some(previous) = after.to_restore(previous) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(600));
             if let Some(clipboard) = CLIPBOARD.get() {
