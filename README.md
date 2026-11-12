@@ -125,8 +125,8 @@ graphics failure cannot stop dictation. Positioning and click-through use X11,
 including XWayland on GNOME, KDE and wlroots desktops; the pointer's monitor is
 selected when recording starts. A Wayland-only session without `DISPLAY`
 continues with the existing tray-only interface. Set `PHONON_INDICATOR=0` to
-disable the capsule. It does not require Omarchy, Quickshell, GTK, or compositor
-configuration.
+disable the capsule. It does not require desktop-shell extensions, GTK, or
+compositor configuration.
 
 ## Pipeline
 
