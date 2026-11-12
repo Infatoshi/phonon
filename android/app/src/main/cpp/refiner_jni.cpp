@@ -204,6 +204,10 @@ struct Head {
     uint64_t used = 0;
 };
 
+// Rule R1 of the shortlist head, the iPhone's value (ios/App/Refiner.swift slThreshold): when the best in-list logit
+// is below this, every other row is computed and the full argmax taken.
+constexpr float kSlThreshold = 28.152f;
+
 // Heads kept at once: one per writing mode (4) plus two with a dictionary vocabulary line. About 1 MB each.
 constexpr size_t kMaxHeads = 6;
 
@@ -232,11 +236,37 @@ struct Refiner {
     // phonon.sl.order and output.slx (ios/shortlist_gguf.py); llama_phonon_sl_k is 0 for today's tied refiner.gguf,
     // which keeps the stock greedy sampler and the stock output matmul.
     bool shortlist = false;
+    int slDbg = 0;  // bench spec sldbg=N: log the top-5 logits (id space) of the first N decode steps
 };
 
-// Rule R1 of the shortlist head, the iPhone's value (ios/App/Refiner.swift slThreshold): when the best in-list logit
-// is below this, every other row is computed and the full argmax taken.
-constexpr float kSlThreshold = 28.152f;
+// Top-5 (id:logit, logits in id space) of the last output: the full head's logits, or for a shortlist model every row
+// recomputed by llama_phonon_sl_full_logits; plus, for a shortlist model, what rule R1 alone and the full argmax pick.
+void logTop5(Refiner *r, const std::string &mode, int step) {
+    const int nv = llama_vocab_n_tokens(r->vocab);
+    std::vector<float> lg(nv);
+    if (r->shortlist) {
+        if (llama_phonon_sl_full_logits(r->ctx, lg.data()) != 0) return;
+    } else {
+        const float *p = llama_get_logits_ith(r->ctx, -1);
+        if (!p) return;
+        std::copy(p, p + nv, lg.begin());
+    }
+    std::vector<int> idx(nv);
+    for (int i = 0; i < nv; i++) idx[i] = i;
+    std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(), [&](int a, int b) { return lg[a] != lg[b] ? lg[a] > lg[b] : a < b; });
+    std::string s;
+    char b[48];
+    for (int i = 0; i < 5; i++) {
+        snprintf(b, sizeof b, "%s%d:%.6f", i ? "," : "", idx[i], lg[idx[i]]);
+        s += b;
+    }
+    int32_t fb = 0;
+    float best = 0;
+    llama_token slTok = -1, fullTok = -1;
+    if (r->shortlist) fullTok = llama_phonon_sl_sample(r->ctx, kSlThreshold, 1, &fb, &best, &slTok);
+    LOGP("SLDBG mode=%s step=%d sl=%d top=%s r1_fallback=%d r1_best=%.6f r1_tok=%d full_tok=%d", mode.c_str(), step,
+         r->shortlist ? 1 : 0, s.c_str(), fb, best, slTok, fullTok);
+}
 
 // Decode tokens went pathological on the pinned pool (2 in a row > 4x the reference and +150 ms): move decode to the
 // next K in 4, 2, 6 not yet tried (always < the core count), remember it in the tune file, keep generating. Thread
@@ -654,6 +684,7 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
         r->cores = cores;
         r->poll = poll;
         r->pin = pin;
+        r->slDbg = specInt(spec, "sldbg", 0);
         r->tunePath = tunePath;
         r->tuneKey = tuneKey;
         r->guardOn = forced <= 0 && specInt(spec, "guard", 1) != 0;
@@ -730,6 +761,7 @@ Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstri
     }
     while (ok && gen < cap) {
         llama_token tok;
+        if (gen < r->slDbg) logTop5(r, mode, gen);
         if (r->shortlist) {
             int32_t fb = 0;
             tok = llama_phonon_sl_sample(r->ctx, kSlThreshold, 0, &fb, nullptr, nullptr);

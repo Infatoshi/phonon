@@ -91,6 +91,7 @@ class RefinerBenchTest {
         log("CPU ${cpuSummary()}")
         val model = stageModel(src)
         log("MODEL path=${model.path} bytes=${model.length()}")
+        ModelPin.check(model)
         val t0 = SystemClock.elapsedRealtime()
         val r = Refiner.load(model.path, threads, repack)
         val loadMs = SystemClock.elapsedRealtime() - t0

@@ -223,6 +223,7 @@ class RefinerKernelBenchTest {
         }
 
         val model = stageModel(arg("model", "/sdcard/phonon/refiner.gguf"))
+        ModelPin.check(model)
         val cfgs = arg("kb_cfg", "disp2,disp4,disp6,disp8,tp4,top2,top4,top6").replace("topbig", "top${big.size}")
             .split(",").distinct().mapNotNull { parseCfg(it) }.filter { it.n <= n }
         var probesDone = false

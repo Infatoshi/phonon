@@ -355,7 +355,10 @@ class ImeE2ETest {
         // instrumentation arg norefiner=1: no refiner file, so the IME runs as it does below the RAM gate
         if (InstrumentationRegistry.getArguments().getString("norefiner") == "1") {
             File(dir, "refiner.gguf").delete(); log("NOREFINER refiner.gguf removed")
-        } else stage("/sdcard/phonon/refiner.gguf", File(dir, "refiner.gguf"))
+        } else {
+            stage("/sdcard/phonon/refiner.gguf", File(dir, "refiner.gguf"))
+            ModelPin.check(File(dir, "refiner.gguf"))
+        }
         for (w in listOf("s1.wav", "steps.wav", "long.wav")) stage("/sdcard/phonon/$w", File(dir, w))
 
         sh("pm grant $pkg android.permission.RECORD_AUDIO")

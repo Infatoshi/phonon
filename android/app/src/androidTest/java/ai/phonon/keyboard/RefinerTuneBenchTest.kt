@@ -71,8 +71,12 @@ class RefinerTuneBenchTest {
             "soc=${if (Build.VERSION.SDK_INT >= 31) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else Build.HARDWARE} " +
             "sdk=${Build.VERSION.SDK_INT} cores=${Runtime.getRuntime().availableProcessors()} ${meminfo()} arms=${arms.joinToString(",")}")
         val model = stageModel(args.getString("model") ?: "/sdcard/phonon/refiner.gguf")
+        ModelPin.check(model)
         // "/sl" arms load the shortlist-head build of the same model (ios/shortlist_gguf.py), staged only if used
-        val slModel by lazy { stageModel(args.getString("model_sl") ?: "/sdcard/phonon/refiner-sl.gguf", "refiner-sl.gguf") }
+        val slModel by lazy {
+            stageModel(args.getString("model_sl") ?: "/sdcard/phonon/refiner-sl.gguf", "refiner-sl.gguf")
+                .also { ModelPin.log(it, "refiner-sl") }
+        }
         val tune = File(ctx.filesDir, "refiner_tune.txt")
         tune.delete()
         idleCpu(-1, 2000)
