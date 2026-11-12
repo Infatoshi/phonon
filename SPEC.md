@@ -302,6 +302,25 @@ which carry no buttons. The prompt needs, in order:
 
 ## Meeting notes (macOS)
 
+Rules (bar/Sources/MeetingRules.swift, since 2026-11-11): Settings › Notes › "When a call starts" is settings.json
+`meeting_mode`: `ask` (default: Record / Not now), `rules`, or `off` (no detection). Under `rules` a call in an app
+or site with a rule in `meeting_rules` (`{key: "always" | "never"}`) records or is ignored without a prompt; one
+without a rule asks "Record this and future <App> calls automatically?" (Always / Just this once / Not now / Never).
+Always and Never store the rule and show Undo on the same card for 6 s; Undo restores the previous rule, deletes the
+seconds an Always started, and asks again. Rules are listed, changed and removed in Settings › Notes. A key is the
+app's bundle id, lowercased, or for a browser tab the conferencing host it matches (`MeetingDetector.conferenceHosts`:
+meet.google.com, zoom.us for us02web.zoom.us), never a display name. Migration: without `meeting_mode`, the two old
+booleans (after the schema 3 rule below) map to it: detection off is `off`, the default-on prompt is `ask`, and
+auto-start is `rules` with every known app and site set to always. Every save still writes `meeting_capture`
+(mode not off) and `meeting_auto_start: false`, so an older build reading the file asks before recording.
+Manual start: the note taker records with nothing detected from the Notes page ("Start note taker"), Settings ›
+Notes, the ϕ menu ("Start Note Taker"), and the play button that hovering the idle capsule shows (a global
+mouse-moved watch arms only while the idle capsule is drawn; the panel takes the mouse only while hovered or
+recording). It runs, whatever the mode, until stopped by hand; the red light, menu-bar dot and Stop item show as
+for a call. The meeting questions (`meeting_questions_asked`) are on the first-run sheet; an install from before
+gets them once on the non-activating card above the capsule (12 s after launch, never mid-dictation); Skip or no
+answer within 30 s keeps `ask`. A "record everything" mode is not built (see the pull request for what it needs).
+
 Recording (bar/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
 asks "take notes?" (or starts by itself with auto-start). Detection (`meeting_capture`) is on by default since
 2026-11-09 (owner's decision; settings schema 3); auto-start (`meeting_auto_start`) stays off, so nothing records

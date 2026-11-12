@@ -1,9 +1,10 @@
 import AppKit
 import Foundation
 
-/// Watches for calls and, with the user's yes, records meeting notes audio.
-/// Off unless Settings > Meetings is on; never records without a click unless
-/// the user also turned on auto-start.
+/// Watches for calls and, with the user's yes, records meeting notes audio. What a
+/// detected call does follows Settings › Notes (`meeting_mode`, MeetingRules.swift): ask
+/// every time (default), follow the per-app rules (an "always" rule records without a
+/// click), or no detection. The note taker can also be started by hand at any time.
 @MainActor
 final class MeetingController {
     nonisolated static let detectionInterval: TimeInterval = 4
@@ -115,16 +116,37 @@ final class MeetingController {
             if case .none = verdict { _ = prompts.shouldAsk(meeting: nil, now: now) }
             return
         }
-        if store.settings.meetingAutoStart {
-            start(meeting: meeting, bundleID: bundleID)
+        let settings = store.settings
+        let key = MeetingRules.key(app: meeting, bundleID: bundleID)
+        switch MeetingRules.decide(mode: settings.meetingMode, rule: settings.meetingRules.rule(for: key)) {
+        case .ignore:
             return
+        case .record:
+            start(meeting: meeting, bundleID: bundleID)
+        case .ask:
+            ask(meeting: meeting, bundleID: bundleID, remember: settings.meetingMode == .rules)
         }
-        flow.ask(app: meeting, bundleID: bundleID)
-        popup.ask(
-            icon: MeetingAppIcon.image(app: meeting, bundleID: bundleID),
-            onNotNow: { [weak self] in self?.notNow() },
-            onRecord: { [weak self] in self?.record() },
-            onExpire: { [weak self] in self?.flow.expire() })
+    }
+
+    /// The question above the capsule: Record / Not now, or under "Follow my rules" the
+    /// per-app question.
+    private func ask(meeting: String, bundleID: String, remember: Bool) {
+        // The one-time questions give way to a real call.
+        if flow.answeredQuestions() { popup.dismiss() }
+        flow.ask(app: meeting, bundleID: bundleID, remember: remember)
+        let icon = MeetingAppIcon.image(app: meeting, bundleID: bundleID)
+        if remember {
+            popup.askRule(
+                icon: icon, name: MeetingRules.displayName(app: meeting, bundleID: bundleID),
+                onChoose: { [weak self] choice in self?.choose(choice) },
+                onExpire: { [weak self] in self?.flow.expire() })
+        } else {
+            popup.ask(
+                icon: icon,
+                onNotNow: { [weak self] in self?.notNow() },
+                onRecord: { [weak self] in self?.record() },
+                onExpire: { [weak self] in self?.flow.expire() })
+        }
     }
 
     /// "Not now": not again for this app for a while (MeetingPromptPolicy).
@@ -132,6 +154,95 @@ final class MeetingController {
         guard let meeting = flow.notNow() else { return }
         prompts.declined(meeting, now: Self.now())
         popup.dismiss()
+    }
+
+    /// An answer to "Record this and future <App> calls automatically?". Always and Never
+    /// store the rule and show Undo; Just this once records without remembering.
+    func choose(_ choice: MeetingChoice) {
+        if choice == .notNow {
+            notNow()
+            return
+        }
+        guard let call = flow.choose(choice) else { return }
+        popup.dismiss()
+        var change: MeetingRuleChange?
+        if let rule = choice.rule {
+            change = store.setMeetingRule(rule, for: MeetingRules.key(app: call.app, bundleID: call.bundleID))
+        }
+        if choice.records { start(meeting: call.app, bundleID: call.bundleID) }
+        guard let change else { return }
+        flow.offerUndo(app: call.app, bundleID: call.bundleID, change: change, recorded: choice.records)
+        let name = MeetingRules.displayName(app: call.app, bundleID: call.bundleID)
+        popup.undo(
+            text: choice == .always
+                ? "\(name) calls will be recorded automatically."
+                : "Phonon won't ask about \(name) calls again.",
+            onUndo: { [weak self] in self?.undo() },
+            onExpire: { [weak self] in self?.flow.expire() })
+    }
+
+    /// Undo on the card: the rule goes back to what it was, a recording that answer
+    /// started (a few seconds) is stopped and deleted, and the question is up again.
+    func undo() {
+        guard let undone = flow.undo() else { return }
+        store.undoMeetingRule(undone.change)
+        if undone.recorded, recorder != nil, !recordingManual {
+            stop(reason: "undone", discard: true)
+            // `stop` hid the popup; the question comes back for the same call.
+            flow.ask(app: undone.app, bundleID: undone.bundleID, remember: true)
+        }
+        popup.askRule(
+            icon: MeetingAppIcon.image(app: undone.app, bundleID: undone.bundleID),
+            name: MeetingRules.displayName(app: undone.app, bundleID: undone.bundleID),
+            onChoose: { [weak self] choice in self?.choose(choice) },
+            onExpire: { [weak self] in self?.flow.expire() })
+    }
+
+    /// The one-time meeting questions for an install that predates them, on the same
+    /// non-activating card (it never takes the keyboard). Only while nothing else is up.
+    func offerQuestions() {
+        guard !store.settings.meetingQuestionsAsked, store.settings.privacyChoiceMade,
+            flow.askQuestions()
+        else { return }
+        popup.questions(
+            onAnswer: { [weak self] mode in self?.answerQuestions(mode) },
+            onExpire: { [weak self] in
+                // Unanswered counts as skipped: asked once, the default kept.
+                guard let self, self.flow.answeredQuestions() else { return }
+                self.store.recordMeetingQuestions(mode: nil)
+            })
+    }
+
+    private func answerQuestions(_ mode: MeetingMode?) {
+        guard flow.answeredQuestions() else { return }
+        popup.dismiss()
+        store.recordMeetingQuestions(mode: mode)
+        onSettingsChanged?()
+    }
+
+    /// Asks the app to re-apply settings (the mode changed from a card).
+    var onSettingsChanged: (() -> Void)?
+
+    /// Start the note taker with nothing detected (the capsule's start button, the Notes
+    /// page, the ϕ menu). It records the mic and this Mac's audio until stopped by hand,
+    /// whatever the detection setting.
+    func startManually() {
+        guard recorder == nil else { return }
+        if case .asking = flow.popup { popup.dismiss() }
+        if case .askingRule = flow.popup { popup.dismiss() }
+        if flow.answeredQuestions() { popup.dismiss() }
+        start(meeting: Self.manualName, bundleID: nil)
+    }
+
+    nonisolated static let manualName = "Note taker"
+
+    /// Settings changed: turning detection off stops a detected call's recording, never
+    /// one started by hand.
+    func settingsChanged() {
+        if !store.settings.meetingCapture, recorder != nil, !recordingManual {
+            stop(reason: "turned_off")
+        }
+        refresh()
     }
 
     /// "Record" on the popup.
@@ -146,6 +257,9 @@ final class MeetingController {
         flow.hover(inside)
     }
 
+    /// Whether the recording under way was started by hand (no call to follow).
+    private(set) var recordingManual = false
+
     /// The capsule's stop button or the menu's Stop item: the same stop as
     /// before, then "Saved to Notes" above the capsule.
     func stopFromUser() {
@@ -157,9 +271,13 @@ final class MeetingController {
     /// microphone (not whatever is in front); its window title and, for a
     /// browser, the conference URL are read off the main actor and filled in
     /// when known, so recording never waits on accessibility.
-    private func start(meeting: String, bundleID: String) {
-        guard recorder == nil, store.settings.meetingCapture else { return }
-        let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
+    /// `bundleID` nil is a start by hand: no call app, nothing read from any window, and
+    /// it runs until stopped (no call to end it).
+    private func start(meeting: String, bundleID: String?) {
+        guard recorder == nil, bundleID == nil || store.settings.meetingCapture else { return }
+        let app = bundleID.flatMap {
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0).first
+        }
         let pid = app?.processIdentifier
         let appName = app?.localizedName ?? meeting
         let micDevice = CoreAudioInputDevices.resolve(
@@ -179,7 +297,7 @@ final class MeetingController {
             conferenceURL: nil,
             micDevice: micDevice)
         begin(meeting: meeting, bundleID: bundleID, directory: directory, metadata: metadata)
-        guard let recorder else { return }
+        guard let recorder, let bundleID else { return }
         Task.detached(priority: .userInitiated) {
             // Read at the start: title and page of the window holding the
             // call app's focus, dropped together if either shows a private
@@ -190,7 +308,7 @@ final class MeetingController {
     }
 
     private func begin(
-        meeting: String, bundleID: String, directory: URL, metadata: MeetingMetadata
+        meeting: String, bundleID: String?, directory: URL, metadata: MeetingMetadata
     ) {
         do {
             let recorder = try MeetingRecorder(directory: directory, metadata: metadata)
@@ -199,7 +317,9 @@ final class MeetingController {
             store.recordingMeetingID = metadata.id
             recordingApp = meeting
             recordingBundleID = bundleID
-            endPolicy = MeetingEndPolicy(now: Self.now())
+            recordingManual = bundleID == nil
+            // A start by hand has no call whose end stops it.
+            endPolicy = bundleID == nil ? nil : MeetingEndPolicy(now: Self.now())
             flow.started(app: meeting)
             onRecordingChanged?(meeting)
             Task { [weak self] in
@@ -226,8 +346,11 @@ final class MeetingController {
         current.map { $0 === candidate } ?? false
     }
 
-    func stop(reason: String) {
+    /// `discard` (Undo of the "Always" that started it): the few seconds recorded are
+    /// deleted instead of transcribed.
+    func stop(reason: String, discard: Bool = false) {
         guard let recorder else { return }
+        recordingManual = false
         // A dictation still under way is cut at the stop, so it is in the final metadata.
         if let start = dictationStartNs {
             recorder.noteDictation(MeetingDictation(startHostNs: start, endHostNs: max(start, HostClock.now())))
@@ -238,7 +361,7 @@ final class MeetingController {
         recordingDirectory = nil
         // Before any async work: a quit while the files close still leaves the meeting marked
         // for transcription at the next launch (the marker goes when transcript.json is written).
-        if let directory { MeetingTranscriber.markPending(directory: directory) }
+        if let directory, !discard { MeetingTranscriber.markPending(directory: directory) }
         // `store.recordingMeetingID` stays set until the files are closed (no Transcribe button
         // against metadata still missing its last chunks).
         endPolicy = nil
@@ -253,8 +376,14 @@ final class MeetingController {
         let store = store
         Task {
             await recorder.stop(reason: reason)
+            guard let directory else { return }
+            if discard {
+                try? FileManager.default.removeItem(at: directory)
+                store.meetingRecordingDiscarded(directory: directory)
+                return
+            }
             // The chunks are closed and metadata.json final: queue it and show it on Notes.
-            if let directory { store.meetingRecordingFinished(directory: directory) }
+            store.meetingRecordingFinished(directory: directory)
         }
     }
 
