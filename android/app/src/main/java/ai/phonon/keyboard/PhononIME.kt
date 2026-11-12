@@ -339,6 +339,30 @@ class PhononIME : InputMethodService() {
         pcm.reset()
         recording = true
         setPhase(Phase.LISTENING)
+        val feed = micFeed()
+        if (feed != null) {
+            // a debug build with a mic_feed.wav: the bar's real touch and recording path, with recorded speech in
+            // place of the microphone at real time (a Test Lab phone hears nothing; ImeE2ETest's talk bar checks)
+            Log.i(TAG, "MIC_FEED samples=${feed.size}")
+            recThread = thread(name = "phonon-mic") {
+                val buf = ByteArray(1600)
+                var at = 0
+                var next = SystemClock.elapsedRealtime()
+                while (recording) {
+                    for (i in 0 until 800) {
+                        val s = if (at < feed.size) (feed[at++] * 32767).toInt().coerceIn(-32768, 32767) else 0
+                        buf[2 * i] = s.toByte(); buf[2 * i + 1] = (s shr 8).toByte()
+                    }
+                    next += 50
+                    SystemClock.sleep(maxOf(0L, next - SystemClock.elapsedRealtime()))
+                    if (!recording) break
+                    synchronized(pcm) { pcm.write(buf, 0, buf.size) }
+                    val level = level(buf, buf.size)
+                    main.post { if (phase == Phase.LISTENING) bar?.level = level }
+                }
+            }
+            return true
+        }
         recThread = thread(name = "phonon-mic") {
             val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
@@ -356,6 +380,13 @@ class PhononIME : InputMethodService() {
             rec.stop(); rec.release()
         }
         return true
+    }
+
+    /** Debug builds only: recorded speech that stands in for the microphone, if the test put one in place. */
+    private fun micFeed(): FloatArray? {
+        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return null
+        val f = File(getExternalFilesDir(null) ?: return null, "mic_feed.wav")
+        return if (f.isFile) try { Wav.read(f.path) } catch (e: Exception) { Log.w(TAG, "MIC_FEED", e); null } else null
     }
 
     /** RMS of the chunk in dBFS, -55..-15 mapped to 0..1 (the iPhone keyboard's meter). */
@@ -427,6 +458,10 @@ class PhononIME : InputMethodService() {
             contentDescription = "Cancel dictation"
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(KeyPanel.RAISED) }
             visibility = View.GONE
+            setOnTouchListener { _, e ->
+                if (e.actionMasked == MotionEvent.ACTION_DOWN) Log.i(TAG, "TOUCH_DOWN key=cancel")
+                false
+            }
             setOnClickListener { v ->
                 v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                 cancelDictation("Cancelled")
@@ -459,7 +494,8 @@ class PhononIME : InputMethodService() {
         val panel = keys ?: return
         val loc = IntArray(2)
         val sb = StringBuilder("KEYPOS")
-        val all = listOfNotNull(micView?.let { "mic" to it }) + panel.keyViews
+        val all = listOfNotNull(micView?.let { "mic" to it }, cancel?.takeIf { it.visibility == View.VISIBLE }?.let { "cancel" to it }) +
+            panel.keyViews
         for ((l, v) in all) {
             v.getLocationOnScreen(loc)
             sb.append(" ").append(l).append("=").append(loc[0] + v.width / 2).append(",").append(loc[1] + v.height / 2)
@@ -478,6 +514,7 @@ class PhononIME : InputMethodService() {
     private fun talkTouch(v: View, e: MotionEvent) {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                Log.i(TAG, "TOUCH_DOWN key=mic phase=$phase")
                 pressedAt = SystemClock.uptimeMillis()
                 press = Press.NONE
                 when {

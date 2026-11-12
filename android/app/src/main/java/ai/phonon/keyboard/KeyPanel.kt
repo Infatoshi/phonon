@@ -169,7 +169,10 @@ class KeyPanel(context: Context, private val host: Host) : LinearLayout(context)
         isSoundEffectsEnabled = false
         setOnTouchListener { v, e ->
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { v.isPressed = true; v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }
+                MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true; v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    android.util.Log.i(TAG, "TOUCH_DOWN key=$name")  // ImeE2ETest checks each injected press arrived
+                }
                 MotionEvent.ACTION_UP -> { v.isPressed = false; action() }
                 MotionEvent.ACTION_CANCEL -> v.isPressed = false
             }
@@ -193,6 +196,7 @@ class KeyPanel(context: Context, private val host: Host) : LinearLayout(context)
                 MotionEvent.ACTION_DOWN -> {
                     v.isPressed = true
                     v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    android.util.Log.i(TAG, "TOUCH_DOWN key=⌫")
                     del()
                     repeat.postDelayed(tick, 450)
                 }

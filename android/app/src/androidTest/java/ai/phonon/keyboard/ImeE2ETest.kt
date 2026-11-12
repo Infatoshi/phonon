@@ -10,6 +10,8 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.text.InputType
 import android.util.Log
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import android.view.inputmethod.InputMethodManager
@@ -305,8 +307,14 @@ class ImeE2ETest {
         log("IME default=${sh("settings get secure default_input_method").trim()}")
         sh("logcat -c")
 
-        val activity = inst.startActivitySync(
-            Intent(ctx, TestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as Activity
+        // started by the shell, not by this process: MIUI refuses an app's own start while it has no window ("Abort
+        // background activity starts", Xiaomi 14 in Test Lab 2026-11-11), and startActivitySync then timed out
+        val monitor = inst.addMonitor(TestActivity::class.java.name, null, false)
+        log("LAUNCH ${sh("am start -W -n $pkg/.TestActivity").lines().firstOrNull { it.startsWith("Status") }?.trim()}")
+        val activity = monitor.waitForActivityWithTimeout(60_000) as Activity?
+            ?: throw AssertionError("TestActivity did not start")
+        inst.removeMonitor(monitor)
+        inst.waitForIdleSync()
         lateinit var multi: EditText
         lateinit var single: EditText
         inst.runOnMainSync {
@@ -371,6 +379,7 @@ class ImeE2ETest {
             log("OPENER ok=$openerOk e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} field=\"${esc(text)}\"")
             phononLog().lastOrNull { it.contains("REFINE total_ms=") }?.let { log("OPENER refiner_text=${it.substringAfter("{\"text\":").take(200)}") }
         }
+        val bar = talkBar(multi)
         log("MEM after_dictation ${meminfo()} ${Mem.snapshot()}")
         smaps("after_dictation")
 
@@ -383,5 +392,126 @@ class ImeE2ETest {
         log("DONE ${meminfo()} ${Mem.snapshot()}")
         assertTrue("the first dictation did not reach the field", firstOk)
         assertTrue("the opener did not survive to the field", openerOk)
+        assertTrue("talk bar checks failed: $bar", bar.values.all { it })
+    }
+
+    // ---------- the talk bar and keys, pressed with real touches ----------
+
+    /** Centre of the IME key [name] from its latest KEYPOS line (screen pixels), waiting up to [seconds]. */
+    private fun keyPos(name: String, seconds: Int = 10): Pair<Float, Float>? {
+        val end = SystemClock.elapsedRealtime() + seconds * 1000L
+        while (true) {
+            val line = phononLog().lastOrNull { it.contains(" KEYPOS ") }
+            val tok = line?.split(' ')?.firstOrNull { it.startsWith("$name=") }?.substring(name.length + 1)
+            val xy = tok?.split(',')?.mapNotNull { it.trim().toFloatOrNull() }
+            if (xy != null && xy.size == 2) return xy[0] to xy[1]
+            if (SystemClock.elapsedRealtime() > end) return null
+            SystemClock.sleep(300)
+        }
+    }
+
+    private fun touch(p: Pair<Float, Float>, action: Int, downAt: Long) {
+        val ev = MotionEvent.obtain(downAt, SystemClock.uptimeMillis(), action, p.first, p.second, 0)
+        ev.source = InputDevice.SOURCE_TOUCHSCREEN
+        inst.uiAutomation.injectInputEvent(ev, true)
+        ev.recycle()
+    }
+
+    private fun downs(name: String) = phononLog().count { it.contains("TOUCH_DOWN key=$name") }
+
+    /** Press [name] for [holdMs] (a tap by default); false if the key is not on the keyboard or no press arrived.
+     *  A press the IME did not log (TOUCH_DOWN) is lifted and sent again: the Xiaomi 14 dropped the first injected
+     *  touch after the keyboard was asked to show (Test Lab 2026-11-12). */
+    private fun press(name: String, holdMs: Long = 60): Boolean {
+        for (attempt in 1..3) {
+            val p = keyPos(name) ?: run { log("BAR no key $name"); return false }
+            val before = downs(name)
+            val down = SystemClock.uptimeMillis()
+            touch(p, MotionEvent.ACTION_DOWN, down)
+            // a tap is lifted on time and checked after (reading logcat can take longer than a 0.35 s tap);
+            // a hold is checked while held
+            val tap = holdMs < 1000
+            if (tap) { SystemClock.sleep(holdMs); touch(p, MotionEvent.ACTION_UP, down) }
+            val end = SystemClock.elapsedRealtime() + 1500
+            var arrived = false
+            while (!arrived && SystemClock.elapsedRealtime() < end) {
+                SystemClock.sleep(100)
+                arrived = downs(name) > before
+            }
+            if (!arrived) {
+                if (!tap) touch(p, MotionEvent.ACTION_CANCEL, down)
+                log("BAR press $name attempt=$attempt not delivered")
+                SystemClock.sleep(500)
+                continue
+            }
+            if (!tap) {
+                SystemClock.sleep(maxOf(0L, holdMs - (SystemClock.uptimeMillis() - down)))
+                touch(p, MotionEvent.ACTION_UP, down)
+            }
+            SystemClock.sleep(400)
+            return true
+        }
+        return false
+    }
+
+    private fun waitE2E(before: Int, seconds: Int): String? {
+        val lines = waitLog(seconds) { l -> l.count { it.contains(" E2E source=") } > before }
+        return lines.filter { it.contains(" E2E source=") }.drop(before).lastOrNull()
+    }
+
+    /**
+     * The talk bar and keys with injected touches, recorded speech standing in for the mic (the IME's debug
+     * mic_feed.wav, played at real time through its recording path):
+     *  - hold: press the bar for the length of s1.wav plus 0.6 s, let go: the dictation reaches the field;
+     *  - latch: a 0.12 s tap starts listening, a second tap after the speech finishes it;
+     *  - cancel: tap to listen, then the cancel button: nothing is committed;
+     *  - digit: "123", then "7", then "ABC": the field reads "7".
+     */
+    private fun talkBar(field: EditText): Map<String, Boolean> {
+        val r = linkedMapOf<String, Boolean>()
+        val feed = File(dir, "mic_feed.wav")
+        File(dir, "s1.wav").copyTo(feed, overwrite = true)
+        val speechMs = (File(dir, "s1.wav").length() - 44) / 32
+        fun heard(t: String) = t.contains("quarterly report", ignoreCase = true)
+
+        focus(field)
+        var before = e2eCount()
+        press("mic", speechMs + 600)
+        var e2e = waitE2E(before, 120)
+        var text = fieldText(field)
+        r["hold"] = e2e?.contains("source=mic") == true && heard(text)
+        log("BAR hold ok=${r["hold"]} e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} field=\"${esc(text)}\"")
+
+        focus(field)
+        before = e2eCount()
+        press("mic", 120)
+        SystemClock.sleep(speechMs + 600)
+        val listening = phononLog().count { it.contains("MIC_UP") }
+        press("mic")  // the bar has moved right of the cancel button: keyPos reads the new centre
+        e2e = waitE2E(before, 120)
+        text = fieldText(field)
+        r["latch"] = e2e?.contains("source=mic") == true && heard(text)
+        log("BAR latch ok=${r["latch"]} mic_up_before_second_tap=$listening e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} field=\"${esc(text)}\"")
+
+        focus(field)
+        before = e2eCount()
+        press("mic", 120)
+        SystemClock.sleep(1500)
+        val tapped = press("cancel")
+        val cancelled = waitLog(10) { l -> l.any { it.contains("CANCEL phase=") } }.any { it.contains("CANCEL phase=") }
+        SystemClock.sleep(5000)
+        text = fieldText(field)
+        r["cancel"] = tapped && cancelled && e2eCount() == before && text.isEmpty()
+        log("BAR cancel ok=${r["cancel"]} tapped=$tapped cancel_logged=$cancelled e2e_after=${e2eCount() - before} field=\"${esc(text)}\"")
+
+        focus(field)
+        val digit = press("123") && press("7") && press("ABC")
+        text = fieldText(field)
+        r["digit"] = digit && text == "7"
+        log("BAR digit ok=${r["digit"]} field=\"${esc(text)}\"")
+
+        feed.delete()
+        log("BAR_SUMMARY pass=${r.values.count { it }}/${r.size} ${r.entries.joinToString(" ") { "${it.key}=${it.value}" }}")
+        return r
     }
 }
