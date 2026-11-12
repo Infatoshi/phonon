@@ -31,15 +31,36 @@ pub fn insert(text: &str, after: ClipboardAfterPaste) -> Result<&'static str> {
     if text.is_empty() {
         return Ok("skipped");
     }
-    match paste_text(text, after) {
-        Ok(()) => Ok("pasted"),
-        Err(error) => {
-            eprintln!("phonon: pasting failed, typing instead: {error:#}");
-            let units: Vec<u16> = text.encode_utf16().collect();
-            type_text(&units)?;
-            Ok("typed")
-        }
-    }
+    // The clipboard work runs on its own thread with a time limit: GetClipboardData
+    // and EmptyClipboard wait on the clipboard's current owner without one, and an
+    // owner that stops answering held the dictation until it recovered (25 s in the
+    // Windows 11 QA VM with a hung OLE owner, 2026-11-12). Past the limit Phonon
+    // types the text instead. The stuck thread may still put the dictation on the
+    // clipboard later, but only this thread presses Control-V, so it cannot paste twice.
+    let owned = text.to_string();
+    let error = match bounded(CLIPBOARD_WAIT, move || load_clipboard(&owned, after)) {
+        Some(Ok(previous)) => match press_paste().context("send Control-V") {
+            Ok(()) => {
+                if let Some(previous) = after.to_restore(previous) {
+                    // The target window reads the clipboard on its own schedule.
+                    // Restoring it instantly would race the paste.
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let _ = set_clipboard_text(&previous);
+                }
+                return Ok("pasted");
+            }
+            Err(error) => error,
+        },
+        Some(Err(error)) => error,
+        None => anyhow::anyhow!(
+            "the clipboard did not answer within {} ms",
+            CLIPBOARD_WAIT.as_millis()
+        ),
+    };
+    eprintln!("phonon: pasting failed, typing instead: {error:#}");
+    let units: Vec<u16> = text.encode_utf16().collect();
+    type_text(&units)?;
+    Ok("typed")
 }
 
 /// Send every code unit as a Unicode key press and release, one character per
@@ -79,22 +100,32 @@ fn type_unit(unit: u16) -> Result<()> {
     Ok(())
 }
 
-/// Put `text` on the clipboard, press Control-V, then put the old text back
-/// unless the user asked to keep the dictation there.
-fn paste_text(text: &str, after: ClipboardAfterPaste) -> Result<()> {
+/// Read the text to restore later (unless the user keeps the dictation on the
+/// clipboard), then put `text` on the clipboard. Returns the text to restore.
+fn load_clipboard(text: &str, after: ClipboardAfterPaste) -> Result<Option<String>> {
     let previous = match after {
         ClipboardAfterPaste::Restore => read_clipboard_text(),
         ClipboardAfterPaste::Dictation => None,
     };
     set_clipboard_text(text).context("write the clipboard")?;
-    press_paste().context("send Control-V")?;
-    if let Some(previous) = after.to_restore(previous) {
-        // The target window reads the clipboard on its own schedule. Restoring it
-        // instantly would race the paste.
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let _ = set_clipboard_text(&previous);
-    }
-    Ok(())
+    Ok(previous)
+}
+
+/// How long reading the previous clipboard and writing the dictation may take
+/// together. Both normally finish in a few milliseconds.
+const CLIPBOARD_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Run `work` on its own thread and give up waiting after `wait`. A thread
+/// that is still stuck is left behind.
+fn bounded<T: Send + 'static>(
+    wait: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    receiver.recv_timeout(wait).ok()
 }
 
 /// Leave `text` on the clipboard, for the user to paste (the tray's recent list).
@@ -205,4 +236,29 @@ fn press_paste() -> Result<()> {
         bail!("SendInput accepted {sent} of {} paste events", events.len());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_read_that_never_answers_is_abandoned_in_time() {
+        let started = Instant::now();
+        let result = bounded(Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_secs(30));
+            7
+        });
+        assert_eq!(result, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_read_that_answers_is_kept() {
+        assert_eq!(
+            bounded(CLIPBOARD_WAIT, || Some("before".to_string())),
+            Some(Some("before".to_string()))
+        );
+    }
 }
