@@ -870,6 +870,41 @@ polish would resolve); Windows/Linux run it in `correct_at` (always minimal ther
 Measured offline on those 608 dictations: WER against the owner's references 9.74% -> about 8.6%, more than a full
 retrain gained.
 
+Number pass (shared output stage, `phonon_llm::numpass::apply(input, output)`, last, on the final text after the line
+breaks; settings.json `number_pass`, default OFF; Windows/Linux: `number_pass.txt` in the data folder, "on" turns it
+on. v4.3.2 is the final revision of this after-model pass. default OFF; turning it on by default is the owner's
+decision, after it has run switched on on the owner's own machine with its changes logged. Further number work goes
+to a pre-pass on the model input and to training rows): deterministic, driven by what was said. It converts spoken number WORDS the correction model left as words,
+and never rewrites, regroups or strips anything already written in digits or symbols (a leading "+", grouped digits,
+a "$" amount, a formatted date, a version, a time). Invariant, enforced per replacement and on the whole result (the
+model's text comes back unchanged on any failure): INV-1, the output's digits in order are a subsequence of the digits
+after; INV-2, no `+ $ € £ % : . / ( )` beside a digit is lost; INV-3, existing digits are regrouped only when the
+spoken words give exactly the same digits, and never a run with a leading "+"; INV-4, a transcript with no spoken
+number word leaves the output unchanged; INV-5, whitespace outside a replaced span is byte-identical (the output is
+split on any whitespace and every run kept; a value never spans a line break, so a number ending a list item or a
+paragraph is replaced whole); INV-6, no word outside the number vocabulary is removed and no number word vanishes
+without becoming digits ("$2,500 a night" keeps "a"; "a" goes only before a scale word, "a thousand"; "and" only
+inside a spoken amount, after a scale word, "two hundred and five", or before number words that reach "cents" or
+"point", "twelve dollars and fifty cents", so "$88.18 and two heads" keeps "and two"; a value stops at a sentence end,
+so "...dollars. One step closer" keeps "One"). So a wrong or missing digit the model wrote stays: that is the model's
+training to fix. Conversions: a digit-by-digit run in the transcript (zero/oh/one..nine or digits, "double"/"triple"
+before a digit word, hesitations like "um" inside it; at least 4 digit words and 7 digits; not starting with "oh";
+stopping at a complete length, 7, 10 or 11 starting with 1, when the next digit word starts other words: "... four
+two one more time") becomes `AAA-BBB-CCCC`, `1-AAA-BBB-CCCC` or `BBB-CCCC`; a spoken amount ("forty five dollars",
+"euros", "and N cents", "two point five million dollars") becomes `$45`, `$1,200`, `$12.50`, `$2.5 million` or `€N`.
+Spoken ordinal dates ("the sixteenth of January"), "bucks" and "pounds" are left as the model wrote them (style
+rewrites reviewers did not prefer). A hyphenated number word ("forty-five") belongs to the value. Phone and money
+replace the output span after the two transcript words before the value (they must occur exactly once in the output),
+else before the two words after it; no unique anchor, no change. A literal port of the research numpass v4.3.2, the
+final revision of this after-model pass (`fixtures/numpass_cases.json`: its outputs on 1,693 public T14/T14b pairs,
+523 public guard rows, 500 derived pairs and its 78 test cases). Worst-mode correct with the shipped model (a
+regression check: these sets were read while the rule was written): T14 0.823 -> 0.870, T14b 0.807 -> 0.837; most
+remaining failures are digits the model wrote wrong, which the invariant leaves alone, and the dates and slang
+currency it no longer rewrites. On public T13/T15/T16 outputs it changes nothing. Do-no-harm audit (protocol frozen
+before the rule existed): 2,076 changed rows over the public, development and laid-out sets, all number-bearing; two
+blind reviewers rated 0 of them worse (bar 2% per reviewer); no ordinary row changed; a 520-item held-out synthetic set
+was unchanged; INV-1..6 had 0 violations. Live text drafts get it too. iPhone and Android do not have it yet.
+
 Your own model endpoint (issue #24; settings.json `byok_enabled`, `byok_base_url`, `byok_model`; the API key in the
 login Keychain, service `com.infatoshi.phonon.byok`): off by default, no default endpoint, no Phonon-hosted service.
 The bar sends `{"cmd":"byok"}` with the key over the engine's stdin; the engine posts the raw transcript, the mode line

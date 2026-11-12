@@ -679,6 +679,14 @@ impl Engine {
                                 request.mode.as_deref().unwrap_or("minimal"),
                                 app_category,
                             );
+                            // spoken phone numbers, money and dates as digits, on the final
+                            // text as measured (after the line breaks)
+                            if self.styles.number_pass() {
+                                corrected.text = phonon_llm::numpass::apply(
+                                    &request.source_text,
+                                    &corrected.text,
+                                );
+                            }
                             if let Some(recording_id) = id
                                 .as_ref()
                                 .and_then(|request_id| self.recording_ids.get(request_id))
@@ -748,8 +756,12 @@ impl Engine {
                             .styles
                             .writing_mode_for(bundle.as_deref())
                             .unwrap_or_else(|| category_mode(category).to_string());
-                        let corrected =
+                        let mut corrected =
                             finish_correction(&self.dictionary, &source, &text, &style, &mode);
+                        // the number pass too, so live text shows what would be pasted
+                        if self.styles.number_pass() {
+                            corrected.text = phonon_llm::numpass::apply(&source, &corrected.text);
+                        }
                         out.push(EngineEvent::DraftResult {
                             id,
                             text: corrected.text,

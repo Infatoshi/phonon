@@ -439,6 +439,8 @@ pub struct StylePreferenceCache {
     styles: std::collections::BTreeMap<String, Vec<String>>,
     /// `live_text` from the same file (asked once per dictation, at `stream_start`).
     live_text: bool,
+    /// `number_pass` from the same file (off when absent).
+    number_pass: bool,
     /// `writing_style` from the same file when it names one refiner mode
     /// (Settings > Advanced); None follows the app.
     writing_mode: Option<String>,
@@ -461,8 +463,16 @@ impl StylePreferenceCache {
         Self {
             path,
             live_text: false,
+            number_pass: false,
             ..Self::default()
         }
+    }
+
+    /// settings.json `number_pass` as the file says now: the number pass
+    /// (`phonon_llm::numpass`) runs on the refiner's text. Off when absent.
+    pub fn number_pass(&mut self) -> bool {
+        self.refresh();
+        self.number_pass
     }
 
     pub fn styles_for(&mut self, category: AppCategory) -> Vec<String> {
@@ -512,6 +522,7 @@ impl StylePreferenceCache {
             self.content = None;
             self.styles.clear();
             self.live_text = false;
+            self.number_pass = false;
             self.writing_mode = None;
             self.app_writing_modes.clear();
             return;
@@ -551,6 +562,7 @@ impl StylePreferenceCache {
                 self.loads += 1;
                 self.styles = settings.style_preferences;
                 self.live_text = settings.live_text;
+                self.number_pass = settings.number_pass;
                 self.writing_mode = settings
                     .extra
                     .get("writing_style")
