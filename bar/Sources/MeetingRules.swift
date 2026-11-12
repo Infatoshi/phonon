@@ -2,27 +2,39 @@ import AppKit
 import Foundation
 
 // Per-app meeting rules and the one global choice (SPEC "Meeting notes", "Rules").
-// What a detected call does: settings.json `meeting_mode` (ask | rules | off) and, under
-// `rules`, `meeting_rules` ({key: "always" | "never"}). A key is the app's bundle id
+// What a detected call does: settings.json `meeting_mode` (rules | every_call | off) and,
+// under `rules`, `meeting_rules` ({key: "always" | "never"}). A key is the app's bundle id
 // (lowercased) or, for a call in a browser tab, the conferencing site it is on
 // (meet.google.com, zoom.us), never a display name.
 
-/// Settings › Notes › "When a call starts". `ask` is the default and what every install
+/// Settings › Notes › "When a call starts". `perApp` is the default and what every install
 /// that had detection on before maps to.
 enum MeetingMode: String, CaseIterable, Codable {
-    /// Ask before recording any call (Record / Not now).
-    case ask
-    /// Follow the per-app rules; a call in an app without one asks whether to remember it.
-    case rules
+    /// Follow the per-app rules; a call in an app or site without one asks "Record this and
+    /// future <App> calls automatically?" (Always / Just this once / Not now / Never).
+    case perApp = "rules"
+    /// Ask before recording every call (Record / Not now), whatever the rules say.
+    case everyCall = "every_call"
     /// No detection at all. Manual start still works.
     case off
 
+    static let standard = MeetingMode.perApp
+
     var title: String {
         switch self {
-        case .ask: return "Ask every time"
-        case .rules: return "Follow my rules"
-        case .off: return "Don't detect"
+        case .perApp: return "Remember per app"
+        case .everyCall: return "Ask every time"
+        case .off: return "Don't detect calls"
         }
+    }
+
+    /// settings.json `meeting_mode`. `ask` was the default of the build that introduced the
+    /// key (always the plain question); it reads as the per-app default now, which still
+    /// asks before recording anything without a rule. An unknown value asks every time.
+    /// An older build reads `every_call` as unknown, which it also treats as asking.
+    static func stored(_ raw: String) -> MeetingMode {
+        if raw == "ask" { return .perApp }
+        return MeetingMode(rawValue: raw) ?? .everyCall
     }
 }
 
@@ -96,8 +108,8 @@ enum MeetingRules {
     static func decide(mode: MeetingMode, rule: MeetingRule?) -> MeetingDecision {
         switch mode {
         case .off: return .ignore
-        case .ask: return .ask
-        case .rules:
+        case .everyCall: return .ask
+        case .perApp:
             switch rule {
             case .always: return .record
             case .never: return .ignore

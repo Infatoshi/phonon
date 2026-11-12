@@ -303,23 +303,31 @@ which carry no buttons. The prompt needs, in order:
 ## Meeting notes (macOS)
 
 Rules (bar/Sources/MeetingRules.swift, since 2026-11-11): Settings › Notes › "When a call starts" is settings.json
-`meeting_mode`: `ask` (default: Record / Not now), `rules`, or `off` (no detection). Under `rules` a call in an app
-or site with a rule in `meeting_rules` (`{key: "always" | "never"}`) records or is ignored without a prompt; one
-without a rule asks "Record this and future <App> calls automatically?" (Always / Just this once / Not now / Never).
+`meeting_mode`, three options named for a non-technical reader: "Remember per app" (`rules`, the default since
+2026-11-11), "Ask every time" (`every_call`: Record / Not now on every call, rules ignored), or "Don't detect
+calls" (`off`). Under "Remember per app" a call in an app or site with a rule in `meeting_rules`
+(`{key: "always" | "never"}`) records (with the usual red light) or is ignored without a prompt; one without a rule,
+which is every app on a new install, asks "Record this and future <App> calls automatically?" (Always / Just this
+once / Not now / Never), so the question comes the first time a call is seen in an app with no trip to Settings.
 Always and Never store the rule and show Undo on the same card for 6 s; Undo restores the previous rule, deletes the
 seconds an Always started, and asks again. Rules are listed, changed and removed in Settings › Notes. A key is the
 app's bundle id, lowercased, or for a browser tab the conferencing host it matches (`MeetingDetector.conferenceHosts`:
 meet.google.com, zoom.us for us02web.zoom.us), never a display name. Migration: without `meeting_mode`, the two old
-booleans (after the schema 3 rule below) map to it: detection off is `off`, the default-on prompt is `ask`, and
-auto-start is `rules` with every known app and site set to always. Every save still writes `meeting_capture`
-(mode not off) and `meeting_auto_start: false`, so an older build reading the file asks before recording.
+booleans (after the schema 3 rule below) map to it: detection off is `off`, the default-on prompt is `rules` with
+no rules (every app asks), and auto-start is `rules` with every known app and site set to always (still records
+without a click). A stored `ask` (the default of the 225b30d build, where it meant Record / Not now on every call)
+reads as `rules`: with no rule that still asks, and only rules the user set act alone. An unknown value reads as
+`every_call`. Every save still writes `meeting_capture` (mode not off) and `meeting_auto_start: false`, so a build
+from before `meeting_mode` asks before recording; the 225b30d build reads `rules` the same way and `every_call` as
+unknown, which it treats as its ask-every-call mode.
 Manual start: the note taker records with nothing detected from the Notes page ("Start note taker"), Settings ›
 Notes, the ϕ menu ("Start Note Taker"), and the play button that hovering the idle capsule shows (a global
 mouse-moved watch arms only while the idle capsule is drawn; the panel takes the mouse only while hovered or
 recording). It runs, whatever the mode, until stopped by hand; the red light, menu-bar dot and Stop item show as
 for a call. The meeting questions (`meeting_questions_asked`) are on the first-run sheet; an install from before
 gets them once on the non-activating card above the capsule (12 s after launch, never mid-dictation); Skip or no
-answer within 30 s keeps `ask`. A "record everything" mode is not built (see the pull request for what it needs).
+answer within 30 s keeps the current mode ("Remember per app" unless changed). Both offer the three options with
+"Remember per app" first and preselected. A "record everything" mode is not built (see the pull request for what it needs).
 
 Recording (bar/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
 asks "take notes?" (or starts by itself with auto-start). Detection (`meeting_capture`) is on by default since

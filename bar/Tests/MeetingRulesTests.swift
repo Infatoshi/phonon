@@ -79,8 +79,8 @@ final class MeetingRulesTests: XCTestCase {
 
     func testTheDecisionFollowsTheModeThenTheRule() {
         let table: [(MeetingMode, MeetingRule?, MeetingDecision)] = [
-            (.ask, nil, .ask), (.ask, .always, .ask), (.ask, .never, .ask),
-            (.rules, nil, .ask), (.rules, .always, .record), (.rules, .never, .ignore),
+            (.perApp, nil, .ask), (.perApp, .always, .record), (.perApp, .never, .ignore),
+            (.everyCall, nil, .ask), (.everyCall, .always, .ask), (.everyCall, .never, .ask),
             (.off, nil, .ignore), (.off, .always, .ignore), (.off, .never, .ignore),
         ]
         for (mode, rule, expected) in table {
@@ -95,7 +95,7 @@ final class MeetingRulesTests: XCTestCase {
         book.set(.never, for: MeetingRules.key(app: "Discord", bundleID: "com.hnc.Discord"))
         func decision(_ app: String, _ bundleID: String) -> MeetingDecision {
             MeetingRules.decide(
-                mode: .rules, rule: book.rule(for: MeetingRules.key(app: app, bundleID: bundleID)))
+                mode: .standard, rule: book.rule(for: MeetingRules.key(app: app, bundleID: bundleID)))
         }
         XCTAssertEqual(decision("meet.google.com", "com.apple.Safari"), .record, "any browser")
         XCTAssertEqual(decision("Discord", "com.hnc.Discord"), .ignore)
@@ -107,7 +107,7 @@ final class MeetingRulesTests: XCTestCase {
 
     func testTheRuleStoreSurvivesARelaunchAndDropsUnknownValues() throws {
         let store = NativeAppStore(supportDirectory: directory)
-        store.updateSettings { $0.meetingMode = .rules }
+        store.updateSettings { $0.meetingMode = .perApp }
         store.setMeetingRule(.always, for: "meet.google.com")
         store.setMeetingRule(.never, for: "com.hnc.Discord")
         XCTAssertEqual(store.settings.meetingRules.rule(for: "com.hnc.discord"), .never, "keys ignore case")
@@ -119,7 +119,7 @@ final class MeetingRulesTests: XCTestCase {
             ["meet.google.com": "always", "com.hnc.discord": "never"])
 
         let relaunched = NativeAppStore(supportDirectory: directory)
-        XCTAssertEqual(relaunched.settings.meetingMode, .rules)
+        XCTAssertEqual(relaunched.settings.meetingMode, .perApp)
         XCTAssertEqual(relaunched.settings.meetingRules.rule(for: "meet.google.com"), .always)
         XCTAssertEqual(relaunched.settings.meetingRules.rule(for: "com.hnc.discord"), .never)
 
@@ -222,7 +222,7 @@ final class MeetingRulesTests: XCTestCase {
         XCTAssertEqual(flow.popup, .hidden)
     }
 
-    func testTheQuestionsAreAskedOnceAndSkipKeepsAsk() throws {
+    func testTheQuestionsAreAskedOnceAndSkipKeepsTheDefault() throws {
         // A fresh install answers on the first-run sheet; an install from before has not.
         XCTAssertFalse(NativeSettings().meetingQuestionsAsked)
         XCTAssertFalse(try decode(#"{"schema_version":3,"privacy_choice_made":true}"#).meetingQuestionsAsked)
@@ -230,30 +230,38 @@ final class MeetingRulesTests: XCTestCase {
         let store = NativeAppStore(supportDirectory: directory)
         store.recordMeetingQuestions(mode: nil)
         XCTAssertTrue(store.settings.meetingQuestionsAsked)
-        XCTAssertEqual(store.settings.meetingMode, .ask, "Skip keeps the default")
-        store.recordMeetingQuestions(mode: .rules)
+        XCTAssertEqual(store.settings.meetingMode, .perApp, "Skip keeps the default")
+        store.recordMeetingQuestions(mode: .everyCall)
         let relaunched = NativeAppStore(supportDirectory: directory)
         XCTAssertTrue(relaunched.settings.meetingQuestionsAsked)
-        XCTAssertEqual(relaunched.settings.meetingMode, .rules)
+        XCTAssertEqual(relaunched.settings.meetingMode, .everyCall)
+        XCTAssertEqual(try storedJSON()["meeting_mode"] as? String, "every_call")
+    }
+
+    func testTheOptionNamesSayWhatTheyDo() {
+        XCTAssertEqual(MeetingMode.allCases, [.perApp, .everyCall, .off], "the default comes first")
+        XCTAssertEqual(MeetingMode.standard, .perApp)
+        XCTAssertEqual(MeetingMode.allCases.map(\.title), ["Remember per app", "Ask every time", "Don't detect calls"])
     }
 
     // MARK: Migration
 
     func testOldSettingsMapOntoTheMode() throws {
-        // The default-on prompt is "ask"; detection off is "off".
-        XCTAssertEqual(try decode(#"{"schema_version":3,"meeting_capture":true}"#).meetingMode, .ask)
-        XCTAssertEqual(
-            try decode(#"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":false}"#)
-                .meetingMode, .ask)
+        // The default-on prompt becomes the per-app default (no rules, so every app asks);
+        // detection off is "off".
+        XCTAssertEqual(try decode(#"{"schema_version":3,"meeting_capture":true}"#).meetingMode, .perApp)
+        let prompted = try decode(#"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":false}"#)
+        XCTAssertEqual(prompted.meetingMode, .perApp)
+        XCTAssertTrue(prompted.meetingRules.rules.isEmpty, "nothing records without a click")
         XCTAssertEqual(try decode(#"{"schema_version":3,"meeting_capture":false}"#).meetingMode, .off)
         XCTAssertEqual(
             try decode(#"{"schema_version":3,"meeting_capture":false,"meeting_auto_start":true}"#)
                 .meetingMode, .off)
 
-        // Auto-start recorded every detected call: rules mode with every known app and site
+        // Auto-start recorded every detected call: per-app mode with every known app and site
         // on always, so it still records them without a click.
         let auto = try decode(#"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":true}"#)
-        XCTAssertEqual(auto.meetingMode, .rules)
+        XCTAssertEqual(auto.meetingMode, .perApp)
         for key in ["us.zoom.xos", "com.apple.facetime", "com.tinyspeck.slackmacgap", "com.hnc.discord",
             "meet.google.com", "zoom.us", "teams.microsoft.com"]
         {
@@ -265,35 +273,52 @@ final class MeetingRulesTests: XCTestCase {
             MeetingDetector.callApps.count + MeetingDetector.chatAppsWithCalls.count
                 + MeetingDetector.conferenceHosts.count)
 
-        // Once written, `meeting_mode` wins over the old keys; unknown values read as ask.
+        // Once written, `meeting_mode` wins over the old keys; unknown values ask every time.
         XCTAssertEqual(
             try decode(#"{"schema_version":3,"meeting_mode":"off","meeting_capture":true,"meeting_auto_start":true}"#)
                 .meetingMode, .off)
         let kept = try decode(
             #"{"schema_version":3,"meeting_mode":"rules","meeting_rules":{"zoom.us":"never"},"meeting_auto_start":true}"#)
+        XCTAssertEqual(kept.meetingMode, .perApp)
         XCTAssertEqual(kept.meetingRules.rules, ["zoom.us": .never], "no seeding over the owner's rules")
-        XCTAssertEqual(try decode(#"{"meeting_mode":"sometimes"}"#).meetingMode, .ask)
+        XCTAssertEqual(try decode(#"{"meeting_mode":"every_call"}"#).meetingMode, .everyCall)
+        XCTAssertEqual(try decode(#"{"meeting_mode":"sometimes"}"#).meetingMode, .everyCall)
+        // `ask`, the default of the build that introduced the key, is the per-app default now.
+        let previous = try decode(#"{"schema_version":3,"meeting_mode":"ask","meeting_rules":{"zoom.us":"never"}}"#)
+        XCTAssertEqual(previous.meetingMode, .perApp)
+        XCTAssertEqual(previous.meetingRules.rules, ["zoom.us": .never])
+    }
+
+    /// The build that introduced `meeting_mode` knew only ask | rules | off and read anything
+    /// else as ask; the raw values stay compatible with that.
+    func testTheStoredModeStaysSafeForTheBuildBefore() {
+        XCTAssertEqual(MeetingMode.perApp.rawValue, "rules", "same meaning in the build before")
+        XCTAssertEqual(MeetingMode.off.rawValue, "off")
+        XCTAssertFalse(["ask", "rules", "off"].contains(MeetingMode.everyCall.rawValue),
+            "unknown there, so it asks every time there too")
     }
 
     func testAnUpgradedFileKeepsWorkingForOlderBuilds() throws {
         try Data(#"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":true,"extra":1}"#.utf8)
             .write(to: settingsURL)
         let store = NativeAppStore(supportDirectory: directory)
-        XCTAssertEqual(store.settings.meetingMode, .rules)
-        store.updateSettings { $0.meetingMode = .ask }
+        XCTAssertEqual(store.settings.meetingMode, .perApp)
+        store.updateSettings { $0.meetingMode = .everyCall }
 
         let json = try storedJSON()
-        XCTAssertEqual(json["meeting_mode"] as? String, "ask")
+        XCTAssertEqual(json["meeting_mode"] as? String, "every_call")
         // An older build reads these: detection on, and it asks (never records unasked).
         XCTAssertEqual(json["meeting_capture"] as? Bool, true)
         XCTAssertEqual(json["meeting_auto_start"] as? Bool, false)
         XCTAssertEqual(json["extra"] as? Int, 1, "unknown keys are kept")
-        XCTAssertEqual(NativeAppStore(supportDirectory: directory).settings.meetingMode, .ask)
+        XCTAssertEqual(NativeAppStore(supportDirectory: directory).settings.meetingMode, .everyCall)
+        store.updateSettings { $0.meetingMode = .perApp }
+        XCTAssertEqual(try storedJSON()["meeting_auto_start"] as? Bool, false, "always rules stay ours")
 
         store.updateSettings { $0.meetingCapture = false }
         XCTAssertEqual(store.settings.meetingMode, .off)
         XCTAssertEqual(try storedJSON()["meeting_capture"] as? Bool, false)
         store.updateSettings { $0.meetingCapture = true }
-        XCTAssertEqual(store.settings.meetingMode, .ask, "turning detection back on asks")
+        XCTAssertEqual(store.settings.meetingMode, .perApp, "turning detection back on is the default")
     }
 }

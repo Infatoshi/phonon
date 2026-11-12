@@ -41,12 +41,12 @@ struct NativeSettings: Codable, Equatable {
     var screenContextDenylist: [String]
     /// Send the text around the cursor to the local correction model.
     var textboxContext: Bool
-    /// What a detected call does (MeetingRules.swift): ask (default), follow the per-app
-    /// rules, or no detection. Replaced `meeting_capture` + `meeting_auto_start`, which are
+    /// What a detected call does (MeetingRules.swift): follow the per-app rules and ask once
+    /// for an app without one (default), ask every time, or no detection. Replaced `meeting_capture` + `meeting_auto_start`, which are
     /// read once to derive it (`init(from:)`) and still written for older builds.
     var meetingMode: MeetingMode
     /// Per-app and per-site rules (bundle id or conferencing host -> always | never),
-    /// followed under `meetingMode == .rules`.
+    /// followed under `meetingMode == .perApp`.
     var meetingRules: MeetingRuleBook
     /// The meeting questions (detect calls? ask or remember per app?) were answered or
     /// skipped: at first run, or once on a card for an install that predates them.
@@ -139,7 +139,7 @@ struct NativeSettings: Codable, Equatable {
         stylePreferences: [String: [String]] = [:],
         screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
         textboxContext: Bool = false,
-        meetingMode: MeetingMode = .ask,
+        meetingMode: MeetingMode = .standard,
         meetingRules: MeetingRuleBook = MeetingRuleBook(),
         meetingQuestionsAsked: Bool = false,
         checkForUpdates: Bool = true,
@@ -245,19 +245,20 @@ struct NativeSettings: Codable, Equatable {
         let storedRules = (try? values.decodeIfPresent(MeetingRuleBook.self, forKey: .meetingRules))
             ?? nil
         // `meeting_mode` wins once written. Before it, the two booleans map onto it: detection
-        // off is off, the default (detection on, no auto-start) is ask, and auto-start (record
-        // every detected call) is the rules mode with every known app and site set to always.
+        // off is off, the default (detection on, no auto-start) is the per-app default (every
+        // app without a rule asks), and auto-start (record every detected call) is the same
+        // mode with every known app and site set to always.
         if let raw = try? values.decodeIfPresent(String.self, forKey: .meetingMode) {
-            meetingMode = MeetingMode(rawValue: raw) ?? .ask
+            meetingMode = MeetingMode.stored(raw)
             meetingRules = storedRules ?? MeetingRuleBook()
         } else if !legacyCapture {
             meetingMode = .off
             meetingRules = storedRules ?? MeetingRuleBook()
         } else if legacyAutoStart {
-            meetingMode = .rules
+            meetingMode = .perApp
             meetingRules = storedRules ?? MeetingRuleBook(MeetingRules.autoStartRules())
         } else {
-            meetingMode = .ask
+            meetingMode = .perApp
             meetingRules = storedRules ?? MeetingRuleBook()
         }
         meetingQuestionsAsked =
@@ -305,7 +306,7 @@ struct NativeSettings: Codable, Equatable {
             if !newValue {
                 meetingMode = .off
             } else if meetingMode == .off {
-                meetingMode = .ask
+                meetingMode = .standard
             }
         }
     }
@@ -1260,7 +1261,7 @@ final class NativeAppStore: ObservableObject {
     }
 
     /// The meeting questions' answer (first run, or the one-time card): the mode, or nil
-    /// for Skip, which keeps the current one (ask, unless it was already changed).
+    /// for Skip, which keeps the current one (per app, unless it was already changed).
     func recordMeetingQuestions(mode: MeetingMode?) {
         updateSettings {
             if let mode { $0.meetingMode = mode }

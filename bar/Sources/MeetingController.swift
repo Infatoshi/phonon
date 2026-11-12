@@ -2,9 +2,9 @@ import AppKit
 import Foundation
 
 /// Watches for calls and, with the user's yes, records meeting notes audio. What a
-/// detected call does follows Settings › Notes (`meeting_mode`, MeetingRules.swift): ask
-/// every time (default), follow the per-app rules (an "always" rule records without a
-/// click), or no detection. The note taker can also be started by hand at any time.
+/// detected call does follows Settings › Notes (`meeting_mode`, MeetingRules.swift):
+/// remember per app (default: an "always" rule records without a click, "never" stays
+/// silent, an app without a rule asks whether to remember), ask every time, or no detection. The note taker can also be started by hand at any time.
 @MainActor
 final class MeetingController {
     nonisolated static let detectionInterval: TimeInterval = 4
@@ -124,12 +124,12 @@ final class MeetingController {
         case .record:
             start(meeting: meeting, bundleID: bundleID)
         case .ask:
-            ask(meeting: meeting, bundleID: bundleID, remember: settings.meetingMode == .rules)
+            ask(meeting: meeting, bundleID: bundleID, remember: settings.meetingMode == .perApp)
         }
     }
 
-    /// The question above the capsule: Record / Not now, or under "Follow my rules" the
-    /// per-app question.
+    /// The question above the capsule: the per-app question under "Remember per app" (the
+    /// default), or Record / Not now under "Ask every time".
     private func ask(meeting: String, bundleID: String, remember: Bool) {
         // The one-time questions give way to a real call.
         if flow.answeredQuestions() { popup.dismiss() }

@@ -15,7 +15,7 @@ struct MeetingFlow: Equatable {
         case hidden
         /// "Ask every time": Not now / Record.
         case asking(app: String, bundleID: String)
-        /// "Follow my rules", an app without a rule: "Record this and future <App> calls
+        /// "Remember per app" (the default), an app without a rule: "Record this and future <App> calls
         /// automatically?" Always / Just this once / Not now / Never.
         case askingRule(app: String, bundleID: String)
         /// A rule was just set from the question: Undo for a few seconds. `recorded` is
@@ -349,9 +349,9 @@ struct MeetingPopupView: View {
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 4) {
-                        Button(MeetingMode.ask.title) { model.onAnswer(.ask) }
+                        Button(MeetingMode.perApp.title) { model.onAnswer(.perApp) }
                             .buttonStyle(MeetingRecordButtonStyle())
-                        Button("Remember per app") { model.onAnswer(.rules) }
+                        Button(MeetingMode.everyCall.title) { model.onAnswer(.everyCall) }
                             .buttonStyle(MeetingGhostButtonStyle())
                         Button(MeetingMode.off.title) { model.onAnswer(.off) }
                             .buttonStyle(MeetingGhostButtonStyle())

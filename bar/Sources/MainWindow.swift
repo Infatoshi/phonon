@@ -1095,11 +1095,13 @@ struct SettingsView: View {
                 SettingsGroup("Notes") {
                     SettingRow(
                         "When a call starts",
-                        help: "Ask every time: Phonon asks whether to record your mic and the "
-                            + "call audio on this Mac. Follow my rules: apps you said Always for "
-                            + "record by themselves, apps you said Never for are left alone, and "
-                            + "any other app asks once whether to remember. Don't detect: Phonon "
-                            + "never watches for calls. Some places require everyone's consent."
+                        help: "Remember per app: the first call in an app asks whether to record "
+                            + "it and future calls there. Apps you said Always for record by "
+                            + "themselves, apps you said Never for are left alone. Ask every "
+                            + "time: Phonon asks before recording every call, whatever you said "
+                            + "before. Don't detect calls: Phonon never watches for calls. "
+                            + "Recording takes your mic and the call audio, kept on this Mac. "
+                            + "Some places require everyone's consent."
                     ) {
                         ChoiceChips(
                             options: MeetingMode.allCases.map { ($0, $0.title) },
@@ -1621,7 +1623,7 @@ struct PrivateListEditor: View {
 }
 
 /// Settings › Notes › per-app call rules (settings.json `meeting_rules`): each app or
-/// site, Always or Never, changeable or removable. Followed under "Follow my rules".
+/// site, Always or Never, changeable or removable. Followed under "Remember per app".
 struct MeetingRulesEditor: View {
     @ObservedObject var store: NativeAppStore
     let onChanged: () -> Void
@@ -1631,15 +1633,15 @@ struct MeetingRulesEditor: View {
         if rows.isEmpty {
             SettingRow(
                 "Per-app rules",
-                help: "Under Follow my rules, the question for a call in a new app or site "
-                    + "(Always, Just this once, Not now, Never) adds its rule here."
+                help: "The question for a call in a new app or site (Always, Just this once, "
+                    + "Not now, Never) adds its rule here."
             ) {
                 Text("none yet").font(.system(size: 12.5)).foregroundStyle(EmberTheme.mute)
             }
         } else {
             AdvancedBlock("Per-app rules") {
-                if store.settings.meetingMode != .rules {
-                    Text("Used only while When a call starts is Follow my rules.")
+                if store.settings.meetingMode != .perApp {
+                    Text("Used only while When a call starts is Remember per app.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(EmberTheme.mute)
                 }
@@ -1993,15 +1995,15 @@ struct PrivacyChoiceView: View {
     @State private var localHistory = false
     @State private var screenContext = false
     @State private var clipboard = ClipboardAfterPaste.dictation
-    /// Ask each time unless chosen otherwise: Continue without touching it is the skip.
-    @State private var meetingMode = MeetingMode.ask
+    /// Remember per app unless chosen otherwise: Continue without touching it is the skip.
+    @State private var meetingMode = MeetingMode.standard
 
     static func meetingDetail(_ mode: MeetingMode) -> String {
         switch mode {
-        case .ask:
-            return "Phonon asks before taking notes on a call: your mic and the call audio, kept on this Mac."
-        case .rules:
-            return "The first call in each app asks once: always record it, just this once, not now, or never."
+        case .perApp:
+            return "The first call in each app asks: record it and future calls there, just this once, not now, or never."
+        case .everyCall:
+            return "Phonon asks before taking notes on every call: your mic and the call audio, kept on this Mac."
         case .off:
             return "Phonon never watches for calls. You can still start the note taker from Notes."
         }
@@ -2059,10 +2061,7 @@ struct PrivacyChoiceView: View {
                 Text("When a call starts (Zoom, Meet, Teams, FaceTime, Slack…)")
                     .font(.headline)
                 ChoiceChips(
-                    options: [
-                        (MeetingMode.ask, "Ask each time"), (.rules, "Remember per app"),
-                        (.off, "Don't detect calls"),
-                    ],
+                    options: MeetingMode.allCases.map { ($0, $0.title) },
                     selection: meetingMode
                 ) { meetingMode = $0 }
                 Text(Self.meetingDetail(meetingMode))
