@@ -28,6 +28,7 @@ mod polish;
 mod settings;
 mod single;
 mod smoke;
+mod update;
 #[cfg(any(windows, target_os = "linux"))]
 mod window;
 
@@ -103,6 +104,13 @@ enum Command {
     /// Internal: list the CUDA devices this environment shows (see backends.rs).
     #[command(hide = true)]
     CudaDevices,
+    /// Ask GitHub once whether a newer release is out (see update.rs) and print it.
+    #[command(hide = true)]
+    CheckUpdate {
+        /// Compare against this tag instead of the build's own (testing).
+        #[arg(long = "as")]
+        as_tag: Option<String>,
+    },
     /// Release tooling: sign a backend manifest, writing <manifest>.sig.
     #[command(hide = true)]
     SignBackends {
@@ -117,6 +125,18 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
         Command::CudaDevices => backends::print_cuda_devices(),
+        Command::CheckUpdate { as_tag } => {
+            let running = as_tag.as_deref().or(update::running_tag());
+            let Some(running) = running else {
+                println!("a development build (no PHONON_RELEASE_TAG): never checks");
+                return Ok(());
+            };
+            match update::fetch(running)? {
+                Some(found) => println!("{running}: Phonon {} is out, {}", found.title, found.page),
+                None => println!("{running}: up to date"),
+            }
+            Ok(())
+        }
         Command::Dictate { wav } => dictate(&wav),
         Command::SignBackends { key, manifest } => sign_backends(&key, &manifest),
         Command::Run => {

@@ -179,6 +179,14 @@ fn app() -> Result<()> {
         &format!("Hold {name} to dictate, or tap to toggle."),
         false,
     );
+    crate::update::start(|found| {
+        tray::notify(
+            &format!("Phonon {} is out", found.title),
+            "Download it from the tray menu.",
+            false,
+        );
+        tray::refresh();
+    });
 
     let mut recording: Option<capture::Recording> = None;
     let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);

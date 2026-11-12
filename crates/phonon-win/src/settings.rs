@@ -226,6 +226,21 @@ impl Settings {
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.map.get(key)
     }
+
+    /// A boolean key with no legacy file (for example the update check's).
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.map.get(key).and_then(Value::as_bool)
+    }
+
+    /// A string key with no legacy file.
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    pub fn get_str(&self, key: &str) -> Option<String> {
+        self.map
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
 }
 
 /// Change one key in the settings file at `root`, keeping every other key.

@@ -198,6 +198,16 @@ impl ksni::Tray for PhononTray {
             item("Open Phonon folder", Command::OpenFolder),
         ];
         items.extend(self.history_items());
+        if let Some(found) = crate::update::available() {
+            items.push(
+                StandardItem {
+                    label: format!("Download Phonon {}\u{2026}", found.title),
+                    activate: Box::new(move |_: &mut Self| crate::update::open_page(&found.page)),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
         items.push(item("Quit Phonon", Command::Quit));
         items
     }
@@ -264,6 +274,15 @@ pub fn set_status(text: &str) {
                 t.status = text;
                 t.recording = recording;
             });
+        }
+    }
+}
+
+/// Rebuild the menu (an update check found a release: `update::available`).
+pub fn refresh() {
+    if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
+        if let Some(handle) = guard.as_ref() {
+            handle.update(|_| {});
         }
     }
 }

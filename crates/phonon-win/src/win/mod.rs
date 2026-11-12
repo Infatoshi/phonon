@@ -261,6 +261,14 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
         &format!("Hold {name} to dictate, or tap to toggle."),
         false,
     );
+    // the tray menu reads `update::available` each time it opens
+    crate::update::start(|found| {
+        tray::notify(
+            &format!("Phonon {} is out", found.title),
+            "Download it from the tray menu.",
+            false,
+        )
+    });
 
     let mut recording: Option<capture::Recording> = None;
     let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);

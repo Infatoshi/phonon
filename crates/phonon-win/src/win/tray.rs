@@ -49,6 +49,8 @@ const ID_QUIT: usize = 3;
 const ID_HISTORY: usize = 4;
 const ID_CLEAR_HISTORY: usize = 5;
 const ID_SETTINGS: usize = 6;
+/// "Download Phonon X..." once an update check found a newer release (`update::available`).
+const ID_UPDATE: usize = 7;
 /// "Recent dictations" submenu items: ID_RECENT + index into the recent list.
 const ID_RECENT: usize = 300;
 /// "Dictation key" submenu items: ID_KEY + index into `hook::CHOICES`.
@@ -473,6 +475,8 @@ fn show_menu(hwnd: HWND) {
     let folder = wide("Open the Phonon folder");
     let settings = wide("Settings\u{2026}");
     let quit = wide("Quit Phonon");
+    let update = crate::update::available()
+        .map(|found| wide(&format!("Download Phonon {}\u{2026}", found.title)));
     let keys_title = wide(&format!("Dictation key: {}", super::hook::current_key().0));
     let keys: HMENU = unsafe { CreatePopupMenu() };
     let (_, current) = super::hook::current_key();
@@ -519,6 +523,9 @@ fn show_menu(hwnd: HWND) {
         AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, folder.as_ptr());
         append_history_items(menu);
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        if let Some(update) = &update {
+            AppendMenuW(menu, MF_STRING, ID_UPDATE, update.as_ptr());
+        }
         AppendMenuW(menu, MF_STRING, ID_QUIT, quit.as_ptr());
 
         let mut point: POINT = std::mem::zeroed();
@@ -559,6 +566,11 @@ unsafe extern "system" fn window_proc(
                 ID_QUIT => send(Command::Quit),
                 ID_HISTORY => send(Command::ToggleHistory),
                 ID_CLEAR_HISTORY => send(Command::ClearHistory),
+                ID_UPDATE => {
+                    if let Some(found) = crate::update::available() {
+                        crate::update::open_page(&found.page);
+                    }
+                }
                 // A separate process, started off this thread (it runs the keyboard hook).
                 ID_SETTINGS => {
                     std::thread::spawn(crate::window::open);
