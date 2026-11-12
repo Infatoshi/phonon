@@ -188,7 +188,12 @@ final class Session: ObservableObject {
         asrStatus = "Speech model: downloading Parakeet…"
         Task {
             do {
-                let ms = try await parakeet.load()
+                let ms = try await parakeet.load { done, total in
+                    Task { @MainActor in
+                        guard !self.useParakeet, done < total else { return }
+                        self.asrStatus = "Speech model: downloading Parakeet \(done >> 20) of \(total >> 20) MB…"
+                    }
+                }
                 // warm-up, as on the Mac: one throwaway decode compiles the CoreML graphs and pages the weights in,
                 // so the first real dictation is not the slow one
                 let w0 = Date()

@@ -3,16 +3,19 @@ import FluidAudio
 import Foundation
 
 /// Parakeet TDT 0.6B v2 on this iPhone (CoreML, Neural Engine), the same recognizer as the Mac app. Downloaded once
-/// from Hugging Face on first start, then loaded from the app's cache.
+/// from Hugging Face on first start at a pinned commit with every file's sha256 checked (ParakeetModel), then
+/// loaded from that folder with FluidAudio's no-download loader.
 actor Parakeet {
     private var manager: AsrManager?
 
     var ready: Bool { manager != nil }
 
-    func load() async throws -> Int {
+    func load(progress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) async throws -> Int {
         if manager != nil { return 0 }
         let t0 = Date()
-        let models = try await AsrModels.downloadAndLoad(version: .v2)
+        let store = ModelStore(root: ParakeetModel.directory, log: { print("Parakeet", $0) })
+        let dir = try await ParakeetModel.ensure(store: store, progress: progress)
+        let models = try AsrModels.loadLocal(from: dir, version: .v2)
         let m = AsrManager(config: .default)
         try await m.loadModels(models)
         manager = m

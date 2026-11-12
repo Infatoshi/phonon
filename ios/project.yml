@@ -121,6 +121,8 @@ targets:
       - UnitTests
       - App/Opener.swift
       - App/LineBreaks.swift
+      - App/ModelStore.swift
+      - App/ParakeetModel.swift
       - path: ../crates/phonon-llm/src/opener_cases.json
         buildPhase: resources
       - path: ../crates/phonon-llm/src/linebreak_cases.json
