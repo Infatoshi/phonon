@@ -84,9 +84,21 @@ pub fn run(page: Option<Page>) -> Result<()> {
     let viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         // Wayland and X11 match the window to phonon.desktop (its icon and name)
-        .with_app_id("phonon")
-        .with_inner_size([720.0, 620.0])
-        .with_min_inner_size([560.0, 420.0]);
+        .with_app_id("phonon");
+    let viewport = match work_area() {
+        // inside the screen less the taskbar, centred: Windows otherwise cascades
+        // the window from the top left, past the taskbar on a 1280x800 screen
+        Some(work) => {
+            let fit = Fit::within(work);
+            viewport
+                .with_inner_size(fit.inner)
+                .with_min_inner_size(fit.min)
+                .with_position(fit.position)
+        }
+        None => viewport
+            .with_inner_size(Fit::INNER)
+            .with_min_inner_size(Fit::MIN),
+    };
     // Phonon's icon in the title bar, the taskbar and alt-tab, not eframe's default "e".
     // eframe already links the PNG decoder for this.
     let viewport =
@@ -115,6 +127,87 @@ pub fn run(page: Option<Page>) -> Result<()> {
         }),
     )
     .map_err(|error| anyhow!("open the settings window: {error}"))
+}
+
+/// The window's size and place inside a screen's work area (the screen less
+/// the taskbar or panels), in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Fit {
+    inner: egui::Vec2,
+    min: egui::Vec2,
+    /// The outer top-left corner.
+    position: egui::Pos2,
+}
+
+impl Fit {
+    const INNER: egui::Vec2 = egui::vec2(720.0, 620.0);
+    const MIN: egui::Vec2 = egui::vec2(560.0, 420.0);
+    /// The title bar and frame around the inner size (Windows 11: a 31-point
+    /// title bar and an 8-point resize border below), with room to spare.
+    const FRAME: egui::Vec2 = egui::vec2(16.0, 44.0);
+    /// Space kept between the window and the work area's edges.
+    const GAP: f32 = 8.0;
+
+    fn within(work: egui::Rect) -> Self {
+        let room = work.size() - Self::FRAME - egui::Vec2::splat(2.0 * Self::GAP);
+        let inner = Self::INNER.min(room).max(egui::vec2(320.0, 240.0));
+        let min = Self::MIN.min(inner);
+        let outer = inner + Self::FRAME;
+        let position = egui::pos2(
+            work.min.x + ((work.width() - outer.x) / 2.0).max(0.0),
+            work.min.y + ((work.height() - outer.y) / 2.0).max(0.0),
+        );
+        Self {
+            inner,
+            min,
+            position,
+        }
+    }
+}
+
+/// The primary monitor's work area in points, where the tray (and so this
+/// window) opens.
+#[cfg(windows)]
+fn work_area() -> Option<egui::Rect> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetDC, GetDeviceCaps, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, LOGPIXELSY,
+        MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    };
+    // SAFETY: plain queries; MONITORINFO carries its size; the screen DC is released.
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if monitor.is_null() || GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        // Called before winit makes the process DPI aware, both values are at
+        // 96 dpi; after, both are in pixels. Either way this gives points.
+        let dc = GetDC(std::ptr::null_mut());
+        let dpi = if dc.is_null() {
+            96
+        } else {
+            let dpi = GetDeviceCaps(dc, LOGPIXELSY as i32);
+            ReleaseDC(std::ptr::null_mut(), dc);
+            dpi
+        };
+        let scale = if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 };
+        let r = info.rcWork;
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(r.left as f32, r.top as f32) / scale,
+            egui::pos2(r.right as f32, r.bottom as f32) / scale,
+        );
+        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
+    }
+}
+
+/// Linux: GNOME and KDE place a new window inside the work area themselves;
+/// a screen too short for the window is handled at the first frame
+/// (`App::fit_screen`), since winit reports the monitor only once it is open.
+#[cfg(not(windows))]
+fn work_area() -> Option<egui::Rect> {
+    None
 }
 
 /// egui's sizes are for dense tool panels; a settings window reads better a
@@ -170,6 +263,9 @@ mod theme {
         soft: Color32,
         /// Help text and other secondary text.
         mute: Color32,
+        /// The Settings page's Models block: grey body-size text, darker than
+        /// `mute` because its thin anti-aliased strokes read lighter than the colour.
+        pub detail: Color32,
         pub ember: Color32,
         /// The selected page and other accent text.
         selected: Color32,
@@ -196,6 +292,7 @@ mod theme {
         ink: hex(0xEEE6DC),
         soft: hex(0xCDBFB2),
         mute: hex(0x8F8377),
+        detail: hex(0xB3A698),
         ember: hex(0xE8692C),
         selected: hex(0x2A1A10),
         selected_ink: hex(0xF08A4B),
@@ -217,6 +314,7 @@ mod theme {
         ink: hex(0x1E1914),
         soft: hex(0x3A3029),
         mute: hex(0x6B5F55),
+        detail: hex(0x4F443B),
         ember: hex(0xD2561A),
         selected: hex(0xFBE5D6),
         selected_ink: hex(0x9A3A0C),
@@ -323,6 +421,12 @@ mod theme {
                 for surface in [p.window, p.side, p.card] {
                     assert!(contrast(p.ink, surface) >= 7.0);
                     assert!(contrast(p.mute, surface) >= 4.5, "help text");
+                    // 7:1 nominal so the anti-aliased glyphs still clear 4.5:1
+                    assert!(contrast(p.detail, surface) >= 7.0, "the Models block");
+                    assert!(
+                        contrast(p.detail, surface) > contrast(p.mute, surface),
+                        "the Models block stands out more than help text"
+                    );
                     assert!(contrast(p.error, surface) >= 4.5, "error text");
                     assert!(contrast(p.raised_border, surface) >= 3.0, "control outline");
                 }
@@ -478,6 +582,36 @@ pub fn clipboard_label(rule: ClipboardAfterPaste) -> &'static str {
     }
 }
 
+/// The History page's line while Keep history is off. Entries from before it
+/// was turned off stay: retention runs only when a dictation is saved
+/// (history.rs `append`) or when Keep recordings for changes, and neither a
+/// dictation with history off nor turning it off deletes anything.
+pub fn history_off_note(
+    history_on: bool,
+    has_entries: bool,
+    retention_days: u32,
+) -> Option<String> {
+    if history_on {
+        return None;
+    }
+    if !has_entries {
+        return Some(
+            "Keep history is off, so Phonon keeps nothing after it types. Turn it on in Settings."
+                .into(),
+        );
+    }
+    let stay = match retention_days {
+        0 => "They stay until you clear them.".to_string(),
+        days => format!(
+            "They stay until you clear them: while history is off they do not expire after \
+             {days} days."
+        ),
+    };
+    Some(format!(
+        "Keep history is off: new dictations are not saved. The ones below are from before. {stay}"
+    ))
+}
+
 /// How many dictations the History page lists.
 const HISTORY_SHOWN: usize = 200;
 
@@ -519,6 +653,9 @@ struct App {
     dictionary_watch: settings::Watch,
     /// The Dictionary page's input line: a word, or "from => to".
     new_entry: String,
+    /// The window has been checked against the screen's height (Linux).
+    #[cfg(not(windows))]
+    fitted: bool,
 }
 
 /// What the Dictionary page's input line asks for: a word to spell as written,
@@ -568,6 +705,34 @@ impl App {
             dictionary: dictionary::DictionaryFile::default(),
             dictionary_watch: settings::Watch::of(dictionary::FILE),
             new_entry: String::new(),
+            #[cfg(not(windows))]
+            fitted: false,
+        }
+    }
+
+    /// Linux: shorten a window taller than the screen less the desktop's
+    /// panels, once winit reports the monitor. Every page scrolls, so its last
+    /// row stays reachable.
+    #[cfg(not(windows))]
+    fn fit_screen(&mut self, ctx: &egui::Context) {
+        /// GNOME's top bar and dock, or KDE's panel, with room to spare.
+        const PANELS: f32 = 80.0;
+        if self.fitted {
+            return;
+        }
+        let (monitor, inner) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().inner_rect));
+        let (Some(monitor), Some(inner)) = (monitor, inner) else {
+            return;
+        };
+        self.fitted = true;
+        let work = egui::Rect::from_min_size(egui::Pos2::ZERO, monitor - egui::vec2(0.0, PANELS));
+        let fit = Fit::within(work);
+        if inner.height() > fit.inner.y + 0.5 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(fit.min));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                inner.width(),
+                fit.inner.y,
+            )));
         }
     }
 
@@ -899,6 +1064,9 @@ impl App {
         );
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Models").strong());
+        // body-size grey text: thin glyphs render lighter than their colour, so
+        // a darker grey than the small help text
+        let detail = theme::of(ui.visuals().dark_mode).detail;
         ui.label(
             egui::RichText::new(format!(
                 "{}\nSpeech model: {}\nCorrection model: {}",
@@ -908,9 +1076,11 @@ impl App {
                 manifest::ASR_MODEL_ID,
                 manifest::POLISH_MODEL_ID,
             ))
-            .weak(),
+            .color(detail),
         );
-        ui.label(egui::RichText::new(format!("Data folder: {}", self.root.display())).weak());
+        ui.label(
+            egui::RichText::new(format!("Data folder: {}", self.root.display())).color(detail),
+        );
     }
 
     fn history_page(&mut self, ui: &mut egui::Ui) {
@@ -958,13 +1128,10 @@ impl App {
             ui.label("Delete every dictation and recording Phonon kept? This cannot be undone.");
         }
         ui.add_space(4.0);
-        if !self.history_on {
-            ui.label(
-                egui::RichText::new(
-                    "Keep history is off, so Phonon keeps nothing after it types. Turn it on in Settings.",
-                )
-                .weak(),
-            );
+        if let Some(note) =
+            history_off_note(self.history_on, !self.history.is_empty(), self.retention)
+        {
+            ui.label(egui::RichText::new(note).weak());
         }
         if self.history.is_empty() {
             ui.label(egui::RichText::new("Nothing yet.").weak());
@@ -1076,6 +1243,8 @@ fn row(
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
+        #[cfg(not(windows))]
+        self.fit_screen(ui.ctx());
         // poll for outside changes even when the mouse is still
         ui.ctx().request_repaint_after(Duration::from_secs(1));
         let palette = theme::of(ui.visuals().dark_mode);
@@ -1231,6 +1400,78 @@ mod tests {
         assert_eq!(app.shortcut, "f13");
         assert_eq!(app.style, "prompt");
         assert!(app.history_on);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The whole window, title bar included, sits inside the work area.
+    #[test]
+    fn the_window_fits_the_work_area() {
+        let inside = |work: egui::Rect| {
+            let fit = Fit::within(work);
+            let outer = egui::Rect::from_min_size(fit.position, fit.inner + Fit::FRAME);
+            assert!(work.contains_rect(outer), "{work:?}: {outer:?}");
+            assert!(fit.min.x <= fit.inner.x && fit.min.y <= fit.inner.y);
+            fit
+        };
+        // 1280x800 less a 48-point taskbar: full size, centred, clear of the taskbar
+        let fit = inside(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 752.0),
+        ));
+        assert_eq!(fit.inner, Fit::INNER);
+        // 1366x768 at 125%: 1093x614 points less the taskbar; shorter, still above the minimum
+        let fit = inside(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1093.0, 566.0),
+        ));
+        assert!(fit.inner.y < Fit::INNER.y && fit.inner.y >= 480.0);
+        // a taskbar on the left or top moves the work area's origin
+        inside(egui::Rect::from_min_max(
+            egui::pos2(62.0, 0.0),
+            egui::pos2(1280.0, 800.0),
+        ));
+        inside(egui::Rect::from_min_max(
+            egui::pos2(0.0, 48.0),
+            egui::pos2(1024.0, 600.0),
+        ));
+        // a large screen keeps the designed size
+        assert_eq!(
+            inside(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(2560.0, 1400.0)
+            ))
+            .inner,
+            Fit::INNER
+        );
+    }
+
+    /// With history off, the History page says old entries are from before and
+    /// stay; retention does not run while it is off.
+    #[test]
+    fn the_history_page_tells_the_truth_when_history_is_off() {
+        assert_eq!(history_off_note(true, true, 30), None);
+        let empty = history_off_note(false, false, 30).unwrap();
+        assert!(empty.contains("keeps nothing after it types"));
+        let kept = history_off_note(false, true, 0).unwrap();
+        assert!(kept.contains("new dictations are not saved"));
+        assert!(kept.contains("from before"));
+        assert!(!kept.contains("keeps nothing"));
+        assert!(history_off_note(false, true, 30)
+            .unwrap()
+            .contains("do not expire after 30 days"));
+        // the code that note describes: an off switch and time do not prune
+        let root = std::env::temp_dir().join(format!("phonon-window-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let old = history::Entry::new(1_000, 2.0, "raw", "an old line", Path::new("a.wav"));
+        history::append_in(&root, &old, 100).unwrap();
+        settings::set_in(&root, settings::HISTORY_RETENTION_DAYS, 7.into()).unwrap();
+        settings::set_in(&root, settings::LOCAL_HISTORY, false.into()).unwrap();
+        let mut app = App::blank(root.clone(), Page::History);
+        app.reload_settings();
+        app.reload_history();
+        assert!(!app.history_on);
+        assert_eq!(app.history.len(), 1, "turning history off removes nothing");
         let _ = std::fs::remove_dir_all(&root);
     }
 
