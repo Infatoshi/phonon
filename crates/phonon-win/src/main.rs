@@ -68,6 +68,10 @@ struct Cli {
 enum Command {
     /// Run the tray application. This is the default.
     Run,
+    /// Internal: Linux's non-focusable indicator; frames arrive on stdin.
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    Indicator,
     /// Open the settings window (the tray's "Settings..." does this).
     Settings {
         /// The page to open: general or history.
@@ -124,6 +128,8 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
+        #[cfg(target_os = "linux")]
+        Command::Indicator => lx::indicator::run(),
         Command::CudaDevices => backends::print_cuda_devices(),
         Command::CheckUpdate { as_tag } => {
             let running = as_tag.as_deref().or(update::running_tag());

@@ -25,6 +25,8 @@ pub struct Recording {
     auto: AutoStop,
     /// Where the samples start in the file, once its header has been read.
     data_offset: Option<u64>,
+    wave: [f32; super::indicator::POINTS],
+    last_wave: Instant,
 }
 
 /// Where the sample data begins in a WAV file's first bytes: after the `data` chunk's
@@ -86,6 +88,8 @@ pub fn start(path: &Path) -> Result<Recording> {
             started: Instant::now(),
             auto: AutoStop::new(RATE),
             data_offset: None,
+            wave: [0.0; super::indicator::POINTS],
+            last_wave: Instant::now(),
         });
     }
     bail!("no recorder could open the microphone (tried pw-record, parecord, arecord)")
@@ -111,8 +115,19 @@ impl Recording {
     /// still discarded.
     pub fn auto_stop(&mut self, latched: bool) -> Decision {
         let fresh = self.appended().unwrap_or_default();
+        if !fresh.is_empty() {
+            self.wave = super::indicator::waveform(&fresh);
+            self.last_wave = Instant::now();
+        } else if self.last_wave.elapsed() >= Duration::from_millis(200) {
+            self.wave.fill(0.0);
+        }
         self.auto.feed(&fresh);
         self.auto.decision(latched, self.seconds())
+    }
+
+    /// Visualization of the same samples already fed to auto-stop. No second capture.
+    pub fn waveform(&self) -> [f32; super::indicator::POINTS] {
+        self.wave
     }
 
     /// The samples the recorder wrote after the ones already fed to the meter.
@@ -207,5 +222,52 @@ mod tests {
         assert_eq!(wav_data_offset(b""), None);
         assert_eq!(wav_data_offset(b"RIFF\0\0\0\0WAVEfmt "), None);
         assert_eq!(wav_data_offset(b"not a wave file at all"), None);
+    }
+
+    #[test]
+    fn the_wave_and_auto_stop_share_each_appended_sample_once() {
+        use super::*;
+        use std::io::Write;
+
+        let path =
+            std::env::temp_dir().join(format!("phonon-wave-capture-{}.wav", std::process::id()));
+        let pcm: Vec<i16> = (0..480)
+            .map(|i| if i % 2 == 0 { 4096 } else { -4096 })
+            .collect();
+        let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&header(&[])).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.flush().unwrap();
+        let mut recording = Recording {
+            child: Command::new("true").spawn().unwrap(),
+            tool: "fixture",
+            path: path.clone(),
+            started: Instant::now(),
+            auto: AutoStop::new(RATE),
+            data_offset: None,
+            wave: [0.0; super::super::indicator::POINTS],
+            last_wave: Instant::now(),
+        };
+        assert_eq!(recording.auto_stop(false), Decision::KeepRecording);
+        assert_eq!(recording.auto.fed(), pcm.len());
+        assert_eq!(
+            recording.waveform(),
+            super::super::indicator::waveform(&pcm)
+        );
+        let wave = recording.waveform();
+        recording.auto_stop(false);
+        assert_eq!(recording.auto.fed(), pcm.len());
+        assert_eq!(recording.waveform(), wave);
+        recording.last_wave = Instant::now() - Duration::from_millis(250);
+        recording.auto_stop(false);
+        assert_eq!(recording.waveform(), [0.0; super::super::indicator::POINTS]);
+        assert_eq!(recording.auto.fed(), pcm.len());
+        file.write_all(&vec![0; bytes.len()]).unwrap();
+        file.flush().unwrap();
+        recording.auto_stop(false);
+        assert_eq!(recording.auto.fed(), 2 * pcm.len());
+        assert_eq!(recording.waveform(), [0.0; super::super::indicator::POINTS]);
+        recording.discard();
     }
 }

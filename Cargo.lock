@@ -2853,6 +2853,7 @@ dependencies = [
  "wgpu",
  "windows-sys 0.59.0",
  "winresource",
+ "x11-dl",
  "zip",
 ]
 

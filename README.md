@@ -112,6 +112,22 @@ First run downloads the same 1.6 GB as Windows, into `~/.local/share/phonon`. Ho
 `PHONON_HOTKEY` takes the Windows key names. Without the package, `phonon setup` prints the one-time rule to
 install.
 
+On Linux, a small click-through capsule shows **Listening** with a continuous
+waveform from the existing microphone recording, then **Transcribing** while
+speech recognition and correction finish. It cannot take keyboard focus or
+intercept clicks, and never displays dictated text. It closes on completion or
+discard; no indicator process or extra microphone stream remains at idle.
+Shortcuts, clipboard behavior, history defaults, and the macOS/Windows UI are
+unchanged.
+
+The capsule uses the existing egui renderer in a separate helper process, so a
+graphics failure cannot stop dictation. Positioning and click-through use X11,
+including XWayland on GNOME, KDE and wlroots desktops; the pointer's monitor is
+selected when recording starts. A Wayland-only session without `DISPLAY`
+continues with the existing tray-only interface. Set `PHONON_INDICATOR=0` to
+disable the capsule. It does not require Omarchy, Quickshell, GTK, or compositor
+configuration.
+
 ## Pipeline
 
 ```

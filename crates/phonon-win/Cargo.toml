@@ -68,6 +68,8 @@ features = ["std", "dx12", "wgsl"]
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 libc = "0.2"
+# Already used by winit; query the pointer's monitor without linking X11.
+x11-dl = "2.21"
 
 [build-dependencies]
 cc = "1"
