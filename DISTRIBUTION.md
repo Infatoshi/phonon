@@ -12,8 +12,12 @@ releases provide a Developer ID-signed and notarized DMG.
   runtime, both sidecars, the native refiner engine (`Contents/Helpers/pe`,
   with its Metal shader sources in `Contents/Resources/engine`), the prompt,
   the English word list, the startup audio fixture, and third-party notices.
-- ASR uses the stock `mlx-community/parakeet-tdt-0.6b-v2` model, pinned by
-  revision. It is public, ungated, CC-BY-4.0, and approximately 2.5 GB.
+- ASR uses Phonon's fine-tuned Parakeet, the same files as Windows and Linux:
+  `Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx` (int8 ONNX, CC BY-SA 4.0,
+  about 0.66 GB), pinned by revision and sha256, plus the config and tokenizer
+  files of `mlx-community/parakeet-tdt-0.6b-v2` (CC BY 4.0). On first launch
+  the ASR sidecar converts it to the MLX layout (`sidecar/asr_convert.py`,
+  about 1.2 GB in Phonon's data folder) and checks the result's pinned sha256.
 - Correction uses Phonon's public refiner, `Infatoshi/phonon-refiner-1.7b`,
   pinned by revision (`crates/phonon-llm/src/paths.rs`). It is fine-tuned from
   LiquidAI/LFM3-1.7B on transcripts of public audio and synthetic transcripts

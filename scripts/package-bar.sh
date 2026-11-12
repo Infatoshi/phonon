@@ -52,7 +52,7 @@ for sidecar in asr_server polish_server; do
 	cp "$project_dir/sidecar/$sidecar.py.lock" "$staged_app/Contents/Resources/sidecar/$sidecar.py.lock"
 done
 # modules the two sidecars import (streaming refine: SPEC "Streaming refine")
-for module in linereader fast_tdt stream_asr stream_vad stream_decode stream_draft stream_refiner pa_client asr_terms cache_gc model_pins; do
+for module in linereader fast_tdt stream_asr stream_vad stream_decode stream_draft stream_refiner pa_client asr_terms asr_convert cache_gc model_pins; do
 	cp "$project_dir/sidecar/$module.py" "$staged_app/Contents/Resources/sidecar/$module.py"
 done
 cp "$project_dir/sidecar/model_pins.json" "$staged_app/Contents/Resources/sidecar/model_pins.json"

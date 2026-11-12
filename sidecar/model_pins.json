@@ -1,6 +1,38 @@
 {
  "_about": "Every Hugging Face model the macOS sidecars may download: the exact revision and, per file, its size and sha256 at that revision (LFS sha256 from the Hub file metadata; small files hashed from the Hub). The sidecars refuse a hub download not listed here. crates/phonon-asr and crates/phonon-llm pin the same revisions; their tests check that they agree.",
  "models": {
+  "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx": {
+   "_about": "Phonon's fine-tuned speech model, the same files Windows and Linux run (crates/phonon-win manifest.rs). The Mac downloads only these files and the mlx_layout files, and loads the MLX-layout folder sidecar/asr_convert.py builds from them; `converted` is the sha256 of that build.",
+   "revision": "76fbda42bfcf7be26cca2488f8fe38ea4328f755",
+   "files": {
+    "decoder.int8.onnx": {
+     "size": 7257753,
+     "sha256": "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e"
+    },
+    "encoder.int8.onnx": {
+     "size": 42405802,
+     "sha256": "5c0a15da8929acd0ddd559471a201bd8ede3bbe2a7f2df6f606d68b8b73f52bb"
+    },
+    "encoder.int8.onnx.data": {
+     "size": 609820416,
+     "sha256": "f91c1c8d1c8269c9d21d4d23e7590b924243ce6036a1ff787e0e1beb515dabca"
+    },
+    "joiner.int8.onnx": {
+     "size": 1739080,
+     "sha256": "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2"
+    }
+   },
+   "mlx_layout": {
+    "repo": "mlx-community/parakeet-tdt-0.6b-v2",
+    "files": ["config.json", "tokenizer.model", "tokenizer.vocab", "vocab.txt"]
+   },
+   "converted": {
+    "model.safetensors": {
+     "size": 1235820060,
+     "sha256": "cd87970e3baf76a748de75f744319fcf625c8bb194d7acf740f27e222e04f137"
+    }
+   }
+  },
   "mlx-community/parakeet-tdt-0.6b-v2": {
    "revision": "8ae155301e23d820d82aa60d24817c900e69e487",
    "files": {

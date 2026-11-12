@@ -36,16 +36,19 @@ def rust_const(path: str, name: str) -> str:
 def test_lock_matches_the_script_and_the_engine_pin(script, rust_file, const):
     metadata = inline_metadata(ROOT / "sidecar" / script)
     requirement = rust_const(rust_file, const)
-    assert metadata["dependencies"] == [requirement]
+    assert metadata["dependencies"][0] == requirement
     assert metadata["requires-python"] == "==3.12.*"
     assert rust_const("crates/phonon-asr/src/lib.rs", "PYTHON_REQUIREMENT") == "3.12"
 
     lock = tomllib.loads((ROOT / "sidecar" / f"{script}.lock").read_text())
     assert lock["requires-python"] == metadata["requires-python"]
-    name, version = requirement.split("==")
-    assert lock["manifest"]["requirements"] == [{"name": name, "specifier": f"=={version}"}]
+    pins = [dependency.split("==") for dependency in metadata["dependencies"]]
+    assert lock["manifest"]["requirements"] == sorted(
+        ({"name": name, "specifier": f"=={version}"} for name, version in pins), key=lambda r: r["name"]
+    )
     versions = {package["name"]: package["version"] for package in lock["package"]}
-    assert versions[name] == version
+    for name, version in pins:
+        assert versions[name] == version
 
 
 @pytest.mark.parametrize("script", [s for s, _, _ in SIDECARS])

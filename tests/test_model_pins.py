@@ -84,11 +84,29 @@ def _counting_hash(monkeypatch):
 
 def test_the_pin_file_lists_both_shipped_models_with_hashes():
     pins = load_pins()
-    for repo in ("mlx-community/parakeet-tdt-0.6b-v2", "Infatoshi/phonon-refiner-1.7b"):
+    speech = "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx"
+    for repo in (speech, "mlx-community/parakeet-tdt-0.6b-v2", "Infatoshi/phonon-refiner-1.7b"):
         files = expected_files(repo, pins[repo]["revision"], pins)
         assert files
         for entry in files.values():
             assert len(entry["sha256"]) == 64 and entry["size"] > 0
+    # the speech model's MLX layout files come from a pinned repository, and its build has a pinned hash
+    layout = pins[speech]["mlx_layout"]
+    assert set(layout["files"]) <= set(pins[layout["repo"]]["files"])
+    converted = pins[speech]["converted"]["model.safetensors"]
+    assert len(converted["sha256"]) == 64 and converted["size"] > 0
+
+
+def test_only_checks_and_returns_the_listed_files(tmp_path):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_bytes(FILES["config.json"])
+    folder = verified_snapshot(
+        REPO, REV, lambda: str(snapshot), label="t", pins=_pins(), marker_dir=None, only=["config.json"]
+    )
+    assert folder == str(snapshot)
+    with pytest.raises(ValueError):
+        verified_snapshot(REPO, REV, lambda: str(snapshot), label="t", pins=_pins(), marker_dir=None, only=["x"])
 
 
 def test_branches_and_unhashed_revisions_are_refused():

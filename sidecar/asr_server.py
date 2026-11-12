@@ -4,7 +4,7 @@
 # update; tests/test_sidecar_locks.py checks the lock matches this block and the engine's pin).
 # /// script
 # requires-python = "==3.12.*"
-# dependencies = ["parakeet-mlx==0.5.2"]
+# dependencies = ["parakeet-mlx==0.5.2", "onnx==1.23.2"]
 # ///
 """JSONL ASR sidecar: load Parakeet MLX, transcribe wav paths.
 
@@ -328,22 +328,50 @@ def model_source(model_id: str, revision: str | None) -> str:
     the pinned snapshot's layout, config.json + model.safetensors + tokenizer files) is used as it is, revision
     ignored, for both MLX and pa (pa_client reads <source>/model.safetensors). Otherwise a hub id at a revision
     listed in model_pins.json (never a branch): the snapshot is downloaded and sha256-checked first, and
-    parakeet_mlx, which has no revision argument, loads that folder."""
+    parakeet_mlx, which has no revision argument, loads that folder.
+
+    A pin with "mlx_layout" (the published fine-tuned int8 ONNX model, the one Windows and Linux run) fetches only
+    its listed files plus the MLX repository's config and tokenizer files, both sha256-checked, and loads the
+    folder asr_convert builds from them once, itself checked against the pinned sha256 of the result."""
     if os.path.isdir(model_id):
         return model_id
     try:
-        from model_pins import verified_snapshot
+        import model_pins
     except ImportError:
-        from sidecar.model_pins import verified_snapshot
+        from sidecar import model_pins
     from huggingface_hub import snapshot_download
 
-    return verified_snapshot(
-        model_id, revision, lambda: snapshot_download(model_id, revision=revision), label="speech model"
+    entry = model_pins.load_pins().get(model_id) or {}
+    layout = entry.get("mlx_layout")
+    if not layout:
+        return model_pins.verified_snapshot(
+            model_id, revision, lambda: snapshot_download(model_id, revision=revision), label="speech model"
+        )
+    files = sorted(entry["files"])
+    onnx_dir = model_pins.verified_snapshot(
+        model_id,
+        revision,
+        lambda: snapshot_download(model_id, revision=revision, allow_patterns=files),
+        label="speech model",
     )
+    layout_repo = layout["repo"]
+    layout_revision = model_pins.pinned_revision(layout_repo)
+    layout_dir = model_pins.verified_snapshot(
+        layout_repo,
+        layout_revision,
+        lambda: snapshot_download(layout_repo, revision=layout_revision, allow_patterns=layout["files"]),
+        label="speech model layout",
+        only=layout["files"],
+    )
+    try:
+        from asr_convert import converted_model
+    except ImportError:
+        from sidecar.asr_convert import converted_model
+    return converted_model(model_id, revision, onnx_dir, layout_dir, entry)
 
 
 def main() -> None:
-    model_id = "mlx-community/parakeet-tdt-0.6b-v2"
+    model_id = "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx"
     revision = None
     args = sys.argv[1:]
     for i, a in enumerate(args):

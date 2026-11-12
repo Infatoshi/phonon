@@ -34,8 +34,10 @@ impl Waker {
 /// Pinned ASR model and runtime. Exact revisions so an upstream release cannot
 /// change what shipped users run. The sha256 of every file at this revision is in
 /// sidecar/model_pins.json, which the sidecar checks before loading; a test keeps the two in step.
-pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
-pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
+/// The same fine-tuned model and revision as Windows and Linux (phonon-win manifest.rs): the sidecar
+/// fetches its int8 ONNX files and loads the MLX-layout copy sidecar/asr_convert.py builds from them.
+pub const ASR_MODEL_ID: &str = "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx";
+pub const ASR_MODEL_REVISION: &str = "76fbda42bfcf7be26cca2488f8fe38ea4328f755";
 /// The runtime is the inline dependency of sidecar/asr_server.py, installed from its hashed
 /// lock (`sidecar_run_args`); this copy is for display, and a test keeps the three in step.
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
@@ -466,7 +468,24 @@ mod tests {
         let pins: serde_json::Value =
             serde_json::from_str(include_str!("../../../sidecar/model_pins.json")).unwrap();
         assert_eq!(pins["models"][ASR_MODEL_ID]["revision"], ASR_MODEL_REVISION);
-        assert!(pins["models"][ASR_MODEL_ID]["files"]["model.safetensors"]["sha256"].is_string());
+        assert!(
+            pins["models"][ASR_MODEL_ID]["files"]["encoder.int8.onnx.data"]["sha256"].is_string()
+        );
+        assert!(
+            pins["models"][ASR_MODEL_ID]["converted"]["model.safetensors"]["sha256"].is_string()
+        );
+    }
+
+    /// The Mac runs the same speech model revision as Windows and Linux (GOAL R25).
+    #[test]
+    fn the_mac_speech_model_is_the_windows_and_linux_one() {
+        let manifest = include_str!("../../phonon-win/src/manifest.rs");
+        assert!(manifest.contains(&format!(
+            "pub const ASR_MODEL_ID: &str = \"{ASR_MODEL_ID}\";"
+        )));
+        assert!(manifest.contains(&format!(
+            "pub const ASR_MODEL_REVISION: &str = \"{ASR_MODEL_REVISION}\";"
+        )));
     }
 
     #[test]

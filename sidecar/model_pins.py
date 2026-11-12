@@ -186,12 +186,19 @@ def verified_snapshot(
     refetch: Callable[[], str] | None = None,
     pins: dict | None = None,
     marker_dir: str | None = "default",
+    only: list[str] | None = None,
 ) -> str:
     """Fetch the pinned snapshot of `repo_id` and return its folder once every file matches
-    model_pins.json. `refetch` (default `fetch`) must download whatever files are missing.
+    model_pins.json (or, with `only`, those of its files; `fetch` then downloads just them).
+    `refetch` (default `fetch`) must download whatever files are missing.
     Raises ValueError for an unpinned revision or a file that still fails after one fresh
     fetch."""
     expected = expected_files(repo_id, revision, pins)
+    if only is not None:
+        missing = [name for name in only if name not in expected]
+        if missing:
+            raise ValueError(f"{repo_id}@{revision}: {', '.join(missing)} not in model_pins.json")
+        expected = {name: expected[name] for name in only}
     if marker_dir == "default":
         marker_dir = default_marker_dir()
     marker = _marker_path(marker_dir, repo_id) if marker_dir else None

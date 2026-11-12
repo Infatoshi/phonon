@@ -60,6 +60,43 @@ def test_model_source_resolves_a_pinned_hub_id_and_verifies_it(monkeypatch):
     assert calls == verified == [(hub, pin)]
 
 
+def test_model_source_builds_the_fine_tuned_model_from_its_onnx_files(monkeypatch):
+    downloads = []
+
+    def fake(model_id, revision=None, allow_patterns=None):
+        downloads.append((model_id, revision, sorted(allow_patterns)))
+        return f"/snapshots/{model_id}"
+
+    _fake_hub(monkeypatch, fake)
+    import sidecar.asr_convert
+    import sidecar.model_pins
+
+    verified = []
+
+    def fake_verified(model_id, revision, fetch, **kwargs):
+        verified.append((model_id, kwargs.get("only")))
+        return fetch()
+
+    built = []
+
+    def fake_converted(model_id, revision, onnx_dir, layout_dir, entry):
+        built.append((model_id, revision, onnx_dir, layout_dir))
+        return "/converted"
+
+    monkeypatch.setattr(sidecar.model_pins, "verified_snapshot", fake_verified)
+    monkeypatch.setattr(sidecar.asr_convert, "converted_model", fake_converted)
+    hub = "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx"
+    pin = "76fbda42bfcf7be26cca2488f8fe38ea4328f755"
+    layout = ["config.json", "tokenizer.model", "tokenizer.vocab", "vocab.txt"]
+    assert model_source(hub, pin) == "/converted"
+    onnx = ["decoder.int8.onnx", "encoder.int8.onnx", "encoder.int8.onnx.data", "joiner.int8.onnx"]
+    stock = "mlx-community/parakeet-tdt-0.6b-v2"
+    stock_pin = "8ae155301e23d820d82aa60d24817c900e69e487"
+    assert downloads == [(hub, pin, onnx), (stock, stock_pin, layout)]
+    assert verified == [(hub, None), (stock, layout)]
+    assert built == [(hub, pin, f"/snapshots/{hub}", f"/snapshots/{stock}")]
+
+
 def test_model_source_never_fetches_a_branch(monkeypatch):
     _fake_hub(monkeypatch, _no_download)
 
