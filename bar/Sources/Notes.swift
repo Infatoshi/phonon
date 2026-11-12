@@ -44,7 +44,11 @@ struct MeetingNote: Identifiable, Equatable {
         if let title = metadata.windowTitle?.trimmingCharacters(in: .whitespaces), !title.isEmpty {
             return title
         }
-        if let app = metadata.appName, !app.isEmpty { return "\(app) call" }
+        if let app = metadata.appName, !app.isEmpty {
+            // Started by hand: no call app.
+            if metadata.appBundleID == nil, app == MeetingController.manualName { return app }
+            return "\(app) call"
+        }
         return "Meeting"
     }
 
@@ -290,6 +294,9 @@ struct NotesView: View {
                         .font(.system(size: 22, weight: .semibold))
                         .tracking(-0.44)
                         .padding(.horizontal, 10)
+                        .padding(.bottom, 8)
+                    NoteTakerButton(store: store)
+                        .padding(.horizontal, 10)
                         .padding(.bottom, 12)
                     ForEach(store.meetings) { note in
                         NoteListRow(note: note, selected: note.id == selected?.id)
@@ -300,8 +307,9 @@ struct NotesView: View {
                             .foregroundStyle(EmberTheme.mute)
                             .padding(.horizontal, 10)
                             .help(
-                                "Turn on Settings › Notes › Ask to take notes when a meeting "
-                                    + "starts, then click Record when a call begins.")
+                                "Click Start note taker, or hover the bar at the bottom of the "
+                                    + "screen and click ▶. Phonon also offers to take notes when "
+                                    + "a call starts (Settings › Notes).")
                     }
                 }
                 .padding(.horizontal, 14)
@@ -329,6 +337,34 @@ struct NotesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onAppear { store.loadMeetings() }
+    }
+}
+
+/// The Notes page's manual control: start the note taker with no call detected (the
+/// same recorder as a detected call: your mic and this Mac's audio), or stop it.
+struct NoteTakerButton: View {
+    @ObservedObject var store: NativeAppStore
+
+    var body: some View {
+        if store.noteTakerRecording {
+            Button {
+                store.onStopNoteTaker?()
+            } label: {
+                Label("Stop note taker", systemImage: "stop.fill")
+            }
+            .buttonStyle(PillButtonStyle())
+            .help("Stop recording and save these notes.")
+        } else {
+            Button {
+                store.onStartNoteTaker?()
+            } label: {
+                Label("Start note taker", systemImage: "record.circle")
+            }
+            .buttonStyle(PillButtonStyle(primary: true))
+            .help(
+                "Record your mic and this Mac's audio now, as notes, until you stop. "
+                    + "The bar at the bottom of the screen shows a red light while it records.")
+        }
     }
 }
 

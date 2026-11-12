@@ -41,12 +41,16 @@ struct NativeSettings: Codable, Equatable {
     var screenContextDenylist: [String]
     /// Send the text around the cursor to the local correction model.
     var textboxContext: Bool
-    /// Notice calls and offer to record meeting notes (mic + call audio). On by
-    /// default since schema 3: it only asks, it never records by itself.
-    var meetingCapture: Bool
-    /// Start recording a detected call without asking. Off by default:
-    /// recording other people needs their consent in some places.
-    var meetingAutoStart: Bool
+    /// What a detected call does (MeetingRules.swift): follow the per-app rules and ask once
+    /// for an app without one (default), ask every time, or no detection. Replaced `meeting_capture` + `meeting_auto_start`, which are
+    /// read once to derive it (`init(from:)`) and still written for older builds.
+    var meetingMode: MeetingMode
+    /// Per-app and per-site rules (bundle id or conferencing host -> always | never),
+    /// followed under `meetingMode == .perApp`.
+    var meetingRules: MeetingRuleBook
+    /// The meeting questions (detect calls? ask or remember per app?) were answered or
+    /// skipped: at first run, or once on a card for an install that predates them.
+    var meetingQuestionsAsked: Bool
     /// Ask GitHub once a day whether a newer release is out (SPEC "Update check").
     var checkForUpdates: Bool
     /// The last version whose update alert was shown, so each release is
@@ -99,8 +103,9 @@ struct NativeSettings: Codable, Equatable {
         case stylePreferences = "style_preferences"
         case screenContextDenylist = "screen_context_denylist"
         case textboxContext = "textbox_context"
-        case meetingCapture = "meeting_capture"
-        case meetingAutoStart = "meeting_auto_start"
+        case meetingMode = "meeting_mode"
+        case meetingRules = "meeting_rules"
+        case meetingQuestionsAsked = "meeting_questions_asked"
         case checkForUpdates = "check_for_updates"
         case updateAnnounced = "update_announced"
         case liveText = "live_text"
@@ -134,8 +139,9 @@ struct NativeSettings: Codable, Equatable {
         stylePreferences: [String: [String]] = [:],
         screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
         textboxContext: Bool = false,
-        meetingCapture: Bool = true,
-        meetingAutoStart: Bool = false,
+        meetingMode: MeetingMode = .standard,
+        meetingRules: MeetingRuleBook = MeetingRuleBook(),
+        meetingQuestionsAsked: Bool = false,
         checkForUpdates: Bool = true,
         updateAnnounced: String = "",
         liveText: Bool = false,
@@ -167,8 +173,9 @@ struct NativeSettings: Codable, Equatable {
         self.stylePreferences = stylePreferences
         self.screenContextDenylist = screenContextDenylist
         self.textboxContext = textboxContext
-        self.meetingCapture = meetingCapture
-        self.meetingAutoStart = meetingAutoStart
+        self.meetingMode = meetingMode
+        self.meetingRules = meetingRules
+        self.meetingQuestionsAsked = meetingQuestionsAsked
         self.checkForUpdates = checkForUpdates
         self.updateAnnounced = updateAnnounced
         self.liveText = liveText
@@ -228,12 +235,34 @@ struct NativeSettings: Codable, Equatable {
         // When the migration is what turns detection on, auto-start goes off with it: an
         // owner who once enabled auto-start and then switched detection off must not start
         // recording calls unprompted after the upgrade (they can turn it back on).
-        let storedCapture = try values.decodeIfPresent(Bool.self, forKey: .meetingCapture)
+        let legacy = try decoder.container(keyedBy: LegacyMeetingKeys.self)
+        let storedCapture = try legacy.decodeIfPresent(Bool.self, forKey: .meetingCapture)
         let storedAutoStart =
-            try values.decodeIfPresent(Bool.self, forKey: .meetingAutoStart) ?? false
+            try legacy.decodeIfPresent(Bool.self, forKey: .meetingAutoStart) ?? false
         let forcedOn = storedSchema < 3 && storedCapture != true
-        meetingCapture = storedSchema < 3 ? true : (storedCapture ?? true)
-        meetingAutoStart = forcedOn ? false : storedAutoStart
+        let legacyCapture = storedSchema < 3 ? true : (storedCapture ?? true)
+        let legacyAutoStart = forcedOn ? false : storedAutoStart
+        let storedRules = (try? values.decodeIfPresent(MeetingRuleBook.self, forKey: .meetingRules))
+            ?? nil
+        // `meeting_mode` wins once written. Before it, the two booleans map onto it: detection
+        // off is off, the default (detection on, no auto-start) is the per-app default (every
+        // app without a rule asks), and auto-start (record every detected call) is the same
+        // mode with every known app and site set to always.
+        if let raw = try? values.decodeIfPresent(String.self, forKey: .meetingMode) {
+            meetingMode = MeetingMode.stored(raw)
+            meetingRules = storedRules ?? MeetingRuleBook()
+        } else if !legacyCapture {
+            meetingMode = .off
+            meetingRules = storedRules ?? MeetingRuleBook()
+        } else if legacyAutoStart {
+            meetingMode = .perApp
+            meetingRules = storedRules ?? MeetingRuleBook(MeetingRules.autoStartRules())
+        } else {
+            meetingMode = .perApp
+            meetingRules = storedRules ?? MeetingRuleBook()
+        }
+        meetingQuestionsAsked =
+            (try? values.decodeIfPresent(Bool.self, forKey: .meetingQuestionsAsked)) ?? nil ?? false
         checkForUpdates = try values.decodeIfPresent(Bool.self, forKey: .checkForUpdates) ?? true
         updateAnnounced =
             try values.decodeIfPresent(String.self, forKey: .updateAnnounced) ?? ""
@@ -261,6 +290,31 @@ struct NativeSettings: Codable, Equatable {
         byokEnabled = (try? values.decodeIfPresent(Bool.self, forKey: .byokEnabled)) ?? false
         byokBaseURL = ((try? values.decodeIfPresent(String.self, forKey: .byokBaseURL)) ?? nil) ?? ""
         byokModel = ((try? values.decodeIfPresent(String.self, forKey: .byokModel)) ?? nil) ?? ""
+    }
+
+    /// The two booleans `meeting_mode` replaced: read to migrate, and written alongside it
+    /// (`legacyMeetingKeys`) so an older build that reads the file never records unasked.
+    enum LegacyMeetingKeys: String, CodingKey {
+        case meetingCapture = "meeting_capture"
+        case meetingAutoStart = "meeting_auto_start"
+    }
+
+    /// Whether calls are detected at all.
+    var meetingCapture: Bool {
+        get { meetingMode != .off }
+        set {
+            if !newValue {
+                meetingMode = .off
+            } else if meetingMode == .off {
+                meetingMode = .standard
+            }
+        }
+    }
+
+    /// What an older build reads: detection as before, and auto-start always off (it asks).
+    var legacyMeetingKeys: [String: Any] {
+        [LegacyMeetingKeys.meetingCapture.rawValue: meetingCapture,
+         LegacyMeetingKeys.meetingAutoStart.rawValue: false]
     }
 }
 
@@ -678,6 +732,11 @@ final class NativeAppStore: ObservableObject {
     @Published var meetingCleanupAvailable = false
     /// The Notes page's Clean up button.
     var onCleanMeeting: ((URL) -> Void)?
+    /// The Notes page's "Start note taker" / "Stop note taker" button (MeetingController).
+    var onStartNoteTaker: (() -> Void)?
+    var onStopNoteTaker: (() -> Void)?
+    /// Whether the note taker records right now (detected or started by hand).
+    @Published var noteTakerRecording = false
     @Published var engineReady = false
     @Published var engineMessage = "Loading local models"
     @Published var selectedMicrophone = "Resolving…"
@@ -822,6 +881,12 @@ final class NativeAppStore: ObservableObject {
     func meetingRecordingFinished(directory: URL) {
         if recordingMeetingID == directory.lastPathComponent { recordingMeetingID = nil }
         onTranscribeMeeting?(directory)
+        loadMeetings()
+    }
+
+    /// A recording undone from its card (its folder already deleted): not queued.
+    func meetingRecordingDiscarded(directory: URL) {
+        if recordingMeetingID == directory.lastPathComponent { recordingMeetingID = nil }
         loadMeetings()
     }
 
@@ -1195,6 +1260,27 @@ final class NativeAppStore: ObservableObject {
         }
     }
 
+    /// The meeting questions' answer (first run, or the one-time card): the mode, or nil
+    /// for Skip, which keeps the current one (per app, unless it was already changed).
+    func recordMeetingQuestions(mode: MeetingMode?) {
+        updateSettings {
+            if let mode { $0.meetingMode = mode }
+            $0.meetingQuestionsAsked = true
+        }
+    }
+
+    /// Set or clear one per-app rule; the change is what Undo reverts.
+    @discardableResult
+    func setMeetingRule(_ rule: MeetingRule?, for key: String) -> MeetingRuleChange {
+        var change: MeetingRuleChange?
+        updateSettings { change = $0.meetingRules.set(rule, for: key) }
+        return change ?? MeetingRuleChange(key: key, previous: nil, new: rule)
+    }
+
+    func undoMeetingRule(_ change: MeetingRuleChange) {
+        updateSettings { $0.meetingRules.undo(change) }
+    }
+
     func clearAllHistory() {
         var failure: String?
         for item in history {
@@ -1512,6 +1598,9 @@ final class NativeAppStore: ObservableObject {
                 try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
             } ?? [:]
         for (key, value) in encoded as? [String: Any] ?? [:] {
+            object[key] = value
+        }
+        for (key, value) in updated.legacyMeetingKeys {
             object[key] = value
         }
         try fileManager.createDirectory(
