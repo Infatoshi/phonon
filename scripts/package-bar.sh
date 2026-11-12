@@ -44,8 +44,13 @@ if [[ -z "$uv_bin" || ! -x "$uv_bin" ]]; then
 	exit 1
 fi
 cp -L "$uv_bin" "$staged_app/Contents/Helpers/uv"
-cp "$project_dir/sidecar/asr_server.py" "$staged_app/Contents/Resources/sidecar/asr_server.py"
-cp "$project_dir/sidecar/polish_server.py" "$staged_app/Contents/Resources/sidecar/polish_server.py"
+# Each sidecar runs with `uv run --frozen --script` from the hashed lock next to it; the bundled uv
+# must be able to read that lock.
+for sidecar in asr_server polish_server; do
+	"$uv_bin" export --offline --frozen --script "$project_dir/sidecar/$sidecar.py" >/dev/null
+	cp "$project_dir/sidecar/$sidecar.py" "$staged_app/Contents/Resources/sidecar/$sidecar.py"
+	cp "$project_dir/sidecar/$sidecar.py.lock" "$staged_app/Contents/Resources/sidecar/$sidecar.py.lock"
+done
 # modules the two sidecars import (streaming refine: SPEC "Streaming refine")
 for module in linereader fast_tdt stream_asr stream_vad stream_decode stream_draft stream_refiner pa_client asr_terms cache_gc model_pins; do
 	cp "$project_dir/sidecar/$module.py" "$staged_app/Contents/Resources/sidecar/$module.py"

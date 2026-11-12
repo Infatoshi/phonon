@@ -539,15 +539,7 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     )?;
     let mut command = Command::new(&uv);
     command
-        .args([
-            "run",
-            "--python",
-            phonon_asr::PYTHON_REQUIREMENT,
-            "--with",
-            POLISH_RUNTIME_REQUIREMENT,
-            "python",
-        ])
-        .arg(&script)
+        .args(phonon_asr::sidecar_run_args(&script)?)
         .args(["--model", &model, "--revision", &revision])
         .arg("--system-prompt-file")
         .arg(&prompt)
@@ -582,7 +574,7 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     if std::env::var("PHONON_POLISH_TRANSCRIPT_ONLY").as_deref() == Ok("1") {
         command.arg("--transcript-only");
     }
-    phonon_asr::apply_offline_policy(&mut command, &uv, POLISH_RUNTIME_REQUIREMENT);
+    phonon_asr::apply_offline_policy(&mut command, &uv, &script);
     Ok(Some(command))
 }
 

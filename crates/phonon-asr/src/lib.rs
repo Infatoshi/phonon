@@ -36,6 +36,8 @@ impl Waker {
 /// sidecar/model_pins.json, which the sidecar checks before loading; a test keeps the two in step.
 pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
+/// The runtime is the inline dependency of sidecar/asr_server.py, installed from its hashed
+/// lock (`sidecar_run_args`); this copy is for display, and a test keeps the three in step.
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
 
 /// A local Parakeet folder used instead of the pinned download: the pinned MLX snapshot's layout (config.json,
@@ -69,6 +71,38 @@ pub fn asr_model_args(model_dir: Option<&str>) -> Result<Vec<String>> {
 /// CPython 3.9 that MLX publishes no wheels for. An open-ended range would also
 /// drift onto each new release before MLX supports it.
 pub const PYTHON_REQUIREMENT: &str = "3.12";
+
+/// The hashed lock of a sidecar script: `<script>.lock` next to it (`uv lock --script`), which
+/// pins every package of the script's inline dependencies to one version and the sha256 of
+/// each file. `uv run --frozen --script` installs from it alone and refuses a file whose hash
+/// differs; it never resolves or rewrites it.
+pub fn sidecar_lock(script: &Path) -> std::path::PathBuf {
+    let mut name = script.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    script.with_file_name(name)
+}
+
+/// `uv` arguments that run a sidecar script from its hashed lock, up to and including the
+/// script path (its own arguments follow). Fails when the lock is missing: uv would refuse
+/// `--frozen` anyway, and the error names the file.
+pub fn sidecar_run_args(script: &Path) -> Result<Vec<std::ffi::OsString>> {
+    let lock = sidecar_lock(script);
+    if !lock.is_file() {
+        bail!("missing {}", lock.display());
+    }
+    let mut args: Vec<std::ffi::OsString> = [
+        "run",
+        "--frozen",
+        "--python",
+        PYTHON_REQUIREMENT,
+        "--script",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    args.push(script.into());
+    Ok(args)
+}
 
 /// Last lines a dying sidecar wrote, so its exit can be reported instead of
 /// hanging the loader at whatever percentage it reached.
@@ -200,15 +234,7 @@ impl AsrSidecar {
         let started = Instant::now();
         let mut command = Command::new(&uv);
         command
-            .args([
-                "run",
-                "--python",
-                PYTHON_REQUIREMENT,
-                "--with",
-                ASR_RUNTIME_REQUIREMENT,
-                "python",
-            ])
-            .arg(&script)
+            .args(sidecar_run_args(&script)?)
             .args(&model_args)
             .env(
                 "PHONON_STREAM_REFINE",
@@ -218,7 +244,7 @@ impl AsrSidecar {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        apply_offline_policy(&mut command, &uv, ASR_RUNTIME_REQUIREMENT);
+        apply_offline_policy(&mut command, &uv, &script);
         let mut child = command.spawn().context("spawn ASR")?;
         let stdout = child.stdout.take().context("asr stdout")?;
         let stdin = child.stdin.take().context("asr stdin")?;
@@ -386,23 +412,24 @@ pub fn resolve_uv() -> Option<std::path::PathBuf> {
     })
 }
 
-/// True when uv can assemble the sidecar environment for `requirement` from
-/// its cache alone. Without this, uv revalidates its PyPI index entry once the
-/// entry goes stale, and with no network that fails after three retries
-/// (about 33 s) even though every wheel is already on disk. Costs 50-150 ms.
-pub fn uv_offline_ready(uv: &Path, requirement: &str) -> bool {
+/// True when uv can assemble the environment of the sidecar `script` from its
+/// lock and its cache alone. Without this, a launch with no network can wait on
+/// uv's retries (about 33 s) even though every wheel is already on disk.
+pub fn uv_offline_ready(uv: &Path, script: &Path) -> bool {
+    if !sidecar_lock(script).is_file() {
+        return false;
+    }
     Command::new(uv)
         .args([
-            "run",
+            "sync",
             "--offline",
+            "--frozen",
+            "--quiet",
             "--python",
             PYTHON_REQUIREMENT,
-            "--with",
-            requirement,
-            "python",
-            "-c",
-            "",
+            "--script",
         ])
+        .arg(script)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -414,8 +441,8 @@ pub fn uv_offline_ready(uv: &Path, requirement: &str) -> bool {
 /// Pin a sidecar launch to uv's cache when the cache is enough, so a Mac with
 /// no network or a captive portal starts dictation instead of waiting on
 /// PyPI. A first launch with nothing cached still resolves online.
-pub fn apply_offline_policy(command: &mut Command, uv: &Path, requirement: &str) {
-    if uv_offline_ready(uv, requirement) {
+pub fn apply_offline_policy(command: &mut Command, uv: &Path, script: &Path) {
+    if uv_offline_ready(uv, script) {
         command.env("UV_OFFLINE", "1");
     }
 }
@@ -428,7 +455,9 @@ impl Drop for AsrSidecar {
 
 #[cfg(test)]
 mod tests {
-    use super::{asr_model_args, Waker, ASR_MODEL_ID, ASR_MODEL_REVISION};
+    use super::{
+        asr_model_args, sidecar_lock, sidecar_run_args, Waker, ASR_MODEL_ID, ASR_MODEL_REVISION,
+    };
     use std::sync::mpsc;
 
     /// sidecar/model_pins.json holds the hashes the sidecar checks; it must pin the same commit.
@@ -467,6 +496,41 @@ mod tests {
             vec!["--model", path.as_str()]
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sidecars_run_frozen_from_their_lock_and_refuse_without_one() {
+        let dir = std::env::temp_dir().join(format!("phonon-asr-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("asr_server.py");
+        std::fs::write(&script, "").unwrap();
+        let err = sidecar_run_args(&script).unwrap_err().to_string();
+        assert!(err.contains("asr_server.py.lock"), "{err}");
+
+        std::fs::write(sidecar_lock(&script), "").unwrap();
+        let args = sidecar_run_args(&script).unwrap();
+        let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--frozen",
+                "--python",
+                "3.12",
+                "--script",
+                script.to_str().unwrap()
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The shipped sidecars carry their locks next to them.
+    #[test]
+    fn both_sidecar_locks_exist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sidecar");
+        for script in ["asr_server.py", "polish_server.py"] {
+            assert!(sidecar_lock(&root.join(script)).is_file(), "{script}.lock");
+        }
     }
 
     #[test]

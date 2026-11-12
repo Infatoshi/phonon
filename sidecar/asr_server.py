@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# The engine runs this with `uv run --frozen --script`: these dependencies resolve only from
+# asr_server.py.lock next to this file, every wheel sha256-checked (`uv lock --script` to
+# update; tests/test_sidecar_locks.py checks the lock matches this block and the engine's pin).
+# /// script
+# requires-python = "==3.12.*"
+# dependencies = ["parakeet-mlx==0.5.2"]
+# ///
 """JSONL ASR sidecar: load Parakeet MLX, transcribe wav paths.
 
 Segment streaming ({"cmd":"stream_start","id":..,"segments":true}): stream_chunk audio goes

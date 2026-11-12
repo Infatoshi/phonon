@@ -55,11 +55,11 @@ pub fn run_doctor() -> Result<()> {
     if let Some(uv) = crate::resolve_runtime_tool("uv") {
         optional(
             "ASR runtime cached for offline start",
-            phonon_asr::uv_offline_ready(&uv, phonon_asr::ASR_RUNTIME_REQUIREMENT),
+            phonon_asr::uv_offline_ready(&uv, &root.join("sidecar/asr_server.py")),
         );
         optional(
             "correction runtime cached for offline start",
-            phonon_asr::uv_offline_ready(&uv, POLISH_RUNTIME_REQUIREMENT),
+            phonon_asr::uv_offline_ready(&uv, &root.join("sidecar/polish_server.py")),
         );
     }
     // The native app records through CoreAudio. SoX only backs `phonon` runs

@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+# The engine runs this with `uv run --frozen --script`: these dependencies resolve only from
+# polish_server.py.lock next to this file, every wheel sha256-checked (`uv lock --script` to
+# update; tests/test_sidecar_locks.py checks the lock matches this block and the engine's pin).
+# /// script
+# requires-python = "==3.12.*"
+# dependencies = ["mlx-lm==0.31.3"]
+# ///
 """JSONL correction sidecar: load the pinned MLX correction model, polish transcripts.
 
 Speaks the same line protocol the engine already used for the correction stage:

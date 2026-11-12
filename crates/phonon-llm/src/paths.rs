@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 /// sidecar/model_pins.json (a test checks the two agree).
 pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
 pub const POLISH_MODEL_REVISION: &str = "b20b28075046af94056ab5d5bff89a7abc0f6f50";
-/// Pinned runtime, for the same reason.
+/// Pinned runtime, for the same reason: the inline dependency of
+/// sidecar/polish_server.py, installed from its hashed lock
+/// (`phonon_asr::sidecar_run_args`); this copy is for display, and a test keeps
+/// the three in step.
 pub const POLISH_RUNTIME_REQUIREMENT: &str = "mlx-lm==0.31.3";
 
 /// The native refiner engine bundled with the app: `pe` next to the running

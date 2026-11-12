@@ -349,15 +349,7 @@ fn bench_asr_full(root: &Path, wav: Option<&Path>) -> Result<AsrBench> {
     }
     let uv = crate::resolve_runtime_tool("uv").context("uv not found")?;
     let mut child = Command::new(uv)
-        .args([
-            "run",
-            "--python",
-            phonon_asr::PYTHON_REQUIREMENT,
-            "--with",
-            phonon_asr::ASR_RUNTIME_REQUIREMENT,
-            "python",
-            script.to_str().unwrap(),
-        ])
+        .args(phonon_asr::sidecar_run_args(&script)?)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
