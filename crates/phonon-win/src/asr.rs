@@ -44,7 +44,6 @@ mod resident {
             joiner: *const c_char,
             tokens: *const c_char,
             threads: c_int,
-            provider: *const c_char,
         ) -> *const c_void;
         fn phonon_asr_file(recognizer: *const c_void, wav: *const c_char) -> *mut c_char;
         fn phonon_asr_samples(
@@ -125,31 +124,6 @@ mod resident {
             .map_err(|e| anyhow!("load {}: {e}", path.display()))
     }
 
-    /// ONNX Runtime session options for the resident model, read by sherpa-onnx from the file named after
-    /// "cpu:" in the provider string. With its CPU arena and memory patterns on (the default), ONNX Runtime
-    /// keeps the activation memory of the longest pass so far for the life of the process: on the Ubuntu QA VM
-    /// Phonon grew from 0.70 GB to 1.24 GB RSS after one 68 s dictation and never came back (2026-11-10).
-    const SESSION_CONFIG: &str = "EnableCpuMemArena=0\nEnableMemPattern=0\n";
-
-    /// "cpu:<config>" on Linux, or plain "cpu" (the old behaviour) when the file cannot be written.
-    /// Windows keeps the arena: without it speech recognition took s4 from 379-491 ms to 545-726 ms
-    /// there (Windows 11 VM, 2026-11-10). On Linux it also costs +16 to 24% in speech recognition, but the
-    /// X4 memory gate (app plus server at most 2.0 GB) is out of reach without it.
-    fn provider(runtime: &Path) -> String {
-        if !cfg!(target_os = "linux") {
-            return "cpu".to_string();
-        }
-        let path = runtime.join("phonon-session.cfg");
-        let current = std::fs::read_to_string(&path).ok();
-        if current.as_deref() == Some(SESSION_CONFIG)
-            || std::fs::write(&path, SESSION_CONFIG).is_ok()
-        {
-            format!("cpu:{}", path.display())
-        } else {
-            "cpu".to_string()
-        }
-    }
-
     impl Resident {
         pub fn load(runtime: &Path, model_dir: &Path, threads: usize) -> Result<Self> {
             if LIBRARY.get().is_none() {
@@ -168,7 +142,6 @@ mod resident {
                 c("joiner.int8.onnx"),
                 c("tokens.txt"),
             );
-            let provider = CString::new(provider(runtime).as_bytes()).unwrap();
             let handle = unsafe {
                 phonon_asr_create(
                     enc.as_ptr(),
@@ -176,7 +149,6 @@ mod resident {
                     joi.as_ptr(),
                     tok.as_ptr(),
                     threads as c_int,
-                    provider.as_ptr(),
                 )
             };
             if handle.is_null() {
