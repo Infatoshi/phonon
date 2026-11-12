@@ -1433,6 +1433,9 @@ final class MicRecorder {
     private var peakRms = 0.0
     private var capturedFrames = 0
     private var streamSamples: [Float] = []
+    /// Frames already sent as stream chunks this dictation, and its chunk cadence.
+    private var streamedFrames = 0
+    private var streamFastStart = false
     private var captureEnabled = false
     private var configuredDeviceID: AudioDeviceID?
     private(set) var wavPath: String?
@@ -1570,7 +1573,9 @@ final class MicRecorder {
         }
     }
 
-    func start() throws {
+    /// `fastStart`: stream the opening seconds in short chunks (`StreamChunkCadence`), so the first
+    /// live word shows sooner; the live text card asks for it.
+    func start(fastStart: Bool = false) throws {
         try ensureHardwareRunning()
         lock.lock()
         samples = []
@@ -1579,6 +1584,8 @@ final class MicRecorder {
         peakRms = 0
         capturedFrames = 0
         streamSamples.removeAll(keepingCapacity: true)
+        streamedFrames = 0
+        streamFastStart = fastStart
         captureEnabled = true
         lock.unlock()
     }
@@ -1739,9 +1746,13 @@ final class MicRecorder {
         let shouldPublishAmplitude = meterFrame.isMultiple(of: 2)
         streamSamples.append(contentsOf: chunk)
         var streamPCM: Data?
-        if streamSamples.count >= Int(hwSampleRate * 0.4) {
+        if StreamChunkCadence.shouldSend(
+            sentFrames: streamedFrames, pendingFrames: streamSamples.count, rate: hwSampleRate,
+            fastStart: streamFastStart)
+        {
             let mono16k = Self.resample(streamSamples, from: hwSampleRate, to: 16_000)
             streamPCM = Self.pcm16Data(mono16k)
+            streamedFrames += streamSamples.count
             streamSamples.removeAll(keepingCapacity: true)
         }
 
@@ -3376,7 +3387,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             startAsrStream()
         }
         do {
-            try recorder.start()
+            try recorder.start(fastStart: liveTextPass)
             meetings.dictationStarted()
             updateMicrophoneStatus()
             e2eTrace?.recordingStartedNs = DispatchTime.now().uptimeNanoseconds
