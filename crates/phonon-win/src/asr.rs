@@ -40,7 +40,7 @@ pub struct Recognizer {
 /// plus server to 2.25-2.48 GB against X4's 2.0 GB (Ubuntu QA VM, 2026-11-12); s4 (13 s) adds
 /// 0.25 GB. The arena itself stays on: without it recognition was 34 to 47 ms slower per
 /// dictation in that VM, which X1 has no margin for. A rebuild took 1.3 s and brought the
-/// model from 1.36 back to 0.63 GB, with recognition times unchanged after it (anvil host).
+/// model from 1.36 back to 0.63 GB, with recognition times unchanged after it (16-core desktop).
 pub const GROWN_PASS_SECONDS: usize = 10;
 
 /// Idle time after a grown pass before the model is rebuilt to give that memory back.
