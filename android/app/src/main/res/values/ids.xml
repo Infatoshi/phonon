@@ -3,5 +3,11 @@
     <item name="field" type="id" />
     <item name="models" type="id" />
     <item name="cellular" type="id" />
+    <item name="mac_url" type="id" />
+    <item name="mac_token" type="id" />
+    <item name="mac_test" type="id" />
+    <item name="mac_result" type="id" />
     <string name="app_name">Phonon Keyboard</string>
+    <string name="voice_ime_name">Phonon voice</string>
+    <string name="voice_subtype">Phonon voice (Mac)</string>
 </resources>

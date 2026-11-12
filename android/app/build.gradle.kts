@@ -57,6 +57,12 @@ android {
 }
 
 dependencies {
+    // VoiceIME: the Mac's WebSocket API (MacClient.kt)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // TestActivity: "Scan pairing code" reads the Mac's QR code (no Google Play services needed)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // ...whose scanner screen calls androidx.core (ContextCompat) without depending on it
+    implementation("androidx.core:core:1.13.1")
     // LineBreaksTest (JVM): the real org.json, since android.jar's is a stub in local unit tests
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

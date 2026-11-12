@@ -1,3 +1,4 @@
+import CoreImage
 import XCTest
 
 @testable import PhononBar
@@ -197,6 +198,171 @@ final class MainWindowDataTests: XCTestCase {
         XCTAssertEqual(OwnEndpoint.readKey(service: service), "sk-test-456", "replaced, not duplicated")
         OwnEndpoint.saveKey("", service: service)
         XCTAssertNil(OwnEndpoint.readKey(service: service))
+    }
+
+    /// The WebSocket API: off by default; on, it has a token, kept in settings.json.
+    func testWebSocketAPISettings() throws {
+        var settings = NativeSettings()
+        XCTAssertFalse(settings.websocketAPI)
+        XCTAssertEqual(settings.websocketAPIPort, 8377)
+        XCTAssertEqual(settings.websocketAPIToken, "")
+        WebSocketAPI.turnOn(&settings)
+        XCTAssertTrue(settings.websocketAPI)
+        let token = settings.websocketAPIToken
+        XCTAssertEqual(token.count, 24, "turning it on makes a token")
+        settings.websocketAPI = false
+        WebSocketAPI.turnOn(&settings)
+        XCTAssertEqual(settings.websocketAPIToken, token, "on again: the same token, phones stay paired")
+
+        let url = directory.appendingPathComponent("settings.json")
+        try Data(#"{"schema_version":2,"websocket_api_bind":"100.64.0.7"}"#.utf8).write(to: url)
+        let store = NativeAppStore(supportDirectory: directory)
+        store.updateSettings {
+            WebSocketAPI.turnOn(&$0)
+            $0.websocketAPIPort = 9001
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("\"websocket_api\" : true"), text)
+        XCTAssertTrue(text.contains("\"websocket_api_port\" : 9001"), text)
+        XCTAssertTrue(
+            text.contains("\"websocket_api_token\" : \"\(store.settings.websocketAPIToken)\""),
+            "where the engine reads it")
+        XCTAssertTrue(text.contains("100.64.0.7"), "a hand-set bind address survives a save")
+        let reread = NativeAppStore(supportDirectory: directory).settings
+        XCTAssertTrue(reread.websocketAPI)
+        XCTAssertEqual(reread.websocketAPIPort, 9001)
+        XCTAssertEqual(reread.websocketAPIToken, store.settings.websocketAPIToken)
+
+        // a port nothing can listen on reads as the default
+        try Data(#"{"schema_version":2,"websocket_api_port":70000}"#.utf8).write(to: url)
+        XCTAssertEqual(NativeAppStore(supportDirectory: directory).settings.websocketAPIPort, 8377)
+        XCTAssertTrue(WebSocketAPI.validPort(1))
+        XCTAssertFalse(WebSocketAPI.validPort(0))
+        XCTAssertFalse(WebSocketAPI.validPort(65_536))
+    }
+
+    func testWebSocketAPITokensAreLongAndTypeable() {
+        let tokens = Set((0..<50).map { _ in WebSocketAPI.newToken() })
+        XCTAssertEqual(tokens.count, 50, "each one is new")
+        for token in tokens {
+            XCTAssertEqual(token.count, 24)
+            XCTAssertGreaterThanOrEqual(token.count, 16, "the engine's minimum")
+            XCTAssertTrue(token.allSatisfy { WebSocketAPI.tokenAlphabet.contains($0) })
+        }
+        for lookalike in "il1o0" {
+            XCTAssertFalse(WebSocketAPI.tokenAlphabet.contains(lookalike))
+        }
+    }
+
+    func testWebSocketAPIStatusLineSaysWhereOrWhyNot() {
+        XCTAssertEqual(
+            WebSocketAPI.statusLine(engineStatus: nil, engineReady: false),
+            "Starts when the models are loaded.")
+        XCTAssertEqual(WebSocketAPI.statusLine(engineStatus: nil, engineReady: true), "Starting…")
+        XCTAssertEqual(
+            WebSocketAPI.statusLine(
+                engineStatus: ["listening": true, "address": "0.0.0.0:8377"], engineReady: true),
+            "Listening on port 8377.")
+        XCTAssertEqual(
+            WebSocketAPI.statusLine(
+                engineStatus: ["listening": false, "msg": "listen on 0.0.0.0:80: Permission denied"],
+                engineReady: true),
+            "Not listening: listen on 0.0.0.0:80: Permission denied.")
+        XCTAssertEqual(
+            WebSocketAPI.statusLine(engineStatus: ["listening": false, "msg": ""], engineReady: true),
+            "Not listening.")
+        // every address offered is one a phone could dial
+        for address in WebSocketAPI.reachableAddresses() {
+            XCTAssertFalse(address.hasPrefix("127."))
+            XCTAssertFalse(address.hasPrefix("169.254."))
+            XCTAssertEqual(address.split(separator: ".").count, 4, address)
+        }
+    }
+
+    /// Home's graph: a dictation's words land in the minutes its audio spanned.
+    func testWebSocketWordsSpreadOverTheMinutesSpoken() {
+        // 12:00:30 local-free: whole minutes since the epoch keep the arithmetic exact
+        let now = Date(timeIntervalSince1970: 1_000 * 60 + 30)
+        XCTAssertEqual(WebSocketActivity.perMinute([], now: now), Array(repeating: 0, count: 60))
+
+        // 60 words over the 90 s ending 10 s ago (minute 1000 + 20 s): it started at minute
+        // 998 + 50 s, so 10 s fall in minute 998, 60 s in 999 and 20 s in 1000
+        let spread = WebSocketDictation(end: now.addingTimeInterval(-10), words: 60, audioSeconds: 90)
+        let values = WebSocketActivity.perMinute([spread], now: now)
+        XCTAssertEqual(values.count, 60)
+        XCTAssertEqual(values[59], 60 * 20 / 90, accuracy: 0.001, "the current minute is last")
+        XCTAssertEqual(values[58], 60 * 60 / 90, accuracy: 0.001)
+        XCTAssertEqual(values[57], 60 * 10 / 90, accuracy: 0.001)
+        XCTAssertEqual(values.reduce(0, +), 60, accuracy: 0.001, "no word lost")
+
+        // no audio length: all at the end; older than the hour: left out
+        let instant = WebSocketDictation(end: now.addingTimeInterval(-125), words: 7, audioSeconds: 0)
+        let old = WebSocketDictation(end: now.addingTimeInterval(-3_700), words: 50, audioSeconds: 10)
+        let both = WebSocketActivity.perMinute([instant, old], now: now)
+        XCTAssertEqual(both[57], 7)
+        XCTAssertEqual(both.reduce(0, +), 7)
+
+        let summary = WebSocketActivity.summary([spread, instant, old], now: now)
+        XCTAssertEqual(summary.words, 67)
+        XCTAssertEqual(summary.rate, 40, "60 words in 1.5 minutes of audio")
+        XCTAssertNil(WebSocketActivity.summary([instant], now: now).rate)
+        XCTAssertEqual(WebSocketActivity.scale([0, 3]), 40, "a floor, so a few words stay small")
+        XCTAssertEqual(WebSocketActivity.scale([0, 133]), 140)
+    }
+
+    func testTheStoreKeepsTheLastHourOfWebSocketDictation() {
+        let store = NativeAppStore(supportDirectory: directory)
+        store.websocketLive = true
+        store.recordWebSocketDictation(words: 0, audioMilliseconds: 500)
+        XCTAssertFalse(store.websocketLive, "ended, even with nothing typed")
+        XCTAssertTrue(store.websocketDictations.isEmpty, "nothing typed: nothing to draw")
+        let now = Date()
+        store.recordWebSocketDictation(
+            words: 5, audioMilliseconds: 2_000, at: now.addingTimeInterval(-2 * 3_600))
+        store.recordWebSocketDictation(words: 9, audioMilliseconds: 4_000, at: now)
+        XCTAssertEqual(store.websocketDictations.map(\.words), [9], "older than an hour is dropped")
+        XCTAssertEqual(store.websocketDictations.first?.audioSeconds, 4)
+    }
+
+    func testThePairingCodeCarriesTheAddressAndToken() throws {
+        let uri = WebSocketAPI.pairingURI(address: "192.168.0.52", port: 8377, token: "fzqxz6qcsyh3")
+        XCTAssertEqual(uri, "phonon://pair?url=ws%3A%2F%2F192.168.0.52%3A8377&token=fzqxz6qcsyh3")
+        let parsed = try XCTUnwrap(URLComponents(string: uri))
+        XCTAssertEqual(parsed.scheme, "phonon")
+        XCTAssertEqual(parsed.host, "pair")
+        XCTAssertEqual(parsed.queryItems?.first { $0.name == "url" }?.value, "ws://192.168.0.52:8377")
+        XCTAssertEqual(parsed.queryItems?.first { $0.name == "token" }?.value, "fzqxz6qcsyh3")
+
+        // and the QR code reads back as the same text
+        let image = try XCTUnwrap(PairingCode.image(for: uri))
+        let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        // scale up with a quiet zone, as a camera would see it
+        let side = cgImage.width * 10 + 80
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        context.setFillColor(gray: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        context.interpolationQuality = .none
+        context.draw(cgImage, in: CGRect(x: 40, y: 40, width: side - 80, height: side - 80))
+        let detector = try XCTUnwrap(
+            CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: nil))
+        let features = detector.features(in: CIImage(cgImage: try XCTUnwrap(context.makeImage())))
+        XCTAssertEqual((features.first as? CIQRCodeFeature)?.messageString, uri)
+    }
+
+    func testThePairingAddressPrefersATailnet() {
+        XCTAssertEqual(
+            WebSocketAPI.preferredAddress(["10.147.20.111", "192.168.0.52", "100.101.102.103"]),
+            "100.101.102.103")
+        XCTAssertEqual(
+            WebSocketAPI.preferredAddress(["10.147.20.111", "192.168.0.52"]), "192.168.0.52")
+        XCTAssertEqual(WebSocketAPI.preferredAddress(["10.147.20.111"]), "10.147.20.111")
+        XCTAssertEqual(
+            WebSocketAPI.preferredAddress(["100.200.1.1", "10.0.0.2"]), "100.200.1.1",
+            "100.200 is not a tailnet address, and nothing else is better")
+        XCTAssertNil(WebSocketAPI.preferredAddress([]))
     }
 
     func testExportCopiesTheUsersDataButNotModelWeights() throws {

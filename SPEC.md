@@ -1044,3 +1044,51 @@ covers (plus up to one 0.4 s chunk); none hit the output budget. Key-up to text 
 ms off/on in the clean run (p90 68.9/71.6); the other run had ASR-side outliers in both arms
 (off 1 of 10, on 4 of 10, up to 2 s) not reproduced. Final text identical on 10 of 10 in all
 four arm-runs.
+
+## WebSocket API (settings.json `websocket_api`, off by default)
+
+Another device, such as a phone keyboard's voice button, dictates through this Mac's warm
+engines: it streams audio and names the app it types into, and gets the corrected text back.
+The engine serves it (`crates/phonon-core/src/remote.rs`, with the WebSocket framing in
+`ws.rs`). The protocol, for anyone writing a client, is `docs/websocket-api.md`;
+`scripts/ws-api-client.py` is a client with no dependencies.
+
+- Switch: Settings › Advanced › WebSocket API (`websocket_api`, `websocket_api_port`, default
+  8377). The engine re-reads settings.json when it changes, so the switch applies without a
+  restart. `websocket_api_bind` (hand-set, default `0.0.0.0`) limits it to one of the Mac's
+  addresses, for example its tailnet address, or `127.0.0.1` behind `tailscale serve`.
+- Token: every client must present it in its first message. The bar makes it when the switch
+  is first turned on (24 characters, no look-alike letters) and keeps it in settings.json
+  (`websocket_api_token`), where the engine reads it; so it is also in the backup and an
+  export. Not the Keychain: a build signed on the user's own Mac (ad-hoc) asked for the login
+  password at every launch after each rebuild. Without a token nothing listens.
+- Not encrypted: plain `ws://`. Meant for a network the user trusts or a tailnet.
+- One dictation at a time, the Mac's first: a client's `start` is refused with `busy` while
+  the Mac or another client dictates, and a dictation started on the Mac ends a client's
+  open one with `preempted`. A dictation that is already past its audio still finishes.
+- What a client sends: 16 kHz mono 16-bit PCM in binary frames, the target app (an Android
+  package name is sorted into the same six categories, `app_context.rs`), the text around
+  the cursor and, if it has any, text on screen. The engine does the rest as the bar would:
+  the stream, the WAV, the speech gate, the final polish.
+- What it gets: the transcript so far (`partial`), the corrected text so far when it asked
+  for it (`"live": true` on `start`, whatever `live_text` says for the Mac), and one `final`
+  with the text to insert. If the refiner fails the transcript is the result.
+- Its events never reach the bar: request ids of the API start with `ws-`, and the engine
+  loop hands those to the client only, so a phone's dictation cannot be typed on the Mac.
+- History: each dictation is a corpus entry with source `websocket`, kept or removed by
+  `local_history` like the Mac's own.
+- Home: with the API on, a card graphs the words dictated over it in each of the last 60
+  minutes (pixel columns; a dictation's words are spread over the minutes its audio spanned),
+  from the engine's `websocket_dictation` status events and, after a restart, local history. A
+  green dot pulses beside its title while a device dictates.
+- Pairing: Settings shows a QR code of `phonon://pair?url=…&token=…` for the ticked address
+  (tailnet first by default). The Android app's "Scan pairing code" saves it and tests the
+  connection; the same link opened from a camera app only fills the fields.
+- Limits: 8 connections, 20 minutes a dictation, 1 MB a message, `hello` within 5 s, and a
+  connection silent for 90 s is dropped (clients ping every 30 s).
+- Clients: the Android app's "Phonon voice" input method (`android/.../VoiceIME.kt`), which
+  another keyboard's mic key opens (FUTO Keyboard with its built-in voice input off). It falls
+  back to the phone's own Parakeet, raw transcript only, when the Mac cannot take the
+  dictation, unless "Fall back to the on-device model" is off: that removes the on-device
+  models (and stops their download), saying how much space it reclaimed. Nothing on a phone
+  reads the screen yet.

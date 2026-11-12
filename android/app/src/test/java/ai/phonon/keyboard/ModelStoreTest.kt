@@ -265,4 +265,13 @@ class ModelStoreTest {
         assertFalse(store().isReady(f))
         assertEquals(data.size.toLong(), store().remaining(listOf(f)))
     }
+
+    @Test
+    fun sizesReadAsPeopleSayThem() {
+        // the two models together: Parakeet (661 MB) and the refiner (988 MB)
+        assertEquals("1.6 GB", formatSize(661_232_435L + 988_453_696L))
+        assertEquals("661 MB", formatSize(661_232_435L))
+        assertEquals("1.6 MB", formatSize(1_572_864L))
+        assertEquals("4 KB", formatSize(4_096L))
+    }
 }
