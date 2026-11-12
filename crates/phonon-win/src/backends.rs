@@ -555,11 +555,86 @@ fn read_small(url: &str) -> Result<Vec<u8>> {
 }
 
 /// The manifest at `url`, after its signature at `url.sig` checks out.
+///
+/// A verified copy is kept beside the installed builds, and a later start reads
+/// that copy first and refreshes it in the background for the start after. So a
+/// start with a build on disk needs no network (offline, a captive portal, a slow
+/// server), and a newly published manifest takes effect one start later.
 pub fn read_manifest(url: &str) -> Result<Manifest> {
+    read_manifest_with(url, &backends_root(), MANIFEST_KEYS, true)
+}
+
+/// The fetched manifest and its signature, after the signature checks out.
+fn fetch_verified(url: &str, keys: &[&str]) -> Result<(Vec<u8>, Vec<u8>)> {
     let bytes = read_small(url)?;
     let signature = read_small(&format!("{url}.sig"))?;
-    verify_manifest(&bytes, &String::from_utf8_lossy(&signature), MANIFEST_KEYS)?;
-    Manifest::parse(std::str::from_utf8(&bytes).context("the manifest is not UTF-8")?)
+    verify_manifest(&bytes, &String::from_utf8_lossy(&signature), keys)?;
+    Ok((bytes, signature))
+}
+
+fn parse_bytes(bytes: &[u8]) -> Result<Manifest> {
+    Manifest::parse(std::str::from_utf8(bytes).context("the manifest is not UTF-8")?)
+}
+
+/// The cached copy's file for `url` under `root` (one per manifest URL, so a
+/// selftest against another manifest never reads this one); ".sig" beside it.
+fn cache_path(root: &Path, url: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(url.as_bytes());
+    let hex: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
+    root.join(format!("manifest-{hex}.json"))
+}
+
+fn store(path: &Path, bytes: &[u8], signature: &[u8]) {
+    let sig = path.with_extension("json.sig");
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // the signature last: a torn write leaves a pair that fails verification
+        std::fs::write(path, bytes)?;
+        std::fs::write(&sig, signature)
+    };
+    if let Err(error) = write() {
+        eprintln!("phonon: could not keep the backend manifest ({error})");
+    }
+}
+
+/// The cached copy, if it is there and still verifies.
+fn load_cached(path: &Path, keys: &[&str]) -> Option<Manifest> {
+    let bytes = std::fs::read(path).ok()?;
+    let signature = std::fs::read(path.with_extension("json.sig")).ok()?;
+    verify_manifest(&bytes, &String::from_utf8_lossy(&signature), keys).ok()?;
+    parse_bytes(&bytes).ok()
+}
+
+/// `read_manifest` with its cache directory and keys given; `refresh` fetches a
+/// new copy in the background when the cached one is used.
+fn read_manifest_with(url: &str, root: &Path, keys: &[&str], refresh: bool) -> Result<Manifest> {
+    let path = cache_path(root, url);
+    if let Some(manifest) = load_cached(&path, keys) {
+        if refresh {
+            let (url, keys) = (
+                url.to_string(),
+                keys.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+            );
+            let _ = std::thread::Builder::new()
+                .name("phonon-manifest".into())
+                .spawn(move || {
+                    let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+                    if let Ok((bytes, signature)) = fetch_verified(&url, &keys) {
+                        if parse_bytes(&bytes).is_ok() {
+                            store(&path, &bytes, &signature);
+                        }
+                    }
+                });
+        }
+        return Ok(manifest);
+    }
+    let (bytes, signature) = fetch_verified(url, keys)?;
+    let manifest = parse_bytes(&bytes)?;
+    store(&path, &bytes, &signature);
+    Ok(manifest)
 }
 
 /// Where every tuned runtime lives.
@@ -1290,6 +1365,43 @@ mod tests {
             ]
         );
         assert_eq!(tuned.device.cc, (8, 6));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A start with a verified copy on disk reads no network; a tampered copy is
+    /// ignored; each manifest URL has its own copy.
+    #[test]
+    fn a_verified_manifest_copy_serves_offline_starts() {
+        let root = fresh_root("manifestcache");
+        let served = root.join("served");
+        std::fs::create_dir_all(&served).unwrap();
+        let body = format!(
+            r#"{{"schema":1,"backends":[{}]}}"#,
+            entry("cuda-sm86", [8, 6], 13000)
+        );
+        let (signature, public) = sign_manifest(body.as_bytes(), TEST_SEED).unwrap();
+        std::fs::write(served.join("m.json"), &body).unwrap();
+        std::fs::write(served.join("m.json.sig"), &signature).unwrap();
+        let url = format!("file://{}", served.join("m.json").display());
+        let cache = root.join("backends");
+        let keys = [public.as_str()];
+
+        // first start: fetched, verified, kept
+        let m = read_manifest_with(&url, &cache, &keys, false).unwrap();
+        assert_eq!(m.backends[0].id, "cuda-sm86");
+        // the server is gone (offline): the kept copy answers
+        std::fs::remove_dir_all(&served).unwrap();
+        let m = read_manifest_with(&url, &cache, &keys, false).unwrap();
+        assert_eq!(m.backends[0].id, "cuda-sm86");
+        // another URL has no copy, so it needs the network
+        let other = format!("{url}?2");
+        assert!(read_manifest_with(&other, &cache, &keys, false).is_err());
+        // a copy changed on disk no longer verifies and is not used
+        let path = cache_path(&cache, &url);
+        std::fs::write(&path, body.replace("sm86", "sm89")).unwrap();
+        assert!(read_manifest_with(&url, &cache, &keys, false).is_err());
+        // nor is a copy signed by a key that is not listed
+        assert!(load_cached(&path, &[RELEASE_KEY]).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
