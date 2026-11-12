@@ -87,6 +87,16 @@ pub fn run(page: Option<Page>) -> Result<()> {
         .with_app_id("phonon")
         .with_inner_size([720.0, 620.0])
         .with_min_inner_size([560.0, 420.0]);
+    // Phonon's icon in the title bar, the taskbar and alt-tab, not eframe's default "e".
+    // eframe already links the PNG decoder for this.
+    let viewport =
+        match eframe::icon_data::from_png_bytes(include_bytes!("../linux/icons/phonon-128.png")) {
+            Ok(icon) => viewport.with_icon(icon),
+            Err(error) => {
+                eprintln!("phonon: the window icon did not decode: {error}");
+                viewport
+            }
+        };
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
@@ -971,6 +981,14 @@ mod tests {
         assert_eq!(app.style, "prompt");
         assert!(app.history_on);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_window_icon_decodes() {
+        let icon =
+            eframe::icon_data::from_png_bytes(include_bytes!("../linux/icons/phonon-128.png"))
+                .unwrap();
+        assert_eq!((icon.width, icon.height), (128, 128));
     }
 
     #[test]
