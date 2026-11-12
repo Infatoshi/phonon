@@ -195,13 +195,25 @@ int specInt(const std::string &spec, const char *key, int dflt) {
     return dflt;
 }
 
+// One cached prompt head: its tokens and sequence 0's KV + conv state right after them.
+struct Head {
+    std::vector<llama_token> tokens;
+    std::vector<uint8_t> state;
+    uint64_t used = 0;
+};
+
+// Heads kept at once: one per writing mode (4) plus two with a dictionary vocabulary line. About 1 MB each.
+constexpr size_t kMaxHeads = 6;
+
 struct Refiner {
     llama_model *model = nullptr;
     llama_context *ctx = nullptr;
     const llama_vocab *vocab = nullptr;
     llama_sampler *sampler = nullptr;
-    std::vector<llama_token> cachedHead;
-    std::vector<uint8_t> headState;  // sequence 0's KV + conv state right after the head
+    // Cached prompt heads, one per writing mode (and per vocabulary line), least recently used dropped first. Before
+    // 2026-11-12 only the last head was kept, so every dictation after a mode switch re-prefilled its head.
+    std::vector<Head> heads;
+    uint64_t tick = 0;
     Pool pool, poolBatch;           // auto mode only; poolBatch.tp == nullptr -> prefill shares `pool`
     // runtime collapse guard (auto mode): reference ms/token (probe result, then the fastest token seen with this K)
     std::vector<Core> cores;
@@ -349,6 +361,67 @@ double probePrefillMs(Refiner *r, Pool &p, std::vector<llama_token> toks, size_t
     if (g_tpPause) g_tpPause(p.tp);
     llama_memory_clear(llama_get_memory(r->ctx), true);
     return ok ? d : 1e9;
+}
+
+// The prompt head of a writing mode: the system prompt, the mode line and, when the dictionary has terms for this
+// dictation, the vocabulary line the refiner was trained with (sidecar/polish_server.py refiner_system_prompt), then
+// the user header. Empty `vocab` gives exactly the head used before the vocabulary line existed.
+std::string headText(const std::string &mode, const std::string &vocab) {
+    std::string system = std::string(kSystemPrompt) + "\n" + modeLine(mode);
+    if (!vocab.empty()) system += "\nVocabulary the speaker may use: " + vocab;
+    return "<|startoftext|><|im_start|>system\n" + system + "<|im_end|>\n<|im_start|>user\n";
+}
+
+// Restores the cached state of `head` into sequence 0, or prefills it from a cleared memory and caches the state
+// (dropping the least recently used head when full). Sets `cached` when the state came from the cache.
+bool loadHead(Refiner *r, const std::vector<llama_token> &head, bool &cached) {
+    llama_memory_t mem = llama_get_memory(r->ctx);
+    cached = false;
+    for (auto &h : r->heads) {
+        if (h.tokens != head) continue;
+        llama_memory_clear(mem, true);
+        if (llama_state_seq_set_data(r->ctx, h.state.data(), h.state.size(), 0) > 0) {
+            h.used = ++r->tick;
+            cached = true;
+            return true;
+        }
+        break;  // a state that does not restore: prefill below and overwrite it
+    }
+    llama_memory_clear(mem, true);
+    std::vector<llama_token> toks = head;
+    if (llama_decode(r->ctx, llama_batch_get_one(toks.data(), (int32_t)toks.size())) != 0) return false;
+    Head fresh;
+    fresh.tokens = head;
+    fresh.state.resize(llama_state_seq_get_size(r->ctx, 0));
+    size_t got = llama_state_seq_get_data(r->ctx, fresh.state.data(), fresh.state.size(), 0);
+    if (got == 0) return true;  // decoded fine, just not cacheable
+    fresh.state.resize(got);
+    fresh.used = ++r->tick;
+    auto same = std::find_if(r->heads.begin(), r->heads.end(), [&](const Head &h) { return h.tokens == head; });
+    if (same != r->heads.end()) {
+        *same = std::move(fresh);
+    } else if (r->heads.size() < kMaxHeads) {
+        r->heads.push_back(std::move(fresh));
+    } else {
+        auto lru = std::min_element(r->heads.begin(), r->heads.end(),
+                                    [](const Head &a, const Head &b) { return a.used < b.used; });
+        *lru = std::move(fresh);
+    }
+    return true;
+}
+
+size_t headBytes(const Refiner *r) {
+    size_t n = 0;
+    for (auto &h : r->heads) n += h.state.size();
+    return n;
+}
+
+std::string jstr(JNIEnv *env, jstring s) {
+    if (!s) return std::string();
+    const char *c = env->GetStringUTFChars(s, nullptr);
+    std::string out(c);
+    env->ReleaseStringUTFChars(s, c);
+    return out;
 }
 
 std::string readFile(const std::string &path) {
@@ -579,22 +652,16 @@ extern "C" JNIEXPORT jlong JNICALL Java_ai_phonon_keyboard_Refiner_nativeCpuMs(J
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
-Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstring jraw, jstring jmode) {
+Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstring jraw, jstring jmode,
+                                             jstring jvocab) {
     auto *r = (Refiner *)h;
-    const char *rawc = env->GetStringUTFChars(jraw, nullptr);
-    const char *modec = env->GetStringUTFChars(jmode, nullptr);
-    std::string raw(rawc), mode(modec);
-    env->ReleaseStringUTFChars(jraw, rawc);
-    env->ReleaseStringUTFChars(jmode, modec);
+    std::string raw = jstr(env, jraw), mode = jstr(env, jmode), vocabLine = jstr(env, jvocab);
 
-    std::string system = std::string(kSystemPrompt) + "\n" + modeLine(mode);
-    std::vector<llama_token> head =
-        tokenize(r->vocab, "<|startoftext|><|im_start|>system\n" + system + "<|im_end|>\n<|im_start|>user\n");
+    std::vector<llama_token> head = tokenize(r->vocab, headText(mode, vocabLine));
     std::vector<llama_token> tail = tokenize(r->vocab, raw + "<|im_end|>\n<|im_start|>assistant\n<think></think>");
     int promptTokens = (int)(head.size() + tail.size());
     int inputTokens = (int)tokenize(r->vocab, raw).size();
     int cap = (int)(1.5 * inputTokens) + 32;
-    llama_memory_t mem = llama_get_memory(r->ctx);
     llama_sampler_reset(r->sampler);
 
     AffinityGuard guard;  // pauses the pools and restores this thread's affinity on return
@@ -604,25 +671,12 @@ Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstri
     retiredBefore.swap(r->retired);
     uint64_t tokHash = 1469598103934665603ULL;  // FNV-1a over the generated token ids
     auto t0 = std::chrono::steady_clock::now();
-    bool ok = true;
-    bool headCached = head == r->cachedHead;
     // Deviation from Refiner.swift: LFM is a hybrid (conv + attention) model, and llama.cpp's recurrent memory
     // refuses a partial llama_memory_seq_rm once generation has moved past the last ubatch (it returns false and
     // leaves the cache untouched), so the Swift code's seq_rm silently keeps the previous dictation in context.
-    // Here the state right after the head is snapshotted and restored instead.
-    if (headCached) {
-        llama_memory_clear(mem, true);
-        headCached = llama_state_seq_set_data(r->ctx, r->headState.data(), r->headState.size(), 0) > 0;
-    }
-    if (!headCached) {
-        llama_memory_clear(mem, true);
-        ok = llama_decode(r->ctx, llama_batch_get_one(head.data(), (int32_t)head.size())) == 0;
-        r->cachedHead.clear();
-        if (ok) {
-            r->headState.resize(llama_state_seq_get_size(r->ctx, 0));
-            if (llama_state_seq_get_data(r->ctx, r->headState.data(), r->headState.size(), 0) > 0) r->cachedHead = head;
-        }
-    }
+    // Here the state right after the head is snapshotted and restored instead (one per mode, see Refiner::heads).
+    bool headCached = false;
+    bool ok = loadHead(r, head, headCached);
     if (ok) ok = llama_decode(r->ctx, llama_batch_get_one(tail.data(), (int32_t)tail.size())) == 0;
     long long prefillMs = msSince(t0);
     // a graph has now run with the current pools, so the backend no longer points at pools retired before this call
@@ -665,17 +719,45 @@ Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstri
     bool fired = !ok || text.empty() || (double)wordCount(text) > 1.2 * rawWords + 20;
     if (fired) text = raw;
 
-    char nums[384];
+    char nums[448];
     snprintf(nums, sizeof nums,
              "\"prompt_tokens\":%d,\"prefill_tokens\":%d,\"gen_tokens\":%d,\"prefill_ms\":%lld,\"decode_ms\":%lld,"
-             "\"head_cached\":%s,\"guard\":%s,\"k\":%d,\"kb\":%d,\"switched\":%s,\"cpu_ms\":%lld,\"tok_hash\":\"%016llx\"",
+             "\"head_cached\":%s,\"guard\":%s,\"k\":%d,\"kb\":%d,\"switched\":%s,\"cpu_ms\":%lld,\"tok_hash\":\"%016llx\","
+             "\"heads\":%d,\"head_bytes\":%zu,\"vocab\":%s",
              promptTokens, (int)(headCached ? tail.size() : head.size() + tail.size()), gen, prefillMs, decodeMs,
              headCached ? "true" : "false", fired ? "true" : "false", r->pool.k, r->poolBatch.k,
-             switched ? "true" : "false", cpuMs, (unsigned long long)tokHash);
+             switched ? "true" : "false", cpuMs, (unsigned long long)tokHash, (int)r->heads.size(), headBytes(r),
+             vocabLine.empty() ? "false" : "true");
     std::string json = "{\"text\":\"" + jsonEscape(text) + "\",\"raw\":\"" + jsonEscape(raw) + "\",\"mode\":\"" +
                        jsonEscape(mode) + "\"," + nums + "}";
     // bytes, not NewStringUTF: JNI modified UTF-8 mangles 4-byte characters
     jbyteArray arr = env->NewByteArray((jsize)json.size());
     env->SetByteArrayRegion(arr, 0, (jsize)json.size(), (const jbyte *)json.data());
     return arr;
+}
+
+// Prefills and caches the prompt head of `mode` (with `vocab`, usually empty) without generating anything, so the
+// first dictation in that mode starts from the cached head. Called by Refiner.warmUp for every writing mode after
+// the keyboard loads the model. Returns the ms it took (0 when the head was already cached, -1 on failure).
+extern "C" JNIEXPORT jlong JNICALL
+Java_ai_phonon_keyboard_Refiner_nativePrime(JNIEnv *env, jclass, jlong h, jstring jmode, jstring jvocab) {
+    auto *r = (Refiner *)h;
+    std::string mode = jstr(env, jmode), vocabLine = jstr(env, jvocab);
+    std::vector<llama_token> head = tokenize(r->vocab, headText(mode, vocabLine));
+    AffinityGuard guard;
+    guard.pause = {r->pool.tp, r->poolBatch.tp};
+    std::vector<Pool> retiredBefore;
+    retiredBefore.swap(r->retired);
+    auto t0 = std::chrono::steady_clock::now();
+    bool cached = false;
+    bool ok = loadHead(r, head, cached);
+    long long ms = msSince(t0);
+    for (auto &p : retiredBefore) {
+        if (ok && !cached) freePool(p);  // a graph ran with the current pools
+        else r->retired.push_back(p);
+    }
+    llama_memory_clear(llama_get_memory(r->ctx), true);
+    LOGP("PRIME mode=%s tokens=%d cached=%d ok=%d ms=%lld heads=%d head_bytes=%zu", mode.c_str(), (int)head.size(),
+         cached ? 1 : 0, ok ? 1 : 0, ms, (int)r->heads.size(), headBytes(r));
+    return ok ? (cached ? 0 : (jlong)std::max(1LL, ms)) : -1;
 }

@@ -31,7 +31,23 @@ object Mem {
 
 /** The JNI side is app/src/main/cpp/refiner_jni.cpp, a port of ios/App/Refiner.swift. */
 class Refiner private constructor(private var handle: Long) {
-    fun refine(raw: String, mode: String): String = String(nativeRefine(handle, raw, mode), Charsets.UTF_8)
+    /** [vocab]: the dictionary's vocabulary line terms ("A, B, C"), or "" for none (the prompt is then unchanged). */
+    fun refine(raw: String, mode: String, vocab: String = ""): String =
+        String(nativeRefine(handle, raw, mode, vocab), Charsets.UTF_8)
+
+    /** Prefills and caches the prompt head of [mode]; ms taken, 0 if it was already cached, -1 on failure. */
+    fun prime(mode: String, vocab: String = ""): Long = nativePrime(handle, mode, vocab)
+
+    /**
+     * The keyboard's warm-up after a load, also run by the benches: one short refine in minimal mode (pages in the
+     * weights, as on iOS), then the prompt head of every other writing mode, so no dictation re-prefills its head
+     * after a mode switch (GOAL 13.8). Returns the minimal refine's JSON.
+     */
+    fun warmUp(): String {
+        val json = refine("warm up", "minimal")
+        for (m in MODES) if (m != "minimal") prime(m)
+        return json
+    }
 
     fun free() {
         if (handle != 0L) nativeFree(handle)
@@ -43,7 +59,11 @@ class Refiner private constructor(private var handle: Long) {
 
         @JvmStatic external fun nativeLoad(path: String, threads: Int, repack: Boolean, autoTune: Boolean,
                                            tunePath: String?, spec: String?): Long
-        @JvmStatic external fun nativeRefine(handle: Long, raw: String, mode: String): ByteArray
+        /** The writing modes the refiner was trained with (refiner_jni.cpp modeLine). */
+        val MODES = listOf("minimal", "casual", "formal", "prompt")
+
+        @JvmStatic external fun nativeRefine(handle: Long, raw: String, mode: String, vocab: String): ByteArray
+        @JvmStatic external fun nativePrime(handle: Long, mode: String, vocab: String): Long
         @JvmStatic external fun nativeFree(handle: Long)
         @JvmStatic external fun nativeCpuMs(): Long
 

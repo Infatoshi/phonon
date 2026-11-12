@@ -81,7 +81,9 @@ class RefinerTuneBenchTest {
             log("LOAD arm=$i name=$arm ok=${r != null} load_ms=$loadMs ${Mem.snapshot()} ${meminfo()}")
             if (r == null) continue
             var t = SystemClock.elapsedRealtime()
-            val warm = r.refine("warm up", "minimal")
+            // "/heads1" arms: the pre-2026-11-12 warm-up (minimal head only), for the before/after of the per-mode
+            // head cache; otherwise the keyboard's warm-up (Refiner.warmUp: every mode's head cached)
+            val warm = if (arm.contains("/heads1")) r.refine("warm up", "minimal") else r.warmUp()
             log("WARMUP arm=$i total_ms=${SystemClock.elapsedRealtime() - t} $warm")
             val armStart = SystemClock.elapsedRealtime()
             loop@ for ((mode, raw) in cases) {
