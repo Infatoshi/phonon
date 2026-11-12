@@ -45,7 +45,8 @@ class PhononIME : InputMethodService() {
     private lateinit var worker: Handler
     @Volatile private var refiner: Refiner? = null
     @Volatile private var asr: Asr? = null
-    private var mode = "minimal"
+    /** The writing mode chosen in the app (WritingModes, default minimal), read for every dictation. */
+    private val mode: String get() = WritingModes.get(this)
     private var shift = false
     private var status: TextView? = null
     private val keyViews = mutableListOf<Pair<String, View>>()
@@ -63,12 +64,12 @@ class PhononIME : InputMethodService() {
                     val m = i.getStringExtra("mode") ?: mode
                     val commit = i.getBooleanExtra("commit", false)
                     worker.post {
-                        val r = refiner ?: run { Log.w(TAG, "REFINE refiner not loaded"); return@post }
+                        if (refiner == null) { Log.w(TAG, "REFINE refiner not loaded"); return@post }
                         val t = SystemClock.elapsedRealtime()
-                        val json = r.refine(text, m)
+                        val (out, json) = correct(text, m)
                         val ms = SystemClock.elapsedRealtime() - t
-                        Log.i(TAG, "REFINE total_ms=$ms ${Mem.snapshot()} $json")
-                        if (commit) main.post { commitResult(refinedText(json), t, "refine") }
+                        Log.i(TAG, "REFINE total_ms=$ms ${Mem.snapshot()} out=\"$out\" $json")
+                        if (commit) main.post { commitResult(out, t, "refine") }
                     }
                 }
                 ACTION_WAV -> {
@@ -120,9 +121,27 @@ class PhononIME : InputMethodService() {
         if (gguf != null) refiner = Refiner.loadAuto(gguf, File(filesDir, "refiner_tune.txt").path)
         else Log.i(TAG, "REFINER_LOAD ok=false skipped=no_file (below the RAM gate or not sideloaded)")
         if (refiner != null) {  // warm-up, as on iOS: caches the minimal-mode prompt head
-            Log.i(TAG, "WARMUP ${refiner!!.refine("warm up", "minimal")}")
+            val t = SystemClock.elapsedRealtime()
+            val json = refiner!!.refine("warm up", "minimal")
+            Log.i(TAG, "WARMUP $json")  // ImeE2ETest waits for " WARMUP {"
+            Log.i(TAG, "WARMUP_MS ${SystemClock.elapsedRealtime() - t}")
         }
         main.post { setStatus("ready: asr=${asr != null} refiner=${refiner != null}") }
+        primeModes(Refiner.MODES.filter { it != "minimal" })
+    }
+
+    /** The other writing modes' prompt heads, cached one per worker message (Refiner.warmUp's second half), so a
+     *  dictation that arrives meanwhile waits for at most one head (about 1.5 s on a Galaxy A16, Test Lab
+     *  2026-11-12) and the keyboard reads ready as early as before. */
+    private fun primeModes(left: List<String>) {
+        if (left.isEmpty()) return
+        worker.post {
+            val r = refiner ?: return@post
+            val t = SystemClock.elapsedRealtime()
+            val ms = r.prime(left[0])
+            Log.i(TAG, "PRIME_MODE mode=${left[0]} ms=$ms wall_ms=${SystemClock.elapsedRealtime() - t}")
+            primeModes(left.drop(1))
+        }
     }
 
     override fun onDestroy() {
@@ -162,27 +181,65 @@ class PhononIME : InputMethodService() {
         val t0 = SystemClock.elapsedRealtime()
         val raw = a.transcribe(samples)
         val t1 = SystemClock.elapsedRealtime()
-        val r = refiner
-        val json = if (r != null && raw.isNotEmpty()) r.refine(raw, mode) else null
+        val (text, json) = correct(raw, mode)
         val t2 = SystemClock.elapsedRealtime()
-        // Refiner gated off by RAM (r == null): the raw transcript still gets the line-break stage, since Parakeet
-        // already writes "1. ... 2. ..." for dictated steps (Galaxy A16 5G, Test Lab 2026-11-08).
-        val text = json?.let { refinedText(it) } ?: if (r == null) LineBreaks.apply(raw, mode) else raw
         Log.i(TAG, "PIPELINE source=$source audio_ms=${samples.size / 16} asr_ms=${t1 - t0} refine_ms=${t2 - t1} " +
             "raw=\"$raw\" refined=${json ?: "null"} ${Mem.snapshot()}")
         main.post { commitResult(text, tUp, source) }
     }
 
-    /** The refiner's text through the shared output stage, in the writing mode the refiner ran with: the opener
-     *  the refiner dropped back in front (crates/phonon-llm opener), then numbered steps one per line, and in
-     *  formal mode the greeting and sign-off on their own lines (linebreak). A length-guard fallback is the raw
-     *  transcript and stays as it is, as on the Mac and iPhone. */
-    private fun refinedText(json: String): String {
+    @Volatile private var dict: Dictionary = Dictionary(emptyList(), null)
+    private var dictStamp = -1L
+    private var words: WordList? = null
+
+    /** The user's dictionary (DictionaryActivity writes it), reread when the file changes; the English word list
+     *  the phonetic guesses need is read from the APK the first time a dictionary has entries. */
+    private fun dictionary(): Dictionary {
+        val f = File(filesDir, Dictionary.FILE_NAME)
+        val stamp = if (f.isFile) f.lastModified() xor f.length() else 0L
+        if (stamp != dictStamp) {
+            dictStamp = stamp
+            dict = Dictionary.load(filesDir) {
+                words ?: try {
+                    WordList(assets.open("english_words.txt").use { it.readBytes() }).also { words = it }
+                } catch (e: Exception) {
+                    Log.w(TAG, "DICT no word list", e); null
+                }
+            }
+            Log.i(TAG, "DICT entries=${dict.entries.size}")
+        }
+        return dict
+    }
+
+    /**
+     * Transcript to committed text (runs on the worker): the dictionary's exact replacements and phonetic
+     * corrections, the refiner with the dictionary's vocabulary line, then the shared output stage. Returns the text
+     * and the refiner's JSON (null without a refiner). An empty dictionary leaves every step as it was.
+     */
+    private fun correct(raw: String, m: String): Pair<String, String?> {
+        val d = dictionary()
+        val prepared = d.prepare(raw)
+        val r = refiner
+        // Refiner gated off by RAM (r == null): the transcript still gets the line-break stage, since Parakeet
+        // already writes "1. ... 2. ..." for dictated steps (Galaxy A16 5G, Test Lab 2026-11-08).
+        if (r == null) return LineBreaks.apply(d.applyExact(prepared.text), m) to null
+        if (raw.isEmpty()) return raw to null
+        val json = r.refine(prepared.text, m, prepared.vocabLine)
+        return refinedText(json, raw, prepared, d) to json
+    }
+
+    /** The refiner's text through the shared output stage, in the writing mode the refiner ran with: a one-word
+     *  dictionary term the refiner swapped put back (polish_server restore_terms), the opener the refiner dropped
+     *  back in front (crates/phonon-llm opener), the dictionary's exact replacements, then numbered steps one per
+     *  line, and in formal mode the greeting and sign-off on their own lines (linebreak). A length-guard fallback is
+     *  the refiner's input and stays as it is, as on the Mac and iPhone. */
+    private fun refinedText(json: String, raw: String, prepared: Dictionary.Prepared, d: Dictionary): String {
         val o = org.json.JSONObject(json)
         val text = o.getString("text")
         if (o.optBoolean("guard", false)) return text
         val m = o.optString("mode", mode)
-        return LineBreaks.apply(Opener.restore(o.optString("raw", ""), text, m), m)
+        val restored = Dictionary.restoreTerms(prepared.text, text, prepared.vocab)
+        return LineBreaks.apply(d.applyExact(Opener.restore(raw, restored, m)), m)
     }
 
     private fun commitResult(result: String, tUp: Long, source: String) {

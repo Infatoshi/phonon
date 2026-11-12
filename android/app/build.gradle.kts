@@ -50,11 +50,19 @@ android {
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     // sherpa-onnx prebuilt JNI libs (libsherpa-onnx-jni.so, libonnxruntime.so) are copied in by scripts/sync_build.sh
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+    // the English word list the dictionary's phonetic guesses check against (repo assets/, shared with the desktop)
+    sourceSets["main"].assets.srcDirs(layout.buildDirectory.dir("generated/wordlist"))
     // extracted to disk, so ggml can dlopen its CPU variant modules by path
     packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
+
+val copyWordList = tasks.register<Copy>("copyWordList") {
+    from(rootProject.file("../assets/english_words.txt"))
+    into(layout.buildDirectory.dir("generated/wordlist"))
+}
+tasks.named("preBuild") { dependsOn(copyWordList) }
 
 dependencies {
     // LineBreaksTest (JVM): the real org.json, since android.jar's is a stub in local unit tests

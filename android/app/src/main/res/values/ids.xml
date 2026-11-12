@@ -3,5 +3,10 @@
     <item name="field" type="id" />
     <item name="models" type="id" />
     <item name="cellular" type="id" />
+    <item name="dictionary" type="id" />
+    <item name="modes" type="id" />
+    <item name="dict_word" type="id" />
+    <item name="dict_instead" type="id" />
+    <item name="dict_add" type="id" />
     <string name="app_name">Phonon Keyboard</string>
 </resources>

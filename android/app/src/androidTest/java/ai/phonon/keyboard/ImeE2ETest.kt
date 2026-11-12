@@ -244,6 +244,42 @@ class ImeE2ETest {
         sh("input keyevent KEYCODE_HOME"); SystemClock.sleep(1000)
     }
 
+    private fun status(key: String): String =
+        File("/proc/self/status").readLines().firstOrNull { it.startsWith("$key:") }?.substringAfter(':')?.trim() ?: "?"
+
+    /**
+     * Instrumentation arg `sustain=N` (GOAL A10, A6, A5): N dictations of long.wav (10.9 s of speech) into the
+     * multi-line field, one every `sustain_period_s` seconds (default 20: 30 in 10 minutes), each logged with the
+     * IME's key-up-to-commit time, its refiner timings, the thermal status and battery level. The test runs in the
+     * keyboard's own process, so the CPU mask logged is the keyboard's. Then the test ends (the feature checks are
+     * the default run's job).
+     */
+    private fun sustained(field: EditText, n: Int) {
+        val period = (InstrumentationRegistry.getArguments().getString("sustain_period_s")?.toLongOrNull() ?: 20L) * 1000
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+        fun battery() = "battery_pct=${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)} " +
+            "charge_uah=${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)} " +
+            "plugged=${sh("dumpsys battery").lines().firstOrNull { it.contains("AC powered") || it.contains("USB powered") }?.trim()}"
+        log("SUSTAIN start n=$n period_ms=$period cpus_allowed=${status("Cpus_allowed_list")} ${battery()} " +
+            "thermal=${pm.currentThermalStatus}")
+        // the other modes' heads are primed after the warm-up; let that finish so dictation 1 is like the rest
+        waitLog(60) { l -> l.any { it.contains("PRIME_MODE mode=prompt") } }
+        val start = SystemClock.elapsedRealtime()
+        for (i in 0 until n) {
+            focus(field)
+            val e2e = dictateWav("long.wav")
+            val pipe = phononLog().lastOrNull { it.contains("PIPELINE source=wav") }
+            log("SUSTAIN i=$i t_s=${(SystemClock.elapsedRealtime() - start) / 1000} " +
+                "e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} thermal=${pm.currentThermalStatus} " +
+                "${battery()} pipe=${pipe?.substringAfter("PIPELINE ")?.replace(Regex("raw=\".*?\" "), "")?.take(500)}")
+            val next = start + (i + 1) * period
+            val wait = next - SystemClock.elapsedRealtime()
+            if (wait > 0) SystemClock.sleep(wait)
+        }
+        log("SUSTAIN done cpus_allowed=${status("Cpus_allowed_list")} ${battery()} ${Mem.snapshot()} ${meminfo()}")
+    }
+
     @Test
     fun keyboardEndToEnd() {
         log("DEVICE manufacturer=${Build.MANUFACTURER} model=${Build.MODEL} device=${Build.DEVICE} " +
@@ -293,6 +329,8 @@ class ImeE2ETest {
         val refiner = ready.any { it.contains("REFINER_LOAD ok=true") }
         log("MEM ready ${meminfo()} refiner_loaded=$refiner")
         smaps("ready")
+        val sustain = InstrumentationRegistry.getArguments().getString("sustain")?.toIntOrNull() ?: 0
+        if (sustain > 0) { sustained(multi, sustain); return }
 
         // dictation into the multi-line field
         var firstOk = false

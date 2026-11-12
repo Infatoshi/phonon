@@ -1,0 +1,718 @@
+{
+  "about": "Reference cases for the dictionary ports on the phones (android/app/src/main/java/ai/phonon/keyboard/Dictionary.kt, ios/App/Dictionary.swift). Inputs are synthetic. `envelope` and `exact[].expected` come from DictionaryFile in data.rs (test dictionary_cases_match); `vocab` and `restore[].expected` come from sidecar/polish_server.py refiner_vocabulary and restore_terms (tests/test_dictionary_cases.py). Regenerate both with PHONON_WRITE_DICTIONARY_CASES=1 (cargo test -p phonon-core dictionary_cases, then pytest tests/test_dictionary_cases.py).",
+  "envelope": [
+    {
+      "entries": [],
+      "envelope": "run the tests again",
+      "id": "empty-dictionary",
+      "transcript": "run the tests again",
+      "vocab": []
+    },
+    {
+      "entries": [
+        {
+          "phrase": "vee llm",
+          "replacement": "vLLM"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: vLLM\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: vee llm => vLLM\n</phonon_dictionary>\n<transcript>\nwe serve it with vLLM on the box\n</transcript>",
+      "id": "exact-replacement",
+      "transcript": "we serve it with vee llm on the box",
+      "vocab": [
+        "vLLM"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "phonon",
+          "replacement": "Phonon",
+          "spoken_forms": [
+            "fonon",
+            "pho non"
+          ]
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: Phonon\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: phonon => Phonon\n</phonon_dictionary>\n<transcript>\nopen Phonon and then Phonon settings\n</transcript>",
+      "id": "exact-replacement-spoken-form",
+      "transcript": "open fonon and then pho non settings",
+      "vocab": [
+        "Phonon"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Kubernetes"
+        },
+        {
+          "phrase": "Grafana"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Kubernetes\nlikely_terms: Kubernetes\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\ndeploy it on kubernetes tonight\n</transcript>",
+      "id": "canonical-term-contained",
+      "transcript": "deploy it on kubernetes tonight",
+      "vocab": [
+        "Kubernetes"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Kubernetes",
+          "spoken_forms": [
+            "cooper netties"
+          ]
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Kubernetes\nlikely_terms: Kubernetes\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\ndeploy it on cooper netties tonight\n</transcript>",
+      "id": "spoken-form-only",
+      "transcript": "deploy it on cooper netties tonight",
+      "vocab": [
+        "Kubernetes"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "cuBLAS"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: cuBLAS\nlikely_terms: cuBLAS\nscreen_confirmed_terms: \nphonetic_matches: koo blass => cuBLAS\nexact_replacements: \n</phonon_dictionary>\n<transcript>\nwe call cuBLAS for the matmul\n</transcript>",
+      "id": "phonetic-two-words",
+      "transcript": "we call koo blass for the matmul",
+      "vocab": [
+        "cuBLAS"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "PyTorch"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: PyTorch\nlikely_terms: PyTorch\nscreen_confirmed_terms: \nphonetic_matches: pietorch => PyTorch\nexact_replacements: \n</phonon_dictionary>\n<transcript>\nport the loop to PyTorch first\n</transcript>",
+      "id": "phonetic-one-word",
+      "transcript": "port the loop to pietorch first",
+      "vocab": [
+        "PyTorch"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Pallas"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Pallas\nlikely_terms: Pallas\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nplease check the kernel\n</transcript>",
+      "id": "phonetic-blocked-by-english",
+      "transcript": "please check the kernel",
+      "vocab": [
+        "Pallas"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Brakt"
+        },
+        {
+          "phrase": "Bricket"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Brakt, Bricket\nlikely_terms: Brakt, Bricket\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nsend it to brokit today\n</transcript>",
+      "id": "phonetic-ambiguous-key-dropped",
+      "transcript": "send it to brokit today",
+      "vocab": [
+        "Brakt",
+        "Bricket"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Blackwell"
+        },
+        {
+          "phrase": "black well"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Blackwell\nlikely_terms: Blackwell\nscreen_confirmed_terms: \nphonetic_matches: blakwel => Blackwell\nexact_replacements: \n</phonon_dictionary>\n<transcript>\nthe Blackwell cards are here\n</transcript>",
+      "id": "same-term-two-spellings",
+      "transcript": "the blakwel cards are here",
+      "vocab": [
+        "Blackwell"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Claude Agent SDK"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: \nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nthe clawed agent sdk shipped\n</transcript>",
+      "id": "multi-word-term",
+      "transcript": "the clawed agent sdk shipped",
+      "vocab": []
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Tailscale"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Tailscale\nlikely_terms: Tailscale\nscreen_confirmed_terms: \nphonetic_matches: tailscail => Tailscale\nexact_replacements: \n</phonon_dictionary>\n<transcript>\nconnect over Tailscale first\n</transcript>",
+      "id": "edit-distance-match",
+      "transcript": "connect over tailscail first",
+      "vocab": [
+        "Tailscale"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Zed",
+          "usage_count": 2
+        },
+        {
+          "phrase": "Neovim",
+          "starred": true
+        },
+        {
+          "phrase": "Helix",
+          "usage_count": 9
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Helix, Zed, Neovim\nlikely_terms: Helix, Zed, Neovim\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nI switched from neovim to helix and zed\n</transcript>",
+      "id": "ordering-by-usage-and-star",
+      "transcript": "I switched from neovim to helix and zed",
+      "vocab": [
+        "Helix",
+        "Zed",
+        "Neovim"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "jay son",
+          "replacement": "JSON"
+        },
+        {
+          "phrase": "FastAPI"
+        },
+        {
+          "phrase": "Pydantic",
+          "usage_count": 3
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Pydantic, FastAPI\nlikely_terms: Pydantic, JSON, FastAPI\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: jay son => JSON\n</phonon_dictionary>\n<transcript>\nreturn JSON from the fast api route with pydantic models\n</transcript>",
+      "id": "replacement-and-terms-together",
+      "transcript": "return jay son from the fast api route with pydantic models",
+      "vocab": [
+        "JSON",
+        "Pydantic",
+        "FastAPI"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Terraform"
+        },
+        {
+          "phrase": "Ansible"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: \nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nbuy milk and eggs\n</transcript>",
+      "id": "not-relevant",
+      "transcript": "buy milk and eggs",
+      "vocab": []
+    },
+    {
+      "entries": [
+        {
+          "phrase": "GPT-5.5"
+        },
+        {
+          "phrase": "gpt five",
+          "replacement": "GPT-5"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: GPT-5.5\nlikely_terms: GPT-5.5, GPT-5\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: gpt five => GPT-5\n</phonon_dictionary>\n<transcript>\ncompare GPT-5 with gpt 5 5 please\n</transcript>",
+      "id": "version-numbers",
+      "transcript": "compare gpt five with gpt 5 5 please",
+      "vocab": [
+        "GPT-5",
+        "GPT-5.5"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Café Olé"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: \nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nmeet at cafe ole at noon\n</transcript>",
+      "id": "non-ascii-term",
+      "transcript": "meet at cafe ole at noon",
+      "vocab": []
+    },
+    {
+      "entries": [
+        {
+          "phrase": "ml",
+          "replacement": "ML"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: ML\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: ml => ML\n</phonon_dictionary>\n<transcript>\nthe html file and the ml model\n</transcript>",
+      "id": "word-boundary",
+      "transcript": "the html file and the ml model",
+      "vocab": [
+        "ML"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "alpha1"
+        },
+        {
+          "phrase": "alpha2"
+        },
+        {
+          "phrase": "alpha3"
+        },
+        {
+          "phrase": "alpha4"
+        },
+        {
+          "phrase": "alpha5"
+        },
+        {
+          "phrase": "alpha6"
+        },
+        {
+          "phrase": "alpha7"
+        },
+        {
+          "phrase": "alpha8"
+        },
+        {
+          "phrase": "alpha9"
+        },
+        {
+          "phrase": "alpha10"
+        },
+        {
+          "phrase": "alpha11"
+        },
+        {
+          "phrase": "alpha12"
+        },
+        {
+          "phrase": "alpha13"
+        },
+        {
+          "phrase": "alpha14"
+        },
+        {
+          "phrase": "alpha15"
+        },
+        {
+          "phrase": "alpha16"
+        },
+        {
+          "phrase": "alpha17"
+        },
+        {
+          "phrase": "alpha18"
+        },
+        {
+          "phrase": "alpha19"
+        },
+        {
+          "phrase": "alpha20"
+        },
+        {
+          "phrase": "alpha21"
+        },
+        {
+          "phrase": "alpha22"
+        },
+        {
+          "phrase": "alpha23"
+        },
+        {
+          "phrase": "alpha24"
+        },
+        {
+          "phrase": "alpha25"
+        },
+        {
+          "phrase": "alpha26"
+        },
+        {
+          "phrase": "alpha27"
+        },
+        {
+          "phrase": "alpha28"
+        },
+        {
+          "phrase": "alpha29"
+        },
+        {
+          "phrase": "alpha30"
+        },
+        {
+          "phrase": "alpha31"
+        },
+        {
+          "phrase": "alpha32"
+        },
+        {
+          "phrase": "alpha33"
+        },
+        {
+          "phrase": "alpha34"
+        },
+        {
+          "phrase": "alpha35"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: alpha1, alpha11, alpha10, alpha12, alpha13, alpha14, alpha15, alpha16, alpha17, alpha18, alpha19, alpha2, alpha20, alpha21, alpha22, alpha23, alpha24, alpha25, alpha26, alpha27, alpha28, alpha29, alpha3, alpha30, alpha31, alpha32, alpha33, alpha34, alpha35, alpha4, alpha5, alpha6, alpha7, alpha8, alpha9\nlikely_terms: alpha1, alpha11, alpha10, alpha12, alpha13, alpha14, alpha15, alpha16, alpha17, alpha18, alpha19, alpha2, alpha20, alpha21, alpha22, alpha23, alpha24, alpha25, alpha26, alpha27, alpha28, alpha29, alpha3, alpha30, alpha31, alpha32, alpha33, alpha34, alpha35, alpha4, alpha5, alpha6, alpha7, alpha8, alpha9\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\ncheck alpha1 now\n</transcript>",
+      "id": "many-terms-capped",
+      "transcript": "check alpha1 now",
+      "vocab": [
+        "alpha1",
+        "alpha11",
+        "alpha10",
+        "alpha12",
+        "alpha13",
+        "alpha14",
+        "alpha15",
+        "alpha16",
+        "alpha17",
+        "alpha18",
+        "alpha19",
+        "alpha2",
+        "alpha20",
+        "alpha21",
+        "alpha22",
+        "alpha23",
+        "alpha24",
+        "alpha25",
+        "alpha26",
+        "alpha27",
+        "alpha28",
+        "alpha29",
+        "alpha3",
+        "alpha30",
+        "alpha31",
+        "alpha32",
+        "alpha33",
+        "alpha34",
+        "alpha35",
+        "alpha4"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Ka1"
+        },
+        {
+          "phrase": "Ka2"
+        },
+        {
+          "phrase": "Ka3"
+        },
+        {
+          "phrase": "Ka4"
+        },
+        {
+          "phrase": "Ka5"
+        },
+        {
+          "phrase": "Ka6"
+        },
+        {
+          "phrase": "Ka7"
+        },
+        {
+          "phrase": "Ka8"
+        },
+        {
+          "phrase": "Ka9"
+        },
+        {
+          "phrase": "Ka10"
+        },
+        {
+          "phrase": "Ka11"
+        },
+        {
+          "phrase": "Ka12"
+        },
+        {
+          "phrase": "Ka13"
+        },
+        {
+          "phrase": "Ka14"
+        },
+        {
+          "phrase": "Ka15"
+        },
+        {
+          "phrase": "Ka16"
+        },
+        {
+          "phrase": "Ka17"
+        },
+        {
+          "phrase": "Ka18"
+        },
+        {
+          "phrase": "Ka19"
+        },
+        {
+          "phrase": "Ka20"
+        },
+        {
+          "phrase": "Ka21"
+        },
+        {
+          "phrase": "Ka22"
+        },
+        {
+          "phrase": "Ka23"
+        },
+        {
+          "phrase": "Ka24"
+        },
+        {
+          "phrase": "Ka25"
+        },
+        {
+          "phrase": "Ka26"
+        },
+        {
+          "phrase": "Ka27"
+        },
+        {
+          "phrase": "Ka28"
+        },
+        {
+          "phrase": "Ka29"
+        },
+        {
+          "phrase": "Ka30"
+        },
+        {
+          "phrase": "Ka31"
+        },
+        {
+          "phrase": "Ka32"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Ka1, Ka10, Ka11, Ka12, Ka13, Ka14, Ka15, Ka16, Ka17, Ka18, Ka19, Ka2, Ka20, Ka21, Ka22, Ka23, Ka24, Ka25, Ka26, Ka27, Ka28, Ka29, Ka3, Ka30, Ka31, Ka32, Ka4, Ka5, Ka6, Ka7, Ka8, Ka9\nlikely_terms: Ka1, Ka10, Ka11, Ka12, Ka13, Ka14, Ka15, Ka16, Ka17, Ka18, Ka19, Ka2, Ka20, Ka21, Ka22, Ka23, Ka24, Ka25, Ka26, Ka27, Ka28, Ka29, Ka3, Ka30, Ka31, Ka32, Ka4, Ka5, Ka6, Ka7, Ka8, Ka9\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nka1 ka2 ka3 ka4 ka5 ka6 ka7 ka8 ka9 ka10 ka11 ka12 ka13 ka14 ka15 ka16 ka17 ka18 ka19 ka20 ka21 ka22 ka23 ka24 ka25 ka26 ka27 ka28 ka29 ka30 ka31 ka32\n</transcript>",
+      "id": "short-transcript-cap",
+      "transcript": "ka1 ka2 ka3 ka4 ka5 ka6 ka7 ka8 ka9 ka10 ka11 ka12 ka13 ka14 ka15 ka16 ka17 ka18 ka19 ka20 ka21 ka22 ka23 ka24 ka25 ka26 ka27 ka28 ka29 ka30 ka31 ka32",
+      "vocab": [
+        "Ka1",
+        "Ka10",
+        "Ka11",
+        "Ka12",
+        "Ka13",
+        "Ka14",
+        "Ka15",
+        "Ka16",
+        "Ka17",
+        "Ka18",
+        "Ka19",
+        "Ka2",
+        "Ka20",
+        "Ka21",
+        "Ka22",
+        "Ka23",
+        "Ka24",
+        "Ka25",
+        "Ka26",
+        "Ka27",
+        "Ka28",
+        "Ka29",
+        "Ka3",
+        "Ka30",
+        "Ka31",
+        "Ka32",
+        "Ka4",
+        "Ka5",
+        "Ka6",
+        "Ka7",
+        "Ka8",
+        "Ka9"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Next.js"
+        },
+        {
+          "phrase": "react query",
+          "replacement": "React Query"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: Next.js\nlikely_terms: Next.js, React Query\nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: react query => React Query\n</phonon_dictionary>\n<transcript>\nOkay, so, next js with react query, right?\n</transcript>",
+      "id": "punctuation-in-transcript",
+      "transcript": "Okay, so, next js with react query, right?",
+      "vocab": [
+        "React Query",
+        "Next.js"
+      ]
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Ruff"
+        }
+      ],
+      "envelope": "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: \nscreen_confirmed_terms: \nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\nthe rough edges are running fine\n</transcript>",
+      "id": "inflected-english-not-guessed",
+      "transcript": "the rough edges are running fine",
+      "vocab": []
+    }
+  ],
+  "exact": [
+    {
+      "entries": [
+        {
+          "phrase": "vee llm",
+          "replacement": "vLLM"
+        }
+      ],
+      "expected": "We serve it with vLLM on the box.",
+      "id": "refined-output-replacement",
+      "text": "We serve it with Vee LLM on the box."
+    },
+    {
+      "entries": [
+        {
+          "phrase": "ml",
+          "replacement": "ML"
+        }
+      ],
+      "expected": "The html file, the ml model and xml.",
+      "id": "refined-output-no-boundary",
+      "text": "The html file, the ml model and xml."
+    },
+    {
+      "entries": [
+        {
+          "phrase": "phonon",
+          "replacement": "Phonon",
+          "spoken_forms": [
+            "fonon"
+          ]
+        }
+      ],
+      "expected": "Open Phonon, then phonon settings.",
+      "id": "refined-output-spoken-forms",
+      "text": "Open fonon, then phonon settings."
+    },
+    {
+      "entries": [
+        {
+          "phrase": "Kubernetes"
+        }
+      ],
+      "expected": "Deploy it on kubernetes.",
+      "id": "refined-output-no-entries",
+      "text": "Deploy it on kubernetes."
+    },
+    {
+      "entries": [
+        {
+          "phrase": "json",
+          "replacement": "JSON"
+        }
+      ],
+      "expected": "Return Json and json.",
+      "id": "refined-output-case-only",
+      "text": "Return Json and json."
+    }
+  ],
+  "restore": [
+    {
+      "expected": "Use native MTP for the draft.",
+      "id": "term-swapped-back",
+      "output": "Use native MTK for the draft.",
+      "spoken": "use native mtp for the draft",
+      "vocab": [
+        "MTP",
+        "MLP"
+      ]
+    },
+    {
+      "expected": "Use the native MTK drafter.",
+      "id": "term-not-said",
+      "output": "Use the native MTK drafter.",
+      "spoken": "use the native drafter",
+      "vocab": [
+        "MTP"
+      ]
+    },
+    {
+      "expected": "The help is slow.",
+      "id": "plain-word-swap-left",
+      "output": "The help is slow.",
+      "spoken": "the mlp is slow",
+      "vocab": [
+        "MLP"
+      ]
+    },
+    {
+      "expected": "Check the MLP, then ship.",
+      "id": "swap-with-punctuation",
+      "output": "Check the MMLU-Pro, then ship.",
+      "spoken": "check the mlp, then ship",
+      "vocab": [
+        "MLP"
+      ]
+    },
+    {
+      "expected": "Open Cloud-Code now.",
+      "id": "multi-word-vocab-ignored",
+      "output": "Open Cloud-Code now.",
+      "spoken": "open claude code now",
+      "vocab": [
+        "Claude Code"
+      ]
+    },
+    {
+      "expected": "The MLX is slow.",
+      "id": "no-vocab",
+      "output": "The MLX is slow.",
+      "spoken": "the mlp is slow",
+      "vocab": []
+    },
+    {
+      "expected": "The H100 run.",
+      "id": "digit-term",
+      "output": "The H200 run.",
+      "spoken": "the h100 run",
+      "vocab": [
+        "H100"
+      ]
+    },
+    {
+      "expected": "Run the MLX and GPU job.",
+      "id": "unequal-replace-span-left",
+      "output": "Run the MLX and GPU job.",
+      "spoken": "run the mlp job",
+      "vocab": [
+        "MLP"
+      ]
+    }
+  ]
+}

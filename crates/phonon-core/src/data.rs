@@ -1315,6 +1315,60 @@ mod tests {
         }
     }
 
+    /// The phones' dictionary ports (Android Dictionary.kt, iPhone Dictionary.swift) are checked
+    /// against `dictionary_cases.json`; this keeps its Rust-made fields equal to what this file
+    /// does. PHONON_WRITE_DICTIONARY_CASES=1 rewrites them instead of comparing.
+    #[test]
+    fn dictionary_cases_match() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/dictionary_cases.json");
+        let mut cases: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let write = std::env::var("PHONON_WRITE_DICTIONARY_CASES").as_deref() == Ok("1");
+        let dictionary_of = |case: &serde_json::Value| DictionaryFile {
+            entries: serde_json::from_value(case["entries"].clone()).unwrap(),
+            ..Default::default()
+        };
+        let mut checked = 0;
+        for case in cases["envelope"].as_array_mut().unwrap() {
+            let dictionary = dictionary_of(case);
+            let envelope = dictionary.prepare_polish_input(case["transcript"].as_str().unwrap());
+            if write {
+                case["envelope"] = serde_json::Value::String(envelope);
+            } else {
+                assert_eq!(
+                    case["envelope"].as_str(),
+                    Some(envelope.as_str()),
+                    "{}",
+                    case["id"]
+                );
+            }
+            checked += 1;
+        }
+        for case in cases["exact"].as_array_mut().unwrap() {
+            let dictionary = dictionary_of(case);
+            let text = dictionary
+                .apply_exact_replacements(case["text"].as_str().unwrap())
+                .text;
+            if write {
+                case["expected"] = serde_json::Value::String(text);
+            } else {
+                assert_eq!(
+                    case["expected"].as_str(),
+                    Some(text.as_str()),
+                    "{}",
+                    case["id"]
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked >= 20, "only {checked} cases");
+        if write {
+            let text = serde_json::to_string_pretty(&cases).unwrap() + "\n";
+            std::fs::write(&path, text).unwrap();
+        }
+    }
+
     #[test]
     fn exact_replacements_are_case_insensitive_and_word_bounded() {
         let dictionary = DictionaryFile {
