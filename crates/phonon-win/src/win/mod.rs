@@ -420,6 +420,8 @@ fn idle_text() -> String {
 
 fn finish(engine: &Engine, recording: Option<capture::Recording>) {
     let Some(recording) = recording else { return };
+    // The window the user was dictating into, at key-up.
+    let target = inject::foreground();
     // A tap, or a recording a starved key-up cut to nothing: no word fits in it.
     if recording.seconds() < 0.25 {
         tray::set_status("nothing was said");
@@ -472,9 +474,13 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                 // Every insertion ends with a space, as on macOS, so the next
                 // dictation does not run into this one ("afternoon?I think").
                 let text = format!("{} ", result.polished.trim());
-                if inject::nowhere_to_paste() {
+                use crate::pipeline::KeptBecause;
+                if crate::pipeline::target_closed(target != 0, inject::still_open(target)) {
+                    eprintln!("phonon: the window dictated into has closed; keeping the text");
+                    keep_unpasted(result.polished.trim(), KeptBecause::TargetClosed);
+                } else if inject::nowhere_to_paste() {
                     eprintln!("phonon: no window to paste into; keeping the text");
-                    keep_unpasted(result.polished.trim(), true);
+                    keep_unpasted(result.polished.trim(), KeptBecause::NothingFocused);
                 } else {
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
@@ -482,7 +488,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                         Err(error) => {
                             // the error names the step that failed, never the text
                             eprintln!("phonon: could not insert the text: {error:#}");
-                            keep_unpasted(result.polished.trim(), false);
+                            keep_unpasted(result.polished.trim(), KeptBecause::PasteFailed);
                         }
                     }
                 }
@@ -565,7 +571,7 @@ fn clear_history() {
 /// A dictation that could not be pasted stays on the clipboard (no restore) when
 /// the clipboard answers, and always in the tray's "Copy last dictation"; the
 /// balloon says why and where it is (`pipeline::kept_notice`).
-fn keep_unpasted(text: &str, nothing_focused: bool) {
+fn keep_unpasted(text: &str, why: crate::pipeline::KeptBecause) {
     let on_clipboard = match inject::copy(text) {
         Ok(()) => true,
         Err(error) => {
@@ -578,7 +584,7 @@ fn keep_unpasted(text: &str, nothing_focused: bool) {
     } else {
         "kept in the tray"
     });
-    let (title, body) = crate::pipeline::kept_notice(nothing_focused, on_clipboard);
+    let (title, body) = crate::pipeline::kept_notice(why, on_clipboard);
     tray::notify(title, body, false);
 }
 

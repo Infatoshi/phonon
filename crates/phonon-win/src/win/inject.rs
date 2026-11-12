@@ -19,7 +19,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
+    GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
 };
 
 use crate::settings::ClipboardAfterPaste;
@@ -40,6 +40,16 @@ pub fn nowhere_to_paste() -> bool {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(window, &mut pid) };
     crate::pipeline::nowhere_to_paste(&class, pid == std::process::id(), false)
+}
+
+/// The window in front now, as a number to compare later (0 for none).
+pub fn foreground() -> isize {
+    unsafe { GetForegroundWindow() as isize }
+}
+
+/// Whether the window `foreground()` returned still exists.
+pub fn still_open(window: isize) -> bool {
+    window != 0 && unsafe { IsWindow(window as _) } != 0
 }
 
 /// Insert `text` into the focused window. `after` says what the clipboard holds
