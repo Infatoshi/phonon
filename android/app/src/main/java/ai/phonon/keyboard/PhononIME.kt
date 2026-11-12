@@ -303,6 +303,15 @@ class PhononIME : InputMethodService() {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(28, 28, 30))
             setPadding((4 * dp).toInt(), (4 * dp).toInt(), (4 * dp).toInt(), (8 * dp).toInt())
+            // Android 15 (targetSdk 35) draws the keyboard window edge to edge: without the navigation bar's inset
+            // the gesture handle and the IME switcher sat on top of the bottom key row
+            setOnApplyWindowInsetsListener { v, insets ->
+                val nav = if (Build.VERSION.SDK_INT >= 30)
+                    insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+                else @Suppress("DEPRECATION") insets.systemWindowInsetBottom
+                v.setPadding(v.paddingLeft, v.paddingTop, v.paddingRight, (8 * dp).toInt() + nav)
+                insets
+            }
         }
         status = TextView(this).apply {
             setTextColor(Color.LTGRAY); textSize = 12f; gravity = Gravity.CENTER
