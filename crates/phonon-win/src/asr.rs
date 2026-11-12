@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -25,8 +27,25 @@ pub struct Recognizer {
     tool: PathBuf,
     model_dir: PathBuf,
     threads: usize,
-    resident: Option<std::sync::Arc<resident::Resident>>,
+    /// The resident model; replaced (never emptied) by `shrink_if_grown`.
+    resident: Arc<RwLock<Option<Arc<resident::Resident>>>>,
+    /// A pass of at least `GROWN_PASS_SECONDS` ran since the model was loaded.
+    grown: Arc<AtomicBool>,
+    /// A replacement model is loading.
+    reloading: Arc<AtomicBool>,
 }
+
+/// A pass this long leaves ONNX Runtime's CPU arena holding its activations for the life of
+/// the model: a 55 s dictation took the resident model from 0.70 to 1.14-1.38 GB RSS, and app
+/// plus server to 2.25-2.48 GB against X4's 2.0 GB (Ubuntu QA VM, 2026-11-12); s4 (13 s) adds
+/// 0.25 GB. The arena itself stays on: without it recognition was 34 to 47 ms slower per
+/// dictation in that VM, which X1 has no margin for. A rebuild took 1.3 s and brought the
+/// model from 1.36 back to 0.63 GB, with recognition times unchanged after it (anvil host).
+pub const GROWN_PASS_SECONDS: usize = 10;
+
+/// Idle time after a grown pass before the model is rebuilt to give that memory back.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const SHRINK_AFTER_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Parakeet held in memory through the sherpa-onnx C API (csrc/sherpa_shim.c).
 mod resident {
@@ -54,6 +73,7 @@ mod resident {
         ) -> *mut c_char;
         fn phonon_asr_free(text: *mut c_char);
         fn phonon_asr_last_error() -> *const c_char;
+        fn phonon_asr_destroy(recognizer: *const c_void);
     }
 
     /// The message of the last decode that ONNX Runtime failed (csrc/guard.cc).
@@ -87,6 +107,20 @@ mod resident {
     impl std::fmt::Debug for Resident {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("Resident")
+        }
+    }
+
+    impl Resident {
+        /// Free the model and everything ONNX Runtime holds for it. Only a replaced model
+        /// is destroyed (`Recognizer::shrink_if_grown`); the one the app starts with is never
+        /// dropped before the process exits, as before.
+        pub fn destroy(self) {
+            let handle = match self.handle.into_inner() {
+                Ok(handle) => handle,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            unsafe { phonon_asr_destroy(handle as *const c_void) };
+            release_freed_memory();
         }
     }
 
@@ -354,8 +388,71 @@ impl Recognizer {
             tool,
             model_dir,
             threads,
-            resident: None,
+            resident: Arc::new(RwLock::new(None)),
+            grown: Arc::new(AtomicBool::new(false)),
+            reloading: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// The resident model, if one is loaded.
+    fn current(&self) -> Option<Arc<resident::Resident>> {
+        self.resident.read().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Linux: after a pass of `GROWN_PASS_SECONDS` or more, rebuild the resident model in the
+    /// background so ONNX Runtime's arena gives that pass's memory back. The old model is
+    /// freed first; a dictation that ends during the rebuild (1 to 3 s) waits for the new
+    /// one. Returns whether a rebuild started.
+    /// Call only when idle (`SHRINK_AFTER_IDLE` after the last dictation). Windows keeps its
+    /// model as it is (W6 passes there).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn shrink_if_grown(&self) -> bool {
+        if !cfg!(target_os = "linux") || !self.grown.load(Ordering::Acquire) {
+            return false;
+        }
+        if self.current().is_none() || self.reloading.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.grown.store(false, Ordering::Release);
+        let (slot, reloading) = (Arc::clone(&self.resident), Arc::clone(&self.reloading));
+        let (model_dir, threads) = (self.model_dir.clone(), self.threads);
+        std::thread::spawn(move || {
+            let runtime = fetch::component_dir(&manifest::SHERPA_RUNTIME);
+            let started = std::time::Instant::now();
+            // The write lock is held for the whole rebuild, so a dictation that ends meanwhile
+            // waits for the new model (about 1.3 s) instead of failing, and the old model is freed
+            // before the new one loads: both in memory at once read 2.9 GB for app plus server.
+            if let Ok(mut current) = slot.write() {
+                // A dictation that took the old model before the lock still holds it: let that
+                // pass finish first.
+                let mut old = current.take();
+                while let Some(model) = old {
+                    match Arc::try_unwrap(model) {
+                        Ok(model) => {
+                            model.destroy();
+                            old = None;
+                        }
+                        Err(shared) => {
+                            old = Some(shared);
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                        }
+                    }
+                }
+                match resident::Resident::load(&runtime, &model_dir, threads) {
+                    Ok(fresh) => {
+                        *current = Some(Arc::new(fresh));
+                        eprintln!(
+                            "phonon: speech model rebuilt after a long dictation in {} ms",
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    // as at startup: passes fall back to the command-line tool
+                    Err(error) => eprintln!("phonon: speech model rebuild failed: {error:#}"),
+                }
+            }
+            reloading.store(false, Ordering::Release);
+        });
+        true
     }
 
     /// Load Parakeet into this process once, so passes skip the per-call model
@@ -369,7 +466,9 @@ impl Recognizer {
                     "phonon: speech model resident in {} ms",
                     started.elapsed().as_millis()
                 );
-                self.resident = Some(std::sync::Arc::new(r));
+                if let Ok(mut slot) = self.resident.write() {
+                    *slot = Some(Arc::new(r));
+                }
             }
             Err(error) => eprintln!(
                 "phonon: resident speech model unavailable, using the tool per pass: {error:#}"
@@ -401,7 +500,7 @@ impl Recognizer {
 
     /// Whether Parakeet is loaded in this process (`transcribe_samples` works).
     pub fn is_resident(&self) -> bool {
-        self.resident.is_some()
+        self.current().is_some()
     }
 
     /// Transcribe samples in memory with the resident model; `None` when it is not
@@ -411,9 +510,12 @@ impl Recognizer {
         sample_rate: u32,
         samples: &[f32],
     ) -> Option<Result<Transcript>> {
-        let r = self.resident.as_ref()?;
+        let r = self.current()?;
         let mut parts = Vec::new();
         for (start, end) in passes(samples, sample_rate) {
+            if end - start >= GROWN_PASS_SECONDS * sample_rate as usize {
+                self.grown.store(true, Ordering::Release);
+            }
             match r.transcribe_samples(sample_rate, &samples[start..end]) {
                 Ok(text) if !text.is_empty() => parts.push(text),
                 Ok(_) => {}
@@ -436,7 +538,7 @@ impl Recognizer {
         // do it too, but on Windows it returns an extended-length `\\?\` path
         // that not every C++ file reader accepts.
         let wav = absolute(wav)?;
-        if let Some(r) = &self.resident {
+        if let Some(r) = self.current() {
             // Too long for one pass: read it here and split it (see `passes`).
             if let Some((rate, samples)) = read_if_long(&wav)? {
                 if let Some(result) = self.transcribe_samples(rate, &samples) {
@@ -482,6 +584,23 @@ impl Recognizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_rebuild_without_a_grown_resident_model() {
+        let r = Recognizer {
+            tool: PathBuf::from("missing"),
+            model_dir: PathBuf::from("missing"),
+            threads: 1,
+            resident: Arc::new(RwLock::new(None)),
+            grown: Arc::new(AtomicBool::new(true)),
+            reloading: Arc::new(AtomicBool::new(false)),
+        };
+        // grown, but nothing resident to rebuild: no thread, and the flag stays for later
+        assert!(!r.shrink_if_grown());
+        assert!(!r.reloading.load(Ordering::Acquire));
+        r.grown.store(false, Ordering::Release);
+        assert!(!r.shrink_if_grown());
+    }
 
     #[test]
     fn short_audio_is_one_pass() {

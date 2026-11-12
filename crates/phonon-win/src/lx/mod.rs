@@ -186,10 +186,19 @@ fn app() -> Result<()> {
     // the settings window can clear the history; the tray's recent list follows
     let mut history_watch = crate::settings::Watch::of(history::LOG_FILE);
     let _ = history_watch.changed_in(&paths::data_root());
+    // The last key, menu or recording activity: a long dictation's recogniser memory is given
+    // back only after `asr::SHRINK_AFTER_IDLE` without any (`Engine::shrink_speech_model`).
+    let mut last_active = std::time::Instant::now();
     loop {
         let event = match inbox.recv_timeout(Duration::from_millis(500)) {
-            Ok(e) => e,
+            Ok(e) => {
+                last_active = std::time::Instant::now();
+                e
+            }
             Err(RecvTimeoutError::Timeout) => {
+                if recording.is_none() && last_active.elapsed() >= crate::asr::SHRINK_AFTER_IDLE {
+                    engine.shrink_speech_model();
+                }
                 // The settings window writes settings.json; a new key applies here,
                 // between dictations. Mode, history and the clipboard rule are read
                 // at each dictation.
@@ -208,6 +217,7 @@ fn app() -> Result<()> {
                     }
                 }
                 if let Some(r) = &mut recording {
+                    last_active = std::time::Instant::now();
                     match r.auto_stop(hook::latched()) {
                         Decision::KeepRecording => {
                             tray::set_status(&format!("recording {:.1} s", r.seconds()))

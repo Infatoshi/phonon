@@ -100,6 +100,13 @@ impl Engine {
         self.corrector.fall_back_to_cpu()
     }
 
+    /// Linux, while idle: rebuild the speech model if a long dictation grew its memory
+    /// (see `Recognizer::shrink_if_grown`). Returns whether a rebuild started.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn shrink_speech_model(&self) -> bool {
+        self.recognizer.shrink_if_grown()
+    }
+
     /// Whether `run_samples` can skip the file (the speech model is resident).
     pub fn resident(&self) -> bool {
         self.recognizer.is_resident()
