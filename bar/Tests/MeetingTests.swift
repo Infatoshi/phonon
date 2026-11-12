@@ -705,36 +705,47 @@ final class MeetingRecordingFilesTests: XCTestCase {
         func decode(_ json: String) throws -> NativeSettings {
             try JSONDecoder().decode(NativeSettings.self, from: Data(json.utf8))
         }
-        // Fresh install, and files without the key: detection on, auto-start off.
+        // What a Zoom call would do with these settings.
+        func zoom(_ settings: NativeSettings) -> MeetingDecision {
+            MeetingRules.decide(
+                mode: settings.meetingMode, rule: settings.meetingRules.rule(for: "us.zoom.xos"))
+        }
+        // Fresh install, and files without the key: detection on, remember per app with no
+        // rules yet, so the first call in any app asks (auto-start off).
         XCTAssertTrue(NativeSettings().meetingCapture)
-        XCTAssertFalse(NativeSettings().meetingAutoStart)
+        XCTAssertEqual(NativeSettings().meetingMode, .perApp)
+        XCTAssertEqual(zoom(NativeSettings()), .ask)
         for json in [#"{}"#, #"{"schema_version":2}"#, #"{"schema_version":3}"#] {
             XCTAssertTrue(try decode(json).meetingCapture, json)
-            XCTAssertFalse(try decode(json).meetingAutoStart, json)
+            XCTAssertEqual(try decode(json).meetingMode, .perApp, json)
+            XCTAssertEqual(zoom(try decode(json)), .ask, json)
         }
         // Before schema 3 every save wrote the old default, so a stored false is
         // turned on once.
         let upgraded = try decode(
             #"{"schema_version":2,"meeting_capture":false,"meeting_auto_start":false}"#)
         XCTAssertTrue(upgraded.meetingCapture)
-        XCTAssertFalse(upgraded.meetingAutoStart)
+        XCTAssertEqual(upgraded.meetingMode, .perApp)
+        XCTAssertEqual(zoom(upgraded), .ask)
         // Auto-start enabled once, then detection switched off: the upgrade turns detection
-        // on but auto-start off, so no call is recorded without asking.
+        // on but auto-start off (no rules seeded), so no call is recorded without asking.
         for schema in [1, 2] {
             let armed = try decode(
                 #"{"schema_version":\#(schema),"meeting_capture":false,"meeting_auto_start":true}"#)
             XCTAssertTrue(armed.meetingCapture, "schema \(schema)")
-            XCTAssertFalse(armed.meetingAutoStart, "schema \(schema): must ask before recording")
+            XCTAssertTrue(armed.meetingRules.rules.isEmpty, "schema \(schema)")
+            XCTAssertEqual(zoom(armed), .ask, "schema \(schema): must ask before recording")
         }
-        XCTAssertFalse(
-            try decode(#"{"schema_version":2,"meeting_auto_start":true}"#).meetingAutoStart)
-        // Detection already on: nothing is forced, auto-start keeps the owner's choice.
-        XCTAssertTrue(
-            try decode(#"{"schema_version":2,"meeting_capture":true,"meeting_auto_start":true}"#)
-                .meetingAutoStart)
-        XCTAssertTrue(
-            try decode(#"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":true}"#)
-                .meetingAutoStart)
+        XCTAssertEqual(zoom(try decode(#"{"schema_version":2,"meeting_auto_start":true}"#)), .ask)
+        // Detection already on: nothing is forced, auto-start keeps the owner's choice (as
+        // rules that record every known app and site).
+        for json in [
+            #"{"schema_version":2,"meeting_capture":true,"meeting_auto_start":true}"#,
+            #"{"schema_version":3,"meeting_capture":true,"meeting_auto_start":true}"#,
+        ] {
+            XCTAssertEqual(try decode(json).meetingMode, .perApp, json)
+            XCTAssertEqual(zoom(try decode(json)), .record, json)
+        }
         // From schema 3 a false is the owner's choice and stays off.
         let chosen = try decode(#"{"schema_version":3,"meeting_capture":false}"#)
         XCTAssertFalse(chosen.meetingCapture)
@@ -756,6 +767,6 @@ final class MeetingRecordingFilesTests: XCTestCase {
 
         let relaunched = NativeAppStore(supportDirectory: support)
         XCTAssertFalse(relaunched.settings.meetingCapture, "the owner's off stays off")
-        XCTAssertFalse(relaunched.settings.meetingAutoStart)
+        XCTAssertEqual(relaunched.settings.meetingMode, .off)
     }
 }

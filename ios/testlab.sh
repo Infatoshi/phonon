@@ -7,6 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 MODEL=${PHONON_MODEL:?set PHONON_MODEL to the refiner GGUF}
+# The refiner needs the patched llama build (ggml_cpu_phonon_set), not the stock release; process substitution
+# rather than a pipe, so grep -q closing early cannot fail the check under pipefail.
+if ! grep -q ggml_cpu_phonon_set < <(nm -gU Frameworks/llama.xcframework/ios-arm64/llama.framework/llama 2>/dev/null); then
+  echo "Frameworks/llama.xcframework is missing or unpatched (no ggml_cpu_phonon_set); building it with ./build_llama.sh"
+  ./build_llama.sh
+fi
 mkdir -p build/selftest-model
 cp -c "$MODEL" build/selftest-model/refiner.gguf 2>/dev/null || cp "$MODEL" build/selftest-model/refiner.gguf
 xcodegen generate --quiet

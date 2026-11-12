@@ -477,6 +477,43 @@ pub struct PolishSidecar {
     waker: Waker,
 }
 
+/// The sidecar's `--model` and `--revision` after PHONON_POLISH_MODEL / PHONON_POLISH_REVISION.
+/// A hub model needs an exact 40-hex commit (the sidecar also needs its hashes in
+/// sidecar/model_pins.json); a branch or a hub override without a revision fails here instead of
+/// downloading whatever the branch points at. A local directory needs no revision.
+fn polish_model_override(
+    default: (String, String),
+    model: Option<String>,
+    revision: Option<String>,
+) -> Result<(String, String)> {
+    if model.is_none() && revision.is_none() {
+        return Ok(default);
+    }
+    let model_overridden = model.is_some();
+    let model = model.unwrap_or(default.0);
+    if Path::new(&model).is_dir() {
+        return Ok((model, revision.unwrap_or(default.1)));
+    }
+    let revision = match revision {
+        Some(revision) => revision,
+        None if model_overridden => {
+            bail!("PHONON_POLISH_MODEL={model} needs PHONON_POLISH_REVISION set to a 40-hex commit, or a local folder")
+        }
+        None => default.1,
+    };
+    if !is_commit(&revision) {
+        bail!("polish model {model}: revision {revision:?} is not a 40-hex commit");
+    }
+    Ok((model, revision))
+}
+
+fn is_commit(revision: &str) -> bool {
+    revision.len() == 40
+        && revision
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// The shipped correction stage. `Ok(None)` means its own files are absent.
 /// `PHONON_POLISH_BACKEND=fluid` swaps in the old helper on identical inputs;
 /// it is a developer comparison switch and is never set in a shipped build.
@@ -495,9 +532,11 @@ fn polish_command(root: &Path, config: &PolishConfig) -> Result<Option<Command>>
     let uv = phonon_asr::resolve_uv().context("uv not found; install it with Homebrew")?;
     // Overridable for developer model comparisons only; unset in shipped builds.
     // A local directory has no revision; the sidecar uses it as it is.
-    let (default_model, default_revision) = config.model_and_revision();
-    let model = std::env::var("PHONON_POLISH_MODEL").unwrap_or(default_model);
-    let revision = std::env::var("PHONON_POLISH_REVISION").unwrap_or(default_revision);
+    let (model, revision) = polish_model_override(
+        config.model_and_revision(),
+        std::env::var("PHONON_POLISH_MODEL").ok(),
+        std::env::var("PHONON_POLISH_REVISION").ok(),
+    )?;
     let mut command = Command::new(&uv);
     command
         .args([
@@ -810,7 +849,7 @@ mod run_request_tests {
 
 #[cfg(test)]
 mod model_precedence_tests {
-    use super::{PolishConfig, POLISH_MODEL_ID, POLISH_MODEL_REVISION};
+    use super::{polish_model_override, PolishConfig, POLISH_MODEL_ID, POLISH_MODEL_REVISION};
     use std::path::PathBuf;
 
     #[test]
@@ -832,5 +871,50 @@ mod model_precedence_tests {
                 POLISH_MODEL_REVISION.to_string()
             )
         );
+    }
+
+    fn pinned() -> (String, String) {
+        (
+            POLISH_MODEL_ID.to_string(),
+            POLISH_MODEL_REVISION.to_string(),
+        )
+    }
+
+    #[test]
+    fn overrides_need_a_commit_or_a_local_folder() {
+        let gemma = "mlx-community/gemma-4-e2b-it-4bit".to_string();
+        let commit = "238767527555cb75a05732a84dff5d6ba0dd6809".to_string();
+        assert_eq!(
+            polish_model_override(pinned(), None, None).unwrap(),
+            pinned()
+        );
+        assert_eq!(
+            polish_model_override(pinned(), Some(gemma.clone()), Some(commit.clone())).unwrap(),
+            (gemma.clone(), commit)
+        );
+        // a hub override without a revision would otherwise inherit the refiner's pin, or a branch
+        assert!(polish_model_override(pinned(), Some(gemma.clone()), None).is_err());
+        assert!(polish_model_override(pinned(), Some(gemma), Some("main".into())).is_err());
+        assert!(polish_model_override(pinned(), None, Some("main".into())).is_err());
+        let dir = std::env::temp_dir();
+        let local = dir.display().to_string();
+        assert_eq!(
+            polish_model_override(pinned(), Some(local.clone()), None).unwrap(),
+            (local, POLISH_MODEL_REVISION.to_string())
+        );
+    }
+
+    /// sidecar/model_pins.json holds the hashes the sidecar checks; it must pin the same commit.
+    #[test]
+    fn the_sidecar_pin_file_agrees_with_the_pinned_revision() {
+        let pins: serde_json::Value =
+            serde_json::from_str(include_str!("../../../sidecar/model_pins.json")).unwrap();
+        assert_eq!(
+            pins["models"][POLISH_MODEL_ID]["revision"],
+            POLISH_MODEL_REVISION
+        );
+        assert!(pins["models"][POLISH_MODEL_ID]["files"]
+            .as_object()
+            .is_some_and(|files| !files.is_empty()));
     }
 }

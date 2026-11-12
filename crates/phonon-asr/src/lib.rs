@@ -32,7 +32,8 @@ impl Waker {
 }
 
 /// Pinned ASR model and runtime. Exact revisions so an upstream release cannot
-/// change what shipped users run.
+/// change what shipped users run. The sha256 of every file at this revision is in
+/// sidecar/model_pins.json, which the sidecar checks before loading; a test keeps the two in step.
 pub const ASR_MODEL_ID: &str = "mlx-community/parakeet-tdt-0.6b-v2";
 pub const ASR_MODEL_REVISION: &str = "8ae155301e23d820d82aa60d24817c900e69e487";
 pub const ASR_RUNTIME_REQUIREMENT: &str = "parakeet-mlx==0.5.2";
@@ -429,6 +430,15 @@ impl Drop for AsrSidecar {
 mod tests {
     use super::{asr_model_args, Waker, ASR_MODEL_ID, ASR_MODEL_REVISION};
     use std::sync::mpsc;
+
+    /// sidecar/model_pins.json holds the hashes the sidecar checks; it must pin the same commit.
+    #[test]
+    fn the_sidecar_pin_file_agrees_with_the_pinned_revision() {
+        let pins: serde_json::Value =
+            serde_json::from_str(include_str!("../../../sidecar/model_pins.json")).unwrap();
+        assert_eq!(pins["models"][ASR_MODEL_ID]["revision"], ASR_MODEL_REVISION);
+        assert!(pins["models"][ASR_MODEL_ID]["files"]["model.safetensors"]["sha256"].is_string());
+    }
 
     #[test]
     fn asr_model_args_pin_the_hub_model_without_an_override() {

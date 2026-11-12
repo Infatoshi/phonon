@@ -499,19 +499,34 @@ def _gigabytes(size: int) -> str:
 
 
 def resolve_model_dir(model: str, revision: str) -> str:
-    """A local directory as it is; otherwise the pinned snapshot, from the cache
-    when it is complete (no network at all), else downloaded with progress."""
+    """A local directory as it is; otherwise the pinned snapshot (model_pins.json),
+    from the cache when it is complete (no network at all), else downloaded with
+    progress, and sha256-checked before it is used."""
     if os.path.isdir(model):
         return model
-    from huggingface_hub import snapshot_download
-
     try:
-        cached = snapshot_download(model, revision=revision, local_files_only=True)
-        if snapshot_is_complete(cached):
-            return cached
-    except Exception:  # noqa: BLE001, S110 - not cached yet
-        pass
-    return download_with_progress(model, revision)
+        from model_pins import verified_snapshot
+    except ImportError:
+        from sidecar.model_pins import verified_snapshot
+
+    def cached_or_download() -> str:
+        from huggingface_hub import snapshot_download
+
+        try:
+            cached = snapshot_download(model, revision=revision, local_files_only=True)
+            if snapshot_is_complete(cached):
+                return cached
+        except Exception:  # noqa: BLE001, S110 - not cached yet
+            pass
+        return download_with_progress(model, revision)
+
+    return verified_snapshot(
+        model,
+        revision,
+        cached_or_download,
+        label="correction model",
+        refetch=lambda: download_with_progress(model, revision),
+    )
 
 
 def download_with_progress(model: str, revision: str) -> str:

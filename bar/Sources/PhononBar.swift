@@ -10,6 +10,7 @@ import AppKit
 import ApplicationServices
 import AudioToolbox
 import Carbon.HIToolbox
+import Combine
 import CoreAudio
 import Darwin
 import Foundation
@@ -73,6 +74,8 @@ final class PillState: ObservableObject {
     @Published var meetingRecording = false
     /// The pointer is over the recording capsule: the stop button replaces the light.
     @Published var stopButtonShown = false
+    /// The pointer is over the idle capsule: the note taker's start button shows.
+    @Published var startButtonShown = false
     /// Settings `show_idle_capsule`: off hides the capsule between dictations.
     @Published var showWhenIdle = true
 
@@ -89,7 +92,11 @@ final class PillState: ObservableObject {
     func apply(_ flow: MeetingFlow) {
         if meetingRecording != flow.isRecording { meetingRecording = flow.isRecording }
         if stopButtonShown != flow.showsStopButton { stopButtonShown = flow.showsStopButton }
+        if startButtonShown != flow.showsStartButton { startButtonShown = flow.showsStartButton }
     }
+
+    /// Where hovering offers the start button: the idle capsule, drawn.
+    var offersStartButton: Bool { mode == .idle && capsuleVisible && !meetingRecording }
 }
 
 struct ModelLoadStream: Identifiable {
@@ -967,6 +974,8 @@ struct PillView: View {
     @ObservedObject var state: PillState
     /// The stop button's action while a meeting records.
     var onStop: () -> Void = {}
+    /// The start button's action on the idle capsule (the note taker, by hand).
+    var onStart: () -> Void = {}
     /// Renders one instant (offscreen tests); nil follows the clock.
     var fixedTime: Date?
 
@@ -1007,6 +1016,8 @@ struct PillView: View {
                     if state.meetingRecording {
                         recordingMark(at: date)
                             .padding(.leading, dictating ? 4 : 0)
+                    } else if state.offersStartButton {
+                        startMark
                     }
                 }
                 .frame(width: 80, height: 16, alignment: .bottom)
@@ -1042,6 +1053,18 @@ struct PillView: View {
                 .animation(.spring(response: 0.16, dampingFraction: 0.62), value: shown)
         }
         .frame(width: RecordLight.diameter, height: RecordLight.diameter)
+    }
+
+    /// On hover over the idle capsule, the start button scales in over its center.
+    private var startMark: some View {
+        let shown = state.startButtonShown
+        return Button(action: onStart) { CapsuleStartButton() }
+            .buttonStyle(.plain)
+            .scaleEffect(shown ? 1 : 0.5)
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            .animation(.spring(response: 0.16, dampingFraction: 0.62), value: shown)
+            .frame(width: RecordLight.diameter, height: RecordLight.diameter)
     }
 
     private func glow(_ energy: Double) -> Double {
@@ -2284,6 +2307,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         support: PhononDataPaths.supportDirectory())
     private lazy var newMicrophones = NewMicrophoneController(store: appStore)
     private var meetingMenuItem: NSMenuItem?
+    private let capsuleHover = CapsuleHoverWatch()
+    private var capsuleHoverArming: AnyCancellable?
     private lazy var updates = UpdateController(store: appStore)
     private var updateMenuItem: NSMenuItem?
 
@@ -2349,7 +2374,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) { _ = BrowserCatalog.httpsHandlers() }
         meetings.onRecordingChanged = { [weak self] app in self?.meetingRecordingChanged(app) }
         meetings.onFlowChanged = { [weak self] flow in self?.meetingFlowChanged(flow) }
+        meetings.onSettingsChanged = { [weak self] in self?.applySettings() }
         meetings.refresh()
+        appStore.onStartNoteTaker = { [weak self] in self?.meetings.startManually() }
+        appStore.onStopNoteTaker = { [weak self] in self?.meetings.stopFromUser() }
+        // An install from before the meeting questions is asked them once, on the card above
+        // the capsule (non-activating), a little after launch and never mid-dictation.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            self?.offerMeetingQuestions()
+        }
         // Meeting transcripts: after each recording stops, from the Notes button, and at
         // launch for any a quit interrupted. Spans go through the engine's meeting queue.
         meetingTranscriber.send = { [weak self] command in self?.engine.send(command) }
@@ -2446,11 +2479,24 @@ final class AppController: NSObject, NSApplicationDelegate {
         let panel = PillPanel(contentRect: PillPanelLayout.frame(screen: PillPanel.screenFrame()))
         let host = PillHostingView(
             rootView: PillPanelContent(
-                state: state, onStop: { [weak self] in self?.meetings.stopFromUser() }))
+                state: state, onStop: { [weak self] in self?.meetings.stopFromUser() },
+                onStart: { [weak self] in self?.meetings.startManually() }))
         host.frame = NSRect(origin: .zero, size: PillPanelLayout.size)
         host.onHover = { [weak self] inside in self?.meetings.hover(inside) }
         panel.contentView = host
         self.panel = panel
+        // Hovering the idle capsule shows the note taker's start button. The panel ignores
+        // the mouse until the pointer is over it, so a global mouse-moved watch notices.
+        capsuleHover.area = { [weak self] in self?.panel?.frame ?? .zero }
+        capsuleHover.onChange = { [weak self] inside in self?.meetings.hover(inside) }
+        capsuleHoverArming = state.$mode.combineLatest(state.$meetingRecording, state.$showWhenIdle)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.capsuleHover.setArmed(self.state.offersStartButton)
+                }
+            }
         let livePanel = LiveTextPanel()
         let liveHost = NSHostingController(rootView: LiveTextView(state: liveText))
         liveHost.view.frame = NSRect(origin: .zero, size: LiveTextPanel.size)
@@ -2604,9 +2650,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             NSMenuItem(
                 title: "Quit Other Dictation Apps…", action: #selector(quitCompetingApps),
                 keyEquivalent: ""))
+        // Start Note Taker, or Stop Meeting Notes (<app>) while one records.
         let meetingItem = NSMenuItem(
-            title: "Stop Meeting Notes", action: #selector(stopMeetingNotes), keyEquivalent: "")
-        meetingItem.isHidden = true
+            title: "Start Note Taker", action: #selector(toggleMeetingNotes), keyEquivalent: "")
         menu.addItem(meetingItem)
         meetingMenuItem = meetingItem
         menu.addItem(.separator())
@@ -2709,17 +2755,29 @@ final class AppController: NSObject, NSApplicationDelegate {
         if enginesReady { sendOwnEndpoint() }
         syncToggleHotKey()
         competitors.settingsChanged()
-        if !appStore.settings.meetingCapture { meetings.stop(reason: "turned_off") }
-        meetings.refresh()
+        meetings.settingsChanged()
     }
 
-    /// A recording meeting is always visible: a dot on the menu bar item and
-    /// a Stop item in its menu.
+    /// A recording meeting is always visible: a dot on the menu bar item, a red light in
+    /// the capsule, and a Stop item in its menu (Start Note Taker otherwise).
     private func meetingRecordingChanged(_ app: String?) {
         statusBase = app == nil ? "ϕ" : "ϕ ●"
         refreshStatusTitle()
-        meetingMenuItem?.isHidden = app == nil
-        meetingMenuItem?.title = app.map { "Stop Meeting Notes (\($0))" } ?? "Stop Meeting Notes"
+        appStore.noteTakerRecording = app != nil
+        meetingMenuItem?.title = app.map { "Stop Meeting Notes (\($0))" } ?? "Start Note Taker"
+    }
+
+    /// The one-time meeting questions, when the pipeline is idle (retried while dictating).
+    private func offerMeetingQuestions(attempt: Int = 0) {
+        guard !appStore.settings.meetingQuestionsAsked else { return }
+        if isRecording || processing {
+            guard attempt < 40 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.offerMeetingQuestions(attempt: attempt + 1)
+            }
+            return
+        }
+        meetings.offerQuestions()
     }
 
     /// The capsule follows the meeting UI: red light while recording, the stop
@@ -2729,8 +2787,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         panel?.ignoresMouseEvents = !flow.capsuleAcceptsMouse
     }
 
-    @objc private func stopMeetingNotes() {
-        meetings.stopFromUser()
+    @objc private func toggleMeetingNotes() {
+        if meetings.isRecording {
+            meetings.stopFromUser()
+        } else {
+            meetings.startManually()
+        }
     }
 
     @objc private func showUpdate() {

@@ -1,5 +1,5 @@
-# Build output, the llama.cpp xcframework (a release download, rebuilt locally) and the
-# Xcode project (generated from project.yml by xcodegen)
+# Build output, the llama.cpp xcframework (patched llama.cpp built by ./build_llama.sh; run.sh and
+# testlab.sh rebuild it when missing) and the Xcode project (generated from project.yml by xcodegen)
 /build/
 /build-*/
 /Frameworks/

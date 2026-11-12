@@ -16,9 +16,11 @@ final class MeetingPopupTests: XCTestCase {
         pill.mode = .idle
         XCTAssertFalse(flow.capsuleAcceptsMouse, "clicks pass through when not recording")
 
-        // Hovering the capsule does nothing until a meeting records.
+        // Hovering the idle capsule offers the note taker's start button, never a stop.
         flow.hover(true)
         XCTAssertFalse(flow.showsStopButton)
+        XCTAssertTrue(flow.showsStartButton)
+        XCTAssertTrue(flow.capsuleAcceptsMouse, "the start button takes the click")
 
         flow.ask(app: "Zoom", bundleID: "us.zoom.xos")
         XCTAssertEqual(flow.popup, .asking(app: "Zoom", bundleID: "us.zoom.xos"))
@@ -31,7 +33,8 @@ final class MeetingPopupTests: XCTestCase {
         flow.started(app: "Zoom")
         pill.apply(flow)
         XCTAssertTrue(pill.meetingRecording)
-        XCTAssertFalse(pill.stopButtonShown)
+        XCTAssertFalse(pill.stopButtonShown, "a click on start never lands on stop")
+        XCTAssertFalse(pill.startButtonShown)
         XCTAssertTrue(flow.capsuleAcceptsMouse)
 
         // Detection keeps running while recording; it never asks again.
@@ -75,14 +78,20 @@ final class MeetingPopupTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "phonon-meeting-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let controller = MeetingController(store: NativeAppStore(supportDirectory: directory))
+        let store = NativeAppStore(supportDirectory: directory)
+        let controller = MeetingController(store: store)
         XCTAssertEqual(controller.flow, MeetingFlow())
         // No question up and nothing recording: these are no-ops.
         controller.notNow()
         controller.record()
         controller.stopFromUser()
+        controller.choose(.always)
+        controller.undo()
         controller.hover(true)
+        XCTAssertTrue(controller.flow.showsStartButton)
+        controller.hover(false)
         XCTAssertEqual(controller.flow, MeetingFlow())
+        XCTAssertTrue(store.settings.meetingRules.rules.isEmpty, "no rule without a question")
         XCTAssertFalse(controller.isRecording)
     }
 
@@ -196,9 +205,10 @@ final class MeetingPopupTests: XCTestCase {
     }
 
     /// The popup and capsule as on screen: both panels share the bottom edge.
-    private func desk(pill: PillState, popup: MeetingPopupModel?, at seconds: TimeInterval)
-        -> some View
-    {
+    private func desk(
+        pill: PillState, popup: MeetingPopupModel?, at seconds: TimeInterval, width: CGFloat = 360,
+        height: CGFloat = 140
+    ) -> some View {
         ZStack(alignment: .bottom) {
             PillView(state: pill, fixedTime: Date(timeIntervalSinceReferenceDate: seconds))
                 .padding(PillPanelLayout.insets)
@@ -209,7 +219,47 @@ final class MeetingPopupTests: XCTestCase {
                         .bottom, MeetingPopupPanel.cardBottom - MeetingPopupPanel.bottomMargin)
             }
         }
-        .frame(width: 360, height: 140, alignment: .bottom)
+        .frame(width: width, height: height, alignment: .bottom)
+    }
+
+    /// The per-app question, Undo, the one-time questions and the idle capsule's start
+    /// button, offscreen (PHONON_RENDER_DIR writes the PNGs).
+    func testRuleQuestionUndoQuestionsAndStartButtonRender() throws {
+        let size = CGSize(width: 520, height: 180)
+        let cards: [(MeetingPopupModel.Content, String)] = [
+            (.askRule(MeetingAppIcon.image(app: "meet.google.com", bundleID: "com.google.Chrome"), "Google Meet"),
+             "popup_rule_question_meet"),
+            (.askRule(MeetingAppIcon.image(app: "Microsoft Teams", bundleID: "com.microsoft.teams2"), "Microsoft Teams"),
+             "popup_rule_question_teams"),
+            (.undo("Google Meet calls will be recorded automatically."), "popup_rule_undo_always"),
+            (.undo("Phonon won't ask about Discord calls again."), "popup_rule_undo_never"),
+            (.questions, "popup_meeting_questions"),
+        ]
+        for (content, name) in cards {
+            XCTAssertTrue(content.wide)
+            let model = MeetingPopupModel()
+            model.content = content
+            model.visible = true
+            let pill = PillState()
+            pill.mode = .idle
+            try write(
+                desk(pill: pill, popup: model, at: 0, width: size.width, height: size.height),
+                name: name, size: size)
+        }
+        let pill = PillState()
+        pill.mode = .idle
+        var flow = MeetingFlow()
+        flow.hover(true)
+        pill.apply(flow)
+        XCTAssertTrue(pill.startButtonShown)
+        XCTAssertTrue(pill.offersStartButton)
+        try write(desk(pill: pill, popup: nil, at: 0), name: "capsule_idle_hover_start", size: CGSize(width: 360, height: 140))
+        // Hidden between dictations: nothing to hover, no start button.
+        pill.showWhenIdle = false
+        XCTAssertFalse(pill.offersStartButton)
+        pill.showWhenIdle = true
+        pill.mode = .listening
+        XCTAssertFalse(pill.offersStartButton, "never while dictating")
     }
 
     func testPopupRendersForThreeApps() throws {

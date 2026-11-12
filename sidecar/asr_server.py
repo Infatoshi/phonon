@@ -316,18 +316,23 @@ def stream_transcriber(model, req: dict):
     return StreamTranscriber(transcribe_words, **settings)
 
 
-def model_source(model_id: str, revision: str | None, need_folder: bool) -> str:
+def model_source(model_id: str, revision: str | None) -> str:
     """Where the Parakeet weights load from. An existing directory (the engine's PHONON_ASR_MODEL_DIR: a folder in
     the pinned snapshot's layout, config.json + model.safetensors + tokenizer files) is used as it is, revision
-    ignored, for both MLX and pa (pa_client reads <source>/model.safetensors). Otherwise a hub id: parakeet_mlx has
-    no revision argument, so a revision (or pa, which needs the files on disk) resolves the exact snapshot first."""
+    ignored, for both MLX and pa (pa_client reads <source>/model.safetensors). Otherwise a hub id at a revision
+    listed in model_pins.json (never a branch): the snapshot is downloaded and sha256-checked first, and
+    parakeet_mlx, which has no revision argument, loads that folder."""
     if os.path.isdir(model_id):
         return model_id
-    if revision or need_folder:
-        from huggingface_hub import snapshot_download
+    try:
+        from model_pins import verified_snapshot
+    except ImportError:
+        from sidecar.model_pins import verified_snapshot
+    from huggingface_hub import snapshot_download
 
-        return snapshot_download(model_id, revision=revision)
-    return model_id
+    return verified_snapshot(
+        model_id, revision, lambda: snapshot_download(model_id, revision=revision), label="speech model"
+    )
 
 
 def main() -> None:
@@ -339,6 +344,12 @@ def main() -> None:
             model_id = args[i + 1]
         elif a == "--revision" and i + 1 < len(args):
             revision = args[i + 1]
+    if revision is None and not os.path.isdir(model_id):
+        try:
+            from model_pins import pinned_revision
+        except ImportError:
+            from sidecar.model_pins import pinned_revision
+        revision = pinned_revision(model_id)
 
     emit(
         {
@@ -366,8 +377,8 @@ def main() -> None:
     metal_cfg = metal_asr_config()
     metal = False
     try:
-        source = model_source(model_id, revision, bool(metal_cfg))
-        if revision and not os.path.isdir(model_id):
+        source = model_source(model_id, revision)
+        if not os.path.isdir(model_id):
             # The pinned version is on disk: note it as Phonon's, and drop older versions of
             # this model that Phonon fetched (cache_gc's manifest) from the cache.
             try:

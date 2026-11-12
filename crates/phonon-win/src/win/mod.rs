@@ -248,6 +248,9 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
             return Err(error);
         }
     }
+    // On the CPU, the fallback corrector for a saturated machine starts now, not
+    // at the first busy moment, so the first dictation under load does not wait.
+    engine.start_lean();
 
     let (name, _) = hook::current_key();
     tray::set_status(&idle_text());
@@ -290,8 +293,9 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                             tray::set_status(&idle_text());
                         }
                     },
-                    // Start the one-thread corrector as soon as the CPU saturates,
-                    // in the background, rather than at the next key-down.
+                    // The fallback corrector (`polish::LEAN_THREADS` threads) started
+                    // after the startup check; if it has not, start it now that the
+                    // CPU saturates, in the background, rather than at the next key-down.
                     None => engine.warm(load::busy()),
                 }
                 continue;
@@ -321,7 +325,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                 if recording.is_none() {
                     recording = begin();
                     // After the microphone is recording. Returns at once; a
-                    // one-thread corrector it starts comes up in the background.
+                    // fallback corrector it starts comes up in the background.
                     if recording.is_some() {
                         engine.prepare(load::busy());
                     }

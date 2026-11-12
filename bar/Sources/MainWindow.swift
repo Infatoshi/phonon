@@ -1094,15 +1094,34 @@ struct SettingsView: View {
 
                 SettingsGroup("Notes") {
                     SettingRow(
-                        "Ask to take notes when a meeting starts",
-                        help: "When a call starts, ask whether to record your mic and the call "
-                            + "audio on this Mac."
-                    ) { toggle(\.meetingCapture) }
+                        "When a call starts",
+                        help: "Remember per app: the first call in an app asks whether to record "
+                            + "it and future calls there. Apps you said Always for record by "
+                            + "themselves, apps you said Never for are left alone. Ask every "
+                            + "time: Phonon asks before recording every call, whatever you said "
+                            + "before. Don't detect calls: Phonon never watches for calls. "
+                            + "Recording takes your mic and the call audio, kept on this Mac. "
+                            + "Some places require everyone's consent."
+                    ) {
+                        ChoiceChips(
+                            options: MeetingMode.allCases.map { ($0, $0.title) },
+                            selection: store.settings.meetingMode
+                        ) { value in
+                            store.updateSettings {
+                                $0.meetingMode = value
+                                $0.meetingQuestionsAsked = true
+                            }
+                            onSettingsChanged()
+                        }
+                    }
                     SettingRow(
-                        "Start recording without asking",
-                        help: "Record detected calls right away. Some places require everyone's "
-                            + "consent."
-                    ) { toggle(\.meetingAutoStart).disabled(!store.settings.meetingCapture) }
+                        "Take notes now",
+                        help: "Start the note taker without a call being detected. It records "
+                            + "until you stop it, here, from the ϕ menu or from the bar's stop "
+                            + "button. Hovering the bar at the bottom of the screen also shows a "
+                            + "start button."
+                    ) { NoteTakerButton(store: store) }
+                    MeetingRulesEditor(store: store, onChanged: onSettingsChanged)
                 }
 
                 SettingsGroup("System") {
@@ -1603,6 +1622,52 @@ struct PrivateListEditor: View {
     }
 }
 
+/// Settings › Notes › per-app call rules (settings.json `meeting_rules`): each app or
+/// site, Always or Never, changeable or removable. Followed under "Remember per app".
+struct MeetingRulesEditor: View {
+    @ObservedObject var store: NativeAppStore
+    let onChanged: () -> Void
+
+    var body: some View {
+        let rows = store.settings.meetingRules.sorted { MeetingRules.displayName(key: $0) }
+        if rows.isEmpty {
+            SettingRow(
+                "Per-app rules",
+                help: "The question for a call in a new app or site (Always, Just this once, "
+                    + "Not now, Never) adds its rule here."
+            ) {
+                Text("none yet").font(.system(size: 12.5)).foregroundStyle(EmberTheme.mute)
+            }
+        } else {
+            AdvancedBlock("Per-app rules") {
+                if store.settings.meetingMode != .perApp {
+                    Text("Used only while When a call starts is Remember per app.")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(EmberTheme.mute)
+                }
+                ForEach(rows, id: \.key) { row in
+                    HStack(spacing: 10) {
+                        Text(MeetingRules.displayName(key: row.key)).help(row.key)
+                        Spacer()
+                        ChoiceChips(
+                            options: MeetingRule.allCases.map { ($0, $0.title) },
+                            selection: row.rule
+                        ) { value in
+                            store.setMeetingRule(value, for: row.key)
+                            onChanged()
+                        }
+                        Button("Remove") {
+                            store.setMeetingRule(nil, for: row.key)
+                            onChanged()
+                        }
+                        .buttonStyle(PillButtonStyle())
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Settings > Advanced > Writing mode per app: one refiner mode pinned for an app,
 /// over the app's category and the Writing style above (settings.json
 /// `writing_modes_by_app`). Claude Code in a terminal is the terminal app here.
@@ -1930,6 +1995,19 @@ struct PrivacyChoiceView: View {
     @State private var localHistory = false
     @State private var screenContext = false
     @State private var clipboard = ClipboardAfterPaste.dictation
+    /// Remember per app unless chosen otherwise: Continue without touching it is the skip.
+    @State private var meetingMode = MeetingMode.standard
+
+    static func meetingDetail(_ mode: MeetingMode) -> String {
+        switch mode {
+        case .perApp:
+            return "The first call in each app asks: record it and future calls there, just this once, not now, or never."
+        case .everyCall:
+            return "Phonon asks before taking notes on every call: your mic and the call audio, kept on this Mac."
+        case .off:
+            return "Phonon never watches for calls. You can still start the note taker from Notes."
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1979,6 +2057,21 @@ struct PrivacyChoiceView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
 
+            VStack(alignment: .leading, spacing: 10) {
+                Text("When a call starts (Zoom, Meet, Teams, FaceTime, Slack…)")
+                    .font(.headline)
+                ChoiceChips(
+                    options: MeetingMode.allCases.map { ($0, $0.title) },
+                    selection: meetingMode
+                ) { meetingMode = $0 }
+                Text(Self.meetingDetail(meetingMode))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(EmberTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10))
+
             Text("All of these can be changed any time in Settings, which can also clear all history.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1989,6 +2082,7 @@ struct PrivacyChoiceView: View {
                     store.recordPrivacyChoice(
                         localHistory: localHistory, screenContext: screenContext,
                         clipboard: clipboard)
+                    store.recordMeetingQuestions(mode: meetingMode)
                     onDone()
                 }
                 .buttonStyle(.borderedProminent)

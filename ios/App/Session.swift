@@ -315,14 +315,23 @@ final class Session: ObservableObject {
             var rows: [[String: Any]] = []
             let t0 = Date()
             let args = ProcessInfo.processInfo.arguments
-            let threads = args.firstIndex(of: "--threads").flatMap { i in
-                i + 1 < args.count ? Int32(args[i + 1]) : nil } ?? 4
-            guard let r = self.refiner ?? Refiner(path: url.path, threads: threads) else {
+            func arg(_ name: String) -> String? {
+                args.firstIndex(of: name).flatMap { i in i + 1 < args.count ? args[i + 1] : nil }
+            }
+            let threads = arg("--threads").flatMap { Int32($0) } ?? Refiner.defaultThreads
+            // A/B flags: --pool 0 = ggml's per-token threads, --stock 1 = stock worker QoS and repack chunking
+            let usePool = arg("--pool") != "0"
+            let stock = arg("--stock") == "1"
+            Refiner.setStock(stock)
+            let before = Self.threadPriorities()
+            guard let r = self.refiner ?? Refiner(path: url.path, threads: threads, persistentPool: usePool) else {
                 DispatchQueue.main.async { self.refinerStatus = "Self-test: model failed to load" }
                 return
             }
-            let stamp = args.firstIndex(of: "--stamp").flatMap { i in i + 1 < args.count ? args[i + 1] : nil } ?? ""
-            rows.append(["load_ms": Int(Date().timeIntervalSince(t0) * 1000), "threads": r.threads, "stamp": stamp])
+            let stamp = arg("--stamp") ?? ""
+            rows.append(["load_ms": Int(Date().timeIntervalSince(t0) * 1000), "threads": r.threads, "stamp": stamp,
+                         "pool": r.persistentPool, "stock": stock, "caller_qos": Int(qos_class_self().rawValue),
+                         "thermal": ProcessInfo.processInfo.thermalState.rawValue, "threads_by_pri_before": before])
             // each mode twice in a row: rep 0 prefills the fixed head (a mode switch), rep 1 reuses it
             for (mode, raw) in cases {
                 for rep in 0..<2 {
@@ -330,9 +339,13 @@ final class Session: ObservableObject {
                     let o = r.refine(raw, mode: mode)
                     rows.append(["rep": rep, "mode": mode, "total_ms": Int(Date().timeIntervalSince(t) * 1000),
                                  "prefill_ms": o.prefillMs, "decode_ms": o.decodeMs, "prompt_tok": o.promptTokens,
-                                 "gen_tok": o.genTokens, "guard": o.guardFired, "out": o.text])
+                                 "gen_tok": o.genTokens, "guard": o.guardFired, "out": o.text,
+                                 "tok_hash": String(o.tokenHash, radix: 16)])
                 }
             }
+            // live threads by base priority after the run (a persistent pool's workers are still alive, paused)
+            rows[0]["threads_by_pri_after"] = Self.threadPriorities()
+            rows[0]["thermal_after"] = ProcessInfo.processInfo.thermalState.rawValue
             if let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
                 let lines = rows.compactMap { try? JSONSerialization.data(withJSONObject: $0) }
                     .map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n") + "\n"
@@ -343,6 +356,29 @@ final class Session: ObservableObject {
                 self.refinerStatus = "Self-test done"
             }
         }
+    }
+
+    /// Live threads of this process counted by base scheduling priority (31 = QoS Default, 37 = User Initiated,
+    /// 47 = User Interactive), so the selftest can check what priority the refiner's workers really got.
+    nonisolated static func threadPriorities() -> [String: Int] {
+        var list: thread_act_array_t?
+        var count: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &list, &count) == KERN_SUCCESS, let list else { return [:] }
+        var hist: [String: Int] = [:]
+        for i in 0..<Int(count) {
+            var info = thread_extended_info()
+            var n = mach_msg_type_number_t(MemoryLayout<thread_extended_info>.size / MemoryLayout<natural_t>.size)
+            let kr = withUnsafeMutablePointer(to: &info) { p in
+                p.withMemoryRebound(to: integer_t.self, capacity: Int(n)) {
+                    thread_info(list[i], thread_flavor_t(THREAD_EXTENDED_INFO), $0, &n)
+                }
+            }
+            if kr == KERN_SUCCESS { hist[String(info.pth_priority), default: 0] += 1 }
+            mach_port_deallocate(mach_task_self_, list[i])
+        }
+        vm_deallocate(mach_task_self_, vm_address_t(bitPattern: list),
+                      vm_size_t(Int(count) * MemoryLayout<thread_t>.size))
+        return hist
     }
 
     private func refineAndDeliver(_ raw: String) {
