@@ -148,7 +148,16 @@ pub fn parse_reply(value: &serde_json::Value) -> Result<String> {
         .get("content")
         .and_then(|c| c.as_str())
         .map(str::to_string)
-        .ok_or_else(|| anyhow!("correction reply has no content: {value}"))
+        .ok_or_else(|| anyhow!("correction reply has no content ({})", fields(value)))
+}
+
+/// A reply's field names, for an error: the reply itself can echo the prompt,
+/// which holds the dictation, and these errors reach stderr (the journal on Linux).
+fn fields(value: &serde_json::Value) -> String {
+    match value.as_object() {
+        Some(object) => object.keys().cloned().collect::<Vec<_>>().join(", "),
+        None => "not an object".into(),
+    }
 }
 
 /// What the correction server computes on.
@@ -662,7 +671,7 @@ fn tokenize(base: &str, text: &str) -> Result<Vec<serde_json::Value>> {
         .get("tokens")
         .and_then(|t| t.as_array())
         .cloned()
-        .ok_or_else(|| anyhow!("tokenize reply has no tokens: {value}"))
+        .ok_or_else(|| anyhow!("tokenize reply has no tokens ({})", fields(&value)))
 }
 
 /// Correct one transcript on the server at `base`, with the personal dictionary
@@ -1231,6 +1240,11 @@ mod tests {
         let reply = serde_json::json!({ "content": "Hello, Fluid Voice.", "stop": true });
         assert_eq!(parse_reply(&reply).unwrap(), "Hello, Fluid Voice.");
         assert!(parse_reply(&serde_json::json!({})).is_err());
+        // an error names the fields, never the prompt a reply may echo
+        let echo = serde_json::json!({ "prompt": "zebra quartz", "stop": true });
+        let error = format!("{:#}", parse_reply(&echo).unwrap_err());
+        assert!(!error.contains("zebra"), "{error}");
+        assert!(error.contains("prompt, stop"), "{error}");
     }
 
     #[test]

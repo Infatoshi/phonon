@@ -22,11 +22,17 @@ pub struct PassResult {
 }
 
 impl PassResult {
-    /// One line for the log.
+    /// One line for the log: timings and lengths, never the text. On Linux the
+    /// autostarted app's stderr lands in the systemd user journal, so a summary
+    /// that quoted the dictation wrote every one of them to disk (Ubuntu QA VM,
+    /// 2026-11-12: 391 dictations in the persistent journal).
     pub fn summary(&self) -> String {
         format!(
-            "asr {:.0} ms -> {:?}; correction {:.0} ms -> {:?}",
-            self.asr_ms, self.raw, self.polish_ms, self.polished
+            "asr {:.0} ms, {} chars; correction {:.0} ms, {} chars",
+            self.asr_ms,
+            self.raw.chars().count(),
+            self.polish_ms,
+            self.polished.chars().count()
         )
     }
 }
@@ -196,8 +202,20 @@ mod tests {
             polish_ms: 980.6,
         };
         let line = result.summary();
-        assert!(line.contains("asr 412 ms"));
-        assert!(line.contains("correction 981 ms"));
-        assert!(line.contains("Hello, Fluid Voice."));
+        assert_eq!(line, "asr 412 ms, 17 chars; correction 981 ms, 19 chars");
+    }
+
+    #[test]
+    fn the_summary_carries_no_dictated_text() {
+        let result = PassResult {
+            raw: "zebra quartz dictation".into(),
+            polished: "Zebra quartz dictation, polished.".into(),
+            asr_ms: 1.0,
+            polish_ms: 2.0,
+        };
+        let line = result.summary().to_lowercase();
+        for word in ["zebra", "quartz", "dictation", "polished"] {
+            assert!(!line.contains(word), "{word} reached the log line: {line}");
+        }
     }
 }
