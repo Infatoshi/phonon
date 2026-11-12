@@ -7,6 +7,7 @@
 
 pub mod capture;
 pub mod hook;
+pub mod indicator;
 pub mod inject;
 pub mod tray;
 
@@ -189,6 +190,8 @@ fn app() -> Result<()> {
     });
 
     let mut recording: Option<capture::Recording> = None;
+    let mut indicator = indicator::Indicator::new();
+    let mut last_status = std::time::Instant::now();
     let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);
     let _ = settings_watch.changed_in(&paths::data_root());
     // the settings window can clear the history; the tray's recent list follows
@@ -198,7 +201,8 @@ fn app() -> Result<()> {
     // back only after `asr::SHRINK_AFTER_IDLE` without any (`Engine::shrink_speech_model`).
     let mut last_active = std::time::Instant::now();
     loop {
-        let event = match inbox.recv_timeout(Duration::from_millis(500)) {
+        let tick = if recording.is_some() { 33 } else { 500 };
+        let event = match inbox.recv_timeout(Duration::from_millis(tick)) {
             Ok(e) => {
                 last_active = std::time::Instant::now();
                 e
@@ -228,7 +232,11 @@ fn app() -> Result<()> {
                     last_active = std::time::Instant::now();
                     match r.auto_stop(hook::latched()) {
                         Decision::KeepRecording => {
-                            tray::set_status(&format!("recording {:.1} s", r.seconds()))
+                            indicator.listening(r.waveform());
+                            if last_status.elapsed() >= Duration::from_millis(500) {
+                                tray::set_status(&format!("recording {:.1} s", r.seconds()));
+                                last_status = std::time::Instant::now();
+                            }
                         }
                         // The key is up (it latched), so the next press must start, not
                         // stop; then the same stop the next tap would make.
@@ -238,7 +246,7 @@ fn app() -> Result<()> {
                                 autostop::SILENCE_AFTER_SPEECH_SECONDS
                             );
                             hook::reset_latch();
-                            finish(&engine, recording.take(), &idle);
+                            finish(&engine, recording.take(), &idle, &mut indicator);
                         }
                         Decision::Discard => {
                             eprintln!(
@@ -250,6 +258,7 @@ fn app() -> Result<()> {
                                 r.discard();
                             }
                             tray::set_status(&idle);
+                            indicator.hide();
                         }
                     }
                 }
@@ -270,13 +279,13 @@ fn app() -> Result<()> {
             Event::Menu(tray::Command::Toggle) => {
                 hook::reset_latch();
                 if recording.is_some() {
-                    finish(&engine, recording.take(), &idle);
+                    finish(&engine, recording.take(), &idle, &mut indicator);
                 } else {
-                    recording = begin();
+                    recording = begin(&mut indicator);
                 }
             }
-            Event::Key(Action::Start) if recording.is_none() => recording = begin(),
-            Event::Key(Action::Stop) => finish(&engine, recording.take(), &idle),
+            Event::Key(Action::Start) if recording.is_none() => recording = begin(&mut indicator),
+            Event::Key(Action::Stop) => finish(&engine, recording.take(), &idle, &mut indicator),
             Event::Key(_) => {}
             Event::Menu(tray::Command::ToggleHistory) => toggle_history(),
             // The recorder is still writing the active recording's file; leave it.
@@ -313,7 +322,7 @@ fn session_locked() -> bool {
         .unwrap_or(false)
 }
 
-fn begin() -> Option<capture::Recording> {
+fn begin(indicator: &mut indicator::Indicator) -> Option<capture::Recording> {
     if session_locked() {
         eprintln!("phonon: screen is locked; not recording");
         return None;
@@ -325,6 +334,7 @@ fn begin() -> Option<capture::Recording> {
     match capture::start(&paths::recordings().join(format!("{stamp}.wav"))) {
         Ok(r) => {
             tray::set_status(&format!("recording from {}", r.device()));
+            indicator.begin();
             Some(r)
         }
         Err(error) => {
@@ -334,7 +344,12 @@ fn begin() -> Option<capture::Recording> {
     }
 }
 
-fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
+fn finish(
+    engine: &Engine,
+    recording: Option<capture::Recording>,
+    idle: &str,
+    indicator: &mut indicator::Indicator,
+) {
     let Some(recording) = recording else { return };
     let key_up = std::time::Instant::now();
     let seconds = recording.seconds();
@@ -342,6 +357,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
     // a crash; with local history off it is deleted once the text is in.
     let wav = recording.path().to_path_buf();
     tray::set_status("transcribing");
+    indicator.transcribing();
     let outcome = recording.finish().and_then(|wav| engine.dictate(&wav));
     match &outcome {
         Ok(result) => {
@@ -392,6 +408,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
         history::remove_if_present(&wav);
     }
     tray::set_status(idle);
+    indicator.hide();
 }
 
 /// Show the history switch and the recent list as they are on disk.
