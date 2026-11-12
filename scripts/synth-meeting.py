@@ -182,8 +182,10 @@ def make(out, minutes, stamps=True):
 
 
 def score(truth_path, transcript_path):
-    truth = json.load(open(truth_path))
-    transcript = json.load(open(transcript_path))
+    with open(truth_path) as f:
+        truth = json.load(f)
+    with open(transcript_path) as f:
+        transcript = json.load(f)
 
     def words(speaker):
         text = " ".join(t["text"] for t in transcript["turns"] if t["speaker"] == speaker)
