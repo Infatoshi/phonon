@@ -16,7 +16,7 @@ for SM in "$@"; do
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" "$IMAGE" bash -c '
       set -euo pipefail
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -qq >/dev/null && apt-get install -y -qq git ninja-build python3-pip bzip2 binutils >/dev/null
+      apt-get update -qq >/dev/null && apt-get install -y -qq git ninja-build python3-pip xz-utils binutils >/dev/null
       pip3 install -q cmake
       CUDA_HOME=/usr/local/cuda bash /repo/scripts/build-cuda-backend.sh "$SM" /out "$JOBS"
       rm -rf /out/work-sm$SM/src /out/work-sm$SM/build

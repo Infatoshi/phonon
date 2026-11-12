@@ -649,6 +649,8 @@ fn archive_format(url: &str) -> &'static str {
         "zip"
     } else if path.ends_with(".tar.bz2") {
         "tar.bz2"
+    } else if path.ends_with(".tar.xz") {
+        "tar.xz"
     } else {
         "tar.gz"
     }
@@ -1470,6 +1472,7 @@ mod tests {
             "tar.bz2"
         );
         assert_eq!(archive_format("file:///b/sm86.zip"), "zip");
+        assert_eq!(archive_format("https://x/b/sm120.tar.xz"), "tar.xz");
         assert_eq!(archive_format("https://x/b/sm86.tar.gz"), "tar.gz");
         let e = entry("cuda-sm86", [8, 6], 13000).replace(".tar.gz", ".tar.bz2");
         let m = manifest(&[e]);

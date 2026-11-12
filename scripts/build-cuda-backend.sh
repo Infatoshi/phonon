@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build one hardware-family correction runtime: llama.cpp b12132 + Phonon's merged CUDA patch + the refiner-only
 # ("lean") patch, CUDA machine code for one GPU architecture, no cuBLAS, cudart linked in. The result needs only
-# the NVIDIA driver on the user's machine. Output: <out>/phonon-backend-linux-x64-cuda-sm<SM>.tar.bz2, plus its
+# the NVIDIA driver on the user's machine. Output: <out>/phonon-backend-linux-x64-cuda-sm<SM>.tar.xz, plus its
 # size and sha256 for the backend manifest (crates/phonon-win/src/backends.rs).
 #
 # usage: scripts/build-cuda-backend.sh <SM> <out-dir> [jobs]
@@ -16,7 +16,8 @@
 #
 # CUDA only: the bundle carries no libggml-cpu-*.so. The app starts the tuned server with its working directory
 # in the CPU runtime it already installed (llama.cpp's b12132 release), and ggml loads its CPU variant from there.
-# That keeps the download near 15 MB (bzip2 -9; the app unpacks .tar.bz2) instead of about 23 MB.
+# That keeps the download under 15 MB instead of about 23 MB. xz -9e: the sm_120a bundle is 13.1 MB against 15.4 MB
+# with bzip2 -9 (the app unpacks .tar.xz, .tar.bz2 and .tar.gz; -T1 keeps one block, which every xz reader takes).
 # Machine code only (<SM>-real): PTX for the same arch would add about 9.5 MB gzipped and is only needed by GPUs
 # newer than the build, which get their own build instead. ggml rewrites 120 to 120a (cuobjdump --list-elf), so
 # the sm_120 entry needs "exact": true.
@@ -48,8 +49,8 @@ find "$P" -type f \( -name '*.so*' -o -name llama-server \) -exec strip --strip-
 if readelf -d "$P/libggml-cuda.so" | grep -q cublas; then
   echo "libggml-cuda.so still links cuBLAS" >&2; exit 1
 fi
-A=$OUT/phonon-backend-linux-x64-cuda-sm$SM.tar.bz2
-(cd "$P" && tar cf - . | bzip2 -9 > "$A")
+A=$OUT/phonon-backend-linux-x64-cuda-sm$SM.tar.xz
+(cd "$P" && tar cf - . | xz -9e -T1 > "$A")
 echo "sm $SM  archive $A  bytes $(stat -c %s "$A")  sha256 $(sha256sum "$A" | cut -d' ' -f1)"
 echo "cuda module bytes $(stat -c %s "$P/libggml-cuda.so")"
 for f in "$P"/*; do

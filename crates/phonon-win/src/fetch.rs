@@ -8,7 +8,7 @@
 //! - An interrupted run leaves the finished components alone.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -256,6 +256,17 @@ fn expand(archive: &Path, into: &Path) -> Result<()> {
         tar::Archive::new(bzip2::read::MultiBzDecoder::new(file))
             .unpack(into)
             .map_err(anyhow::Error::from)
+    } else if name.ends_with(".tar.xz") {
+        // lzma-rs decodes into a writer, not a reader; a backend bundle is tens of MB, so the
+        // tar is held in memory for the moment it takes to unpack.
+        let mut tarball = Vec::new();
+        lzma_rs::xz_decompress(&mut io::BufReader::new(file), &mut tarball)
+            .map_err(|error| anyhow!("xz: {error}"))
+            .and_then(|()| {
+                tar::Archive::new(tarball.as_slice())
+                    .unpack(into)
+                    .map_err(anyhow::Error::from)
+            })
     } else if name.ends_with(".tar.gz") {
         tar::Archive::new(flate2::read::MultiGzDecoder::new(file))
             .unpack(into)
@@ -709,6 +720,9 @@ mod tests {
                 let mut encoder = bzip2::write::BzEncoder::new(file, bzip2::Compression::default());
                 encoder.write_all(&bytes).unwrap();
                 encoder.finish().unwrap();
+            } else if name.ends_with(".tar.xz") {
+                let mut file = file;
+                lzma_rs::xz_compress(&mut bytes.as_slice(), &mut file).unwrap();
             } else {
                 let mut encoder =
                     flate2::write::GzEncoder::new(file, flate2::Compression::default());
@@ -723,7 +737,7 @@ mod tests {
         let dir = std::env::temp_dir().join("phonon-win-compressed-expand-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        for suffix in ["tar.bz2", "tar.gz", "zip"] {
+        for suffix in ["tar.bz2", "tar.xz", "tar.gz", "zip"] {
             let archive = dir.join(format!("bundle.{suffix}"));
             write_archive_fixture(&archive, "wrapper/bin/tool");
             let raw = dir.join(format!("{suffix}/.raw"));
@@ -754,7 +768,7 @@ mod tests {
         let dir = std::env::temp_dir().join("phonon-win-traversal-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        for suffix in ["tar.bz2", "tar.gz", "zip"] {
+        for suffix in ["tar.bz2", "tar.xz", "tar.gz", "zip"] {
             let archive = dir.join(format!("bundle.{suffix}"));
             write_archive_fixture(&archive, "../escaped");
             let out = dir.join("out");

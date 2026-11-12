@@ -1,7 +1,7 @@
 """Backend manifest (schema 1, crates/phonon-win/src/backends.rs) for the CUDA bundles in a directory.
 
 usage: python3 -I scripts/make-backend-manifest.py <archive-dir> <url-prefix> > manifest.json
-  <archive-dir>: phonon-backend-linux-x64-cuda-sm<SM>.tar.bz2 files (scripts/build-cuda-backend.sh).
+  <archive-dir>: phonon-backend-linux-x64-cuda-sm<SM>.tar.xz (or .tar.bz2) files (scripts/build-cuda-backend.sh).
   <url-prefix>: where they will be served, ending in "/" (an empty string keeps bare file names).
 Then sign it: phonon-win sign-backends --key <seed file> manifest.json (writes manifest.json.sig, which the
 app fetches from <manifest URL>.sig). sm_120 builds are sm_120a machine code (ggml rewrites the arch), so their
@@ -45,7 +45,7 @@ def main():
     src, prefix = sys.argv[1], sys.argv[2]
     backends = []
     for name in sorted(os.listdir(src)):
-        match = re.fullmatch(r"phonon-backend-linux-x64-cuda-sm(\d+)\.tar\.bz2", name)
+        match = re.fullmatch(r"phonon-backend-linux-x64-cuda-sm(\d+)\.tar\.(?:xz|bz2)", name)
         if match:
             item = entry(os.path.join(src, name), int(match.group(1)))
             item["url"] = prefix + name
