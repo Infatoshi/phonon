@@ -49,6 +49,24 @@ pub const DEFAULT_MODE: &str = "minimal";
 /// The model may take this long to load before the server is called dead.
 const READY_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Every GPU try of one runtime together (listing, start, warm-up, speed probe)
+/// gets this long; then the next path in the fallback order starts. A GPU server
+/// on a 3090 is ready in a few seconds; a hung driver must not hold up the CPU
+/// fallback for `READY_TIMEOUT`.
+const GPU_BUDGET: Duration = Duration::from_secs(120);
+
+/// One GPU listing, warm-up or speed probe request may take at most this long.
+const GPU_STEP: Duration = Duration::from_secs(30);
+
+/// The warm-up and the corrections themselves (CPU or a GPU that passed its
+/// checks) may take this long.
+const CORRECTION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// What is left of `deadline`, at most `cap`.
+fn left(deadline: Instant, cap: Duration) -> Duration {
+    deadline.saturating_duration_since(Instant::now()).min(cap)
+}
+
 /// The mode line for a mode name; unknown names fall back to minimal.
 pub fn mode_line(mode: &str) -> &'static str {
     MODES
@@ -209,7 +227,10 @@ const MIN_GPU_DECODE: f64 = 60.0;
 
 /// Decode speed of the server at `base`, from llama-server's own timings for a
 /// 32-token greedy completion.
-fn decode_rate(base: &str) -> Option<f64> {
+fn decode_rate(base: &str, timeout: Duration) -> Option<f64> {
+    if timeout.is_zero() {
+        return None;
+    }
     let tokens = tokenize(
         base,
         &prompt(
@@ -220,7 +241,7 @@ fn decode_rate(base: &str) -> Option<f64> {
     .ok()?;
     let value: serde_json::Value = http::agent()
         .post(&format!("{base}/completion"))
-        .timeout(Duration::from_secs(60))
+        .timeout(timeout)
         .send_json(serde_json::json!({
             "prompt": tokens, "n_predict": 32, "temperature": 0.0, "top_k": 1,
             "cache_prompt": false, "stream": false,
@@ -291,14 +312,16 @@ fn runtime_files() -> Result<(PathBuf, PathBuf)> {
 
 /// A command for the bundled server that shows no console window (Windows) and
 /// finds its shared libraries (Linux). `env` is set on the child only (a tuned
-/// runtime pins its device with CUDA_VISIBLE_DEVICES).
-fn server_command(server: &Path, env: &[(String, String)]) -> Result<Command> {
+/// runtime pins its device with CUDA_VISIBLE_DEVICES). `workdir` is the CPU
+/// runtime's directory for every server: ggml loads its backends from the
+/// executable's directory and the working directory, so a tuned CUDA-only
+/// runtime (no libggml-cpu-*.so of its own, which keeps its download near 15 MB)
+/// takes its CPU variant from the CPU runtime every install already has.
+fn server_command(server: &Path, env: &[(String, String)], workdir: &Path) -> Result<Command> {
     let mut command = Command::new(server);
     command.stdin(Stdio::null());
     command.envs(env.iter().map(|(k, v)| (k, v)));
-    if let Some(dir) = server.parent() {
-        command.current_dir(dir);
-    }
+    command.current_dir(workdir);
     #[cfg(windows)]
     {
         // Without CREATE_NO_WINDOW the server owns a console window that sits on
@@ -319,8 +342,13 @@ fn server_command(server: &Path, env: &[(String, String)]) -> Result<Command> {
 /// What the server prints for `--list-devices` (stdout and stderr, which carries
 /// ggml's per-device lines). A machine without the driver lists no device; a
 /// module that fails to load (wrong driver, missing library) lists none either.
-fn device_listing(server: &Path, env: &[(String, String)]) -> Option<String> {
-    let mut command = server_command(server, env).ok()?;
+fn device_listing(
+    server: &Path,
+    env: &[(String, String)],
+    workdir: &Path,
+    timeout: Duration,
+) -> Option<String> {
+    let mut command = server_command(server, env, workdir).ok()?;
     command
         .arg("--list-devices")
         .stdout(Stdio::piped())
@@ -329,12 +357,13 @@ fn device_listing(server: &Path, env: &[(String, String)]) -> Option<String> {
     let started = Instant::now();
     // A driver can take seconds to initialise; a hung one must not hold up startup.
     while child.try_wait().ok()?.is_none() {
-        if started.elapsed() > Duration::from_secs(20) {
+        if started.elapsed() > timeout {
             let _ = child.kill();
-            eprintln!("phonon: listing GPUs took over 20 s; using the CPU");
+            let _ = child.wait();
+            eprintln!("phonon: listing GPUs took over {timeout:?}; not using them");
             return None;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
     let output = child.wait_with_output().ok()?;
     Some(format!(
@@ -354,17 +383,50 @@ struct Target<'a> {
     pinned: Option<&'a str>,
 }
 
+/// How long a server may take to become ready and to answer its warm-up.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    ready_by: Instant,
+    warm_up: Duration,
+}
+
+impl Limits {
+    /// The CPU server: the model may load slowly (real-time scanning, a busy CPU).
+    fn cpu() -> Self {
+        Self {
+            ready_by: Instant::now() + READY_TIMEOUT,
+            warm_up: CORRECTION_TIMEOUT,
+        }
+    }
+
+    /// A GPU try that must finish by `deadline`.
+    fn gpu(deadline: Instant) -> Self {
+        Self {
+            ready_by: deadline,
+            warm_up: left(deadline, GPU_STEP),
+        }
+    }
+}
+
 /// A server on the target GPU of the runtime at `server`, if it lists it, starts,
-/// and decodes fast enough. `label` names the runtime in the log.
+/// and decodes fast enough, all by `deadline`. `label` names the runtime in the log.
+#[allow(clippy::too_many_arguments)]
 fn gpu_server(
     server: &Path,
     target: &Target,
     label: &str,
     model: &Path,
     threads: usize,
+    workdir: &Path,
+    deadline: Instant,
 ) -> Option<Server> {
     let kind = target.kind;
-    let listing = device_listing(server, &target.env).unwrap_or_default();
+    let budget = left(deadline, GPU_STEP);
+    if budget.is_zero() {
+        eprintln!("phonon: no time left to try {label}");
+        return None;
+    }
+    let listing = device_listing(server, &target.env, workdir, budget).unwrap_or_default();
     if let Some(name) = target.pinned {
         if !crate::backends::listing_matches(&listing, name) {
             eprintln!("phonon: {label} does not list the chosen {name} alone; not using it");
@@ -375,13 +437,25 @@ fn gpu_server(
         eprintln!("phonon: {label} lists no {kind} device");
         return None;
     };
-    match Server::spawn(server, model, threads, Some(&gpu), &target.env) {
+    let limits = Limits::gpu(deadline);
+    match Server::spawn(
+        server,
+        model,
+        threads,
+        Some(&gpu),
+        &target.env,
+        workdir,
+        limits,
+    ) {
         // Twice: the first Vulkan run after an install compiles the GPU's shaders
         // (3090: 66 tokens/s cold, 300 warm).
-        Ok(main) => match [decode_rate(&main.base), decode_rate(&main.base)]
-            .into_iter()
-            .flatten()
-            .reduce(f64::max)
+        Ok(main) => match [
+            decode_rate(&main.base, left(deadline, GPU_STEP)),
+            decode_rate(&main.base, left(deadline, GPU_STEP)),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(f64::max)
         {
             Some(rate) if rate >= MIN_GPU_DECODE => {
                 eprintln!("phonon: correction runs on {gpu} with {label} ({rate:.0} tokens/s)");
@@ -403,6 +477,12 @@ fn gpu_server(
 }
 
 impl Server {
+    /// The CPU runtime's server on the CPU, from its own directory.
+    fn cpu(server: &Path, model: &Path, threads: usize) -> Result<Self> {
+        let workdir = server.parent().unwrap_or(Path::new("."));
+        Self::spawn(server, model, threads, None, &[], workdir, Limits::cpu())
+    }
+
     /// Start a server and wait until the model answers its health check.
     fn spawn(
         server: &Path,
@@ -410,9 +490,11 @@ impl Server {
         threads: usize,
         gpu: Option<&str>,
         env: &[(String, String)],
+        workdir: &Path,
+        limits: Limits,
     ) -> Result<Self> {
         let port = free_port()?;
-        let mut command = server_command(server, env)?;
+        let mut command = server_command(server, env, workdir)?;
         command
             .arg("-m")
             .arg(model)
@@ -509,9 +591,13 @@ impl Server {
             {
                 break;
             }
-            if started.elapsed() > READY_TIMEOUT {
+            if Instant::now() >= limits.ready_by {
                 let _ = child.kill();
-                bail!("llama-server did not become ready within {READY_TIMEOUT:?}");
+                let _ = child.wait();
+                bail!(
+                    "llama-server did not become ready within {:?}",
+                    started.elapsed()
+                );
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -529,7 +615,9 @@ impl Server {
             job,
         };
         // warm-up, as on the iPhone and Android: loads the weights' pages and caches the prompt head
-        let _ = correct_at(&server.base, "warm up", DEFAULT_MODE);
+        if !limits.warm_up.is_zero() {
+            let _ = correct_one_within(&server.base, "warm up", DEFAULT_MODE, limits.warm_up);
+        }
         Ok(server)
     }
 }
@@ -646,11 +734,21 @@ fn sentence_groups(raw: &str, max_words: usize) -> Vec<String> {
 /// One correction request, with the length guard (true when it kept the raw
 /// text); no layout.
 fn correct_one(base: &str, raw: &str, mode: &str) -> Result<(String, bool)> {
+    correct_one_within(base, raw, mode, CORRECTION_TIMEOUT)
+}
+
+/// `correct_one` with the completion request bounded by `timeout`.
+fn correct_one_within(
+    base: &str,
+    raw: &str,
+    mode: &str,
+    timeout: Duration,
+) -> Result<(String, bool)> {
     let tokens = tokenize(base, &prompt(raw, mode))?;
     let budget = output_budget(tokenize(base, raw.trim())?.len() as u32);
     let value: serde_json::Value = http::agent()
         .post(&format!("{base}/completion"))
-        .timeout(Duration::from_secs(300))
+        .timeout(timeout)
         .send_json(serde_json::json!({
             "prompt": tokens,
             "n_predict": budget,
@@ -712,14 +810,23 @@ impl Corrector {
                 .map(|count| count.get())
                 .unwrap_or(2),
         );
+        // every server runs from the CPU runtime's directory (see `server_command`)
+        let workdir = server.parent().unwrap_or(Path::new(".")).to_path_buf();
         if let Some(url) = backends {
-            match crate::backends::prepare(url) {
+            let started = Instant::now();
+            let prepared = crate::backends::prepare_within(url, crate::backends::PREPARE_BUDGET);
+            eprintln!(
+                "phonon: tuned GPU runtime prepared in {} ms",
+                started.elapsed().as_millis()
+            );
+            match prepared {
                 Ok(Some(tuned)) => {
                     let target = Target {
                         kind: "CUDA",
                         env: tuned.env(),
                         pinned: Some(&tuned.device.name),
                     };
+                    let deadline = Instant::now() + GPU_BUDGET;
                     // the manifest's build first, then earlier builds still on disk
                     for candidate in &tuned.servers {
                         let label = candidate
@@ -727,8 +834,9 @@ impl Corrector {
                             .and_then(|dir| dir.file_name())
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_else(|| tuned.id.clone());
-                        if let Some(main) = gpu_server(candidate, &target, &label, &model, threads)
-                        {
+                        if let Some(main) = gpu_server(
+                            candidate, &target, &label, &model, threads, &workdir, deadline,
+                        ) {
                             let mut corrector = Self::new(main, Device::Gpu, server, model);
                             corrector.pending =
                                 candidate.parent().map(|dir| crate::backends::Installed {
@@ -752,7 +860,10 @@ impl Corrector {
                     env: Vec::new(),
                     pinned: None,
                 };
-                if let Some(main) = gpu_server(&server, &vulkan, "vulkan", &model, threads) {
+                let deadline = Instant::now() + GPU_BUDGET;
+                if let Some(main) = gpu_server(
+                    &server, &vulkan, "vulkan", &model, threads, &workdir, deadline,
+                ) {
                     return Ok(Self::new(main, Device::Gpu, server, model));
                 }
             } else {
@@ -761,7 +872,7 @@ impl Corrector {
                 );
             }
         }
-        let main = Server::spawn(&server, &model, threads, None, &[])?;
+        let main = Server::cpu(&server, &model, threads)?;
         eprintln!("phonon: correction runs on the CPU");
         Ok(Self::new(main, Device::Cpu, server, model))
     }
@@ -801,7 +912,7 @@ impl Corrector {
                 .map(|count| count.get())
                 .unwrap_or(2),
         );
-        self.main = Server::spawn(&self.server, &self.model, threads, None, &[])?;
+        self.main = Server::cpu(&self.server, &self.model, threads)?;
         self.device = Device::Cpu;
         self.pending = None;
         Ok(())
@@ -853,7 +964,7 @@ impl Corrector {
             );
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let next = match Server::spawn(&server, &model, threads, None, &[]) {
+                let next = match Server::cpu(&server, &model, threads) {
                     Ok(server) => {
                         eprintln!(
                             "phonon: {threads}-thread corrector ready in {} ms",
@@ -1106,5 +1217,86 @@ mod tests {
             assert!(lean <= thread_count(logical_cpus));
         }
         assert_eq!(lean_threads(2), 1);
+    }
+
+    /// A fake `llama-server`: a shell script that answers `--list-devices` with
+    /// `listing` and otherwise runs `serve`. No GPU and no model are involved.
+    #[cfg(unix)]
+    fn fake_server(dir: &Path, listing: &str, serve: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("llama-server");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = --list-devices ]; then\n{listing}\nexit 0\nfi\n{serve}\n"
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Every way a tuned CUDA server can fail at start ends in None (the caller
+    /// goes on to the next build, Vulkan or the CPU) within the GPU deadline.
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_gpu_server_is_given_up_within_its_deadline() {
+        let root = std::env::temp_dir().join(format!("phonon-win-fakegpu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let rtx3090 = "echo '  CUDA0: NVIDIA GeForce RTX 3090 (24145 MiB, 21037 MiB free)'";
+        let target = Target {
+            kind: "CUDA",
+            env: vec![("CUDA_VISIBLE_DEVICES".into(), "GPU-test".into())],
+            pinned: Some("NVIDIA GeForce RTX 3090"),
+        };
+        let cases = [
+            // the pin did not take: another card, or two cards
+            ("wrong-device", "echo '  CUDA0: NVIDIA GeForce RTX 2080 Ti (11000 MiB, 10000 MiB free)'", "exit 1"),
+            ("two-devices", "echo '  CUDA0: NVIDIA GeForce RTX 3090 (1 MiB, 1 MiB free)'; echo '  CUDA1: NVIDIA GeForce RTX 3090 (1 MiB, 1 MiB free)'", "exit 1"),
+            // the module did not load (old driver, missing library): no device
+            ("no-device", "echo 'Available devices:'", "exit 1"),
+            // a hung driver during the listing
+            ("listing-hangs", "exec sleep 60", "exit 1"),
+            // the server crashes while loading
+            ("server-crashes", rtx3090, "echo 'CUDA error: no kernel image' >&2; exit 134"),
+            // the server never answers its health check
+            ("server-hangs", rtx3090, "exec sleep 60"),
+        ];
+        for (name, listing, serve) in cases {
+            let dir = root.join(name);
+            let server = fake_server(&dir, listing, serve);
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(3);
+            let main = gpu_server(
+                &server,
+                &target,
+                name,
+                &dir.join("model.gguf"),
+                1,
+                &dir,
+                deadline,
+            );
+            assert!(main.is_none(), "{name}");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{name} took {:?}",
+                started.elapsed()
+            );
+        }
+        // no time left: nothing is started at all
+        let server = fake_server(&root.join("late"), rtx3090, "exit 1");
+        let started = Instant::now();
+        assert!(gpu_server(&server, &target, "late", &root.join("m"), 1, &root, started).is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn deadlines_never_go_negative() {
+        let now = Instant::now();
+        assert_eq!(left(now, GPU_STEP), Duration::ZERO);
+        assert!(left(now + Duration::from_secs(5), GPU_STEP) <= Duration::from_secs(5));
+        assert_eq!(left(now + Duration::from_secs(500), GPU_STEP), GPU_STEP);
+        let gpu = Limits::gpu(now + Duration::from_secs(5));
+        assert!(gpu.warm_up <= Duration::from_secs(5));
+        assert!(Limits::cpu().ready_by > now + GPU_BUDGET);
     }
 }

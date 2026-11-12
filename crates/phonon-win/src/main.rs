@@ -307,6 +307,34 @@ pub fn startup_check_with_fallback(
         }
         Ok(result)
     };
+    check_with_fallback(engine, check)
+}
+
+/// What the startup check needs from an engine (a trait so tests can use a fake).
+trait Fallback {
+    fn device(&self) -> polish::Device;
+    fn confirm_backend(&mut self);
+    fn fall_back_to_cpu(&mut self) -> Result<()>;
+}
+
+impl Fallback for pipeline::Engine {
+    fn device(&self) -> polish::Device {
+        pipeline::Engine::device(self)
+    }
+    fn confirm_backend(&mut self) {
+        pipeline::Engine::confirm_backend(self)
+    }
+    fn fall_back_to_cpu(&mut self) -> Result<()> {
+        pipeline::Engine::fall_back_to_cpu(self)
+    }
+}
+
+/// `check` on the engine; passing confirms the tuned build in use, and failing on
+/// the GPU moves the correction to the CPU and checks again there.
+fn check_with_fallback<E: Fallback, R>(
+    engine: &mut E,
+    check: impl Fn(&E) -> Result<R>,
+) -> Result<R> {
     match check(engine) {
         Ok(result) => {
             engine.confirm_backend();
@@ -395,5 +423,81 @@ mod tests {
     fn the_gate_rejects_recognition_alone() {
         assert!(assert_startup(&result("hello fluid voice", "")).is_err());
         assert!(assert_usable(&result("", "anything")).is_err());
+    }
+
+    /// An engine whose check passes or fails per device, recording what happened.
+    struct FakeEngine {
+        device: polish::Device,
+        gpu_passes: bool,
+        cpu_starts: bool,
+        confirmed: u32,
+        fallbacks: u32,
+    }
+
+    impl FakeEngine {
+        fn on(device: polish::Device, gpu_passes: bool) -> Self {
+            Self {
+                device,
+                gpu_passes,
+                cpu_starts: true,
+                confirmed: 0,
+                fallbacks: 0,
+            }
+        }
+    }
+
+    impl Fallback for FakeEngine {
+        fn device(&self) -> polish::Device {
+            self.device
+        }
+        fn confirm_backend(&mut self) {
+            self.confirmed += 1;
+        }
+        fn fall_back_to_cpu(&mut self) -> Result<()> {
+            self.fallbacks += 1;
+            if !self.cpu_starts {
+                bail!("the CPU server did not start");
+            }
+            self.device = polish::Device::Cpu;
+            Ok(())
+        }
+    }
+
+    fn fake_check(engine: &FakeEngine) -> Result<polish::Device> {
+        match engine.device {
+            polish::Device::Gpu if !engine.gpu_passes => bail!("the GPU answered wrongly"),
+            device => Ok(device),
+        }
+    }
+
+    #[test]
+    fn a_gpu_that_passes_the_startup_check_is_confirmed() {
+        let mut engine = FakeEngine::on(polish::Device::Gpu, true);
+        let device = check_with_fallback(&mut engine, fake_check).unwrap();
+        assert_eq!(device, polish::Device::Gpu);
+        assert_eq!((engine.confirmed, engine.fallbacks), (1, 0));
+    }
+
+    /// A GPU that answers wrongly ends on the CPU, and its build is not confirmed
+    /// (the family's earlier build stays on disk for the next start).
+    #[test]
+    fn a_gpu_that_fails_the_startup_check_ends_on_the_cpu() {
+        let mut engine = FakeEngine::on(polish::Device::Gpu, false);
+        let device = check_with_fallback(&mut engine, fake_check).unwrap();
+        assert_eq!(device, polish::Device::Cpu);
+        assert_eq!((engine.confirmed, engine.fallbacks), (0, 1));
+    }
+
+    #[test]
+    fn a_failing_cpu_check_is_an_error_without_a_fallback() {
+        let mut engine = FakeEngine::on(polish::Device::Cpu, true);
+        let failing = |_: &FakeEngine| -> Result<()> { bail!("wrong transcript") };
+        assert!(check_with_fallback(&mut engine, failing).is_err());
+        assert_eq!((engine.confirmed, engine.fallbacks), (0, 0));
+        // the GPU fails and the CPU server cannot start: the error surfaces
+        let mut engine = FakeEngine::on(polish::Device::Gpu, false);
+        engine.cpu_starts = false;
+        assert!(check_with_fallback(&mut engine, fake_check).is_err());
+        assert_eq!(engine.fallbacks, 1);
     }
 }

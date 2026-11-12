@@ -12,6 +12,10 @@ path = "src/main.rs"
 [package.metadata.winresource]
 OriginalFilename = "phonon-win.exe"
 
+[features]
+# QA builds only: also accept backend manifests signed with the public RFC 8032 test key (backends.rs).
+backend-test-key = []
+
 [dependencies]
 anyhow.workspace = true
 # The 0.6 default is libbz2-rs-sys (pure Rust); do not enable bzip2-sys.

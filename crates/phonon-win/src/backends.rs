@@ -45,8 +45,20 @@ pub const DEFAULT_MANIFEST: Option<&str> = None;
 /// `<manifest URL>.sig` as 128 hex characters. The private key never enters the
 /// repository; `phonon-win sign-backends` signs with it. Key 1 created 2026-11-09;
 /// its seed is kept with the Android release keystore, not in the repository.
-pub const MANIFEST_KEYS: &[&str] =
-    &["179736715df6cbb67a77e8c4f57daabc657e491d153a94c64a228cdc35cf2d9c"];
+#[cfg(not(feature = "backend-test-key"))]
+pub const MANIFEST_KEYS: &[&str] = &[RELEASE_KEY];
+
+/// A QA build (`--features backend-test-key`, never a release) also accepts
+/// manifests signed with the RFC 8032 test-vector key, whose seed is public
+/// (`TEST_SEED` below), so test machines can serve their own manifests.
+#[cfg(feature = "backend-test-key")]
+pub const MANIFEST_KEYS: &[&str] = &[RELEASE_KEY, RFC8032_TEST_KEY];
+
+const RELEASE_KEY: &str = "179736715df6cbb67a77e8c4f57daabc657e491d153a94c64a228cdc35cf2d9c";
+
+/// The public key of RFC 8032 section 7.1 test 1 (seed 9d61b19d...7f60).
+#[cfg(any(test, feature = "backend-test-key"))]
+const RFC8032_TEST_KEY: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 
 /// Manifest schema this build understands.
 const SCHEMA: u32 = 1;
@@ -55,7 +67,16 @@ const SCHEMA: u32 = 1;
 const MANIFEST_LIMIT: u64 = 1 << 20;
 
 /// How long the device listing child may take (a driver can take seconds to start).
-const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long one manifest or signature request may take.
+const MANIFEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The whole tuned-runtime preparation (device listing, manifest, signature,
+/// download) gets this long before the app goes on without it. At 15 MB that is
+/// about 2 Mbit/s; a slower first run starts on the CPU (or Vulkan) and the
+/// download, which goes on in the background, is used from the next start.
+pub const PREPARE_BUDGET: Duration = Duration::from_secs(90);
 
 /// One CUDA device, in the order the CUDA driver numbers it for this environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,26 +458,78 @@ fn probe_command() -> Result<Command> {
     Ok(command)
 }
 
-/// The CUDA devices as the runtime will number them. None found (no driver, an
-/// empty CUDA_VISIBLE_DEVICES, a hung driver) is an empty list.
-pub fn detect() -> Hardware {
-    let run = || -> Result<Hardware> {
-        let mut child = probe_command()?.spawn()?;
-        let started = Instant::now();
-        while child.try_wait()?.is_none() {
-            if started.elapsed() > PROBE_TIMEOUT {
-                let _ = child.kill();
-                bail!("listing CUDA devices took over {PROBE_TIMEOUT:?}");
-            }
-            std::thread::sleep(Duration::from_millis(20));
+/// Files that exist only where the NVIDIA kernel driver is loaded (or, on WSL, where
+/// Windows passes its CUDA driver through).
+#[cfg(target_os = "linux")]
+const NVIDIA_MARKERS: &[&str] = &[
+    "/proc/driver/nvidia/version",
+    "/dev/nvidiactl",
+    "/usr/lib/wsl/lib/libcuda.so.1",
+];
+
+/// Whether this machine can have a CUDA device at all, without starting anything:
+/// a file check on Linux, the display adapters' PCI vendor on Windows. A machine
+/// without one costs nothing at first run: no listing child and no network.
+pub fn nvidia_present() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        NVIDIA_MARKERS.iter().any(|path| Path::new(path).exists())
+    }
+    #[cfg(windows)]
+    {
+        nvidia_adapter(&crate::polish::display_adapter_ids())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        false
+    }
+}
+
+/// Whether any display adapter id ("PCI\VEN_10DE&DEV_2204&...") is NVIDIA's.
+#[cfg(any(windows, test))]
+fn nvidia_adapter(adapter_ids: &[String]) -> bool {
+    adapter_ids
+        .iter()
+        .any(|id| id.to_ascii_uppercase().starts_with("PCI\\VEN_10DE"))
+}
+
+/// What a listing child printed, if it exited cleanly within `timeout`. A child
+/// that hangs is killed; one that crashes (a driver fault) counts as no listing,
+/// whatever it printed first.
+fn run_listing(mut command: Command, timeout: Duration) -> Result<String> {
+    let mut child = command.spawn().context("start the CUDA device listing")?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
         }
-        let output = child.wait_with_output()?;
-        Ok(parse_probe(&String::from_utf8_lossy(&output.stdout)))
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("listing CUDA devices took over {timeout:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
     };
-    run().unwrap_or_else(|error| {
-        eprintln!("phonon: no CUDA device information ({error:#})");
-        Hardware::default()
-    })
+    let output = child.wait_with_output()?;
+    if !status.success() {
+        bail!("the CUDA device listing exited with {status}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The CUDA devices as the runtime will number them. None found (no driver, an
+/// empty CUDA_VISIBLE_DEVICES, a hung or crashing driver) is an empty list.
+pub fn detect() -> Hardware {
+    if !nvidia_present() {
+        return Hardware::default();
+    }
+    probe_command()
+        .and_then(|command| run_listing(command, PROBE_TIMEOUT))
+        .map(|text| parse_probe(&text))
+        .unwrap_or_else(|error| {
+            eprintln!("phonon: no CUDA device information ({error:#})");
+            Hardware::default()
+        })
 }
 
 /// Bytes from an https, http or file URL, at most `MANIFEST_LIMIT`.
@@ -471,7 +544,7 @@ fn read_small(url: &str) -> Result<Vec<u8>> {
     } else {
         http::agent()
             .get(url)
-            .timeout(Duration::from_secs(20))
+            .timeout(MANIFEST_TIMEOUT)
             .call()
             .with_context(|| format!("download {url}"))?
             .into_reader()
@@ -494,6 +567,18 @@ fn backends_root() -> PathBuf {
     crate::paths::data_root().join("runtime/backends")
 }
 
+/// The archive format `fetch::expand` should read, from the URL's suffix.
+fn archive_format(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    if path.ends_with(".zip") {
+        "zip"
+    } else if path.ends_with(".tar.bz2") {
+        "tar.bz2"
+    } else {
+        "tar.gz"
+    }
+}
+
 /// The installed component for an entry. Its directory names the hash, so a new
 /// build lands beside the old one and replaces it only once it is confirmed.
 /// The strings live for the rest of the process (`Component` borrows them for
@@ -501,11 +586,7 @@ fn backends_root() -> PathBuf {
 fn component(entry: &Entry) -> Component {
     let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
     // fetch::expand picks the format by the file name
-    let format = if entry.url.ends_with(".zip") {
-        "zip"
-    } else {
-        "tar.gz"
-    };
+    let format = archive_format(&entry.url);
     let asset = Asset {
         name: leak(format!("{}-{}.{format}", entry.id, &entry.sha256[..12])),
         url: leak(entry.url.clone()),
@@ -619,27 +700,53 @@ pub fn listing_matches(listing: &str, name: &str) -> bool {
     matches!(devices[..], [only] if only.strip_prefix(name).is_some_and(|rest| rest.starts_with(" (")))
 }
 
+/// At most this many builds of a family are tried at start: the manifest's and
+/// the newest earlier one. Each failed try costs a server start.
+const MAX_BUILDS_TRIED: usize = 2;
+
 /// Detect, choose and install. Ok(None): no tuned build for this machine. A failed
 /// download still returns the family's earlier builds, if any.
 pub fn prepare(manifest_url: &str) -> Result<Option<Accelerated>> {
+    prepare_with(
+        detect,
+        || read_manifest(manifest_url),
+        |entry| {
+            let component = component(entry);
+            if !fetch::installed(&component) {
+                eprintln!(
+                    "phonon: installing {} ({})",
+                    entry.id,
+                    crate::manifest::human_bytes(entry.bytes)
+                );
+            }
+            fetch::ensure(&component, &mut |_| {})
+        },
+        &backends_root(),
+    )
+}
+
+/// `prepare` with its machine-facing steps passed in (tests use fakes). The
+/// manifest is read only when a CUDA device is listed, so a machine without one
+/// never touches the network.
+fn prepare_with(
+    detect: impl FnOnce() -> Hardware,
+    read_manifest: impl FnOnce() -> Result<Manifest>,
+    install: impl FnOnce(&Entry) -> Result<PathBuf>,
+    root: &Path,
+) -> Result<Option<Accelerated>> {
     let hardware = detect();
     eprintln!("phonon: hardware: {}", hardware.summary());
-    let manifest = read_manifest(manifest_url)?;
+    if hardware.cuda.is_empty() {
+        return Ok(None);
+    }
+    let manifest = read_manifest()?;
     let Some(choice) = choose(&manifest, &hardware, this_os(), std::env::consts::ARCH) else {
         return Ok(None);
     };
     let (entry, device) = (choice.entry, choice.device.clone());
     eprintln!("phonon: {} for {} ({})", entry.id, device.name, device.uuid);
-    let component = component(entry);
-    if !fetch::installed(&component) {
-        eprintln!(
-            "phonon: installing {} ({})",
-            entry.id,
-            crate::manifest::human_bytes(entry.bytes)
-        );
-    }
     let mut servers = Vec::new();
-    let fresh = match fetch::ensure(&component, &mut |_| {}) {
+    let fresh = match install(entry) {
         Ok(dir) => {
             servers.push(dir.join(&entry.server));
             Some(dir)
@@ -649,11 +756,12 @@ pub fn prepare(manifest_url: &str) -> Result<Option<Accelerated>> {
             None
         }
     };
-    for dir in installed_builds(&backends_root(), &entry.id, &entry.server) {
+    for dir in installed_builds(root, &entry.id, &entry.server) {
         if Some(&dir) != fresh.as_ref() {
             servers.push(dir.join(&entry.server));
         }
     }
+    servers.truncate(MAX_BUILDS_TRIED);
     if servers.is_empty() {
         bail!("no build of {} could be installed", entry.id);
     }
@@ -662,6 +770,37 @@ pub fn prepare(manifest_url: &str) -> Result<Option<Accelerated>> {
         servers,
         device,
     }))
+}
+
+/// `prepare`, given at most `budget`: past it the app goes on without a tuned
+/// runtime. The work goes on in the background (a download finishes and is used
+/// from the next start). A panic in it is a failure like any other.
+pub fn prepare_within(manifest_url: &str, budget: Duration) -> Result<Option<Accelerated>> {
+    let url = manifest_url.to_string();
+    within(budget, move || prepare(&url))
+}
+
+/// Run `work` on its own thread and wait at most `budget` for its result.
+fn within<T: Send + 'static>(
+    budget: Duration,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("phonon-backends".into())
+        .spawn(move || {
+            let _ = send.send(work());
+        })
+        .context("start the tuned-runtime thread")?;
+    match receive.recv_timeout(budget) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            bail!("not ready within {budget:?}; going on without it")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            bail!("the tuned-runtime thread stopped without a result (panicked)")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -974,7 +1113,7 @@ mod tests {
             verify_manifest(br#"{"schema":1,"backends":[ ]}"#, &signature, &[&public]).is_err()
         );
         // a key that did not sign it
-        assert!(verify_manifest(body, &signature, MANIFEST_KEYS).is_err());
+        assert!(verify_manifest(body, &signature, &[RELEASE_KEY]).is_err());
         // malformed signatures
         assert!(verify_manifest(body, "", &[&public]).is_err());
         assert!(verify_manifest(body, &signature[..126], &[&public]).is_err());
@@ -991,6 +1130,256 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    fn one_gpu(cc: (u32, u32)) -> Hardware {
+        hw(&[cc], 13000)
+    }
+
+    fn fresh_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("phonon-win-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// Entries for the OS and arch the tests run on (`prepare_with` picks for this machine).
+    fn here(entries: &[String]) -> Manifest {
+        let native: Vec<String> = entries
+            .iter()
+            .map(|e| {
+                e.replace("\"linux\"", &format!("{:?}", this_os()))
+                    .replace("\"x86_64\"", &format!("{:?}", std::env::consts::ARCH))
+            })
+            .collect();
+        manifest(&native)
+    }
+
+    fn families_here() -> Manifest {
+        here(&[
+            entry("cuda-sm75", [7, 5], 13000),
+            entry("cuda-sm86", [8, 6], 13000),
+            entry("cuda-sm89", [8, 9], 13000),
+        ])
+    }
+
+    /// A machine without a CUDA device never reads the manifest (no network, no
+    /// seconds at first run) and never installs anything.
+    #[test]
+    fn no_cuda_device_means_no_manifest_fetch() {
+        let root = fresh_root("nofetch");
+        let tuned = prepare_with(
+            Hardware::default,
+            || panic!("the manifest must not be read"),
+            |_| panic!("nothing must be installed"),
+            &root,
+        )
+        .unwrap();
+        assert!(tuned.is_none());
+        // a driver but no device (CUDA_VISIBLE_DEVICES="") is the same
+        let tuned = prepare_with(
+            || parse_probe("driver 13000\n"),
+            || panic!("the manifest must not be read"),
+            |_| panic!("nothing must be installed"),
+            &root,
+        )
+        .unwrap();
+        assert!(tuned.is_none());
+    }
+
+    /// Unreachable, 404, a bad signature: all arrive as an error from the reader,
+    /// and the caller goes on to the next path.
+    #[test]
+    fn an_unreadable_manifest_is_an_error_not_a_hang() {
+        let root = fresh_root("badmanifest");
+        let error = prepare_with(
+            || one_gpu((8, 6)),
+            || bail!("the backend manifest is not signed by a Phonon key"),
+            |_| panic!("nothing must be installed"),
+            &root,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("not signed"));
+    }
+
+    #[test]
+    fn a_missing_family_means_no_tuned_runtime() {
+        let root = fresh_root("nofamily");
+        // a Turing card, a manifest with only sm86 and sm89
+        let only = here(&[
+            entry("cuda-sm86", [8, 6], 13000),
+            entry("cuda-sm89", [8, 9], 13000),
+        ]);
+        let tuned = prepare_with(
+            || one_gpu((7, 5)),
+            || Ok(only),
+            |_| panic!("nothing must be installed"),
+            &root,
+        )
+        .unwrap();
+        assert!(tuned.is_none());
+    }
+
+    /// A failed download or a hash mismatch with no earlier build is an error; with
+    /// an earlier build of the family on disk, that build is tried.
+    #[test]
+    fn a_failed_install_falls_back_to_an_earlier_build_or_errors() {
+        let root = fresh_root("failinstall");
+        let error = prepare_with(
+            || one_gpu((8, 6)),
+            || Ok(families_here()),
+            |_| bail!("sha256 mismatch"),
+            &root,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("no build of cuda-sm86"));
+
+        let earlier = root.join("cuda-sm86-aaaaaaaaaaaa");
+        std::fs::create_dir_all(&earlier).unwrap();
+        std::fs::write(earlier.join("llama-server"), b"").unwrap();
+        let tuned = prepare_with(
+            || one_gpu((8, 6)),
+            || Ok(families_here()),
+            |_| bail!("sha256 mismatch"),
+            &root,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(tuned.servers, vec![earlier.join("llama-server")]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The fresh build first, then the newest earlier one, and no more than
+    /// `MAX_BUILDS_TRIED` (each try costs a server start). Unix: the fixture sets
+    /// directory times through a directory handle.
+    #[cfg(unix)]
+    #[test]
+    fn the_fresh_build_is_tried_first_and_the_tries_are_capped() {
+        let root = fresh_root("order");
+        for (i, dir) in [
+            "cuda-sm86-111111111111",
+            "cuda-sm86-222222222222",
+            "cuda-sm86-333333333333",
+        ]
+        .iter()
+        .enumerate()
+        {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("llama-server"), b"").unwrap();
+            // distinct modification times, oldest first
+            let time = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 + i as u64);
+            std::fs::File::open(root.join(dir))
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        }
+        let fresh = root.join("cuda-sm86-111111111111");
+        let tuned = prepare_with(
+            || one_gpu((8, 6)),
+            || Ok(families_here()),
+            |_| Ok(fresh.clone()),
+            &root,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tuned.servers,
+            vec![
+                fresh.join("llama-server"),
+                root.join("cuda-sm86-333333333333/llama-server"),
+            ]
+        );
+        assert_eq!(tuned.device.cc, (8, 6));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn work_past_its_budget_or_a_panic_is_an_error_in_bounded_time() {
+        let started = Instant::now();
+        let slow = within(Duration::from_millis(200), || {
+            std::thread::sleep(Duration::from_secs(30));
+            Ok(())
+        });
+        assert!(format!("{:#}", slow.unwrap_err()).contains("not ready within"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let panicked = within(Duration::from_secs(10), || -> Result<()> {
+            panic!("a bug in the tuned-runtime path")
+        });
+        assert!(format!("{:#}", panicked.unwrap_err()).contains("panicked"));
+        assert_eq!(within(Duration::from_secs(10), || Ok(7)).unwrap(), 7);
+    }
+
+    /// The listing child: a clean exit is read, a crash (whatever it printed first)
+    /// and a hang are no listing, the hang within the timeout.
+    #[cfg(unix)]
+    #[test]
+    fn a_crashing_or_hanging_listing_child_lists_nothing() {
+        let shell = |script: &str| {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg(script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            command
+        };
+        let good = "printf 'driver 13000\\ndevice\\tGPU-1\\t8\\t6\\t0000:01:00.0\\tNVIDIA GeForce RTX 3090\\n'";
+        let text = run_listing(shell(good), Duration::from_secs(10)).unwrap();
+        assert_eq!(parse_probe(&text).cuda.len(), 1);
+        let crash = format!("{good}; kill -SEGV $$");
+        assert!(run_listing(shell(&crash), Duration::from_secs(10)).is_err());
+        assert!(run_listing(shell("exit 3"), Duration::from_secs(10)).is_err());
+        let started = Instant::now();
+        assert!(run_listing(shell("exec sleep 30"), Duration::from_millis(300)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn only_nvidia_adapters_count() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(nvidia_adapter(&ids(&[
+            r"PCI\VEN_1002&DEV_164E",
+            r"PCI\VEN_10DE&DEV_2204&SUBSYS_38821462"
+        ])));
+        assert!(nvidia_adapter(&ids(&[r"pci\ven_10de&dev_2684"])));
+        assert!(!nvidia_adapter(&ids(&[
+            r"PCI\VEN_1002&DEV_164E",
+            r"PCI\VEN_8086&DEV_A780"
+        ])));
+        assert!(!nvidia_adapter(&ids(&[r"ROOT\BasicDisplay", ""])));
+    }
+
+    #[test]
+    fn archives_unpack_by_their_url_suffix() {
+        assert_eq!(archive_format("https://x/b/sm86.tar.bz2"), "tar.bz2");
+        assert_eq!(
+            archive_format("https://x/b/sm86.tar.bz2?download=1"),
+            "tar.bz2"
+        );
+        assert_eq!(archive_format("file:///b/sm86.zip"), "zip");
+        assert_eq!(archive_format("https://x/b/sm86.tar.gz"), "tar.gz");
+        let e = entry("cuda-sm86", [8, 6], 13000).replace(".tar.gz", ".tar.bz2");
+        let m = manifest(&[e]);
+        let c = component(&m.backends[0]);
+        assert!(
+            c.assets[0].name.ends_with(".tar.bz2"),
+            "{}",
+            c.assets[0].name
+        );
+    }
+
+    /// The test key is the RFC 8032 test vector, and it is compiled in only with
+    /// the QA feature: a release build refuses a manifest signed with it.
+    #[test]
+    fn the_test_key_is_the_public_test_vector_and_release_builds_refuse_it() {
+        let (_, public) = sign_manifest(b"x", TEST_SEED).unwrap();
+        assert_eq!(public, RFC8032_TEST_KEY);
+        assert_eq!(
+            MANIFEST_KEYS.contains(&RFC8032_TEST_KEY),
+            cfg!(feature = "backend-test-key")
+        );
+        assert!(MANIFEST_KEYS.contains(&RELEASE_KEY));
     }
 
     #[test]
