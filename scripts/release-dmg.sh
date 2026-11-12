@@ -54,7 +54,20 @@ trap cleanup EXIT
 ditto "$app_path" "$dmg_root/Phonon.app"
 ln -s /Applications "$dmg_root/Applications"
 rm -f "$dmg_path"
-hdiutil create -volname Phonon -srcfolder "$dmg_root" -ov -format UDZO "$dmg_path"
+# PHONON_DMG_NO_MOUNT=1 builds the image without hdiutil (for a Mac whose disk-image helper is
+# wedged): an ISO 9660 + Rock Ridge image from xorrisofs, wrapped as compressed UDIF by the `dmg`
+# tool of libdmg-hfsplus (PHONON_DMG_TOOL; https://github.com/fanquake/libdmg-hfsplus, cmake build),
+# checked at the end by extracting it with 7zz instead of mounting it. Notarized and stapled the
+# same way (1.0.3, 2026-11-12).
+no_mount=${PHONON_DMG_NO_MOUNT:-0}
+if [[ "$no_mount" == 1 ]]; then
+	dmg_tool=${PHONON_DMG_TOOL:?set PHONON_DMG_TOOL to the libdmg-hfsplus dmg binary}
+	xorrisofs -quiet -V Phonon -R -uid 0 -gid 0 -D -l -no-pad -o "$dmg_root.iso" "$dmg_root"
+	"$dmg_tool" "$dmg_root.iso" "$dmg_path" >/dev/null
+	rm -f "$dmg_root.iso"
+else
+	hdiutil create -volname Phonon -srcfolder "$dmg_root" -ov -format UDZO "$dmg_path"
+fi
 codesign --force --sign "$identity" --timestamp "$dmg_path"
 codesign --verify --verbose=4 "$dmg_path"
 
@@ -95,6 +108,17 @@ fi
 xcrun stapler staple "$dmg_path"
 xcrun stapler validate "$dmg_path"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg_path"
+
+if [[ "$no_mount" == 1 ]]; then
+	mkdir "$dmg_root.x"
+	7zz x -y -o"$dmg_root.x" "$dmg_path" >/dev/null || true
+	diff -r "$app_path" "$dmg_root.x/Phonon.app"
+	codesign --verify --deep --strict --verbose=2 "$dmg_root.x/Phonon.app"
+	spctl --assess --type exec --verbose=4 "$dmg_root.x/Phonon.app"
+	rm -rf "$dmg_root.x"
+	printf 'Notarized DMG: %s\nSubmission ID: %s\nNotarization log: %s\n' "$dmg_path" "$submission_id" "$log_path"
+	exit 0
+fi
 
 mount_info=$(hdiutil attach "$dmg_path" -nobrowse -readonly -plist)
 mount_point=$(printf '%s' "$mount_info" | plutil -convert json -o - - |
