@@ -7,7 +7,8 @@
 // spawns and joins its worker threads on every graph, i.e. every token, unpinned; on Test Lab phones that cost
 // 30-80% of decode speed and sometimes collapsed to seconds per token (DEVLOG 4:10 pm). Auto mode attaches one
 // persistent ggml threadpool pinned (strict, one thread per core) to the K highest-cpu_capacity cores. K comes from a
-// short probe at first load among 2/4/6 (never all cores), cached per device in a small text file: the fastest K for
+// short probe at first load among 2/4/6 plus the big-core count and one fewer (never all cores), cached per device in
+// a small text file: the fastest K for
 // single-token decode, and, if a different K prefills a 32-token batch faster, a second pool for prefill. A K whose
 // probe token runs over 3x the best so far is abandoned; at runtime two decode tokens over 4x the fastest seen move
 // decode to the next K (pinned pools collapsed to seconds per token on some phones). The pools are paused after every
@@ -117,17 +118,18 @@ struct Pool {
     std::vector<int> cpus;
 };
 
-Pool makePool(const std::vector<Core> &cores, int k, int poll) {
+// pin false (bench spec pin=0 only): the same persistent pool, threads left to the scheduler (no cpumask, not strict).
+Pool makePool(const std::vector<Core> &cores, int k, int poll, bool pin = true) {
     Pool p;
     if (!g_tpNew || k <= 0 || k > (int)cores.size()) return p;
     ggml_threadpool_params tpp = ggml_threadpool_params_default(k);
     tpp.poll = (uint32_t)poll;
-    tpp.strict_cpu = true;
+    tpp.strict_cpu = pin;
     tpp.paused = true;  // the first graph resumes it; creating it unpaused would pin the calling thread right away
     for (int i = 0; i < k; i++) {
         int c = cores[i].cpu;
-        if (c >= 0 && c < GGML_MAX_N_THREADS) tpp.cpumask[c] = true;
-        p.cpus.push_back(c);
+        if (pin && c >= 0 && c < GGML_MAX_N_THREADS) tpp.cpumask[c] = true;
+        p.cpus.push_back(pin ? c : -1);
     }
     std::sort(p.cpus.begin(), p.cpus.end());
     p.tp = g_tpNew(&tpp);
@@ -182,7 +184,7 @@ long long cpuMsNow() {
 
 // "key=value,key=value" overrides for the bench (the keyboard passes ""). Keys: k (force K, no probe, no guard), kb
 // (prefill pool size), poll (ggml poll level, default 50), probe (0 = ignore the cache file), pprobe (0 = no prefill
-// probe), passes (probe passes, default 1), guard (0 = no runtime collapse guard).
+// probe), passes (probe passes, default 1), guard (0 = no runtime collapse guard), pin (0 = pools not pinned).
 int specInt(const std::string &spec, const char *key, int dflt) {
     std::string k = std::string(key) + "=";
     size_t pos = 0;
@@ -225,7 +227,16 @@ struct Refiner {
     // Pools no longer attached. ggml's CPU backend keeps a pointer to the last pool it ran and pauses it when the next
     // graph brings a different one, so a pool may only be freed after a graph has run with its successor.
     std::vector<Pool> retired;
+    bool pin = true;
+    // Shortlist output head (ios/llama-b12132-shortlist.patch): on only when the model file carries phonon.sl.k,
+    // phonon.sl.order and output.slx (ios/shortlist_gguf.py); llama_phonon_sl_k is 0 for today's tied refiner.gguf,
+    // which keeps the stock greedy sampler and the stock output matmul.
+    bool shortlist = false;
 };
+
+// Rule R1 of the shortlist head, the iPhone's value (ios/App/Refiner.swift slThreshold): when the best in-list logit
+// is below this, every other row is computed and the full argmax taken.
+constexpr float kSlThreshold = 28.152f;
 
 // Decode tokens went pathological on the pinned pool (2 in a row > 4x the reference and +150 ms): move decode to the
 // next K in 4, 2, 6 not yet tried (always < the core count), remember it in the tune file, keep generating. Thread
@@ -243,7 +254,7 @@ bool switchDecodePool(Refiner *r, double slowMs) {
         LOGP("TUNE collapse k=%d slow_ms=%.0f, no other K left", r->pool.k, slowMs);
         return false;
     }
-    Pool np = makePool(r->cores, next, r->poll);
+    Pool np = makePool(r->cores, next, r->poll, r->pin);
     if (!np.tp) return false;
     int oldK = r->pool.k;
     llama_detach_threadpool(r->ctx);
@@ -482,11 +493,19 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
         backends_loaded = true;
     }
     llama_backend_init();
+    // llama.cpp's warnings and its per-buffer weight sizes (which weights went to the repacked heap copy) to logcat
+    llama_log_set(
+        [](ggml_log_level level, const char *text, void *) {
+            if (level == GGML_LOG_LEVEL_WARN || level == GGML_LOG_LEVEL_ERROR || std::strstr(text, "buffer size"))
+                __android_log_print(ANDROID_LOG_INFO, "PhononLlama", "%s", text);
+        },
+        nullptr);
     AffinityGuard guard;
     bool useRepack = repack;
     std::vector<Core> cores;
     std::vector<int> cands;
     int poll = 50, kb = 0, forced = 0, cachedK = 0, cachedKb = 0, pprobe = 0;
+    bool pin = true;
     long memT = -1, memA = -1;
     std::string tuneKey;
     if (autoTune) {
@@ -502,13 +521,24 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
         poll = specInt(spec, "poll", 50);
         kb = specInt(spec, "kb", 0);
         forced = specInt(spec, "k", 0);
+        pin = specInt(spec, "pin", 1) != 0;
         // prefill gets its own pool when another K prefills faster (A56: K=2 decode, 4-6 prefill, -9% per dictation)
         pprobe = specInt(spec, "pprobe", 1);
         // never all cores on big phones (Pixel 11 pinned to all 7 ran 937 ms/token, Galaxy S9 all 8 5.6 s/token):
         // K < cores. On 4 or fewer allowed cores K = all is still a probe candidate (x86 emulator: K=2 1692 ms vs
         // 4 threads 1062 ms); the probe's 3x bail drops it if it collapses.
+        // Also probed: every big core (capacity >= half the top one, i.e. all clusters but the efficiency cores) and one
+        // fewer, when that is 3 or more. Test Lab, same process, token-identical, ms/token over 8 dictations x 4 runs
+        // (2026-11-12): Xiaomi 14 K=5 22.7 vs K=4 24.7 and K=6 24.4 (big = 6: prime + 5 A720); Galaxy A56 K=3 57.7
+        // vs K=2 62.4 (big = the 3 A720 the process may use); Galaxy A16 K=3 80.3 vs K=2 79.6 (big = 2, nothing added).
         if (!useRepack) cands = {2};
-        else cands = {4, 6, 2};
+        else {
+            cands = {4, 6, 2};
+            long maxCap = cores.empty() ? 0 : cores.front().cap;
+            int nBig = (int)std::count_if(cores.begin(), cores.end(), [&](const Core &c) { return c.cap * 2 >= maxCap; });
+            for (int k : {nBig - 1, nBig})
+                if (k >= 3 && std::find(cands.begin(), cands.end(), k) == cands.end()) cands.push_back(k);
+        }
         const int nCores = (int)cores.size();
         cands.erase(std::remove_if(cands.begin(), cands.end(),
                                    [&](int k) { return k > nCores || (k == nCores && nCores > 4); }),
@@ -517,7 +547,8 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
         if (forced > 0) cands = {std::min(forced, std::max(1, (int)cores.size()))};
         struct stat st{};
         long long modelBytes = stat(path, &st) == 0 ? (long long)st.st_size : -1;
-        tuneKey = "v2 pp=" + std::to_string(pprobe) + " ps=" + std::to_string(specInt(spec, "passes", 1)) + " repack=" + std::to_string(useRepack ? 1 : 0) +
+        // v3: the big-core candidates were added (a v2 file would keep a phone on its old K without probing them)
+        tuneKey = "v3 pp=" + std::to_string(pprobe) + " ps=" + std::to_string(specInt(spec, "passes", 1)) + " repack=" + std::to_string(useRepack ? 1 : 0) +
                   " model=" + std::to_string(modelBytes) + " cores=";
         for (auto &c : cores) tuneKey += std::to_string(c.cpu) + ":" + std::to_string(c.cap) + ";";
         if (cands.size() > 1 && !tunePath.empty() && specInt(spec, "probe", 1) != 0) {
@@ -555,6 +586,8 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
     r->ctx = c;
     r->vocab = llama_model_get_vocab(m);
     r->sampler = llama_sampler_init_greedy();
+    r->shortlist = llama_phonon_sl_k(c) > 0;
+    LOGP("SHORTLIST k=%d", llama_phonon_sl_k(c));
     if (autoTune && g_tpNew) {
         auto t0 = std::chrono::steady_clock::now();
         std::string probeLog;
@@ -573,7 +606,7 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
                     size_t idx = pass % 2 ? cands.size() - 1 - ci : ci;
                     int k = cands[idx];
                     if (pass > 0 && decMs[idx] >= 1e9) continue;  // bailed once: never again
-                    Pool p = makePool(cores, k, poll);
+                    Pool p = makePool(cores, k, poll, pin);
                     if (!p.tp) continue;
                     // any token slower than 3x the best K so far ends this K's probe (2 s before there is a best)
                     double limit = bestSoFar < 1e17 ? 3 * bestSoFar : 2000;
@@ -609,8 +642,8 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
             }
         }
         if (kb <= 0) kb = bestKb;  // spec kb overrides the probed one
-        if (best) r->pool = makePool(cores, best, poll);
-        if (r->pool.tp && kb > 0 && kb != best) r->poolBatch = makePool(cores, kb, poll);
+        if (best) r->pool = makePool(cores, best, poll, pin);
+        if (r->pool.tp && kb > 0 && kb != best) r->poolBatch = makePool(cores, kb, poll, pin);
         if (r->pool.tp) {
             llama_attach_threadpool(r->ctx, r->pool.tp, r->poolBatch.tp ? r->poolBatch.tp : r->pool.tp);
             llama_set_n_threads(r->ctx, r->pool.k, r->poolBatch.tp ? r->poolBatch.k : r->pool.k);
@@ -620,13 +653,15 @@ Java_ai_phonon_keyboard_Refiner_nativeLoad(JNIEnv *env, jclass, jstring jpath, j
         guard.pause = {r->pool.tp, r->poolBatch.tp};
         r->cores = cores;
         r->poll = poll;
+        r->pin = pin;
         r->tunePath = tunePath;
         r->tuneKey = tuneKey;
         r->guardOn = forced <= 0 && specInt(spec, "guard", 1) != 0;
         LOGP("TUNE gate=run memtotal_mb=%ld memavail_mb=%ld repack=%d k=%d cpus=%s kb=%d poll=%d cached=%d probe=%s "
-             "tune_ms=%lld pause=%d",
+             "tune_ms=%lld pause=%d key=%s",
              memT, memA, useRepack ? 1 : 0, r->pool.k, join(r->pool.cpus).c_str(), r->poolBatch.k, poll,
-             cachedK ? 1 : 0, probeLog.empty() ? "-" : probeLog.c_str(), (long long)msSince(t0), g_tpPause != nullptr);
+             cachedK ? 1 : 0, probeLog.empty() ? "-" : probeLog.c_str(), (long long)msSince(t0), g_tpPause != nullptr,
+             tuneKey.c_str());
     } else if (autoTune) {
         LOGP("TUNE gate=run no-threadpool-api repack=%d threads=%d", useRepack ? 1 : 0, k0);
     }
@@ -687,10 +722,21 @@ Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstri
 
     auto t1 = std::chrono::steady_clock::now();
     std::string out;
-    int gen = 0, slowRun = 0;
+    int gen = 0, slowRun = 0, fallbacks = 0;
     bool switched = false;
+    if (r->shortlist) {  // the dictation's own token ids join the shortlist for this dictation (as on the iPhone)
+        std::vector<llama_token> ids = tokenize(r->vocab, raw);
+        llama_phonon_sl_set_extras(r->ctx, ids.data(), (int32_t)ids.size());
+    }
     while (ok && gen < cap) {
-        llama_token tok = llama_sampler_sample(r->sampler, r->ctx, -1);
+        llama_token tok;
+        if (r->shortlist) {
+            int32_t fb = 0;
+            tok = llama_phonon_sl_sample(r->ctx, kSlThreshold, 0, &fb, nullptr, nullptr);
+            fallbacks += fb;
+        } else {
+            tok = llama_sampler_sample(r->sampler, r->ctx, -1);
+        }
         if (llama_vocab_is_eog(r->vocab, tok)) break;
         out += piece(r->vocab, tok);
         tokHash = (tokHash ^ (uint32_t)tok) * 1099511628211ULL;
@@ -719,15 +765,15 @@ Java_ai_phonon_keyboard_Refiner_nativeRefine(JNIEnv *env, jclass, jlong h, jstri
     bool fired = !ok || text.empty() || (double)wordCount(text) > 1.2 * rawWords + 20;
     if (fired) text = raw;
 
-    char nums[448];
+    char nums[512];
     snprintf(nums, sizeof nums,
              "\"prompt_tokens\":%d,\"prefill_tokens\":%d,\"gen_tokens\":%d,\"prefill_ms\":%lld,\"decode_ms\":%lld,"
              "\"head_cached\":%s,\"guard\":%s,\"k\":%d,\"kb\":%d,\"switched\":%s,\"cpu_ms\":%lld,\"tok_hash\":\"%016llx\","
-             "\"heads\":%d,\"head_bytes\":%zu,\"vocab\":%s",
+             "\"heads\":%d,\"head_bytes\":%zu,\"vocab\":%s,\"shortlist\":%s,\"fallbacks\":%d",
              promptTokens, (int)(headCached ? tail.size() : head.size() + tail.size()), gen, prefillMs, decodeMs,
              headCached ? "true" : "false", fired ? "true" : "false", r->pool.k, r->poolBatch.k,
              switched ? "true" : "false", cpuMs, (unsigned long long)tokHash, (int)r->heads.size(), headBytes(r),
-             vocabLine.empty() ? "false" : "true");
+             vocabLine.empty() ? "false" : "true", r->shortlist ? "true" : "false", fallbacks);
     std::string json = "{\"text\":\"" + jsonEscape(text) + "\",\"raw\":\"" + jsonEscape(raw) + "\",\"mode\":\"" +
                        jsonEscape(mode) + "\"," + nums + "}";
     // bytes, not NewStringUTF: JNI modified UTF-8 mangles 4-byte characters

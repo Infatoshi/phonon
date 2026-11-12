@@ -18,7 +18,9 @@ import java.io.File
  *   arms        comma list, default "legacy,auto,auto". legacy = the pre-tuning path (no threadpool, 4 threads
  *               unpinned, repack on, no RAM gate); auto = Refiner.loadAuto; "auto/k4/poll0" passes the spec
  *               "k=4,poll=0". The tune cache is deleted at the start, so the first auto arm probes K and later
- *               ones read the cache, as on a phone's first and later keyboard starts.
+ *               ones read the cache, as on a phone's first and later keyboard starts. "/pin0" leaves the pool's
+ *               threads unpinned; "/sl" loads `model_sl` (default /sdcard/phonon/refiner-sl.gguf), the shortlist-head
+ *               build of the same model (ios/shortlist_gguf.py), instead of `model`.
  *   arm_budget_s  stop an arm's remaining refines once it has run this long (default 150), so a collapsed
  *               configuration cannot eat the Test Lab timeout.
  * Logcat tag Phonon, prefix TB.
@@ -41,11 +43,11 @@ class RefinerTuneBenchTest {
         return "memtotal_mb=${mb("MemTotal")} memavail_mb=${mb("MemAvailable")}"
     }
 
-    private fun stageModel(src: String): File {
+    private fun stageModel(src: String, name: String = "refiner.gguf"): File {
         val inst = InstrumentationRegistry.getInstrumentation()
         val direct = File(src)
         if (direct.canRead()) return direct
-        val dst = File(inst.targetContext.filesDir, "refiner.gguf")
+        val dst = File(inst.targetContext.filesDir, name)
         val t = SystemClock.elapsedRealtime()
         val pfd = inst.uiAutomation.executeShellCommand("cat $src")
         ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input -> dst.outputStream().use { input.copyTo(it, 1 shl 20) } }
@@ -69,14 +71,18 @@ class RefinerTuneBenchTest {
             "soc=${if (Build.VERSION.SDK_INT >= 31) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else Build.HARDWARE} " +
             "sdk=${Build.VERSION.SDK_INT} cores=${Runtime.getRuntime().availableProcessors()} ${meminfo()} arms=${arms.joinToString(",")}")
         val model = stageModel(args.getString("model") ?: "/sdcard/phonon/refiner.gguf")
+        // "/sl" arms load the shortlist-head build of the same model (ios/shortlist_gguf.py), staged only if used
+        val slModel by lazy { stageModel(args.getString("model_sl") ?: "/sdcard/phonon/refiner-sl.gguf", "refiner-sl.gguf") }
         val tune = File(ctx.filesDir, "refiner_tune.txt")
         tune.delete()
         idleCpu(-1, 2000)
         for ((i, arm) in arms.withIndex()) {
             // "auto/kb6/poll0" -> spec "kb=6,poll=0" (no '=' in the arm names: gcloud's KEY=VALUE parsing)
-            val spec = arm.split("/").drop(1).joinToString(",") { it.replace(Regex("^([a-z]+)(\\d+)$"), "$1=$2") }
+            val parts = arm.split("/").drop(1)
+            val spec = parts.filter { it != "sl" }.joinToString(",") { it.replace(Regex("^([a-z]+)(\\d+)$"), "$1=$2") }
+            val path = if ("sl" in parts) slModel.path else model.path
             val t0 = SystemClock.elapsedRealtime()
-            val r = if (arm.startsWith("legacy")) Refiner.load(model.path, 4, true) else Refiner.loadAuto(model.path, tune.path, spec)
+            val r = if (arm.startsWith("legacy")) Refiner.load(path, 4, true) else Refiner.loadAuto(path, tune.path, spec)
             val loadMs = SystemClock.elapsedRealtime() - t0
             log("LOAD arm=$i name=$arm ok=${r != null} load_ms=$loadMs ${Mem.snapshot()} ${meminfo()}")
             if (r == null) continue

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Builds the debug APK on a Linux build host. Source is rsynced to /data/android/work/src from the Mac.
+# Builds the debug APK on a Linux build host. Source (the android/ folder) is rsynced to /data/android/work/src from
+# the Mac, or to the folder in $S. Run scripts/fetch_deps.sh first (it makes the patched llama.cpp tree).
 set -euo pipefail
 export ANDROID_HOME=/data/android/sdk JAVA_HOME=/data/android/jdk GRADLE_USER_HOME=/data/android/gradle-home
-S=/data/android/work/src D=/data/android/deps
+S=${S:-/data/android/work/src} D=/data/android/deps
 G=/data/android/gradle/gradle-8.11.1/bin/gradle
 if [ ! -x $G ]; then
   mkdir -p /data/android/gradle && cd /data/android/gradle
