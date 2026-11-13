@@ -153,14 +153,22 @@ final class MeetingDetectorTests: XCTestCase {
     }
 
     func testPromptsOncePerCallAndBacksOffAfterNotNow() {
+        let zoom = "us.zoom.xos", facetime = "com.apple.FaceTime"
         var policy = MeetingPromptPolicy()
-        XCTAssertTrue(policy.shouldAsk(meeting: "Zoom", now: 0))
-        XCTAssertFalse(policy.shouldAsk(meeting: "Zoom", now: 4), "same call")
+        policy.observe(holders: [zoom], now: 0)
+        XCTAssertTrue(policy.shouldAsk(meeting: "Zoom", bundleID: zoom, now: 0))
+        policy.observe(holders: [zoom], now: 4)
+        XCTAssertFalse(policy.shouldAsk(meeting: "Zoom", bundleID: zoom, now: 4), "same call")
         policy.declined("Zoom", now: 5)
-        XCTAssertFalse(policy.shouldAsk(meeting: nil, now: 8))
-        XCTAssertFalse(policy.shouldAsk(meeting: "Zoom", now: 60), "declined recently")
-        XCTAssertTrue(policy.shouldAsk(meeting: "Zoom", now: 5 + MeetingPromptPolicy.quietAfterDecline))
-        XCTAssertTrue(policy.shouldAsk(meeting: "FaceTime", now: 70))
+        // that call ends; a new Zoom call soon after is still quiet
+        policy.observe(holders: [], now: 8)
+        policy.observe(holders: [], now: 8 + MeetingPromptPolicy.callEndGap)
+        XCTAssertFalse(
+            policy.shouldAsk(meeting: "Zoom", bundleID: zoom, now: 9 + MeetingPromptPolicy.callEndGap),
+            "declined recently")
+        policy.observe(holders: [], now: 10 + 2 * MeetingPromptPolicy.callEndGap)
+        XCTAssertTrue(policy.shouldAsk(meeting: "Zoom", bundleID: zoom, now: 5 + MeetingPromptPolicy.quietAfterDecline))
+        XCTAssertTrue(policy.shouldAsk(meeting: "FaceTime", bundleID: facetime, now: 70))
     }
 
     /// Review item 3: nothing is read from an app before the private filter;

@@ -64,6 +64,7 @@ final class MeetingDetectionHarnessTests: XCTestCase {
         while now <= last + 20 {
             let moment = scenario.moments.first { $0.from <= now && now < $0.to }
             let evidence = evidence(moment)
+            prompts.observe(holders: evidence.microphoneHolders, now: now)
             if var current = recording {
                 let inCall = MeetingDetector.stillInCall(
                     recordingBundleID: current.bundleID, holders: evidence.microphoneHolders)
@@ -76,15 +77,13 @@ final class MeetingDetectionHarnessTests: XCTestCase {
             } else {
                 let verdict = MeetingDetector.evaluate(evidence)
                 if case let .meeting(app, bundleID) = verdict {
-                    if prompts.shouldAsk(meeting: app, now: now) {
+                    if prompts.shouldAsk(meeting: app, bundleID: bundleID, now: now) {
                         outcome.prompts.append(now)
                         outcome.app = outcome.app ?? app
                         if recordOnPrompt, scenario.call != nil, outcome.recordingStopped == nil {
                             recording = (bundleID, MeetingEndPolicy(now: now))
                         }
                     }
-                } else {
-                    _ = prompts.shouldAsk(meeting: nil, now: now)
                 }
             }
             now += MeetingController.detectionInterval

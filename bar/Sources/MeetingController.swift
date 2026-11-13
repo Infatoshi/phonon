@@ -100,6 +100,8 @@ final class MeetingController {
 
     private func handle(_ verdict: MeetingDetector.Verdict, evidence: MeetingDetector.Evidence) {
         let now = Self.now()
+        // A call asked about stays asked about until its app lets go of the mic for good.
+        prompts.observe(holders: evidence.microphoneHolders, now: now)
         if let recordingBundleID, var policy = endPolicy {
             // Still in the call while that process holds the microphone,
             // whatever app is in front now.
@@ -111,11 +113,8 @@ final class MeetingController {
             return
         }
         guard recorder == nil, case let .meeting(meeting, bundleID) = verdict,
-            prompts.shouldAsk(meeting: meeting, now: now)
-        else {
-            if case .none = verdict { _ = prompts.shouldAsk(meeting: nil, now: now) }
-            return
-        }
+            prompts.shouldAsk(meeting: meeting, bundleID: bundleID, now: now)
+        else { return }
         let settings = store.settings
         let key = MeetingRules.key(app: meeting, bundleID: bundleID)
         switch MeetingRules.decide(mode: settings.meetingMode, rule: settings.meetingRules.rule(for: key)) {

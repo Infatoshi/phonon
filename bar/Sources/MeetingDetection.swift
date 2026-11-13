@@ -235,23 +235,55 @@ enum MeetingWindowInfo {
     }
 }
 
-/// When to ask "Meeting detected: take notes?". Once per call; after "Not
-/// now", not again for the same app for a while.
+/// When to ask "Meeting detected: take notes?". At most once per call, whatever the answer
+/// (record, not now, never, or no answer before the card timed out); after "Not now", not
+/// again for the same app for a while either.
+///
+/// A call is followed by the process holding the microphone, not by the verdict: a chat app
+/// (Discord, Slack) or a browser tab is a meeting only while it is in front and playing, so
+/// the verdict drops to `.none` every time the user looks at another app or the far side goes
+/// quiet. Resetting on that re-asked all through one long call. The call is over only once its
+/// app has not held the microphone for `callEndGap`; mute, a device switch, the mic being
+/// released and taken again, a missed poll and Phonon's own dictation (never a holder) are
+/// all shorter than that.
 struct MeetingPromptPolicy {
     static let quietAfterDecline: TimeInterval = 30 * 60
+    /// 2 minutes: 30 polls (`MeetingController.detectionInterval`, 4 s) and 12 times the
+    /// recording's own end grace (`MeetingEndPolicy.grace`, 10 s), which can be short because
+    /// a recording cut early loses little; asking again mid-call is what the owner reported.
+    static let callEndGap: TimeInterval = 2 * 60
 
     private var declined = [String: TimeInterval]()
-    private var askedForCurrentCall: String?
+    /// Calls already asked about (or handled by a rule), by `callKey`, with when their app last
+    /// held the microphone.
+    private var calls = [String: (owner: String, lastHeld: TimeInterval)]()
 
-    /// `meeting` is the current verdict's app, nil when no call is up.
-    mutating func shouldAsk(meeting: String?, now: TimeInterval) -> Bool {
-        guard let meeting else {
-            askedForCurrentCall = nil
-            return false
+    /// One call: the app holding the microphone, and what the prompt names (a browser can hold
+    /// it for different sites).
+    static func callKey(meeting: String, bundleID: String) -> String {
+        MeetingDetector.owner(of: bundleID) + "|" + meeting
+    }
+
+    /// Every poll, recording or not: the processes holding the microphone now. A call whose app
+    /// has not held it for `callEndGap` is over, and the next one is asked about again.
+    mutating func observe(holders: [String], now: TimeInterval) {
+        let owners = Set(holders.map(MeetingDetector.owner(of:)))
+        for (key, call) in calls {
+            if owners.contains(call.owner) {
+                calls[key]?.lastHeld = now
+            } else if now - call.lastHeld >= Self.callEndGap {
+                calls[key] = nil
+            }
         }
-        guard askedForCurrentCall != meeting else { return false }
+    }
+
+    /// The current verdict is a meeting in `meeting`, held by `bundleID`: whether to ask (or
+    /// apply the app's rule). Marks the call as asked about.
+    mutating func shouldAsk(meeting: String, bundleID: String, now: TimeInterval) -> Bool {
+        let key = Self.callKey(meeting: meeting, bundleID: bundleID)
+        guard calls[key] == nil else { return false }
+        calls[key] = (MeetingDetector.owner(of: bundleID), now)
         if let at = declined[meeting], now - at < Self.quietAfterDecline { return false }
-        askedForCurrentCall = meeting
         return true
     }
 
