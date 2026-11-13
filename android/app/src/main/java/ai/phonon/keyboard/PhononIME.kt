@@ -371,23 +371,49 @@ class PhononIME : InputMethodService() {
             }
             return true
         }
+        val gen = generation
         recThread = thread(name = "phonon-mic") {
             val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 3200) * 2)
+            // during a phone call (or with another app holding the mic) the recorder can fail to open, fail to
+            // start, or start returning error codes: each ends the dictation with a message, never a spin or crash
+            val rec = try {
+                AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 3200) * 2)
+            } catch (e: Exception) { Log.w(TAG, "MIC_ERROR create", e); null }
+            if (rec == null || rec.state != AudioRecord.STATE_INITIALIZED) {
+                Log.w(TAG, "MIC_ERROR state=${rec?.state}")
+                rec?.release()
+                micFailed(gen)
+                return@thread
+            }
             val buf = ByteArray(1600)  // 50 ms: the level the capsule lights with updates 20 times a second
-            rec.startRecording()
-            while (recording) {
-                val n = rec.read(buf, 0, buf.size)
-                if (n > 0) {
-                    synchronized(pcm) { pcm.write(buf, 0, n) }
-                    val level = level(buf, n)
+            try {
+                rec.startRecording()
+                val err = if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) -3
+                else MicLoop.run(buf, { recording }, { rec.read(it, 0, it.size) }) { b, n ->
+                    synchronized(pcm) { pcm.write(b, 0, n) }
+                    val level = level(b, n)
                     main.post { if (phase == Phase.LISTENING) bar?.level = level }
                 }
+                if (err != null) { Log.w(TAG, "MIC_ERROR read=$err"); micFailed(gen) }
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "MIC_ERROR start", e)
+                micFailed(gen)
+            } finally {
+                try { rec.stop() } catch (_: IllegalStateException) {}
+                rec.release()
             }
-            rec.stop(); rec.release()
         }
         return true
+    }
+
+    /** The mic failed under this dictation: with half a second or more already heard, write that down as if the
+     *  user let go (a call arriving mid-sentence keeps the sentence); otherwise drop it and say why on the bar. */
+    private fun micFailed(gen: Int) {
+        main.post {
+            if (!recording || gen != generation) return@post
+            if (synchronized(pcm) { pcm.size() } >= 16000) stopRecording() else cancelDictation(MicLoop.BUSY)
+        }
     }
 
     /** Debug builds only: recorded speech that stands in for the microphone, if the test put one in place. */
