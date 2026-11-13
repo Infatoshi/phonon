@@ -131,6 +131,7 @@ targets:
       - App/Dictionary.swift
       - App/DictionaryView.swift
       - App/RefinerPrompt.swift
+      - App/MicInterruption.swift
       - Shared/Theme.swift
       # the keyboard's SwiftUI (TalkBarTests); plain SwiftUI + UIKit, no IPC or extension APIs
       - Shared/KeyboardUI.swift

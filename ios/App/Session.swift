@@ -34,7 +34,11 @@ final class Session: ObservableObject {
     @Published var lastMs: Int?
     @Published var count = 0
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
+    /// phone calls, Siri and media-services resets take the mic away; while down the session does not claim alive
+    private var interruption = MicInterruption()
+    /// the session is on, not interrupted, and the engine really runs: what the heartbeat and pong report
+    var live: Bool { interruption.alive(running: running, engineRunning: engine.isRunning) }
     private let feed = Feed()
     private let sink = SampleSink()
     private let parakeet = Parakeet()
@@ -94,9 +98,25 @@ final class Session: ObservableObject {
         IPC.observe(IPC.stop) { [weak self] in self?.endUtterance() }
         IPC.observe(IPC.cancel) { [weak self] in self?.cancelUtterance() }
         IPC.observe(IPC.ping) { [weak self] in
-            guard let self, self.running else { return }  // only a live mic session counts as alive
+            guard let self, self.live else { return }  // only a live mic session counts as alive
             self.beat()
             IPC.post(IPC.pong)
+        }
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
+            let info = n.userInfo ?? [:]
+            let type = (info[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap { AVAudioSession.InterruptionType(rawValue: $0) }
+            let options = AVAudioSession.InterruptionOptions(rawValue: info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+            MainActor.assumeIsolated {
+                switch type {
+                case .began: self?.audioEvent(.began)
+                case .ended: self?.audioEvent(.ended(shouldResume: options.contains(.shouldResume)))
+                default: break
+                }
+            }
+        }
+        nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.audioEvent(.mediaServicesReset) }
         }
         sink.onLevel = { level in
             DispatchQueue.main.async {
@@ -131,10 +151,37 @@ final class Session: ObservableObject {
     }
 
     func start() async {
-        guard !running else { return }
+        // a session that is on but down (call, Siri, media reset, engine stopped by iOS) restarts here
+        guard !live else { return }
+        if running {
+            restartEngine()
+            return
+        }
         if let problem = await permissions() {
             status = problem
             return
+        }
+        if let problem = startEngine() {
+            status = problem
+            return
+        }
+        interruption.restarted()
+        running = true
+        sessionStarted = Date()
+        loadParakeet()
+        loadRefiner()
+        setStatus("Ready")
+        beat()
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            Task { @MainActor in self.beat() }
+        }
+    }
+
+    /// Activates the audio session and starts the engine with the input tap; returns the problem, or nil.
+    private func startEngine() -> String? {
+        if interruption.needsNewEngine {  // after a media-services reset the old engine is unusable
+            engine.inputNode.removeTap(onBus: 0)
+            engine = AVAudioEngine()
         }
         do {
             let s = AVAudioSession.sharedInstance()
@@ -151,18 +198,35 @@ final class Session: ObservableObject {
             }
             engine.prepare()
             try engine.start()
+            return nil
         } catch {
-            status = "Microphone did not start: \(error.localizedDescription)"
+            return "Microphone did not start: \(error.localizedDescription)"
+        }
+    }
+
+    /// Brings a session that is on but down back up; on failure it stays down (not alive), so the keyboard's next
+    /// tap opens Phonon and start() tries again.
+    private func restartEngine() {
+        if let problem = startEngine() {
+            setStatus(problem)
             return
         }
-        running = true
-        sessionStarted = Date()
-        loadParakeet()
-        loadRefiner()
+        interruption.restarted()
         setStatus("Ready")
         beat()
-        heartbeat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            Task { @MainActor in self.beat() }
+    }
+
+    private func audioEvent(_ event: MicInterruption.Event) {
+        switch interruption.handle(event, running: running) {
+        case .none:
+            break
+        case .pause:
+            // keep what was heard so far: finish the utterance as if the mic button came up
+            if status == "Listening" { endUtterance() }
+            IPC.set(0, IPC.heartbeat)
+            setStatus("Microphone paused by a call or Siri")
+        case .restart, .rebuildAndRestart:
+            restartEngine()
         }
     }
 
@@ -178,7 +242,10 @@ final class Session: ObservableObject {
         setStatus("Stopped")
     }
 
-    private func beat() { IPC.set(IPC.now(), IPC.heartbeat) }
+    private func beat() {
+        guard live else { return }  // a dead or interrupted mic must not look alive to the keyboard
+        IPC.set(IPC.now(), IPC.heartbeat)
+    }
 
     private func setStatus(_ s: String) {
         status = s
@@ -233,7 +300,7 @@ final class Session: ObservableObject {
     }
 
     private func beginUtterance() {
-        guard running else { return }
+        guard live else { return }
         utteranceStart = IPC.now()
         sink.begin()  // also drives the keyboard's level meter on the Apple-recognizer fallback
         if useParakeet {

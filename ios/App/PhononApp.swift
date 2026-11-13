@@ -35,7 +35,7 @@ struct PhononApp: App {
                 let target = BackToCaller.capture(host: host, via: via)
                 Task {
                     await session.start()
-                    guard session.running else { return }
+                    guard session.live else { return }  // still down (a call holds the mic): stay here
                     session.backHint = !(await BackToCaller.go(target))
                 }
             }
@@ -267,7 +267,7 @@ struct HomeView: View {
     private var sessionCard: some View {
         Card {
             HStack(spacing: 16) {
-                PulseDot(live: session.running, busy: session.status == "Listening")
+                PulseDot(live: session.live, busy: session.status == "Listening")
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.running ? sessionTitle : "Phonon is off")
                         .font(.system(size: 18, weight: .semibold))
