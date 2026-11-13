@@ -1424,8 +1424,12 @@ final class EngineClient {
 final class MicRecorder {
     private let engine = AVAudioEngine()
     private let lock = NSLock()
-    private var samples: [Float] = []
+    private var samples = CaptureBuffer()
     private var hwSampleRate: Double = 48_000
+    /// The rate of the stream samples not yet sent (a mid-dictation change flushes them first).
+    private var streamRate: Double = 48_000
+    /// Seconds captured this dictation, across rate changes.
+    private var capturedSeconds = 0.0
     private var tapFormat: AVAudioFormat?
     private var meter = 0.0
     private var meterFrame = 0
@@ -1578,11 +1582,12 @@ final class MicRecorder {
     func start(fastStart: Bool = false) throws {
         try ensureHardwareRunning()
         lock.lock()
-        samples = []
+        samples = CaptureBuffer()
         meter = 0
         meterFrame = 0
         peakRms = 0
         capturedFrames = 0
+        capturedSeconds = 0
         streamSamples.removeAll(keepingCapacity: true)
         streamedFrames = 0
         streamFastStart = fastStart
@@ -1599,7 +1604,7 @@ final class MicRecorder {
     func capturedOnlySilence(atLeast seconds: Double) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return Double(capturedFrames) >= seconds * hwSampleRate && peakRms < Self.silentRms
+        return capturedSeconds >= seconds && peakRms < Self.silentRms
     }
 
     /// Whether this dictation has captured any audio at all.
@@ -1719,6 +1724,8 @@ final class MicRecorder {
         guard let ch = buffer.floatChannelData, buffer.frameLength > 0 else { return }
         let frames = Int(buffer.frameLength)
         let nCh = Int(buffer.format.channelCount)
+        // This buffer's own rate: the tap is reinstalled at a new rate when the device changes.
+        let rate = buffer.format.sampleRate > 0 ? buffer.format.sampleRate : hwSampleRate
 
         var chunk = [Float](repeating: 0, count: frames)
         var sumSq = 0.0
@@ -1742,28 +1749,31 @@ final class MicRecorder {
         meterFrame += 1
         peakRms = max(peakRms, rms)
         capturedFrames += frames
+        capturedSeconds += Double(frames) / rate
         let amp = meter
         let shouldPublishAmplitude = meterFrame.isMultiple(of: 2)
-        streamSamples.append(contentsOf: chunk)
         var streamPCM: Data?
+        if rate != streamRate {
+            // The rate changed: what is pending goes out at its own rate before the new audio.
+            if !streamSamples.isEmpty {
+                streamPCM = Self.pcm16Data(Self.resample(streamSamples, from: streamRate, to: 16_000))
+                streamSamples.removeAll(keepingCapacity: true)
+            }
+            streamedFrames = Int(Double(streamedFrames) * rate / streamRate)
+            streamRate = rate
+        }
+        streamSamples.append(contentsOf: chunk)
         if StreamChunkCadence.shouldSend(
-            sentFrames: streamedFrames, pendingFrames: streamSamples.count, rate: hwSampleRate,
+            sentFrames: streamedFrames, pendingFrames: streamSamples.count, rate: rate,
             fastStart: streamFastStart)
         {
-            let mono16k = Self.resample(streamSamples, from: hwSampleRate, to: 16_000)
-            streamPCM = Self.pcm16Data(mono16k)
+            let mono16k = Self.resample(streamSamples, from: rate, to: 16_000)
+            streamPCM = (streamPCM ?? Data()) + Self.pcm16Data(mono16k)
             streamedFrames += streamSamples.count
             streamSamples.removeAll(keepingCapacity: true)
         }
 
-        samples.append(contentsOf: chunk)
-        // 20 minutes (230 MB at 48 kHz, held only while recording). The old 120 s kept just
-        // the tail of longer dictations, so their corpus audio no longer matched the
-        // transcript (26 of 1,203 entries by 2026-11-04).
-        let maxSamples = Int(hwSampleRate * 1200)
-        if samples.count > maxSamples {
-            samples.removeFirst(samples.count - maxSamples)
-        }
+        samples.append(chunk, rate: rate)
         lock.unlock()
 
         if shouldPublishAmplitude {
@@ -1783,7 +1793,7 @@ final class MicRecorder {
     func drainStreamPCM16() -> Data? {
         lock.lock()
         let pending = streamSamples
-        let rate = hwSampleRate
+        let rate = streamRate
         streamSamples.removeAll(keepingCapacity: true)
         lock.unlock()
         guard !pending.isEmpty else { return nil }
@@ -1808,20 +1818,18 @@ final class MicRecorder {
         primed = false
     }
 
-    func takeSamples() -> (samples: [Float], sampleRate: Double) {
+    func takeSamples() -> CaptureBuffer {
         lock.lock()
         let captured = samples
-        let rate = hwSampleRate
-        samples.removeAll(keepingCapacity: true)
+        samples = CaptureBuffer()
         lock.unlock()
-        return (captured, rate)
+        return captured
     }
 
-    nonisolated static func writeWav(from captured: [Float], sampleRate srcRate: Double) -> String? {
+    nonisolated static func writeWav(from captured: CaptureBuffer) -> String? {
         guard !captured.isEmpty else { return nil }
         // Require at least ~80ms so we don't ship a silent stub from a cold start.
-        let minFrames = Int(srcRate * 0.08)
-        guard captured.count >= minFrames else { return nil }
+        guard captured.seconds >= 0.08 else { return nil }
 
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
@@ -1833,7 +1841,7 @@ final class MicRecorder {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         let path = directory.appendingPathComponent("audio.wav").path
-        let mono16k = resample(captured, from: srcRate, to: 16_000)
+        let mono16k = captured.mono16k()
         do {
             try writeWavPCM16(path: path, samples: mono16k, sampleRate: 16_000)
             return path
@@ -1855,8 +1863,7 @@ final class MicRecorder {
     func stop(writeFile: Bool = true) {
         endCapture()
         if writeFile {
-            let (captured, rate) = takeSamples()
-            wavPath = Self.writeWav(from: captured, sampleRate: rate)
+            wavPath = Self.writeWav(from: takeSamples())
         } else {
             _ = takeSamples()
             wavPath = nil
@@ -1864,7 +1871,7 @@ final class MicRecorder {
         releaseHardware()
     }
 
-    nonisolated private static func resample(_ input: [Float], from src: Double, to dst: Double)
+    nonisolated static func resample(_ input: [Float], from src: Double, to dst: Double)
         -> [Float]
     {
         guard !input.isEmpty, src > 0, dst > 0 else { return input }
@@ -3475,11 +3482,11 @@ final class AppController: NSObject, NSApplicationDelegate {
         recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
         meetings.dictationEnded()
         e2eTrace?.captureEndedNs = DispatchTime.now().uptimeNanoseconds
-        let (captured, rate) = recorder.takeSamples()
+        let captured = recorder.takeSamples()
         let id = activeId ?? "p\(pass)"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let path = MicRecorder.writeWav(from: captured, sampleRate: rate)
+            let path = MicRecorder.writeWav(from: captured)
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.activeId == id, self.processing else {
@@ -3497,7 +3504,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
                 guard let path else {
                     NSLog(
-                        "phonon: empty/short capture (\(captured.count) frames @ \(rate) Hz) — pass \(id)"
+                        "phonon: empty/short capture (\(captured.seconds) s) — pass \(id)"
                     )
                     // No WAV, so no transcribe: tell the engine the dictation is over.
                     self.engine.send(["cmd": "dictation_end", "id": id])
