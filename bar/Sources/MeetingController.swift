@@ -317,6 +317,9 @@ final class MeetingController {
     ) {
         do {
             let recorder = try MeetingRecorder(directory: directory, metadata: metadata)
+            recorder.onWriteFailed = { [weak self] error in
+                Task { @MainActor in self?.writeFailed(recorder, meeting: meeting, bundleID: bundleID, error: error) }
+            }
             self.recorder = recorder
             recordingDirectory = directory
             store.recordingMeetingID = metadata.id
@@ -347,6 +350,19 @@ final class MeetingController {
             holdOff(meeting: meeting, bundleID: bundleID)
         }
     }
+
+    /// A write failed (a full disk): stop cleanly, keep what was written (it is transcribed like
+    /// any stopped meeting), do not start again in this call, and tell the user.
+    private func writeFailed(_ failed: MeetingRecorder, meeting: String, bundleID: String?, error: Error) {
+        guard Self.isSame(recorder, failed) else { return }
+        holdOff(meeting: meeting, bundleID: bundleID)
+        stop(reason: "write_failed")
+        let message = MeetingWriteFailure.message(for: error)
+        onRecordingFailed?(message.title, message.detail)
+    }
+
+    /// Shows the user why a recording stopped (title, detail).
+    var onRecordingFailed: ((String, String) -> Void)?
 
     /// A recording that could not start is not retried on every poll of the same call.
     private func holdOff(meeting: String, bundleID: String?) {

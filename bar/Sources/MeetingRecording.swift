@@ -385,7 +385,14 @@ final class ChunkedWavWriter {
                     out[index] = Self.pcm16(sample(offset + index)).littleEndian
                 }
             }
-            handle?.write(pcm)
+            do {
+                // The throwing write: the old `write(_:)` raised an Objective-C exception on a
+                // full disk, which no Swift code can catch, and took the app down.
+                try handle?.write(contentsOf: pcm)
+            } catch {
+                fail()
+                throw error
+            }
             chunkSamples += take
             trackSamples += Int64(take)
             offset += take
@@ -405,11 +412,30 @@ final class ChunkedWavWriter {
         try closeChunk()
     }
 
+    /// A write failed (a full disk): no more appends, and the open chunk is closed with the
+    /// samples written so far, so everything before the failure stays readable.
+    private func fail() {
+        finished = true
+        try? closeChunk()
+    }
+
     private func openChunk(hostNs: UInt64?) throws {
         let url = directory.appendingPathComponent(Self.fileName(chunkIndex))
-        FileManager.default.createFile(atPath: url.path, contents: Self.header(samples: 0, rate: sampleRate))
-        handle = try FileHandle(forWritingTo: url)
-        handle?.seekToEndOfFile()
+        guard
+            FileManager.default.createFile(
+                atPath: url.path, contents: Self.header(samples: 0, rate: sampleRate))
+        else {
+            finished = true
+            throw CocoaError(.fileWriteOutOfSpace, userInfo: [NSFilePathErrorKey: url.path])
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        self.handle = handle
+        do {
+            try handle.seekToEnd()
+        } catch {
+            fail()
+            throw error
+        }
         chunkSamples = 0
         chunkStart = trackSamples
         chunkStartHostNs = hostNs
@@ -417,10 +443,17 @@ final class ChunkedWavWriter {
 
     private func closeChunk() throws {
         guard let handle else { return }
-        handle.seek(toFileOffset: 0)
-        handle.write(Self.header(samples: chunkSamples, rate: sampleRate))
-        try handle.close()
+        // The handle goes and the chunk is reported whatever happens to the header: a header
+        // rewrite overwrites bytes already on disk, so it normally succeeds even on a full disk.
         self.handle = nil
+        var headerError: Error?
+        do {
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: Self.header(samples: chunkSamples, rate: sampleRate))
+        } catch {
+            headerError = error
+        }
+        try? handle.close()
         let end = chunkStart + Int64(chunkSamples)
         let inside = pendingDiscontinuities.filter { $0.sample < end }
         pendingDiscontinuities.removeAll { $0.sample < end }
@@ -430,6 +463,7 @@ final class ChunkedWavWriter {
             discontinuities: inside.isEmpty ? nil : inside)
         chunkIndex += 1
         onChunkClosed(chunk)
+        if let headerError { throw headerError }
     }
 
     static func header(samples: Int, rate: Int) -> Data {
@@ -605,6 +639,24 @@ struct RecorderLifecycle: Equatable {
     }
 }
 
+/// What the user is told when a meeting recording stops because a write failed.
+enum MeetingWriteFailure {
+    static func isOutOfSpace(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == CocoaError.fileWriteOutOfSpace.rawValue { return true }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(ENOSPC) || ns.code == Int(EDQUOT) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error { return isOutOfSpace(underlying) }
+        return false
+    }
+
+    static func message(for error: Error) -> (title: String, detail: String) {
+        let kept = "What was recorded until then is saved in Notes."
+        return isOutOfSpace(error)
+            ? ("Meeting recording stopped", "The disk is full. \(kept)")
+            : ("Meeting recording stopped", "Phonon could not write the recording. \(kept)")
+    }
+}
+
 enum MeetingRecorderError: LocalizedError {
     case noMicrophone
 
@@ -767,7 +819,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
                 let hostNs = HostClock.plausible(
                     when.isHostTimeValid ? HostClock.nanoseconds(machTicks: when.hostTime) : nil,
                     now: HostClock.now())
-                self.queue.async { try? self.mic.append(samples, hostNs: hostNs) }
+                self.queue.async { self.write(self.mic, samples, hostNs: hostNs) }
             }
         }, &raised)
         guard installed else { throw raised ?? MeetingRecorderError.noMicrophone }
@@ -855,7 +907,25 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         // another, convert rather than write samples the track clock would misplace.
         let rate = Self.sampleRate(sampleBuffer) ?? target.sampleRate
         guard let samples = systemSamples(captured, rate: rate) else { return }
-        try? system.append(samples, hostNs: hostNs)
+        write(system, samples, hostNs: hostNs)
+    }
+
+    /// Called once, on the writer queue, when a write fails (a full disk). Set before `start`.
+    var onWriteFailed: ((Error) -> Void)?
+    /// On `queue`.
+    private var writeFailed = false
+
+    /// On `queue`: a failed write closes that track's open chunk (ChunkedWavWriter) and is
+    /// reported once, so the controller stops the recording and keeps what was written.
+    private func write(_ writer: ChunkedWavWriter, _ samples: [Float], hostNs: UInt64?) {
+        do {
+            try writer.append(samples, hostNs: hostNs)
+        } catch {
+            guard !writeFailed else { return }
+            writeFailed = true
+            NSLog("phonon meeting: write failed: \(error.localizedDescription)")
+            onWriteFailed?(error)
+        }
     }
 
     /// On `queue`: the converter for system audio delivered at a rate other than the track's.

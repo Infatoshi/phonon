@@ -2424,6 +2424,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.onRecordingChanged = { [weak self] app in self?.meetingRecordingChanged(app) }
         meetings.onFlowChanged = { [weak self] flow in self?.meetingFlowChanged(flow) }
         meetings.onSettingsChanged = { [weak self] in self?.applySettings() }
+        meetings.onRecordingFailed = { [weak self] title, detail in
+            self?.notPasted.showMessage(title: title, detail: detail)
+        }
         meetings.refresh()
         appStore.onStartNoteTaker = { [weak self] in self?.meetings.startManually() }
         appStore.onStopNoteTaker = { [weak self] in self?.meetings.stopFromUser() }

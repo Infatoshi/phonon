@@ -415,6 +415,64 @@ final class MeetingRecordingFilesTests: XCTestCase {
         XCTAssertEqual(u32(4), 36 + 84_000)
     }
 
+    /// A write that fails mid-meeting (a full disk; here the process file-size limit, which
+    /// fails the same `write` with EFBIG) throws instead of raising the Objective-C exception
+    /// `FileHandle.write(_:)` raised, which crashed the app. The chunk is closed with every
+    /// sample written before the failure, and later appends do nothing.
+    func testAFailedWriteThrowsAndKeepsWhatWasWritten() throws {
+        var closed = [MeetingChunk]()
+        let folder = directory.appendingPathComponent("full")
+        let writer = try ChunkedWavWriter(
+            directory: folder, chunkSeconds: 60, onChunkClosed: { closed.append($0) })
+        let buffer = [Float](repeating: 0.25, count: 4_096)  // 8,192 bytes per append
+        var limit = rlimit()
+        getrlimit(RLIMIT_FSIZE, &limit)
+        let saved = limit
+        let oldHandler = signal(SIGXFSZ, SIG_IGN)
+        limit.rlim_cur = 100_000
+        setrlimit(RLIMIT_FSIZE, &limit)
+        var appended = 0
+        var failure: Error?
+        while appended < 40 {
+            do {
+                try writer.append(buffer)
+                appended += 1
+            } catch {
+                failure = error
+                break
+            }
+        }
+        var restore = saved
+        setrlimit(RLIMIT_FSIZE, &restore)
+        signal(SIGXFSZ, oldHandler)
+
+        XCTAssertNotNil(failure, "the write past the limit throws")
+        XCTAssertGreaterThan(appended, 0)
+        XCTAssertTrue(writer.finished, "no more appends after a failure")
+        XCTAssertEqual(closed.count, 1, "the open chunk is closed")
+        XCTAssertEqual(closed.first?.sampleCount, Int64(appended * 4_096))
+        try writer.append(buffer)
+        try writer.finish()
+        XCTAssertEqual(closed.count, 1)
+        let data = try Data(contentsOf: folder.appendingPathComponent("0000.wav"))
+        let size = data[40..<44].enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) }
+        XCTAssertEqual(Int(size), appended * 4_096 * 2, "the header counts what was written")
+        XCTAssertGreaterThanOrEqual(data.count, 44 + Int(size))
+    }
+
+    func testTheUserIsToldWhyTheRecordingStopped() {
+        let full = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+        XCTAssertTrue(MeetingWriteFailure.isOutOfSpace(full))
+        XCTAssertTrue(MeetingWriteFailure.isOutOfSpace(CocoaError(.fileWriteOutOfSpace)))
+        XCTAssertTrue(
+            MeetingWriteFailure.isOutOfSpace(
+                NSError(domain: NSCocoaErrorDomain, code: 512, userInfo: [NSUnderlyingErrorKey: full])))
+        XCTAssertTrue(MeetingWriteFailure.message(for: full).detail.contains("disk is full"))
+        let other = MeetingWriteFailure.message(for: NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)))
+        XCTAssertFalse(other.detail.contains("disk is full"))
+        XCTAssertTrue(other.detail.contains("saved in Notes"))
+    }
+
     /// Second review, item 5: samples arriving after the stop (late SCK or
     /// mic buffers) reopened a chunk that nobody would ever close.
     func testSamplesAfterFinishAreDropped() throws {
