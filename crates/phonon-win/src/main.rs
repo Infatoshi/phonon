@@ -141,8 +141,11 @@ fn main() -> Result<()> {
         Command::SignBackends { key, manifest } => sign_backends(&key, &manifest),
         Command::Run => {
             let Some(_guard) = single::claim(&paths::data_root())? else {
-                eprintln!("phonon: Phonon is already running; this copy exits");
-                return Ok(());
+                // Started again from the Start menu or a launcher: the user wants to see Phonon, and a line on a
+                // console that closes at once shows nothing. Become the settings window, the same process the
+                // tray's Settings item starts (it raises the window when one is already open).
+                eprintln!("phonon: Phonon is already running; opening its settings window");
+                return settings_window(None);
             };
             run()
         }
