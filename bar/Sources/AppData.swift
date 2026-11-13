@@ -31,6 +31,9 @@ struct NativeSettings: Codable, Equatable {
     /// Bundle IDs of competing dictation apps the owner answered "Don't ask
     /// again" for. See `CompetingApps.swift`.
     var competitorQuitMuted: [String]
+    /// When (seconds since 1970) the owner last answered "Not Now" to quitting a competing
+    /// dictation app, by bundle ID: not asked again for `CompetitorPolicy.notNowCooldown`.
+    var competitorQuitSnoozed: [String: Double]
     /// Watch the field after insertion and offer what the user corrected.
     var editLearning: Bool
     /// Approved style preferences by app category, e.g. `["chat":
@@ -99,6 +102,7 @@ struct NativeSettings: Codable, Equatable {
         case privacyChoiceMade = "privacy_choice_made"
         case historyRetentionDays = "history_retention_days"
         case competitorQuitMuted = "competitor_quit_muted"
+        case competitorQuitSnoozed = "competitor_quit_snoozed"
         case editLearning = "edit_learning"
         case stylePreferences = "style_preferences"
         case screenContextDenylist = "screen_context_denylist"
@@ -135,6 +139,7 @@ struct NativeSettings: Codable, Equatable {
         privacyChoiceMade: Bool = false,
         historyRetentionDays: Int = NativeSettings.keepRecordingsForever,
         competitorQuitMuted: [String] = [],
+        competitorQuitSnoozed: [String: Double] = [:],
         editLearning: Bool = true,
         stylePreferences: [String: [String]] = [:],
         screenContextDenylist: [String] = ContextPolicy.defaultDenylist,
@@ -169,6 +174,7 @@ struct NativeSettings: Codable, Equatable {
         self.privacyChoiceMade = privacyChoiceMade
         self.historyRetentionDays = historyRetentionDays
         self.competitorQuitMuted = competitorQuitMuted
+        self.competitorQuitSnoozed = competitorQuitSnoozed
         self.editLearning = editLearning
         self.stylePreferences = stylePreferences
         self.screenContextDenylist = screenContextDenylist
@@ -219,6 +225,8 @@ struct NativeSettings: Codable, Equatable {
             ?? NativeSettings.keepRecordingsForever
         competitorQuitMuted =
             try values.decodeIfPresent([String].self, forKey: .competitorQuitMuted) ?? []
+        competitorQuitSnoozed =
+            try values.decodeIfPresent([String: Double].self, forKey: .competitorQuitSnoozed) ?? [:]
         editLearning = try values.decodeIfPresent(Bool.self, forKey: .editLearning) ?? true
         stylePreferences =
             try values.decodeIfPresent([String: [String]].self, forKey: .stylePreferences) ?? [:]

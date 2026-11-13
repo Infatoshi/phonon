@@ -370,15 +370,20 @@ enum CompetitorPolicy {
         }
     }
 
-    /// Ask once per session per app, plus at most one more time when the app
-    /// relaunches (SPEC step 5). Never for an app the user muted with "Don't
-    /// ask again".
+    /// "Not Now" holds for a week, across launches: the question is a blocking alert, and
+    /// held only in memory it came back on every launch.
+    static let notNowCooldown: TimeInterval = 7 * 24 * 60 * 60
+
+    /// At most once per launch per app (a relaunch of the app or a new shortcut does not ask
+    /// again in the same launch), not within `notNowCooldown` of a "Not Now" (`snoozedAt`,
+    /// seconds since 1970), and never for an app the user muted with "Don't ask again".
     static func shouldPrompt(
-        bundleID: String, muted: [String], promptCount: Int, relaunch: Bool
+        bundleID: String, muted: [String], promptCount: Int, snoozedAt: Double? = nil,
+        now: Double = Date().timeIntervalSince1970
     ) -> Bool {
         if muted.contains(bundleID) { return false }
-        if promptCount == 0 { return true }
-        return relaunch && promptCount < 2
+        if let snoozedAt, now >= snoozedAt, now - snoozedAt < notNowCooldown { return false }
+        return promptCount == 0
     }
 
     /// A helper process may be signalled only when both its name and its path
@@ -521,19 +526,18 @@ final class CompetitorCoordinator {
         }
     }
 
-    /// SPEC step 1: rescan on every hotkey change. A new shortcut changes the
-    /// verdict, so earlier "not now" answers no longer apply.
+    /// SPEC step 1: rescan on every hotkey change. An app already asked about this launch, or
+    /// within a week of "Not Now", is not asked again (the menu's check still asks).
     func settingsChanged() {
         let mode = store.settings.shortcutMode
         guard mode != lastShortcutMode else { return }
         lastShortcutMode = mode
-        promptCounts.removeAll()
         check(trigger: "hotkey-change")
     }
 
     /// Scan now and prompt if anything qualifies. Runs the alert modally.
     func check(trigger: String) {
-        let findings = scan(ignoreMuted: false, relaunch: trigger == "relaunch")
+        let findings = scan(ignoreMuted: false)
         guard !findings.isEmpty else { return }
         NSLog(
             "phonon competitors: \(trigger) found \(findings.map(\.app.name).joined(separator: ", "))")
@@ -577,11 +581,12 @@ final class CompetitorCoordinator {
     // MARK: Scan
 
     func scan(
-        ignoreMuted: Bool, requireConflict: Bool = true, relaunch: Bool = false
+        ignoreMuted: Bool, requireConflict: Bool = true
     ) -> [CompetitorFinding] {
         let running = NSWorkspace.shared.runningApplications
         let mode = store.settings.shortcutMode
         let muted = store.settings.competitorQuitMuted
+        let snoozed = store.settings.competitorQuitSnoozed
         var findings: [CompetitorFinding] = []
         for app in CompetingAppTable.apps {
             let instances = running.filter { instance in
@@ -593,7 +598,7 @@ final class CompetitorCoordinator {
                 !CompetitorPolicy.shouldPrompt(
                     bundleID: app.primaryBundleID, muted: muted,
                     promptCount: promptCounts[app.primaryBundleID, default: 0],
-                    relaunch: relaunch)
+                    snoozedAt: snoozed[app.primaryBundleID])
             {
                 continue
             }
@@ -647,7 +652,13 @@ final class CompetitorCoordinator {
                 }
             }
         default:
+            // "Not Now" (or the alert closed another way): not again for a week, across launches.
             NSLog("phonon competitors: user kept \(names.joined(separator: ", "))")
+            let ids = findings.map(\.app.primaryBundleID)
+            let now = Date().timeIntervalSince1970
+            store.updateSettings { settings in
+                for id in ids { settings.competitorQuitSnoozed[id] = now }
+            }
         }
     }
 

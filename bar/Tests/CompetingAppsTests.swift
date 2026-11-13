@@ -141,22 +141,42 @@ final class CompetingAppsTests: XCTestCase {
 
     func testPromptGate() {
         let id = "com.electron.wispr-flow"
+        XCTAssertTrue(CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 0))
+        XCTAssertFalse(CompetitorPolicy.shouldPrompt(bundleID: id, muted: [id], promptCount: 0))
+        // At most once per launch, a relaunch of the app included.
+        XCTAssertFalse(CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 1))
         XCTAssertTrue(
-            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 0, relaunch: false))
+            CompetitorPolicy.shouldPrompt(bundleID: id, muted: ["com.electron.aqua-voice"], promptCount: 0))
+    }
+
+    /// The owner's report: "Not Now" was held in memory only, so the blocking alert came back
+    /// on every launch. It now holds for a week, read from settings at each launch.
+    func testNotNowHoldsForAWeekAcrossLaunches() throws {
+        let id = "com.electron.wispr-flow"
+        let day: Double = 24 * 60 * 60
+        let at: Double = 1_800_000_000
+        // A fresh launch (count 0) the next day: not asked.
         XCTAssertFalse(
-            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [id], promptCount: 0, relaunch: false))
+            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 0, snoozedAt: at, now: at + day))
         XCTAssertFalse(
-            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [id], promptCount: 0, relaunch: true))
-        // Once per session, unless the app relaunched: then one more time only.
-        XCTAssertFalse(
-            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 1, relaunch: false))
-        XCTAssertTrue(
-            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 1, relaunch: true))
-        XCTAssertFalse(
-            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 2, relaunch: true))
-        XCTAssertTrue(
             CompetitorPolicy.shouldPrompt(
-                bundleID: id, muted: ["com.electron.aqua-voice"], promptCount: 0, relaunch: false))
+                bundleID: id, muted: [], promptCount: 0, snoozedAt: at, now: at + 7 * day - 1))
+        XCTAssertTrue(
+            CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 0, snoozedAt: at, now: at + 7 * day))
+        // Another app's snooze does not hold this one.
+        XCTAssertTrue(CompetitorPolicy.shouldPrompt(bundleID: id, muted: [], promptCount: 0, snoozedAt: nil, now: at))
+
+        // The answer survives a save and a load of settings.json.
+        var settings = NativeSettings()
+        settings.competitorQuitSnoozed[id] = at
+        let data = try JSONEncoder().encode(settings)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual((json["competitor_quit_snoozed"] as? [String: Double])?[id], at)
+        let loaded = try JSONDecoder().decode(NativeSettings.self, from: data)
+        XCTAssertEqual(loaded.competitorQuitSnoozed[id], at)
+        // Settings written before this field still load.
+        let old = try JSONDecoder().decode(NativeSettings.self, from: Data(#"{"schema_version":2}"#.utf8))
+        XCTAssertEqual(old.competitorQuitSnoozed, [:])
     }
 
     func testHelperMatchNeedsNameAndPath() {
