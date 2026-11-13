@@ -2295,6 +2295,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var pendingTranscribe: (path: String, id: String)?
     private var submittedTranscribe: (path: String, id: String)?
     private var processing = false
+    /// Dictations still processing when the next one started: finished in the background,
+    /// their text shown on the "not pasted" card.
+    private var earlier = EarlierDictations()
+    /// What an earlier dictation put on that card, so a second one adds to it.
+    private var earlierCardText: String?
     private var streamActive = false
     private var latestAcousticPreview = ""
     /// Live text is on for the open dictation, so partials show as its uncorrected tail.
@@ -2914,7 +2919,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             if isRecording && state.streamingPreviewEnabled && !streamActive {
                 startAsrStream()
             }
-            // Flush first-pass work that arrived early.
+            // Flush first-pass work that arrived early, earlier dictations first.
+            run(earlier.engineReady())
             if let pending = pendingTranscribe {
                 pendingTranscribe = nil
                 sendTranscribe(path: pending.path, id: pending.id)
@@ -2946,6 +2952,12 @@ final class AppController: NSObject, NSApplicationDelegate {
                     showLiveTextTail(stable)
                     return
                 }
+                if let id, let steps = earlier.transcript(
+                    id: id, text: text, keepAudio: appStore.settings.localHistory)
+                {
+                    run(steps)
+                    return
+                }
                 guard id == activeId else { return }
                 if e2eTrace?.passId == id {
                     e2eTrace?.asrResultNs = DispatchTime.now().uptimeNanoseconds
@@ -2968,6 +2980,12 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
                 submitFinalPolish(text, id: pid)
             } else if kind == "polish" {
+                if let id, let steps = earlier.corrected(
+                    id: id, text: ev["text"] as? String, keepAudio: appStore.settings.localHistory)
+                {
+                    run(steps)
+                    return
+                }
                 guard id == activeId else { return }
                 if e2eTrace?.passId == id {
                     e2eTrace?.polishResultNs = DispatchTime.now().uptimeNanoseconds
@@ -3073,6 +3091,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             let msg = ev["msg"] as? String ?? "error"
             appStore.lastError = msg
             NSLog("phonon engine error: \(msg)")
+            if let id = ev["id"] as? String, let steps = earlier.failed(
+                id: id, keepAudio: appStore.settings.localHistory)
+            {
+                run(steps)
+                return
+            }
             if let id = ev["id"] as? String, id != activeId { return }
             if isRecording { return }
             // Don't kill a queued first pass on boot-stream noise.
@@ -3273,18 +3297,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         source: String = "direct", eventNs: UInt64 = DispatchTime.now().uptimeNanoseconds,
         callbackNs: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
-        // If previous pass still polishing, abandon it for snappy re-trigger.
-        if processing {
-            if let pendingTranscribe {
-                MicRecorder.discardWav(at: pendingTranscribe.path)
-            }
-            pendingTranscribe = nil
-            submittedTranscribe = nil
-            pendingFinalPolish = nil
-            processing = false
-        }
         guard !isRecording else { return }
-        notPasted.dismiss()
+        // The previous pass is still processing: start at once, and finish that one in the
+        // background; its text goes to the "not pasted" card, never dropped.
+        if processing { setEarlierAside() }
+        // A card holding an earlier dictation's text stays until it times out or is closed.
+        if earlierCardText == nil || notPasted.current?.text != earlierCardText {
+            notPasted.dismiss()
+            earlierCardText = nil
+        }
         editLearning.interrupt(reason: .nextDictation)
         let ownPID = ProcessInfo.processInfo.processIdentifier
         if let frontmost = NSWorkspace.shared.frontmostApplication,
@@ -3462,7 +3483,13 @@ final class AppController: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard self.activeId == id, self.processing else {
-                    if let path { MicRecorder.discardWav(at: path) }
+                    if let steps = self.earlier.wavWritten(
+                        id: id, path: path, engineReady: self.enginesReady)
+                    {
+                        self.run(steps)
+                    } else if let path {
+                        MicRecorder.discardWav(at: path)
+                    }
                     return
                 }
                 if self.e2eTrace?.passId == id {
@@ -3581,6 +3608,86 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         submittedTranscribe = (path, id)
         engine.send(["cmd": "transcribe", "path": path, "id": id, "source": "bar"])
+    }
+
+    /// The pass being processed is set aside (EarlierDictations) so the next can start: the
+    /// stage it reached, its WAV, and its own correction context come with it.
+    private func setEarlierAside() {
+        defer {
+            pendingTranscribe = nil
+            submittedTranscribe = nil
+            pendingFinalPolish = nil
+            screenWaitWork?.cancel()
+            screenWaitWork = nil
+            activeWavPath = nil
+            e2eTrace = nil
+            processing = false
+        }
+        guard let id = activeId else { return }
+        let stage: EarlierDictations.Stage
+        var path = activeWavPath
+        var polishSent = true
+        if let pending = pendingTranscribe, pending.id == id {
+            stage = .awaitingTranscribe
+            path = pending.path
+        } else if let submitted = submittedTranscribe, submitted.id == id {
+            stage = .transcribing
+            path = submitted.path
+        } else if let pending = pendingFinalPolish, pending.id == id {
+            stage = .polishing(raw: pending.text)
+            polishSent = false
+        } else if !rawText.isEmpty {
+            stage = .polishing(raw: rawText)
+        } else if activeWavPath == nil {
+            stage = .writingWav
+        } else {
+            return  // nothing in flight that can still produce text
+        }
+        let target = dictationTarget
+        let textbox = appStore.settings.textboxContext ? dictationTextbox : nil
+        let screen = screenCollection.text
+        let history = appStore.settings.localHistory
+        run(
+            earlier.add(
+                id: id, stage: stage, wavPath: path, polishSent: polishSent, engineReady: enginesReady,
+                polishCommand: { raw in
+                    PolishCommand.make(
+                        text: raw, id: id, screenText: screen, target: target, textbox: textbox,
+                        localHistory: history)
+                }))
+    }
+
+    /// Carries out what EarlierDictations asks for.
+    private func run(_ steps: [EarlierDictations.Step]) {
+        for step in steps {
+            switch step {
+            case let .transcribe(path, id):
+                engine.send(["cmd": "transcribe", "path": path, "id": id, "source": "bar"])
+            case let .polish(raw, id):
+                if let command = earlier.polishCommand(raw: raw, id: id) { engine.send(command) }
+            case let .dictationEnd(id):
+                engine.send(["cmd": "dictation_end", "id": id])
+            case let .show(raw, candidate):
+                let final = MacroBook.expand(
+                    PreviewRevisionPolicy.safeFinalText(source: raw, candidate: candidate),
+                    macros: appStore.macros)
+                guard !final.isEmpty else { continue }
+                let onCard = notPasted.current?.text == earlierCardText ? earlierCardText : nil
+                let text = EarlierDictations.cardText(onCard: onCard, adding: final)
+                earlierCardText = text
+                notPasted.show(text)
+            case let .deleteWav(path):
+                MicRecorder.discardWav(at: path)
+            }
+        }
+        // History lists the finished dictation, as after a paste.
+        let finished = steps.contains {
+            switch $0 {
+            case .show, .deleteWav: return true
+            default: return false
+            }
+        }
+        if finished { appStore.reloadAll() }
     }
 
     private func finishRecordingRetention() {
