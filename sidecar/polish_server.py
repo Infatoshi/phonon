@@ -127,7 +127,7 @@ GUARD_MIN_WORDS = 8
 POLISH_MLX_CACHE_LIMIT = 1 << 30
 WRITING_MODE_BY_CATEGORY = {
     "chat": "casual",  # personal chat: Discord, iMessage, WhatsApp
-    "work_chat": "formal",  # Slack, Teams, Google Chat
+    "work_chat": "casual",  # Slack, Teams, Google Chat: a chat message at work is still one
     "email": "formal",
     "ai_prompt": "prompt",
     "code": "prompt",  # terminals and editors: mostly prompts to a coding agent

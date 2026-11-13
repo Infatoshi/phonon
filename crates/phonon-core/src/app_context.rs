@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 pub enum AppCategory {
     /// Personal chat (Discord, iMessage, WhatsApp): casual.
     Chat,
-    /// Work chat (Slack, Teams, Google Chat): formal, like email.
+    /// Work chat (Slack, Teams, Google Chat): casual too; a chat message is a
+    /// chat message wherever it is sent.
     WorkChat,
     Email,
     /// Editors, IDEs and terminals (including agent CLIs run in them).
@@ -411,8 +412,9 @@ pub fn polish_context(
 /// else (`app`, absent, unknown) follows the app's category.
 const WRITING_STYLES: &[&str] = &["minimal", "casual", "formal"];
 
-/// settings.json `writing_modes_by_app` values: bundle id -> one of the refiner's
-/// four modes (Settings > Advanced > Writing mode per app). Others are ignored.
+/// settings.json `writing_modes_by_app` values: bundle id, or a browser site's
+/// host, -> one of the refiner's four modes (Settings > Advanced > Writing mode
+/// per app). Others are ignored.
 const APP_WRITING_MODES: &[&str] = &["minimal", "casual", "formal", "prompt"];
 
 /// Add the user's fixed writing mode to a sidecar `context` (the sidecar then
@@ -444,7 +446,7 @@ pub struct StylePreferenceCache {
     /// `writing_style` from the same file when it names one refiner mode
     /// (Settings > Advanced); None follows the app.
     writing_mode: Option<String>,
-    /// `writing_modes_by_app` from the same file: bundle id -> mode.
+    /// `writing_modes_by_app` from the same file: bundle id or site host -> mode.
     app_writing_modes: std::collections::BTreeMap<String, String>,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
@@ -496,16 +498,41 @@ impl StylePreferenceCache {
         self.writing_mode.clone()
     }
 
-    /// The writing mode for a dictation into `bundle_id`: the user's per-app pick
-    /// first, then the one mode picked for every app, else None (follow the app's
-    /// category).
-    pub fn writing_mode_for(&mut self, bundle_id: Option<&str>) -> Option<String> {
+    /// The writing mode for a dictation into `bundle_id`, on the page `url_host`
+    /// when it is a browser tab whose site is known: the user's pick for that site
+    /// first, then for the app, then the one mode picked for every app, else None
+    /// (follow the app's category).
+    pub fn writing_mode_for(
+        &mut self,
+        bundle_id: Option<&str>,
+        url_host: Option<&str>,
+    ) -> Option<String> {
         self.refresh();
-        bundle_id
-            .filter(|id| !id.is_empty())
-            .and_then(|id| self.app_writing_modes.get(id))
-            .cloned()
+        url_host
+            .and_then(normalize_host)
+            .and_then(|host| self.site_writing_mode(&host))
+            .or_else(|| {
+                bundle_id
+                    .filter(|id| !id.is_empty())
+                    .and_then(|id| self.app_writing_modes.get(id))
+                    .cloned()
+            })
             .or_else(|| self.writing_mode.clone())
+    }
+
+    /// A per-site pick: a `writing_modes_by_app` key that is a site host
+    /// (`mail.google.com`, or `slack.com` for every Slack workspace). The most
+    /// specific matching key wins. Bundle-id keys (reversed domains such as
+    /// `com.google.Chrome`) name no real site, so they do not match pages.
+    fn site_writing_mode(&self, host: &str) -> Option<String> {
+        self.app_writing_modes
+            .iter()
+            .filter_map(|(key, mode)| {
+                let site = normalize_host(key)?;
+                host_matches(host, &site).then_some((site.len(), mode))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, mode)| mode.clone())
     }
 
     fn refresh(&mut self) {
@@ -992,12 +1019,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             cache
-                .writing_mode_for(Some("com.mitchellh.ghostty"))
+                .writing_mode_for(Some("com.mitchellh.ghostty"), None)
                 .as_deref(),
             Some("minimal")
         );
         assert_eq!(
-            cache.writing_mode_for(Some("dev.lapis.desktop")).as_deref(),
+            cache
+                .writing_mode_for(Some("dev.lapis.desktop"), None)
+                .as_deref(),
             Some("prompt")
         );
         for other in [
@@ -1007,7 +1036,7 @@ mod tests {
             None,
         ] {
             assert_eq!(
-                cache.writing_mode_for(other).as_deref(),
+                cache.writing_mode_for(other, None).as_deref(),
                 Some("formal"),
                 "{other:?}"
             );
@@ -1019,16 +1048,90 @@ mod tests {
         .unwrap();
         assert_eq!(
             cache
-                .writing_mode_for(Some("com.mitchellh.ghostty"))
+                .writing_mode_for(Some("com.mitchellh.ghostty"), None)
                 .as_deref(),
             Some("casual")
         );
-        assert_eq!(cache.writing_mode_for(Some("com.apple.mail")), None);
+        assert_eq!(cache.writing_mode_for(Some("com.apple.mail"), None), None);
         std::fs::remove_file(&path).unwrap();
         assert_eq!(cache.writing_mode(), None);
-        assert_eq!(cache.writing_mode_for(Some("com.mitchellh.ghostty")), None);
+        assert_eq!(
+            cache.writing_mode_for(Some("com.mitchellh.ghostty"), None),
+            None
+        );
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
         assert!(!cache.live_text(), "no file: the default");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// A browser's mode can be picked per site: the site's pick wins when the
+    /// tab's host is known, else the browser's own pick (saved overrides keep
+    /// working), else the global pick.
+    #[test]
+    fn a_browser_mode_is_picked_per_site_with_the_app_as_fallback() {
+        let directory = std::env::temp_dir().join(format!(
+            "phonon-site-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":2,"writing_style":"minimal","writing_modes_by_app":
+                {"com.google.Chrome":"formal","slack.com":"casual",
+                 "mail.google.com":"formal","google.com":"prompt"}}"#,
+        )
+        .unwrap();
+        let mut cache = StylePreferenceCache::new(Some(path.clone()));
+        let chrome = Some("com.google.Chrome");
+        let mode = |cache: &mut StylePreferenceCache, host: Option<&str>| {
+            cache.writing_mode_for(chrome, host)
+        };
+        // a site key, its subdomains, and case and www. ignored
+        assert_eq!(
+            mode(&mut cache, Some("slack.com")).as_deref(),
+            Some("casual")
+        );
+        assert_eq!(
+            mode(&mut cache, Some("acme.slack.com")).as_deref(),
+            Some("casual")
+        );
+        assert_eq!(
+            mode(&mut cache, Some("WWW.Slack.com")).as_deref(),
+            Some("casual")
+        );
+        // the most specific site wins over a parent domain
+        assert_eq!(
+            mode(&mut cache, Some("mail.google.com")).as_deref(),
+            Some("formal")
+        );
+        assert_eq!(
+            mode(&mut cache, Some("docs.google.com")).as_deref(),
+            Some("prompt")
+        );
+        // a site with no pick, or an unreadable tab: the browser's own pick
+        assert_eq!(
+            mode(&mut cache, Some("example.org")).as_deref(),
+            Some("formal")
+        );
+        assert_eq!(mode(&mut cache, None).as_deref(), Some("formal"));
+        // another browser with no pick: the global pick; a site pick still applies
+        assert_eq!(
+            cache
+                .writing_mode_for(Some("org.mozilla.firefox"), Some("example.org"))
+                .as_deref(),
+            Some("minimal")
+        );
+        assert_eq!(
+            cache
+                .writing_mode_for(Some("org.mozilla.firefox"), Some("app.slack.com"))
+                .as_deref(),
+            Some("casual")
+        );
         let _ = std::fs::remove_dir_all(&directory);
     }
 

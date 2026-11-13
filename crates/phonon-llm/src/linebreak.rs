@@ -63,7 +63,7 @@ const CHAT_SIGN_OFFS: &[&str] = &[
     "warmly",
 ];
 
-/// Chat apps in formal mode (Slack, Teams, Google Chat). Refiners from RLQv4U on emit an
+/// Chat apps in formal mode (Slack, Teams, Google Chat with formal picked). Refiners from RLQv4U on emit an
 /// email's layout themselves in formal mode ("Hello team,\n\nBody.\n\nBest regards,\nChris"),
 /// and a greeting or sign-off alone on a line reads wrong in a chat message. This joins
 /// those newlines back into single spaces: the newlines after a leading greeting line, and
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn greeting_and_sign_off_break_only_for_email() {
         let text = "Hi Sarah, the build is green. Thanks, Chris";
-        // Slack / Teams: formal mode, but a chat message
+        // Slack / Teams with formal picked: formal mode, but a chat message
         assert_eq!(layout(text, "formal", false), text);
         // email
         assert_eq!(

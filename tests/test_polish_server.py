@@ -174,7 +174,7 @@ def test_writing_mode_follows_the_app_category(tmp_path):
     lines, table = read_writing_modes(str(tmp_path))
     pick = lambda context: writing_mode(lines, table, context)[0]
     assert pick({"app_category": "chat"}) == "casual"
-    assert pick({"app_category": "work_chat"}) == "formal"
+    assert pick({"app_category": "work_chat"}) == "casual"
     assert pick({"app_category": "email"}) == "formal"
     assert pick({"app_category": "ai_prompt"}) == "prompt"
     assert pick({"app_category": "code"}) == "prompt"

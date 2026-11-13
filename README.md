@@ -33,7 +33,7 @@ also include the DMG for direct installation. To build from source instead, use
 - **Data:** 76,960 transcripts of public audio and synthetic dictations, each rewritten by DeepSeek
   following a written spec, in four writing modes (casual, formal, prompt, minimal). No personal dictation
   went into it. The pipeline is in `ml/`.
-- **Mode:** picked from the app you dictate into: casual in Discord, formal in Slack and email, prompt in
+- **Mode:** picked from the app you dictate into: casual in chat apps (Slack, Teams, Discord), formal in email, prompt in
   AI assistants and terminals, minimal everywhere else.
 - **Speed:** both models work while you talk, so at key-up only the last seconds are left. The refiner runs
   on a native Metal engine (a decode megakernel with a speculative drafter). Key-up to pasted text is about

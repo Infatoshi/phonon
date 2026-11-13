@@ -167,8 +167,8 @@ pub struct Engine {
     /// commits carry the writing mode the final polish will use; and the category and
     /// writing mode the last commit went out with.
     stream_category: Option<(String, app_context::AppCategory)>,
-    /// The open stream's target bundle id, for a per-app writing mode.
-    stream_bundle: Option<(String, String)>,
+    /// The open stream's target bundle id and page host, for a per-app or per-site writing mode.
+    stream_bundle: Option<(String, String, Option<String>)>,
     stream_commit_category: (Option<app_context::AppCategory>, Option<String>),
     /// The open stream whose background drafts go out as `draft` results: settings.json
     /// `live_text` as of its `stream_start` (re-read only when the file changed), so a
@@ -274,7 +274,7 @@ fn byok_text_passes(dictionary: &data::DictionaryFile, source: &str, remote: &st
 
 /// Line breaks of the inserted text: numbered lists one per line in every mode but
 /// casual; the greeting and sign-off on their own lines only in email (`email_layout`),
-/// never in Slack or Teams although they map to formal. A chat app in formal mode also
+/// never in Slack or Teams, even with formal picked for them. A chat app in formal mode also
 /// gets the greeting and sign-off newlines the refiner wrote itself joined back
 /// (`linebreak::chat_join`); lists stay.
 fn final_layout(text: &str, mode: &str, category: Option<app_context::AppCategory>) -> String {
@@ -293,8 +293,9 @@ fn final_layout(text: &str, mode: &str, category: Option<app_context::AppCategor
 /// The refiner's writing mode for an app category (`polish_server.WRITING_MODE_BY_CATEGORY`).
 fn category_mode(category: Option<app_context::AppCategory>) -> &'static str {
     match category.map(|category| category.as_str()) {
-        Some("chat") => "casual",
-        Some("work_chat") | Some("email") => "formal",
+        // a chat message, personal or at work (Slack, Teams, Discord): casual
+        Some("chat") | Some("work_chat") => "casual",
+        Some("email") => "formal",
         Some("ai_prompt") | Some("code") => "prompt",
         _ => "minimal",
     }
@@ -744,9 +745,11 @@ impl Engine {
                             _ => Vec::new(),
                         };
                         // the draft's writing mode, resolved as the final polish resolves it
-                        let bundle = match &self.stream_bundle {
-                            Some((stream_id, bundle)) if *stream_id == id => Some(bundle.clone()),
-                            _ => None,
+                        let (bundle, host) = match &self.stream_bundle {
+                            Some((stream_id, bundle, host)) if *stream_id == id => {
+                                (Some(bundle.clone()), host.clone())
+                            }
+                            _ => (None, None),
                         };
                         let category = match &self.stream_category {
                             Some((stream_id, category)) if *stream_id == id => Some(*category),
@@ -754,7 +757,7 @@ impl Engine {
                         };
                         let mode = self
                             .styles
-                            .writing_mode_for(bundle.as_deref())
+                            .writing_mode_for(bundle.as_deref(), host.as_deref())
                             .unwrap_or_else(|| category_mode(category).to_string());
                         let mut corrected =
                             finish_correction(&self.dictionary, &source, &text, &style, &mode);
@@ -1070,7 +1073,7 @@ impl Engine {
         if self.segment_streams.contains_key(id) {
             let app = app_context::AppContext::from_request(app);
             self.stream_category = app.as_ref().map(|app| (id.to_string(), app.category));
-            self.stream_bundle = app.map(|app| (id.to_string(), app.bundle_id));
+            self.stream_bundle = app.map(|app| (id.to_string(), app.bundle_id, app.url_host));
         }
     }
 
@@ -1101,11 +1104,15 @@ impl Engine {
             _ => String::new(),
         };
         let category = self.stream_commit_context(id);
-        let bundle = match (&self.stream_bundle, id) {
-            (Some((stream_id, bundle)), Some(id)) if stream_id == id => Some(bundle.clone()),
-            _ => None,
+        let (bundle, host) = match (&self.stream_bundle, id) {
+            (Some((stream_id, bundle, host)), Some(id)) if stream_id == id => {
+                (Some(bundle.clone()), host.clone())
+            }
+            _ => (None, None),
         };
-        let mode = self.styles.writing_mode_for(bundle.as_deref());
+        let mode = self
+            .styles
+            .writing_mode_for(bundle.as_deref(), host.as_deref());
         if matches!(&self.stream_envelope, Some((t, s, _)) if *t == text && *s == screen)
             && (category, mode.clone()) == self.stream_commit_category
         {
@@ -1205,9 +1212,10 @@ impl Engine {
             None => Vec::new(),
         };
         let textbox = textbox.and_then(app_context::TextboxContext::from_request);
-        let mode = self
-            .styles
-            .writing_mode_for(app.as_ref().map(|app| app.bundle_id.as_str()));
+        let mode = self.styles.writing_mode_for(
+            app.as_ref().map(|app| app.bundle_id.as_str()),
+            app.as_ref().and_then(|app| app.url_host.as_deref()),
+        );
         let context = app_context::with_writing_mode(
             app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
             mode.as_deref(),
@@ -2022,7 +2030,7 @@ mod tests {
     fn greeting_and_sign_off_lines_only_in_email() {
         use super::final_layout;
         let text = "Hi Sarah, the build is green. Thanks, Chris";
-        // Slack and Teams map to formal: the message stays one line
+        // Slack and Teams with formal picked: the message stays one line
         assert_eq!(
             final_layout(text, "formal", Some(AppCategory::WorkChat)),
             text
@@ -2073,12 +2081,37 @@ mod tests {
     fn layout_modes_follow_the_category_table() {
         use super::category_mode;
         assert_eq!(category_mode(Some(AppCategory::Chat)), "casual");
-        assert_eq!(category_mode(Some(AppCategory::WorkChat)), "formal");
+        // a chat message is casual at work too (Slack, Teams, Google Chat)
+        assert_eq!(category_mode(Some(AppCategory::WorkChat)), "casual");
         assert_eq!(category_mode(Some(AppCategory::Email)), "formal");
         assert_eq!(category_mode(Some(AppCategory::Code)), "prompt");
         assert_eq!(category_mode(Some(AppCategory::AiPrompt)), "prompt");
         assert_eq!(category_mode(Some(AppCategory::Docs)), "minimal");
+        assert_eq!(category_mode(Some(AppCategory::Other)), "minimal");
         assert_eq!(category_mode(None), "minimal");
+        // unknown apps, and a browser whose tab address could not be read, stay minimal
+        for (bundle, host) in [
+            ("com.example.unknown", None),
+            ("com.google.Chrome", None),
+            ("com.apple.Safari", Some("example.org")),
+        ] {
+            let category = crate::app_context::categorize(bundle, host);
+            assert_eq!(
+                category_mode(Some(category)),
+                "minimal",
+                "{bundle} {host:?}"
+            );
+        }
+        for (bundle, host) in [
+            ("com.tinyspeck.slackmacgap", None),
+            ("com.microsoft.teams2", None),
+            ("com.hnc.Discord", None),
+            ("com.google.Chrome", Some("app.slack.com")),
+            ("com.google.Chrome", Some("chat.google.com")),
+        ] {
+            let category = crate::app_context::categorize(bundle, host);
+            assert_eq!(category_mode(Some(category)), "casual", "{bundle} {host:?}");
+        }
     }
 
     #[test]
