@@ -89,21 +89,14 @@ struct KeyboardView: View {
     /// One bar, always the same view (only its contents change), so a press that starts listening also gets its
     /// release: hold and let go to finish, or tap once to lock it on and tap again to finish. The writing mode lives in
     /// the app. (The old toolbar swapped the mic button for a different view on press, which dropped the release.)
+    /// The side button is always there, so the bar never changes width: an X while dictating, a settings circle
+    /// (opens Phonon) otherwise.
     private var toolbar: some View {
-        HStack(spacing: 8) {
-            if model.phase == .listening || model.phase == .working {
-                Button {
-                    tick()
-                    press = .none
-                    model.host?.cancelDictation()
-                } label: {
-                    Image(systemName: "xmark").font(.system(size: 14, weight: .semibold))
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(Ember.panelRaised))
-                        .foregroundStyle(Ember.soft)
-                }
-                .accessibilityLabel("Cancel dictation")
-            }
+        TalkBarStrip(control: TalkBarSideControl(phase: model.phase), onSide: {
+            tick()
+            press = .none
+            if let host = model.host { TalkBarSideControl(phase: model.phase).perform(on: host) }
+        }) {
             talkBar
         }
     }
@@ -123,40 +116,27 @@ struct KeyboardView: View {
     @State private var flash: String?
     @State private var flashID = 0
 
-    /// At rest the bar is a grey, softly blurred fluid that drifts inside the capsule (no label). Pressed, it becomes
-    /// the Mac's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2.6x: the black capsule whose ember
-    /// centre lights and swells with your voice, then breathes while the text is written. With the app not running
-    /// it looks the same (a tap opens Phonon). Only no Full Access keeps a short label over a dimmed fluid, since it
-    /// needs an instruction; at rest a new status shows the same way for about 2 s.
+    /// One capsule of fixed size in every state; only the fill changes. At rest it is a grey, softly blurred fluid
+    /// that drifts inside the capsule (no label). Dictating, it turns red, brighter with your voice, then breathes
+    /// while the text is written. With the app not running it looks the same (a tap opens Phonon). Only no Full
+    /// Access keeps a short label over a dimmed fluid, since it needs an instruction; at rest a new status shows the
+    /// same way for about 2 s.
     private var talkBar: some View {
-        let active = model.phase == .listening || model.phase == .working
-        let pillMode: MacPill.Mode = model.phase == .listening ? .listening : .working
         let animate = model.visible && !model.lowPower && !reduceMotion
-        let noAccess = model.phase == .needsAccess
-        return ZStack {
-            if active {
-                MacPill(mode: pillMode, level: voiceLevel, scale: 2.6, animate: animate)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.6)))
-            } else {
-                IdleFluid(animate: animate, dim: noAccess)
-                    .overlay {
-                        if noAccess {
-                            barText(barLabel)
-                        } else if let flash, resting {
-                            barText(flash).transition(.opacity)
-                        }
-                    }
-                    .transition(.opacity)
+        return TalkBarFill(state: TalkBarFill.Mode(phase: model.phase), level: voiceLevel, animate: animate,
+                           followLevel: !reduceMotion)
+            .overlay {
+                if model.phase == .needsAccess {
+                    barText(barLabel)
+                } else if let flash, resting {
+                    barText(flash).transition(.opacity)
+                }
             }
-        }
-        .animation(.easeOut(duration: 0.18), value: active)
-        .onChange(of: model.statusSeq) { _, _ in showStatus() }
-        .onChange(of: model.phase) { _, _ in
-            if !resting { clearFlash() }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 42)
-        .contentShape(Capsule())
+            .onChange(of: model.statusSeq) { _, _ in showStatus() }
+            .onChange(of: model.phase) { _, _ in
+                if !resting { clearFlash() }
+            }
+            .contentShape(Capsule())
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -468,58 +448,120 @@ private struct Key: View {
     }
 }
 
-/// The Mac's dictation capsule (bar/Sources/PhononBar.swift PillView), same geometry and colours, drawn at `scale`.
-/// Idle: a small black bar. Listening: wider and taller with the live level, ember centre lit by the voice, warm
-/// glow. Working: smaller, breathing on a 1.6 s cycle.
-struct MacPill: View {
-    enum Mode { case idle, listening, working }
-    let mode: Mode
-    let level: Double
-    var scale: CGFloat = 1
-    /// False with Reduce Motion, Low Power Mode or the keyboard off screen: the working breath holds still.
-    var animate = true
+/// The keyboard's top row: the side button, then the talk bar filling the rest of the width at a fixed height. The
+/// side button is present in every state (only its icon changes), so the bar's frame never depends on the phase.
+struct TalkBarStrip<Bar: View>: View {
+    static var barHeight: CGFloat { 42 }
+    static var sideSize: CGFloat { 44 }
+
+    let control: TalkBarSideControl
+    let onSide: () -> Void
+    @ViewBuilder let bar: () -> Bar
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: mode != .working || !animate)) { context in
-            let energy = energy(at: context.date)
-            let size = shellSize(energy: energy)
-            Capsule(style: .continuous)
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0),
-                            .init(color: Color(red: 0.42, green: 0.12, blue: 0.035).opacity(warmth(energy)),
-                                  location: 0.5),
-                            .init(color: .black, location: 1),
-                        ],
-                        startPoint: .leading, endPoint: .trailing)
-                )
-                .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(mode == .idle ? 0.10 : 0),
-                                                                  lineWidth: 0.5))
-                .shadow(color: Color(red: 0.55, green: 0.16, blue: 0.04).opacity(glow(energy)), radius: 4 * scale, y: scale)
-                .frame(width: size.width * scale, height: size.height * scale)
-                .animation(.spring(response: 0.22, dampingFraction: 0.86), value: size)
+        HStack(spacing: 8) {
+            Button(action: onSide) {
+                Image(systemName: control.symbol).font(.system(size: control == .stop ? 14 : 16, weight: .semibold))
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Ember.panelRaised))
+                    .foregroundStyle(Ember.soft)
+                    .frame(width: Self.sideSize, height: Self.sideSize)  // 44 pt hit target around the 40 pt circle
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(control.accessibilityLabel)
+            bar()
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.barHeight)
+        }
+    }
+}
+
+/// The button beside the talk bar: an X that cancels while dictating, a settings circle that opens Phonon otherwise.
+enum TalkBarSideControl: Equatable {
+    case stop, settings
+
+    init(phase: KeyboardPhase) {
+        self = phase == .listening || phase == .working ? .stop : .settings
+    }
+
+    var symbol: String { self == .stop ? "xmark" : "gearshape.fill" }
+    var accessibilityLabel: String { self == .stop ? "Cancel dictation" : "Open Phonon" }
+
+    func perform(on host: KeyboardHost) {
+        switch self {
+        case .stop: host.cancelDictation()
+        case .settings: host.openApp()
+        }
+    }
+}
+
+/// The talk bar's fill. It takes exactly the frame it is given in every state and audio level; voice and state show
+/// only in colour and brightness. Idle: the grey fluid. Listening: a red band whose brightness follows the smoothed
+/// level. Working: the same red breathing on a 1.6 s cycle. No scale, size or layout ever depends on the level.
+struct TalkBarFill: View {
+    enum Mode: Equatable {
+        case idle, noAccess, listening, working
+
+        init(phase: KeyboardPhase) {
+            switch phase {
+            case .listening: self = .listening
+            case .working: self = .working
+            case .needsAccess: self = .noAccess
+            case .ready, .needsSession: self = .idle
+            }
         }
     }
 
-    private func energy(at date: Date) -> Double {
-        switch mode {
-        case .idle: return 0
-        case .listening: return min(1, max(0.08, level))
+    let state: Mode
+    let level: Double
+    /// False with Reduce Motion, Low Power Mode or the keyboard off screen: the fluid and the breath hold still.
+    var animate = true
+    /// False with Reduce Motion: listening is one static red, not driven by the level.
+    var followLevel = true
+
+    var body: some View {
+        ZStack {
+            IdleFluid(animate: animate && !active, dim: state == .noAccess)
+                .opacity(active ? 0 : 1)
+            if active {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: state != .working || !animate)) { context in
+                    Self.ember(energy: energy(at: context.date))
+                }
+                .transition(.opacity)
+            }
+        }
+        .clipShape(Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(active ? 0.06 : 0), lineWidth: 0.5))
+        .animation(followLevel ? .easeOut(duration: 0.18) : nil, value: active)
+    }
+
+    private var active: Bool { state == .listening || state == .working }
+
+    /// 0...1: how bright the red is.
+    func energy(at date: Date) -> Double {
+        switch state {
+        case .idle, .noAccess: return 0
+        case .listening: return followLevel ? min(1, max(0.08, level)) : 0.55
         case .working:
+            guard animate else { return 0.27 }
             let breath = (sin(date.timeIntervalSinceReferenceDate * .pi * 2 / 1.6) + 1) / 2
             return 0.18 + breath * 0.18
         }
     }
 
-    private func warmth(_ energy: Double) -> Double { mode == .idle ? 0 : 0.50 + energy * 0.38 }
-    private func glow(_ energy: Double) -> Double { mode == .idle ? 0 : 0.22 + energy * 0.12 }
-
-    private func shellSize(energy: Double) -> CGSize {
-        switch mode {
-        case .idle: return CGSize(width: 40, height: 8)
-        case .listening: return CGSize(width: 66 + 14 * energy, height: 13 + 3 * energy)
-        case .working: return CGSize(width: 38 + 10 * energy, height: 10 + 3 * energy)
+    /// Dark red at the ends, a red centre that brightens toward ember orange-red with energy; a soft core glow on
+    /// top. Colours only: both layers fill the given rectangle.
+    static func ember(energy e: Double) -> some View {
+        let edge = Color(red: 0.10 + 0.18 * e, green: 0.02 + 0.02 * e, blue: 0.01)
+        let mid = Color(red: 0.45 + 0.50 * e, green: 0.08 + 0.17 * e, blue: 0.03 + 0.06 * e)
+        return ZStack {
+            Rectangle().fill(.black)
+            LinearGradient(stops: [.init(color: edge, location: 0), .init(color: mid, location: 0.5),
+                                   .init(color: edge, location: 1)],
+                           startPoint: .leading, endPoint: .trailing)
+            EllipticalGradient(colors: [Color(red: 1, green: 0.55, blue: 0.30).opacity(0.10 + 0.55 * e), .clear],
+                               center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5)
         }
     }
 }

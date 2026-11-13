@@ -132,6 +132,8 @@ targets:
       - App/DictionaryView.swift
       - App/RefinerPrompt.swift
       - Shared/Theme.swift
+      # the keyboard's SwiftUI (TalkBarTests); plain SwiftUI + UIKit, no IPC or extension APIs
+      - Shared/KeyboardUI.swift
       - path: ../crates/phonon-llm/src/opener_cases.json
         buildPhase: resources
       - path: ../crates/phonon-llm/src/linebreak_cases.json
