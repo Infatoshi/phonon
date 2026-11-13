@@ -112,12 +112,13 @@ final class MeetingController {
             if over { stop(reason: "call_ended") }
             return
         }
-        guard recorder == nil, case let .meeting(meeting, bundleID) = verdict,
-            prompts.shouldAsk(meeting: meeting, bundleID: bundleID, now: now)
-        else { return }
+        guard recorder == nil, case let .meeting(meeting, bundleID) = verdict else { return }
         let settings = store.settings
         let key = MeetingRules.key(app: meeting, bundleID: bundleID)
-        switch MeetingRules.decide(mode: settings.meetingMode, rule: settings.meetingRules.rule(for: key)) {
+        let decision = MeetingRules.decide(
+            mode: settings.meetingMode, rule: settings.meetingRules.rule(for: key))
+        // Asked once per call; a call already recorded resumes (as a new meeting) on its own.
+        switch prompts.action(meeting: meeting, bundleID: bundleID, decision: decision, now: now) {
         case .ignore:
             return
         case .record:
@@ -185,6 +186,8 @@ final class MeetingController {
     func undo() {
         guard let undone = flow.undo() else { return }
         store.undoMeetingRule(undone.change)
+        // Not recorded again on its own in this call unless the question is answered again.
+        holdOff(meeting: undone.app, bundleID: undone.bundleID)
         if undone.recorded, recorder != nil, !recordingManual {
             stop(reason: "undone", discard: true)
             // `stop` hid the popup; the question comes back for the same call.
@@ -263,6 +266,8 @@ final class MeetingController {
     /// before, then "Saved to Notes" above the capsule.
     func stopFromUser() {
         guard recorder != nil else { return }
+        // Stopped by the user: not restarted on its own in this call.
+        if let recordingApp { holdOff(meeting: recordingApp, bundleID: recordingBundleID) }
         stop(reason: "user_stopped")
     }
 
@@ -295,6 +300,7 @@ final class MeetingController {
             windowTitle: nil,
             conferenceURL: nil,
             micDevice: micDevice)
+        if let bundleID { prompts.accepted(meeting: meeting, bundleID: bundleID, now: Self.now()) }
         begin(meeting: meeting, bundleID: bundleID, directory: directory, metadata: metadata)
         guard let recorder, let bundleID else { return }
         Task.detached(priority: .userInitiated) {
@@ -330,13 +336,22 @@ final class MeetingController {
                     // stop the controller only if it is still this recording
                     // (a newer one may have started after a quick stop).
                     await recorder.stop(reason: "start_failed")
-                    guard let self, Self.isSame(self.recorder, recorder) else { return }
+                    guard let self else { return }
+                    self.holdOff(meeting: meeting, bundleID: bundleID)
+                    guard Self.isSame(self.recorder, recorder) else { return }
                     self.stop(reason: "start_failed")
                 }
             }
         } catch {
             NSLog("phonon meeting: \(error.localizedDescription)")
+            holdOff(meeting: meeting, bundleID: bundleID)
         }
+    }
+
+    /// A recording that could not start is not retried on every poll of the same call.
+    private func holdOff(meeting: String, bundleID: String?) {
+        guard let bundleID else { return }
+        prompts.holdOff(meeting: meeting, bundleID: bundleID, now: Self.now())
     }
 
     /// Whether `current` is the very recorder `candidate` (identity, not

@@ -254,9 +254,20 @@ struct MeetingPromptPolicy {
     static let callEndGap: TimeInterval = 2 * 60
 
     private var declined = [String: TimeInterval]()
-    /// Calls already asked about (or handled by a rule), by `callKey`, with when their app last
-    /// held the microphone.
-    private var calls = [String: (owner: String, lastHeld: TimeInterval)]()
+
+    struct Call {
+        var owner: String
+        /// When its app last held the microphone.
+        var lastHeld: TimeInterval
+        /// A recording of this call was started (a rule, Record, Always, Just this once).
+        var accepted = false
+        /// The user stopped or undid this call's recording, or it could not start: not
+        /// started again on its own until the call ends.
+        var heldOff = false
+    }
+
+    /// Calls already asked about (or handled by a rule), by `callKey`.
+    private var calls = [String: Call]()
 
     /// One call: the app holding the microphone, and what the prompt names (a browser can hold
     /// it for different sites).
@@ -282,9 +293,55 @@ struct MeetingPromptPolicy {
     mutating func shouldAsk(meeting: String, bundleID: String, now: TimeInterval) -> Bool {
         let key = Self.callKey(meeting: meeting, bundleID: bundleID)
         guard calls[key] == nil else { return false }
-        calls[key] = (MeetingDetector.owner(of: bundleID), now)
+        calls[key] = Call(owner: MeetingDetector.owner(of: bundleID), lastHeld: now)
         if let at = declined[meeting], now - at < Self.quietAfterDecline { return false }
         return true
+    }
+
+    /// What to do about a call detected while nothing records, given what its rule and the
+    /// mode say (`decision`). The first sight of a call asks (or applies the rule) as
+    /// `shouldAsk` allows. After that it is never asked about again, but it is recorded again
+    /// without a question when its recording stopped on its own (its app off the microphone
+    /// for `MeetingEndPolicy.grace`: mute, a device switch, a back-to-back call) and either the
+    /// rule is "always" or a recording of this call was accepted, unless the user stopped or
+    /// undid it.
+    mutating func action(
+        meeting: String, bundleID: String, decision: MeetingDecision, now: TimeInterval
+    ) -> MeetingDecision {
+        let key = Self.callKey(meeting: meeting, bundleID: bundleID)
+        guard let call = calls[key] else {
+            return shouldAsk(meeting: meeting, bundleID: bundleID, now: now) ? decision : .ignore
+        }
+        guard !call.heldOff, decision == .record || (call.accepted && decision == .ask) else {
+            return .ignore
+        }
+        return .record
+    }
+
+    /// A recording of this call started.
+    mutating func accepted(meeting: String, bundleID: String, now: TimeInterval) {
+        update(meeting: meeting, bundleID: bundleID, now: now) {
+            $0.accepted = true
+            $0.heldOff = false
+        }
+    }
+
+    /// The user stopped or undid this call's recording (or it failed to start): not
+    /// restarted on its own while the call lasts.
+    mutating func holdOff(meeting: String, bundleID: String, now: TimeInterval) {
+        update(meeting: meeting, bundleID: bundleID, now: now) {
+            $0.accepted = false
+            $0.heldOff = true
+        }
+    }
+
+    private mutating func update(
+        meeting: String, bundleID: String, now: TimeInterval, _ change: (inout Call) -> Void
+    ) {
+        let key = Self.callKey(meeting: meeting, bundleID: bundleID)
+        var call = calls[key] ?? Call(owner: MeetingDetector.owner(of: bundleID), lastHeld: now)
+        change(&call)
+        calls[key] = call
     }
 
     mutating func declined(_ meeting: String, now: TimeInterval) {

@@ -126,6 +126,113 @@ final class MeetingRepromptTests: XCTestCase {
             Self.prompts(moments, mode: .everyCall, rules: [Self.discord.lowercased(): .never]).count, 2)
     }
 
+    // MARK: Recording again after the end grace (an "always" call must not stay unrecorded)
+
+    struct Run {
+        var prompts: [TimeInterval] = []
+        var starts: [TimeInterval] = []
+        var stops: [TimeInterval] = []
+    }
+
+    /// `MeetingController.handle` with a recorder: the end policy stops a recording 10 s off
+    /// the mic; while nothing records, `MeetingPromptPolicy.action` says whether to ask, record
+    /// or do nothing. A question is answered with Record (`recordOnAsk`); `userStopsAt` presses
+    /// Stop at that time.
+    static func record(
+        _ moments: [Moment], mode: MeetingMode = .perApp, rules: [String: MeetingRule] = [:],
+        recordOnAsk: Bool = true, userStopsAt: TimeInterval? = nil
+    ) -> Run {
+        var policy = MeetingPromptPolicy()
+        var run = Run()
+        var recording: (app: String, bundleID: String, end: MeetingEndPolicy)?
+        let last = moments.map(\.to).max() ?? 0
+        var now: TimeInterval = 0
+        func start(_ app: String, _ bundleID: String) {
+            policy.accepted(meeting: app, bundleID: bundleID, now: now)
+            recording = (app, bundleID, MeetingEndPolicy(now: now))
+            run.starts.append(now)
+        }
+        while now <= last + 20 {
+            let moment = moments.first { $0.from <= now && now < $0.to }
+            let evidence = MeetingDetectionHarnessTests.evidence(moment)
+            policy.observe(holders: evidence.microphoneHolders, now: now)
+            if let stopAt = userStopsAt, let current = recording, now >= stopAt, run.stops.isEmpty {
+                policy.holdOff(meeting: current.app, bundleID: current.bundleID, now: now)
+                recording = nil
+                run.stops.append(now)
+            }
+            if var current = recording {
+                let inCall = MeetingDetector.stillInCall(
+                    recordingBundleID: current.bundleID, holders: evidence.microphoneHolders)
+                if current.end.observe(stillInCall: inCall, now: now) {
+                    recording = nil
+                    run.stops.append(now)
+                } else {
+                    recording = current
+                }
+            } else if case let .meeting(app, bundleID) = MeetingDetector.evaluate(evidence) {
+                let rule = rules[MeetingRules.key(app: app, bundleID: bundleID)]
+                switch policy.action(
+                    meeting: app, bundleID: bundleID, decision: MeetingRules.decide(mode: mode, rule: rule), now: now)
+                {
+                case .ignore: break
+                case .record: start(app, bundleID)
+                case .ask:
+                    run.prompts.append(now)
+                    if recordOnAsk { start(app, bundleID) }
+                }
+            }
+            now += MeetingController.detectionInterval
+        }
+        return run
+    }
+
+    static let always = [discord.lowercased(): MeetingRule.always]
+
+    /// Two Discord calls 30 s apart (the end grace is 10 s, the call end gap 2 minutes), and a
+    /// 30 s mute inside the second: an "always" rule records each stretch, never asking.
+    static let backToBack = [
+        inCall(0, 600), gap(600, 632), inCall(632, 1_200), gap(1_200, 1_232), inCall(1_232, 1_800),
+    ]
+
+    func testAlwaysRuleRecordsAgainAfterTheMicWasFree() {
+        let run = Self.record(Self.backToBack, rules: Self.always)
+        XCTAssertEqual(run.prompts, [])
+        XCTAssertEqual(run.starts, [0, 632, 1_232], "each stretch on the mic is recorded")
+        XCTAssertEqual(run.stops.count, 3)
+    }
+
+    func testARecordingTheUserAcceptedResumesWithoutANewQuestion() {
+        for mode in [MeetingMode.perApp, .everyCall] {
+            let run = Self.record(Self.backToBack, mode: mode)
+            XCTAssertEqual(run.prompts, [0], "\(mode): asked once")
+            XCTAssertEqual(run.starts, [0, 632, 1_232], "\(mode)")
+        }
+        // Not recorded at the question: nothing starts later in the call either.
+        XCTAssertEqual(Self.record(Self.backToBack, recordOnAsk: false).starts, [])
+        // "Never" stays silent.
+        XCTAssertEqual(Self.record(Self.backToBack, rules: [Self.discord.lowercased(): .never]).starts, [])
+    }
+
+    func testAStopByTheUserHoldsForTheRestOfTheCall() {
+        let run = Self.record(Self.backToBack, rules: Self.always, userStopsAt: 300)
+        XCTAssertEqual(run.starts, [0], "not restarted after Stop while the call lasts")
+        // After the call really ends (off the mic for the end gap), the next call records again.
+        let gapEnd = 1_800 + MeetingPromptPolicy.callEndGap + 20
+        let later = Self.record(
+            Self.backToBack + [Self.gap(1_800, gapEnd), Self.inCall(gapEnd, gapEnd + 300)],
+            rules: Self.always, userStopsAt: 300)
+        XCTAssertEqual(later.starts, [0, gapEnd])
+        XCTAssertEqual(later.prompts, [])
+    }
+
+    func testTheLongCallStillAsksOnceWhenRecordingResumes() {
+        let (moments, end) = Self.longCallThenANewOne()
+        let run = Self.record(moments)
+        XCTAssertEqual(run.prompts, [0, end + 600], "one question per call")
+        XCTAssertGreaterThan(run.starts.filter { $0 < end }.count, 1, "the mute gaps resume the recording")
+    }
+
     /// The end gap is what separates calls: just under it is the same call, just over it a new one.
     func testTheEndGapSeparatesCalls() {
         let gap = MeetingPromptPolicy.callEndGap
