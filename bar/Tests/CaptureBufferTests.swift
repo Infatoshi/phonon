@@ -41,6 +41,27 @@ final class CaptureBufferTests: XCTestCase {
         XCTAssertEqual(buffer.mono16k(), MicRecorder.resample(audio, from: 44_100, to: 16_000))
     }
 
+    /// Long past the cap, dropping is a moving start index, not a shift of the whole buffer:
+    /// storage stays at the cap's worth of pieces and the kept audio is exactly the last stretch.
+    func testPastTheCapStorageStaysBoundedAndExact() {
+        var buffer = CaptureBuffer(maxSeconds: 2)
+        let rate = 48_000.0
+        var next: Float = 0
+        var maxStored = 0
+        for _ in 0..<(60 * 47) {  // a minute of 1024-frame buffers, 30 times the cap
+            let chunk = (0..<1_024).map { Float($0) + next }
+            next += 1_024
+            buffer.append(chunk, rate: rate)
+            maxStored = max(maxStored, buffer.storedPieces)
+        }
+        XCTAssertLessThanOrEqual(maxStored, Int(2 * rate) / CaptureBuffer.pieceFrames + 2)
+        let kept = buffer.segments.first?.samples ?? []
+        XCTAssertEqual(kept.count, 96_000)
+        XCTAssertEqual(kept.first, next - 96_000)
+        XCTAssertEqual(kept.last, next - 1)
+        XCTAssertEqual(buffer.seconds, 2, accuracy: 1e-9)
+    }
+
     func testPastTheCapTheOldestAudioGoes() {
         var buffer = CaptureBuffer(maxSeconds: 1)
         let audio = (0..<72_000).map { Float($0) }

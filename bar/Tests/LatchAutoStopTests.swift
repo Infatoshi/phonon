@@ -89,6 +89,15 @@ final class LatchAutoStopTests: XCTestCase {
         XCTAssertEqual(stop.decision(at: 9.5), .discard, "no reading for over a second")
     }
 
+    /// Ctrl+Space and the menu toggle: nothing but the next press ends them, so they get the
+    /// same watch as a tapped hold key. A held key ends on its release and is not watched.
+    func testToggleStartsAreWatchedLikeALatchedTap() {
+        XCTAssertTrue(LatchAutoStop.watchesToggle(source: "control-space"))
+        XCTAssertTrue(LatchAutoStop.watchesToggle(source: "menu"))
+        XCTAssertFalse(LatchAutoStop.watchesToggle(source: "fn"))
+        XCTAssertFalse(LatchAutoStop.watchesToggle(source: "right-option"))
+    }
+
     func testTheLimitsAreTheChosenDefaults() {
         XCTAssertEqual(LatchAutoStop.noSpeechSeconds, 8)
         XCTAssertEqual(LatchAutoStop.silenceAfterSpeechSeconds, 60)

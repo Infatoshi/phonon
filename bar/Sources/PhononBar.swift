@@ -474,9 +474,9 @@ struct HoldKeyTapLatch {
     }
 }
 
-/// When a latched dictation (one tap of fn or Right Option) stops on its own, so a stray tap
-/// cannot leave the mic recording until the next press. A held key never stops this way (its
-/// release does), and neither do Ctrl+Space or a meeting.
+/// When a latched dictation (one tap of fn or Right Option, or a start by Ctrl+Space or the
+/// menu) stops on its own, so a stray tap cannot leave the mic recording until the next press.
+/// A held key never stops this way (its release does), and neither does a meeting.
 ///
 /// Speech is the capsule's `VoiceDetector` (the level meter against the room's floor), the
 /// same signal the live-text dot answers to, but only once it has lasted `speechRunSeconds`
@@ -512,6 +512,12 @@ struct LatchAutoStop {
 
     init(startedAt: TimeInterval) {
         self.startedAt = startedAt
+    }
+
+    /// Dictations started by a toggle (Ctrl+Space, the menu's Start or Stop Dictation): like a
+    /// tapped hold key, nothing but the next press ends them, so they are watched the same way.
+    static func watchesToggle(source: String) -> Bool {
+        source == "control-space" || source == "menu"
     }
 
     var heardSpeech: Bool { lastSpeechAt != nil }
@@ -2282,6 +2288,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Hears speech from the start of every dictation; acted on only once a tap latched it.
     private var latchAutoStop = LatchAutoStop(startedAt: 0)
     private var latchAutoStopTimer: Timer?
+    /// The open dictation was started by a toggle (`LatchAutoStop.watchesToggle`).
+    private var toggleLatched = false
     /// Times macOS disabled the event tap (a lost key release is likely each time).
     private var eventTapDisables = 0
     private var hotkeyRepresses = 0
@@ -3297,6 +3305,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             stopDictation(source: source, eventNs: eventNs, callbackNs: callbackNs)
         } else {
             startDictation(source: source, eventNs: eventNs, callbackNs: callbackNs)
+            if isRecording, LatchAutoStop.watchesToggle(source: source) {
+                toggleLatched = true
+                armLatchAutoStop()
+            }
         }
     }
 
@@ -3391,6 +3403,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         recordingStartedAt = Date()
         voiceDetector = VoiceDetector()
         stopLatchAutoStop()
+        toggleLatched = false
         latchAutoStop = LatchAutoStop(startedAt: ProcessInfo.processInfo.systemUptime)
         // No buffers at all never calls onAmplitude, so check on a timer too.
         micSilenceCheck?.cancel()
@@ -3535,7 +3548,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func checkLatchAutoStop() {
-        guard isRecording, fnTapLatch.latched || optionTapLatch.latched else {
+        guard isRecording, fnTapLatch.latched || optionTapLatch.latched || toggleLatched else {
             stopLatchAutoStop()
             return
         }
@@ -3544,6 +3557,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // The key is up (it latched), so the next press must start, not stop.
         fnTapLatch.reset()
         optionTapLatch.reset()
+        toggleLatched = false
         switch decision {
         case .commit:
             NSLog(
