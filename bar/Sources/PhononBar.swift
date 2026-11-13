@@ -1985,7 +1985,7 @@ enum Typer {
                 return copy
             } : []
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
+        guard pasteboard.writeObjects([dictationItem(text, temporary: restoreClipboard)]) else {
             throw NSError(
                 domain: "PhononBar", code: 2,
                 userInfo: [NSLocalizedDescriptionKey: "Could not copy dictation to the pasteboard"])
@@ -2013,6 +2013,23 @@ enum Typer {
             pasteboard.clearContents()
             pasteboard.writeObjects(previous)
         }
+    }
+
+    /// The nspasteboard.org markers clipboard managers honour: transient (on the clipboard only
+    /// for a moment) and concealed (do not keep it in a history).
+    static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+
+    /// What goes on the pasteboard for the paste. `temporary` (the user's clipboard comes back
+    /// after it): marked so clipboard managers skip it; otherwise plain text the user keeps.
+    static func dictationItem(_ text: String, temporary: Bool) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        if temporary {
+            item.setData(Data(), forType: transientType)
+            item.setData(Data(), forType: concealedType)
+        }
+        return item
     }
 
     static func makePasteEvents() -> (CGEvent, CGEvent)? {
