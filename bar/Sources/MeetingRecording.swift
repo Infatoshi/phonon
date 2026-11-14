@@ -597,6 +597,38 @@ struct MeetingEndPolicy {
         if stillInCall { lastSeen = now }
         return now - lastSeen >= Self.grace
     }
+
+    enum Step: Equatable {
+        case keep
+        /// Off the mic for `grace`: stop capturing, keep the meeting open.
+        case pause
+        /// Back on the mic: capture again into the same meeting.
+        case resume
+        /// Off the mic for `MeetingPromptPolicy.callEndGap`: the call is over.
+        case finish
+    }
+
+    private(set) var paused = false
+
+    /// What the controller does each poll. A call that leaves the mic (mute, a device switch,
+    /// a back-to-back call in the same app) and comes back within the call window stays one
+    /// meeting: capture pauses after `grace`, so nothing is recorded meanwhile, and the
+    /// track clock fills the gap with silence when it resumes.
+    mutating func step(stillInCall: Bool, now: TimeInterval) -> Step {
+        if stillInCall {
+            lastSeen = now
+            guard paused else { return .keep }
+            paused = false
+            return .resume
+        }
+        let off = now - lastSeen
+        if off >= MeetingPromptPolicy.callEndGap { return .finish }
+        if !paused, off >= Self.grace {
+            paused = true
+            return .pause
+        }
+        return .keep
+    }
 }
 
 /// Records the two tracks. Mic through its own AVAudioEngine (the dictation
@@ -682,6 +714,8 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
     /// so a stop can never miss a stream that is being attached.
     private struct State {
         var lifecycle = RecorderLifecycle()
+        /// Capture is off while the call is away from the mic (`pause`); the files stay open.
+        var paused = false
         var stream: SCStream?
         var systemRestarts = RestartBudget(limit: 3)
     }
@@ -746,7 +780,53 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         try? await Task.sleep(for: .seconds(1))
         guard let stream = try? await startSystemAudio() else { return }
         let attached = state.withLock { current -> Bool in
-            guard current.lifecycle.phase == .running, current.stream == nil else { return false }
+            guard current.lifecycle.phase == .running, !current.paused, current.stream == nil else {
+                return false
+            }
+            current.stream = stream
+            return true
+        }
+        if !attached { try? await stream.stopCapture() }
+    }
+
+    /// The call left the mic: stop both captures and keep the files open, so a call that comes
+    /// back stays one meeting. Nothing is captured meanwhile.
+    func pause() async {
+        let stream = state.withLock { current -> SCStream?? in
+            guard current.lifecycle.phase == .running, !current.paused else { return nil }
+            current.paused = true
+            let stream = current.stream
+            current.stream = nil
+            return .some(stream)
+        }
+        guard let stream else { return }
+        control.sync { stopMicrophone() }
+        if let running = stream { try? await running.stopCapture() }
+    }
+
+    /// The call is back on the mic: capture again into the same files. The track clock fills
+    /// the paused stretch with silence from the buffer timestamps.
+    func resume() async {
+        let resuming = state.withLock { current -> Bool in
+            guard current.lifecycle.phase == .running, current.paused else { return false }
+            current.paused = false
+            return true
+        }
+        guard resuming else { return }
+        do {
+            try control.sync {
+                try startMicrophone()
+                // Stopped or paused again meanwhile: leave the mic off.
+                if !state.withLock({ $0.lifecycle.phase == .running && !$0.paused }) { stopMicrophone() }
+            }
+        } catch {
+            NSLog("phonon meeting: microphone did not resume: \(error.localizedDescription)")
+        }
+        guard let stream = try? await startSystemAudio() else { return }
+        let attached = state.withLock { current -> Bool in
+            guard current.lifecycle.phase == .running, !current.paused, current.stream == nil else {
+                return false
+            }
             current.stream = stream
             return true
         }
@@ -829,7 +909,7 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
 
     /// On `control`: re-install the tap on the new input while recording.
     private func restartMicrophone() {
-        guard state.withLock({ $0.lifecycle.mayRestartInput }) else { return }
+        guard state.withLock({ $0.lifecycle.mayRestartInput && !$0.paused }) else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         do {

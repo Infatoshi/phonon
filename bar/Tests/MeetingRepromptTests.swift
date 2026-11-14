@@ -233,6 +233,83 @@ final class MeetingRepromptTests: XCTestCase {
         XCTAssertGreaterThan(run.starts.filter { $0 < end }.count, 1, "the mute gaps resume the recording")
     }
 
+    // MARK: One call, one meeting (a mute or a back-to-back call pauses, never splits)
+
+    struct Meeting: Equatable {
+        var start: TimeInterval
+        var pauses: [TimeInterval] = []
+        var resumes: [TimeInterval] = []
+        var end: TimeInterval?
+    }
+
+    /// `MeetingController.handle` with the end policy's steps: an "always" rule records, a
+    /// stretch off the mic pauses capture after the grace, coming back resumes the same
+    /// meeting, and only the call end gap finishes it.
+    static func meetings(_ moments: [Moment]) -> [Meeting] {
+        var prompts = MeetingPromptPolicy()
+        var meetings: [Meeting] = []
+        var recording: (bundleID: String, end: MeetingEndPolicy)?
+        let last = moments.map(\.to).max() ?? 0
+        var now: TimeInterval = 0
+        while now <= last + MeetingPromptPolicy.callEndGap + 20 {
+            let moment = moments.first { $0.from <= now && now < $0.to }
+            let evidence = MeetingDetectionHarnessTests.evidence(moment)
+            prompts.observe(holders: evidence.microphoneHolders, now: now)
+            if var current = recording {
+                let inCall = MeetingDetector.stillInCall(
+                    recordingBundleID: current.bundleID, holders: evidence.microphoneHolders)
+                switch current.end.step(stillInCall: inCall, now: now) {
+                case .keep: recording = current
+                case .pause:
+                    meetings[meetings.count - 1].pauses.append(now)
+                    recording = current
+                case .resume:
+                    meetings[meetings.count - 1].resumes.append(now)
+                    recording = current
+                case .finish:
+                    meetings[meetings.count - 1].end = now
+                    recording = nil
+                }
+            } else if case let .meeting(app, bundleID) = MeetingDetector.evaluate(evidence),
+                prompts.action(
+                    meeting: app, bundleID: bundleID,
+                    decision: MeetingRules.decide(mode: .perApp, rule: .always), now: now) == .record
+            {
+                prompts.accepted(meeting: app, bundleID: bundleID, now: now)
+                recording = (bundleID, MeetingEndPolicy(now: now))
+                meetings.append(Meeting(start: now))
+            }
+            now += MeetingController.detectionInterval
+        }
+        return meetings
+    }
+
+    func testMutesAndABackToBackCallStayOneMeeting() {
+        let meetings = Self.meetings(Self.backToBack)
+        XCTAssertEqual(meetings.count, 1, "one meeting, not three")
+        XCTAssertEqual(meetings.first?.start, 0)
+        // Capture goes off 10 s after the mic does, including after the last stretch, which
+        // then finishes once the call end gap has passed.
+        XCTAssertEqual(meetings.first?.pauses, [608, 1_208, 1_808])
+        XCTAssertEqual(meetings.first?.resumes, [632, 1_232])
+        XCTAssertEqual(meetings.first?.end, 1_796 + MeetingPromptPolicy.callEndGap)
+    }
+
+    func testACallBackAfterTheEndGapIsANewMeeting() {
+        let gapEnd = 600 + MeetingPromptPolicy.callEndGap + 20
+        let meetings = Self.meetings([Self.inCall(0, 600), Self.gap(600, gapEnd), Self.inCall(gapEnd, gapEnd + 300)])
+        XCTAssertEqual(meetings.map(\.start), [0, gapEnd])
+        XCTAssertEqual(meetings.first?.end, 596 + MeetingPromptPolicy.callEndGap)
+    }
+
+    func testTheLongCallIsOneMeeting() {
+        let (moments, end) = Self.longCallThenANewOne()
+        let meetings = Self.meetings(moments)
+        XCTAssertEqual(meetings.count, 2, "the 3 h call and the next call")
+        XCTAssertLessThan(meetings[0].end ?? .infinity, end + 600)
+        XCTAssertFalse(meetings[0].pauses.isEmpty, "mutes paused it")
+    }
+
     /// The end gap is what separates calls: just under it is the same call, just over it a new one.
     func testTheEndGapSeparatesCalls() {
         let gap = MeetingPromptPolicy.callEndGap

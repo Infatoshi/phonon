@@ -35,7 +35,38 @@ final class MeetingController {
         self.store = store
     }
 
-    var isRecording: Bool { recorder != nil }
+    /// Capturing now (a meeting paused while its call is off the mic is not).
+    var isRecording: Bool { recorder != nil && !recordingPaused }
+
+    /// The call left the mic for `MeetingEndPolicy.grace`: capture is off, the meeting stays
+    /// open until the call is back (resume) or over (`MeetingPromptPolicy.callEndGap`).
+    private var recordingPaused = false
+    /// Pause and resume run one after another, never interleaved.
+    private var captureControl: Task<Void, Never>?
+
+    private func pauseRecording() {
+        guard let recorder, !recordingPaused else { return }
+        recordingPaused = true
+        flow.stopped(byUser: false)
+        onRecordingChanged?(nil)
+        let previous = captureControl
+        captureControl = Task {
+            await previous?.value
+            await recorder.pause()
+        }
+    }
+
+    private func resumeRecording() {
+        guard let recorder, recordingPaused, let recordingApp else { return }
+        recordingPaused = false
+        flow.started(app: recordingApp)
+        onRecordingChanged?(recordingApp)
+        let previous = captureControl
+        captureControl = Task {
+            await previous?.value
+            await recorder.resume()
+        }
+    }
 
     /// Host time a dictation's capture started, while one is under way.
     private var dictationStartNs: UInt64?
@@ -107,10 +138,19 @@ final class MeetingController {
             // whatever app is in front now.
             let inCall = MeetingDetector.stillInCall(
                 recordingBundleID: recordingBundleID, holders: evidence.microphoneHolders)
-            let over = policy.observe(stillInCall: inCall, now: now)
+            let step = policy.step(stillInCall: inCall, now: now)
             endPolicy = policy
-            if over { stop(reason: "call_ended") }
-            return
+            switch step {
+            case .keep: break
+            case .pause: pauseRecording()
+            case .resume: resumeRecording()
+            case .finish: stop(reason: "call_ended")
+            }
+            // While paused, a call in another app ends this meeting and is handled as its own.
+            guard recordingPaused, case let .meeting(_, other) = verdict,
+                MeetingDetector.owner(of: other) != MeetingDetector.owner(of: recordingBundleID)
+            else { return }
+            stop(reason: "call_ended")
         }
         guard recorder == nil, case let .meeting(meeting, bundleID) = verdict else { return }
         let settings = store.settings
@@ -229,6 +269,8 @@ final class MeetingController {
     /// page, the ϕ menu). It records the mic and this Mac's audio until stopped by hand,
     /// whatever the detection setting.
     func startManually() {
+        // A meeting paused off the mic ends here; the start by hand is its own.
+        if recordingPaused { stop(reason: "call_ended") }
         guard recorder == nil else { return }
         if case .asking = flow.popup { popup.dismiss() }
         if case .askingRule = flow.popup { popup.dismiss() }
@@ -381,6 +423,7 @@ final class MeetingController {
     func stop(reason: String, discard: Bool = false) {
         guard let recorder else { return }
         recordingManual = false
+        recordingPaused = false
         // A dictation still under way is cut at the stop, so it is in the final metadata.
         if let start = dictationStartNs {
             recorder.noteDictation(MeetingDictation(startHostNs: start, endHostNs: max(start, HostClock.now())))
@@ -404,7 +447,11 @@ final class MeetingController {
             popup.saved(onExpire: { [weak self] in self?.flow.expire() })
         }
         let store = store
+        // After any pause or resume still under way, so the stop is the last word.
+        let previous = captureControl
+        captureControl = nil
         Task {
+            await previous?.value
             await recorder.stop(reason: reason)
             guard let directory else { return }
             if discard {
