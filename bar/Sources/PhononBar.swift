@@ -956,22 +956,46 @@ enum ScreenContextCapture {
     }
 
     private static func recognize(_ image: CGImage) -> String {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        // Language correction "fixes" identifiers toward English words and
-        // costs about 30% of the time; screen context exists to read exactly
-        // those identifiers. Measured 2026-10-29 (synthetic Retina screens,
-        // 316 dictionary terms, warm, M4 Max): on 96.9/96.1% of terms exact
-        // in 202/218 ms (code/UI screen), off 96.9/98.7% in 156/135 ms.
-        request.usesLanguageCorrection = false
-        let handler = VNImageRequestHandler(cgImage: image)
-        do {
-            try handler.perform([request])
+        recognizeText { level in
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = level
+            // Language correction "fixes" identifiers toward English words and
+            // costs about 30% of the time; screen context exists to read exactly
+            // those identifiers. Measured 2026-10-29 (synthetic Retina screens,
+            // 316 dictionary terms, warm, M4 Max): on 96.9/96.1% of terms exact
+            // in 202/218 ms (code/UI screen), off 96.9/98.7% in 156/135 ms.
+            request.usesLanguageCorrection = false
+            try VNImageRequestHandler(cgImage: image).perform([request])
             return (request.results ?? [])
                 .compactMap { $0.topCandidates(1).first?.string }
                 .joined(separator: "\n")
+        }
+    }
+
+    private static let accurateFailureLogged = OSAllocatedUnfairLock(initialState: false)
+
+    /// Accurate recognition, else fast. macOS deletes Vision's compiled models
+    /// from the app's cache when disk runs low (CacheDelete); from then on every
+    /// accurate request in this process throws an e5rt error (code 13) until
+    /// Phonon relaunches, while the fast recognizer still works. Without the
+    /// fallback that error read as a blank screen and screen context went quiet
+    /// for days with nothing logged (2026-11-12). The first failure is logged.
+    static func recognizeText(
+        _ run: (VNRequestTextRecognitionLevel) throws -> String
+    ) -> String {
+        do {
+            return try run(.accurate)
         } catch {
-            return ""
+            let first = accurateFailureLogged.withLock { logged in
+                defer { logged = true }
+                return !logged
+            }
+            if first {
+                NSLog(
+                    "phonon screen context: accurate OCR failed (\(error)); using fast OCR until Phonon relaunches"
+                )
+            }
+            return (try? run(.fast)) ?? ""
         }
     }
 }
