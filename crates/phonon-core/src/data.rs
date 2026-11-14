@@ -289,6 +289,8 @@ impl DictionaryFile {
 
         let normalized = normalize(transcript);
         let words = normalized.split_whitespace().collect::<Vec<_>>();
+        // The same words as written, for the casing `normalize` drops.
+        let written = written_words(transcript);
         let mut occupied = vec![false; words.len()];
         let mut matches = Vec::new();
         for window_len in (1..=MAX_PHONETIC_WINDOW.min(words.len())).rev() {
@@ -326,6 +328,15 @@ impl DictionaryFile {
                     continue;
                 }
                 if is_ordinary_english(&spoken) {
+                    continue;
+                }
+                // A word the recognizer capitalised inside (`iPhone`, `macOS`)
+                // is a name it spelled on purpose, not a mishearing; the word
+                // list is too old to know it. `iPhone` keys like `Phonon`.
+                if written
+                    .get(start..start + window_len)
+                    .is_some_and(|window| window.iter().any(|word| capitalised_inside(word)))
+                {
                     continue;
                 }
                 // A window longer than the taught form is either the recognizer
@@ -955,6 +966,22 @@ pub(crate) fn normalize(value: &str) -> String {
         .join(" ")
 }
 
+/// `normalize`'s words with their case kept, one for one.
+fn written_words(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A lowercase letter followed later by a capital: `iPhone`, `GitHub`.
+fn capitalised_inside(word: &str) -> bool {
+    word.chars()
+        .skip_while(|character| !character.is_lowercase())
+        .any(char::is_uppercase)
+}
+
 fn contains_phrase(text: &str, phrase: &str) -> bool {
     format!(" {text} ").contains(&format!(" {phrase} "))
 }
@@ -1392,6 +1419,26 @@ mod tests {
             "multi-word term was not reachable: {prepared}"
         );
         assert!(prepared.contains("ask Claude Code to look at it"));
+    }
+
+    #[test]
+    fn phonetic_matching_leaves_a_word_capitalised_inside_alone() {
+        // `iphone` and `Phonon` share the key `phn`, and the 1934 word list has
+        // no `iPhone`: the owner's iPhone became Phonon in 13 dictations.
+        let mut phonon = entry("Phonon", None);
+        phonon.spoken_forms = vec!["phone on".into()];
+        let dictionary = DictionaryFile {
+            entries: vec![phonon],
+            ..Default::default()
+        };
+        let prepared = dictionary.prepare_polish_input("I left my iPhone on the desk");
+        assert!(
+            prepared.contains("I left my iPhone on the desk") && !prepared.contains("=> Phonon"),
+            "iPhone was rewritten: {prepared}"
+        );
+        // The recognizer's lowercase mishearing of the term is still repaired.
+        let prepared = dictionary.prepare_polish_input("open the phonnon settings");
+        assert!(prepared.contains("open the Phonon settings"), "{prepared}");
     }
 
     #[test]
