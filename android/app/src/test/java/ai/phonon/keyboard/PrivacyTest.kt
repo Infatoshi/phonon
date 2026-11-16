@@ -48,6 +48,16 @@ class PrivacyTest {
     }
 
     @Test
+    fun debugReceiverOnlyInDebuggableBuilds() {
+        for (sdk in listOf(29, 32, 33, 35)) assertTrue(Privacy.debugReceivers(debuggable = false, sdk = sdk).isEmpty())
+        // Android 13+: one private to the app, one for adb's shell only; nothing open to other apps
+        val modern = Privacy.debugReceivers(debuggable = true, sdk = 33)
+        assertEquals(listOf(Privacy.Receiver(false, null), Privacy.Receiver(true, Privacy.SHELL_ONLY)), modern)
+        assertTrue(modern.none { it.exported && it.permission == null })
+        assertEquals(listOf(Privacy.Receiver(true, null)), Privacy.debugReceivers(debuggable = true, sdk = 32))
+    }
+
+    @Test
     fun refineStatsCarryLengthsNotText() {
         val json = """{"text":"my pin is 4821","raw":"my pin is four eight two one","mode":"minimal",""" +
             """"prompt_tokens":40,"gen_tokens":6,"decode_ms":120,"guard":false,"tok_hash":"00ff00ff00ff00ff"}"""

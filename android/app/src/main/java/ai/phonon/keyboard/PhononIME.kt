@@ -37,7 +37,7 @@ import kotlin.concurrent.thread
  * Parakeet and refines with the LFM3-1.7B GGUF through llama.cpp, all in this process, then commits the text.
  * The models are downloaded on first use (ModelFetch); each loads as soon as its files are verified.
  *
- * Debug broadcasts (adb shell am broadcast -p ai.phonon.keyboard -a ACTION ...):
+ * Debug broadcasts, debuggable builds only (adb shell am broadcast -p ai.phonon.keyboard -a ACTION ...):
  *   ai.phonon.keyboard.REFINE  --es text "..." [--es mode minimal] [--ez commit true]
  *   ai.phonon.keyboard.WAV     --es path /sdcard/Android/data/ai.phonon.keyboard/files/x.wav  (stands in for a hold)
  *   ai.phonon.keyboard.STATUS
@@ -71,6 +71,7 @@ class PhononIME : InputMethodService() {
     private var recThread: Thread? = null
     private val pcm = java.io.ByteArrayOutputStream()
 
+    private val debugReceivers = mutableListOf<BroadcastReceiver>()
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
@@ -105,7 +106,14 @@ class PhononIME : InputMethodService() {
         super.onCreate()
         worker = Handler(HandlerThread("phonon-engines").apply { start() }.looper)
         val f = IntentFilter().apply { addAction(ACTION_REFINE); addAction(ACTION_WAV); addAction(ACTION_STATUS) }
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, RECEIVER_EXPORTED) else registerReceiver(receiver, f)
+        // debuggable builds only, never reachable from other installed apps on Android 13+ (Privacy.debugReceivers)
+        for (spec in Privacy.debugReceivers(debug, Build.VERSION.SDK_INT)) {
+            val r = object : BroadcastReceiver() { override fun onReceive(c: Context, i: Intent) = receiver.onReceive(c, i) }
+            if (Build.VERSION.SDK_INT >= 33)
+                registerReceiver(r, f, spec.permission, null, if (spec.exported) RECEIVER_EXPORTED else RECEIVER_NOT_EXPORTED)
+            else registerReceiver(r, f, spec.permission, null)
+            debugReceivers += r
+        }
         Log.i(TAG, "IME_CREATE ${Mem.snapshot()}")
         ModelFetch.addListener(onModels)
         ModelFetch.start(this)
@@ -163,7 +171,7 @@ class PhononIME : InputMethodService() {
 
     override fun onDestroy() {
         ModelFetch.removeListener(onModels)
-        unregisterReceiver(receiver)
+        debugReceivers.forEach { unregisterReceiver(it) }
         super.onDestroy()
     }
 
