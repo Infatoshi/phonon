@@ -566,18 +566,17 @@ struct TalkBarFill: View {
         }
     }
 
-    /// Dark red at the ends, a red centre that brightens toward ember orange-red with energy; a soft core glow on
-    /// top. Colours only: both layers fill the given rectangle.
+    /// Black at the ends, a warm centre that strengthens with energy, the same as the Mac capsule.
+    /// Colours only: both layers fill the given rectangle.
     static func ember(energy e: Double) -> some View {
-        let edge = Color(red: 0.10 + 0.18 * e, green: 0.02 + 0.02 * e, blue: 0.01)
-        let mid = Color(red: 0.45 + 0.50 * e, green: 0.08 + 0.17 * e, blue: 0.03 + 0.06 * e)
+        // The Mac capsule's colours exactly (bar/Sources/PhononBar.swift): black at both ends, one warm centre
+        // whose strength follows the energy. No extra glow layer, so the ends stay dark at any level.
+        let mid = Color(red: 0.42, green: 0.12, blue: 0.035).opacity(0.50 + e * 0.38)
         return ZStack {
             Rectangle().fill(.black)
-            LinearGradient(stops: [.init(color: edge, location: 0), .init(color: mid, location: 0.5),
-                                   .init(color: edge, location: 1)],
+            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: mid, location: 0.5),
+                                   .init(color: .black, location: 1)],
                            startPoint: .leading, endPoint: .trailing)
-            EllipticalGradient(colors: [Color(red: 1, green: 0.55, blue: 0.30).opacity(0.10 + 0.55 * e), .clear],
-                               center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5)
         }
     }
 }

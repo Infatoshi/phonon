@@ -155,8 +155,8 @@ final class TalkBarTests: XCTestCase {
 
     /// Dark-mode renders on the keyboard's background for a person to look at.
     func testWritesBarShots() throws {
-        let shots: [(String, KeyboardPhase, Double)] = [("idle", .ready, 0), ("quiet", .listening, 0.05),
-                                                        ("loud", .listening, 1)]
+        let shots: [(String, KeyboardPhase, Double)] = [("idle", .ready, 0), ("quiet", .listening, 0.1),
+                                                        ("mid", .listening, 0.5), ("loud", .listening, 1)]
         for (name, phase, level) in shots {
             let view = strip(phase, level: level)
                 .padding(.horizontal, 6)
