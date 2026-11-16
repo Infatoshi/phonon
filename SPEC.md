@@ -677,9 +677,9 @@ components, in this order:
 | Component | Pinned to | Size |
 | --- | --- | --- |
 | sherpa-onnx tools and ONNX Runtime | release `v1.13.6` | 18 MB |
-| llama.cpp CPU build | release `b10726` | 18 MB |
-| Parakeet TDT 0.6b v2, int8 ONNX | commit `1ab9323` | 661 MB |
-| Gemma 4 E2B instruction tuned, q4_0 GGUF | commit `675cff4` | 3.3 GB |
+| llama.cpp Vulkan build (CPU backends included) | release `b12132` | 38 MB |
+| Parakeet TDT 0.6b v2 (N8avg), int8 ONNX | commit `76fbda4` | 661 MB |
+| Phonon refiner 1.7B, Q4_K_S GGUF | commit `2b0ab74` | 988 MB |
 
 Every file has its SHA-256 in `crates/phonon-win/src/manifest.rs`. A file that
 does not match is deleted, not used. A component is built in a staging
@@ -697,11 +697,14 @@ Speech recognition is Parakeet TDT 0.6b v2, the same acoustic model macOS runs
 on MLX, exported to ONNX and quantised to int8. `sherpa-onnx-offline.exe` reads
 one wave file and writes one JSON object to standard output.
 
-Correction is Gemma 4 E2B, Google's own quantisation-aware q4_0 GGUF, resident
-in `llama-server.exe`. The prompt is `prompts/polish_v2.txt`, embedded in the
-executable. The temperature and the output budget rule, `ceil(spoken * 1.8) +
-24` clamped to 48 and 2048 tokens, are the ones in `sidecar/polish_server.py`.
-Both platforms therefore correct a transcript the same way.
+Correction is the Phonon refiner (fine-tuned LFM3-1.7B), resident in
+`llama-server.exe`, with the iPhone build's prompt, greedy decoding, output
+budget and length guard (`crates/phonon-win/src/polish.rs`). It runs on the
+first path that works: a tuned CUDA build from the backend manifest (none in
+this release), then a Vulkan GPU that decodes at least 60 tokens/s, then the
+CPU. `info` and the settings window name the path and why earlier ones were
+passed over; settings.json `compute` can force one, and a GPU server that dies
+or hangs mid-session hands correction to the CPU.
 
 Correction is mandatory here as it is on macOS. There is no recognition-only
 mode.
