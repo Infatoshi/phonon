@@ -311,6 +311,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         model.levels = Array(repeating: 0, count: model.levels.count)
         model.phase = .listening
         IPC.set(model.mode.rawValue, IPC.modeKey)
+        IPC.set(contextBefore, IPC.beforeCursor)  // before start: the app reads it when the utterance begins
         let t = DictationToken.make()
         token = t
         IPC.set(t, IPC.dictationToken)  // before start: the app reads it when the utterance begins

@@ -1077,8 +1077,9 @@ impl Engine {
         }
     }
 
-    /// The `context` of a background commit for the stream `id`: the app category only,
-    /// the one key the refiner's prompt depends on.
+    /// The app category of a background commit for the stream `id` (its `context` also
+    /// carries the writing mode and the stream's screen text; the text before the cursor
+    /// arrives only with the final polish, so drafts are made without that line).
     fn stream_commit_context(&self, id: Option<&str>) -> Option<app_context::AppCategory> {
         match (&self.stream_category, id) {
             (Some((stream_id, category)), Some(id)) if stream_id == id => Some(*category),
@@ -1122,9 +1123,12 @@ impl Engine {
             .dictionary
             .prepare_polish_input_with_context(&text, &screen);
         let live = id.filter(|id| self.live_text_stream.as_deref() == Some(*id));
-        let context = app_context::with_writing_mode(
-            stream_commit_json(category, live.map(|id| (id, index))),
-            mode.as_deref(),
+        let context = app_context::with_screen_text(
+            app_context::with_writing_mode(
+                stream_commit_json(category, live.map(|id| (id, index))),
+                mode.as_deref(),
+            ),
+            &screen,
         );
         let polisher = self.polisher.as_mut()?;
         let error = polisher
@@ -1216,9 +1220,12 @@ impl Engine {
             app.as_ref().map(|app| app.bundle_id.as_str()),
             app.as_ref().and_then(|app| app.url_host.as_deref()),
         );
-        let context = app_context::with_writing_mode(
-            app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
-            mode.as_deref(),
+        let context = app_context::with_screen_text(
+            app_context::with_writing_mode(
+                app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
+                mode.as_deref(),
+            ),
+            screen_text,
         );
         let layout_mode = mode
             .clone()

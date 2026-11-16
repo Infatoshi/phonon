@@ -68,6 +68,8 @@ class PhononIME : InputMethodService() {
 
     // mic capture
     @Volatile private var recording = false
+    /** The field's text before the cursor when the current dictation started (null: none or no field). */
+    private var dictationBefore: String? = null
     private var recThread: Thread? = null
     private val pcm = java.io.ByteArrayOutputStream()
 
@@ -247,8 +249,12 @@ class PhononIME : InputMethodService() {
     }
 
     /** Runs on the worker thread: ASR, refine, then commit on the main thread. A [password] field's transcript skips
-     *  the dictionary and the refiner and is committed as heard. */
-    private fun process(samples: FloatArray, tUp: Long, source: String, gen: Int = generation, password: Boolean = false) {
+     *  the dictionary and the refiner and is committed as heard. [before] is the field's text before the cursor
+     *  when the dictation started (the refiner's Before-cursor line). */
+    private fun process(
+        samples: FloatArray, tUp: Long, source: String, gen: Int = generation, password: Boolean = false,
+        before: String? = null,
+    ) {
         val a = asr ?: run {
             Log.w(TAG, "ASR not loaded")
             main.post { setPhase(Phase.READY); flash("The speech model is not ready yet") }
@@ -258,7 +264,7 @@ class PhononIME : InputMethodService() {
         val t0 = SystemClock.elapsedRealtime()
         val raw = a.transcribe(samples)
         val t1 = SystemClock.elapsedRealtime()
-        val (text, json) = if (password) raw to null else correct(raw, mode)
+        val (text, json) = if (password) raw to null else correct(raw, mode, before)
         val t2 = SystemClock.elapsedRealtime()
         Log.i(TAG, "PIPELINE source=$source audio_ms=${samples.size / 16} asr_ms=${t1 - t0} refine_ms=${t2 - t1} " +
             "password=$password raw_chars=${raw.length} refined=${Privacy.refineStats(json)} ${Mem.snapshot()}")
@@ -296,7 +302,7 @@ class PhononIME : InputMethodService() {
      * corrections, the refiner with the dictionary's vocabulary line, then the shared output stage. Returns the text
      * and the refiner's JSON (null without a refiner). An empty dictionary leaves every step as it was.
      */
-    private fun correct(raw: String, m: String): Pair<String, String?> {
+    private fun correct(raw: String, m: String, before: String? = null): Pair<String, String?> {
         val d = dictionary()
         val prepared = d.prepare(raw)
         val r = refiner
@@ -304,7 +310,10 @@ class PhononIME : InputMethodService() {
         // already writes "1. ... 2. ..." for dictated steps (Galaxy A16 5G, Test Lab 2026-11-08).
         if (r == null) return LineBreaks.apply(d.applyExact(prepared.text), m) to null
         if (raw.isEmpty()) return raw to null
-        val json = r.refine(prepared.text, m, prepared.vocabLine)
+        // the refiner's prompt (RefinerPrompt): the vocabulary line, and with text before the cursor its
+        // Before-cursor line and the join rule on the user turn
+        val json = r.refine(RefinerPrompt.userTurn(prepared.text, before), m,
+            RefinerPrompt.systemTail(prepared.vocab, null, before))
         return refinedText(json, raw, prepared, d) to json
     }
 
@@ -360,6 +369,10 @@ class PhononIME : InputMethodService() {
             flash("Open Phonon once to allow the microphone"); return false
         }
         pcm.reset()
+        // the field's text before the cursor as the dictation starts, for the refiner's Before-cursor line (never a
+        // password field's)
+        dictationBefore = if (Privacy.isPassword(currentInputEditorInfo?.inputType ?: 0)) null
+            else currentInputConnection?.getTextBeforeCursor(RefinerPrompt.BEFORE_READ_CHARS, 0)?.toString()
         recording = true
         setPhase(Phase.LISTENING)
         val feed = micFeed()
@@ -476,7 +489,8 @@ class PhononIME : InputMethodService() {
         Log.i(TAG, "MIC_UP samples=${samples.size} peak=$peak")
         val gen = generation
         val password = Privacy.isPassword(currentInputEditorInfo?.inputType ?: 0)
-        worker.post { process(samples, tUp, "mic", gen, password) }
+        val before = dictationBefore
+        worker.post { process(samples, tUp, "mic", gen, password, before) }
     }
 
     // ---------- keyboard view ----------

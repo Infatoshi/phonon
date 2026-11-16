@@ -27,6 +27,9 @@ enum IPC {
     static let keyboardSeen = "keyboard_seen"  // written by the keyboard with Full Access: setup step 2 is done
     static let dictationToken = "dictation_token"  // keyboard, before start: names the dictation (DictationToken)
     static let resultToken = "result_token"  // app, with each result: the token of the dictation it answers
+    /// keyboard, before start: the text before the cursor in the host field (documentContextBeforeInput), for the
+    /// refiner's Before-cursor line; empty when the field has none
+    static let beforeCursor = "before_cursor"
 
     /// Values live as small files in the App Group container. (They used to live in named pasteboards, but iOS blocks
     /// pasteboard access from a backgrounded app, so the heartbeat froze the moment the user left Phonon and the

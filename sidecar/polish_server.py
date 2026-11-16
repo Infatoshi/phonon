@@ -41,6 +41,12 @@ import sys
 import time
 import traceback
 from difflib import SequenceMatcher
+from typing import NamedTuple
+
+try:  # run as sidecar/polish_server.py (sidecar dir on sys.path) or imported as a package
+    from refiner_prompt import INSTRUCTION, VOCAB_PREFIX, system_prompt, user_turn
+except ImportError:
+    from .refiner_prompt import INSTRUCTION, VOCAB_PREFIX, system_prompt, user_turn
 
 # Gemma 4 opens a thought channel by default even when the template omits
 # `<|think|>`. Prefilling a closed thought channel puts the model straight into
@@ -89,16 +95,19 @@ PROMPT_SPLIT_SENTINEL = "\x00PHONON_USER_TURN\x00"
 # A model directory holding this file is a trained refiner (phonon-research
 # ml/, phonon-bench format) rather than an instruction-following polisher: it
 # gets the exact system prompt and vocabulary line it was trained on, the bare
-# transcript as the user turn, and the word-count guard. Byte-identical to
-# ml/research/bench_v0 prompts.py in Infatoshi/phonon-research; a different
-# wording is a different model.
+# transcript as the user turn, and the word-count guard. The prompt's wording,
+# line order and the join rule live in refiner_prompt.py (checked against the
+# training-side builders' output in fixtures/refiner_prompt_cases.json); a
+# different wording is a different model.
 REFINER_MARKER_FILE = "phonon_refiner.json"
-REFINER_SYSTEM_PROMPT = (
-    "Rewrite the raw dictation transcript into the exact text the speaker intended. "
-    "Fix recognition errors and technical terms, keep the speaker's wording and casing style, "
-    "do not add or drop content."
-)
-REFINER_VOCAB_PREFIX = "Vocabulary the speaker may use: "
+REFINER_SYSTEM_PROMPT = INSTRUCTION
+REFINER_VOCAB_PREFIX = VOCAB_PREFIX
+# A refiner trained with the On-screen and Before-cursor lines lists them in its
+# marker: "context_lines": ["on_screen", "before_cursor"]. Only then does a
+# request's screen text (context.screen_text) and text before the cursor
+# (context.textbox.before_text) reach the prompt; a refiner without the key
+# gets the prompt it always had.
+CONTEXT_LINES = ("on_screen", "before_cursor")
 # Dictionary lines that become vocabulary, most confident first. Term lines are
 # comma-separated; pair lines are `spoken => canonical` joined by `;` and
 # contribute the canonical side.
@@ -288,13 +297,71 @@ def restore_terms(spoken: str, output: str, vocab: list[str]) -> str:
     return "".join(out) + output[last:]
 
 
-def refiner_system_prompt(vocab: list[str], mode_line: str = "") -> str:
-    system = REFINER_SYSTEM_PROMPT
-    if mode_line:
-        system += "\n" + mode_line
-    if not vocab:
-        return system
-    return system + "\n" + REFINER_VOCAB_PREFIX + ", ".join(vocab)
+def refiner_system_prompt(
+    vocab: list[str],
+    mode_line: str = "",
+    screen: str | None = None,
+    before: str | None = None,
+) -> str:
+    return system_prompt(vocab, mode_line, screen, before)
+
+
+class RequestLines(NamedTuple):
+    """What a request adds to the refiner's fixed instructions: the writing mode and its line,
+    and (for a refiner trained with context lines) the screen text and the text before the
+    cursor as the engine sent them. `spoken` is the request's whole transcript: a part of a long
+    dictation that does not start it gets no Before-cursor line (that text is not before it).
+    Indexes 0 and 1 are the (mode, line) pair writing_mode returns."""
+
+    mode: str | None = None
+    line: str = ""
+    screen: str = ""
+    before: str = ""
+    spoken: str = ""
+
+    def for_part(self, part: str) -> RequestLines:
+        if not self.before:
+            return self
+        words, spoken = part.split(), self.spoken.split()
+        if words == spoken[: len(words)]:
+            return self
+        return self._replace(before="")
+
+
+def read_context_lines(model_dir: str) -> frozenset[str]:
+    """The context lines the refiner was trained with (marker "context_lines")."""
+    try:
+        with open(os.path.join(model_dir, REFINER_MARKER_FILE)) as handle:
+            marker = json.load(handle)
+    except (OSError, ValueError):
+        return frozenset()
+    names = marker.get("context_lines") if isinstance(marker, dict) else None
+    if not isinstance(names, list):
+        return frozenset()
+    return frozenset(n for n in names if n in CONTEXT_LINES)
+
+
+def request_lines(
+    lines: dict[str, str],
+    table: dict[str, str],
+    context,
+    context_lines: frozenset[str] = frozenset(),
+    text: str = "",
+) -> RequestLines:
+    """writing_mode's (mode, line), plus the context lines this refiner reads from `context`:
+    `screen_text` (the engine's screen text) and `textbox.before_text`."""
+    mode, line = writing_mode(lines, table, context)
+    context = context if isinstance(context, dict) else {}
+    screen = context.get("screen_text") if "on_screen" in context_lines else None
+    textbox = context.get("textbox") if "before_cursor" in context_lines else None
+    before = textbox.get("before_text") if isinstance(textbox, dict) else None
+    return RequestLines(
+        mode,
+        line,
+        screen if isinstance(screen, str) else "",
+        before if isinstance(before, str) else "",
+        transcript_payload(text),
+    )
 
 
 def read_writing_modes(model_dir: str) -> tuple[dict[str, str], dict[str, str]]:
@@ -916,6 +983,7 @@ def main() -> None:
         prune_in_background(args.model, args.revision, "correction model")
     refiner = os.path.isfile(os.path.join(local_dir, REFINER_MARKER_FILE))
     mode_lines, mode_table = read_writing_modes(local_dir) if refiner else ({}, {})
+    context_lines = read_context_lines(local_dir) if refiner else frozenset()
     engine_config = read_engine_config(local_dir) if refiner else None
     engine_spec = (
         engine_command(
@@ -1066,10 +1134,14 @@ def main() -> None:
     else:
         prompt_prefix, prompt_suffix = split_rendered_prompt(render, system_prompt)
 
-    def build_prompt(text: str, mode_line: str = "") -> str:
+    def build_prompt(text: str, lines: tuple = (None, "")) -> str:
         if refiner:
-            system = refiner_system_prompt(refiner_vocabulary(text), mode_line)
-            return render(system, transcript_payload(text)) + think_prefill
+            spoken = transcript_payload(text)
+            lines = RequestLines(*lines).for_part(spoken)
+            system = refiner_system_prompt(
+                refiner_vocabulary(text), lines.line, lines.screen, lines.before
+            )
+            return render(system, user_turn(spoken, lines.before)) + think_prefill
         if args.transcript_only:
             text = transcript_payload(text)
         return prompt_prefix + text + prompt_suffix + think_prefill
@@ -1120,7 +1192,7 @@ def main() -> None:
         return max(OUTPUT_TOKEN_FLOOR, min(OUTPUT_TOKEN_CEILING, budget))
 
     def run_engine(text: str, mode: tuple = (None, "")) -> dict:
-        prompt = build_prompt(text, mode[1])
+        prompt = build_prompt(text, mode)
         max_tokens = output_budget(text)
         started_at = time.perf_counter()
         reply = engine.generate(prompt, max_tokens)
@@ -1194,15 +1266,19 @@ def main() -> None:
 
         class EnvelopePrompter:
             """Refiner prompt pieces for an engine envelope (vocabulary + transcript), with
-            the writing-mode line of the request being served (set before each job)."""
+            the writing-mode and context lines of the request being served (set before each
+            job)."""
 
-            mode_line = ""
+            lines = RequestLines()
 
             def prompt_tokens(self, text: str) -> list[int]:
-                return encode_prompt(build_prompt(text, self.mode_line))
+                return encode_prompt(build_prompt(text, self.lines))
 
             def open_prompt_tokens(self, text: str) -> list[int]:
-                system = refiner_system_prompt(refiner_vocabulary(text), self.mode_line)
+                lines = self.lines.for_part(transcript_payload(text))
+                system = refiner_system_prompt(
+                    refiner_vocabulary(text), lines.line, lines.screen, lines.before
+                )
                 rendered = render(
                     system, transcript_payload(text) + PROMPT_SPLIT_SENTINEL
                 )
@@ -1272,7 +1348,7 @@ def main() -> None:
         started_at = time.perf_counter()
         aborted = False
         info: dict = {}
-        stream.p.mode_line = mode[1]
+        stream.p.lines = RequestLines(*mode)
         try:
             info = stream.commit(text, should_abort=should_abort)
         except Aborted:
@@ -1306,8 +1382,9 @@ def main() -> None:
         started_at = time.perf_counter()
         commits, draft_tokens = stream.commits, len(stream.draft or [])
         cached = len(stream.e.tokens)
-        # A draft made under another mode line still drafts; the answer is this prompt's.
-        stream.p.mode_line = mode[1]
+        # A draft made under other mode or context lines still drafts; the answer is this
+        # prompt's.
+        stream.p.lines = RequestLines(*mode)
         try:
             ids, info = stream.final(text)
         except EngineError as error:
@@ -1374,13 +1451,13 @@ def main() -> None:
     # whose prompt plus output budget would not fit the engine's fast context is refined in
     # groups of whole sentences that do, and any part that still stops at a cap is refined
     # again in halves, or left as spoken below SPLIT_MIN_WORDS. Parts are joined in order.
-    def fits_one_request(text: str, mode_line: str) -> bool:
-        prompt = encode_prompt(build_prompt(text, mode_line))
+    def fits_one_request(text: str, lines: tuple) -> bool:
+        prompt = encode_prompt(build_prompt(text, lines))
         return len(prompt) + output_budget(text) <= STREAM_CONTEXT_TOKENS
 
-    def sentence_groups(text: str, mode_line: str) -> list[list[str]]:
+    def sentence_groups(text: str, lines: tuple) -> list[list[str]]:
         words = transcript_payload(text).split()
-        if fits_one_request(text, mode_line):
+        if fits_one_request(text, lines):
             return [words]
         groups: list[list[str]] = []
         start = 0
@@ -1390,15 +1467,13 @@ def main() -> None:
                 ends.append(len(words))
             end = 0
             for e in ends:  # the most whole sentences that still fit
-                if not fits_one_request(
-                    with_transcript(text, words[start:e]), mode_line
-                ):
+                if not fits_one_request(with_transcript(text, words[start:e]), lines):
                     break
                 end = e
             if end == 0:  # one sentence too long for a request: cut it by words
                 end = ends[0]
                 while end - start > 1 and not fits_one_request(
-                    with_transcript(text, words[start:end]), mode_line
+                    with_transcript(text, words[start:end]), lines
                 ):
                     end = start + (end - start) // 2
             groups.append(words[start:end])
@@ -1432,7 +1507,7 @@ def main() -> None:
         ) + refine_part(with_transcript(text, words[k:]), mode, depth + 1)
 
     def run_parts(text: str, mode: tuple) -> dict:
-        groups = sentence_groups(text, mode[1])
+        groups = sentence_groups(text, mode)
         if len(groups) > 1:
             print(
                 f"refine: {sum(map(len, groups))} words do not fit one request; "
@@ -1478,7 +1553,7 @@ def main() -> None:
     def run_one(text: str, mode: tuple = (None, "")) -> dict:
         if engine is not None:
             return run_engine(text, mode)
-        prompt = build_prompt(text, mode[1])
+        prompt = build_prompt(text, mode)
         max_tokens = output_budget(text)
         started_at = time.perf_counter()
         tokens = encode_prompt(prompt)
@@ -1545,6 +1620,8 @@ def main() -> None:
         ready_message += "; refiner prompt and word-count guard"
     if mode_lines:
         ready_message += "; writing modes " + ", ".join(sorted(mode_lines))
+    if context_lines:
+        ready_message += "; context lines " + ", ".join(sorted(context_lines))
     if engine is not None:
         ready_message += "; native refiner engine"
         if engine_config.get("draft"):
@@ -1603,7 +1680,9 @@ def main() -> None:
                 stream_reset()
                 emit({"ok": False, "error": "empty inputText"})
                 return True
-            mode = writing_mode(mode_lines, mode_table, request.get("context"))
+            mode = request_lines(
+                mode_lines, mode_table, request.get("context"), context_lines, text
+            )
             try:
                 emit(run(text, mode=mode))
             except Exception as error:  # noqa: BLE001
@@ -1664,7 +1743,7 @@ def main() -> None:
             return bool(queue)
 
         context = request.get("context")
-        mode = writing_mode(mode_lines, mode_table, context)
+        mode = request_lines(mode_lines, mode_table, context, context_lines, text)
         try:
             emit(stream_commit(text, should_abort, mode, draft_request(context)))
         except Exception as error:  # noqa: BLE001

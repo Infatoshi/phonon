@@ -26,20 +26,9 @@ use crate::fetch;
 use crate::http;
 use crate::manifest;
 
-/// The refiner's system prompt (sidecar/polish_server.py, ios/App/Refiner.swift).
-pub const SYSTEM_PROMPT: &str = "Rewrite the raw dictation transcript into the exact text the speaker intended. \
-Fix recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop content.";
-
-/// `writing_modes` from the refiner's `phonon_refiner.json` at the pinned revision.
-pub const MODES: [(&str, &str); 4] = [
-    ("minimal", "Writing mode: minimal (notes and documents)."),
-    ("casual", "Writing mode: casual (a chat message)."),
-    ("formal", "Writing mode: formal (an email or document)."),
-    (
-        "prompt",
-        "Writing mode: prompt (an instruction to an AI assistant).",
-    ),
-];
+/// The refiner's prompt is defined once for Rust (`phonon_llm::refiner_prompt`, checked
+/// against the training-side builders' output in fixtures/refiner_prompt_cases.json).
+pub use phonon_llm::refiner_prompt::{mode_line, INSTRUCTION as SYSTEM_PROMPT, MODES};
 
 /// The mode a dictation uses until the user picks another from the tray
 /// (`crate::mode`), and the one the startup check, the warm-up and the speed probe
@@ -77,39 +66,17 @@ fn left(deadline: Instant, cap: Duration) -> Duration {
     deadline.saturating_duration_since(Instant::now()).min(cap)
 }
 
-/// The mode line for a mode name; unknown names fall back to minimal.
-pub fn mode_line(mode: &str) -> &'static str {
-    MODES
-        .iter()
-        .find(|(name, _)| *name == mode)
-        .unwrap_or(&MODES[0])
-        .1
-}
-
 /// The whole prompt for one transcript, as the iPhone builds it.
 pub fn prompt(raw: &str, mode: &str) -> String {
     prompt_with(raw, mode, &[])
 }
 
-/// The prompt with the personal dictionary's vocabulary line after the mode line, as
-/// the Mac's sidecar builds it for this refiner (`refiner_system_prompt`); no line
-/// for an empty vocabulary.
+/// The prompt with the personal dictionary's vocabulary line after the mode line
+/// (no line for an empty vocabulary). Windows and Linux have no screen text and no
+/// text before the cursor, so the refiner's On-screen and Before-cursor lines are
+/// left out, as in its training rows without them.
 pub fn prompt_with(raw: &str, mode: &str, vocabulary: &[String]) -> String {
-    let vocabulary = if vocabulary.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n{}{}",
-            crate::dictionary::VOCAB_PREFIX,
-            vocabulary.join(", ")
-        )
-    };
-    format!(
-        "<|startoftext|><|im_start|>system\n{SYSTEM_PROMPT}\n{}{vocabulary}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n\
-         <|im_start|>assistant\n<think></think>",
-        mode_line(mode),
-        raw.trim()
-    )
+    phonon_llm::refiner_prompt::prompt(raw, mode, vocabulary, None, None)
 }
 
 /// How many tokens the refiner may generate: 1.5 x the transcript's + 32.
@@ -1710,6 +1677,39 @@ mod tests {
         assert!(p.ends_with(
             "<|im_start|>user\nhello there<|im_end|>\n<|im_start|>assistant\n<think></think>"
         ));
+    }
+
+    /// Byte-identical to the training-side builders' prompt for every fixture case
+    /// Windows and Linux can produce (no screen text, no text before the cursor).
+    #[test]
+    fn the_prompt_matches_the_training_builder() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/refiner_prompt_cases.json"))
+                .unwrap();
+        let mut checked = 0;
+        for case in fixtures["cases"].as_array().unwrap() {
+            if !case["screen_text"].is_null() || !case["before_cursor"].is_null() {
+                continue;
+            }
+            let vocabulary: Vec<String> = case["vocabulary"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(
+                prompt_with(
+                    case["transcript"].as_str().unwrap(),
+                    case["mode"].as_str().unwrap(),
+                    &vocabulary
+                ),
+                case["prompt"].as_str().unwrap(),
+                "{}",
+                case["name"]
+            );
+            checked += 1;
+        }
+        assert!(checked >= 5);
     }
 
     #[test]

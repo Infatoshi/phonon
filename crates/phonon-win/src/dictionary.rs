@@ -39,8 +39,8 @@ const SOURCE: &str = "phonon-app";
 /// `static`, not a `const`: each use of a const may carry its own 1.8 MB copy.
 static ENGLISH_WORDS: &str = include_str!("../../../assets/english_words.txt");
 
-/// `polish_server.py` `REFINER_VOCAB_PREFIX`, after the writing-mode line.
-pub const VOCAB_PREFIX: &str = "Vocabulary the speaker may use: ";
+/// The vocabulary line's prefix, after the writing-mode line (`phonon_llm::refiner_prompt`).
+pub use phonon_llm::refiner_prompt::VOCAB_PREFIX;
 
 /// The dictionary file in the data root.
 pub fn path() -> PathBuf {

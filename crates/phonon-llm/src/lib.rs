@@ -19,6 +19,7 @@ pub mod linebreak;
 pub mod numpass;
 pub mod opener;
 mod paths;
+pub mod refiner_prompt;
 
 use anyhow::{bail, Context, Result};
 pub use paths::{

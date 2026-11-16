@@ -126,12 +126,14 @@ final class Refiner: @unchecked Sendable {
     /// `vocab` is the dictionary's vocabulary line terms: "Vocabulary the speaker may use: ..." goes after the mode
     /// line (sidecar/polish_server.py refiner_system_prompt; Android refiner_jni.cpp headText), so it is part of the
     /// cached head, whose key is the head's tokens. Empty: the prompt is byte-identical to the one without a
-    /// dictionary. `spoken` is the transcript as heard (for the opener; default `raw`) and `dictionary` gives the
-    /// output its restored terms and exact replacements; a guard fallback is `raw` unchanged.
-    func refine(_ raw: String, mode: String, vocab terms: [String] = [], spoken: String? = nil,
-                dictionary: UserDictionary? = nil) -> Output {
-        let head = tokenize(RefinerPrompt.headText(mode: mode, vocab: terms))
-        var tail = tokenize("\(raw)<|im_end|>\n<|im_start|>assistant\n<think></think>")
+    /// dictionary. `before` is the text before the cursor in the host field: its Before-cursor line ends the head
+    /// (so a head with one is cached only until the next dictation) and the user turn goes through the join rule
+    /// (RefinerPrompt). `spoken` is the transcript as heard (for the opener; default `raw`) and `dictionary` gives
+    /// the output its restored terms and exact replacements; a guard fallback is `raw` unchanged.
+    func refine(_ raw: String, mode: String, vocab terms: [String] = [], before: String? = nil,
+                spoken: String? = nil, dictionary: UserDictionary? = nil) -> Output {
+        let head = tokenize(RefinerPrompt.headText(mode: mode, vocab: terms, before: before))
+        var tail = tokenize(RefinerPrompt.tailText(RefinerPrompt.userTurn(raw, before: before)))
         let tokens = head + tail
         let inputTokens = tokenize(raw).count
         let cap = Int(1.5 * Double(inputTokens)) + 32

@@ -145,6 +145,8 @@ targets:
         buildPhase: resources
       - path: ../crates/phonon-core/src/dictionary_cases.json
         buildPhase: resources
+      - path: ../fixtures/refiner_prompt_cases.json
+        buildPhase: resources
       - path: ../assets/english_words.txt
         buildPhase: resources
     settings:

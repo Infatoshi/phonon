@@ -52,6 +52,9 @@ final class Session: ObservableObject {
     private var task: SFSpeechRecognitionTask?
     private var heartbeat: Timer?
     private var utteranceStart = 0.0
+    /// The text before the cursor in the host field when this utterance began (the keyboard's IPC.beforeCursor),
+    /// for the refiner's Before-cursor line.
+    private var utteranceBefore: String?
     /// The current utterance and the keyboard's token for it: a cancelled or superseded utterance's late
     /// transcription is dropped, and each result goes back with its dictation's token (DictationFlow.swift).
     private var gate = UtteranceGate()
@@ -307,6 +310,7 @@ final class Session: ObservableObject {
         guard live else { return }
         let gen = gate.begin(token: IPC.string(IPC.dictationToken))
         utteranceStart = IPC.now()
+        utteranceBefore = IPC.string(IPC.beforeCursor)
         sink.begin()  // also drives the keyboard's level meter on the Apple-recognizer fallback
         if useParakeet {
             request = nil
@@ -512,8 +516,9 @@ final class Session: ObservableObject {
         // the keyboard's mode chip wins: it is what the user picked for this text field
         if let m = IPC.string(IPC.modeKey), WritingMode(rawValue: m) != nil, m != self.mode { self.mode = m }
         let mode = self.mode
+        let before = utteranceBefore
         refineQueue.async {
-            let out = r.refine(prepared.text, mode: mode, vocab: prepared.vocab, spoken: raw,
+            let out = r.refine(prepared.text, mode: mode, vocab: prepared.vocab, before: before, spoken: raw,
                                dictionary: dict.isEmpty ? nil : dict)
             DispatchQueue.main.async { self.deliver(out.text, raw: raw, refined: out, gen: gen) }
         }

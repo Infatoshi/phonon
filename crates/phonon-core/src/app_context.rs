@@ -417,6 +417,20 @@ const WRITING_STYLES: &[&str] = &["minimal", "casual", "formal"];
 /// per app). Others are ignored.
 const APP_WRITING_MODES: &[&str] = &["minimal", "casual", "formal", "prompt"];
 
+/// Add the screen text to a sidecar `context` as `screen_text`, shaped as the
+/// refiner's On-screen line takes it (`phonon_llm::refiner_prompt::screen_text`:
+/// the first 350 words, whitespace collapsed); nothing when there is none. A
+/// refiner trained with that line puts it in its prompt; others ignore the key.
+pub fn with_screen_text(context: Option<Value>, screen_text: &str) -> Option<Value> {
+    let shown = phonon_llm::refiner_prompt::screen_text(screen_text);
+    if shown.is_empty() {
+        return context;
+    }
+    let mut context = context.unwrap_or_else(|| json!({}));
+    context["screen_text"] = json!(shown);
+    Some(context)
+}
+
 /// Add the user's fixed writing mode to a sidecar `context` (the sidecar then
 /// uses it instead of the app category's mode).
 pub fn with_writing_mode(context: Option<Value>, mode: Option<&str>) -> Option<Value> {
@@ -945,6 +959,22 @@ mod tests {
             "Hi Bob, about the kernel: "
         );
         assert_eq!(context["textbox"]["after_text"], "\n\nThanks");
+    }
+
+    #[test]
+    fn screen_text_reaches_the_context_shaped_for_the_on_screen_line() {
+        assert!(with_screen_text(None, " \n\t").is_none());
+        let context = with_screen_text(None, "Inbox\n  Drafts\tSent").unwrap();
+        assert_eq!(context["screen_text"], "Inbox Drafts Sent");
+        let long = (0..400)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context = with_screen_text(Some(json!({"app_category": "chat"})), &long).unwrap();
+        assert_eq!(context["app_category"], "chat");
+        let shown = context["screen_text"].as_str().unwrap();
+        assert_eq!(shown.split(' ').count(), 350);
+        assert!(shown.starts_with("w0 w1 ") && shown.ends_with(" w349"));
     }
 
     /// Review item 9: settings.json is parsed once, then again only when it

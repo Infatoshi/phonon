@@ -404,12 +404,12 @@ double probePrefillMs(Refiner *r, Pool &p, std::vector<llama_token> toks, size_t
     return ok ? d : 1e9;
 }
 
-// The prompt head of a writing mode: the system prompt, the mode line and, when the dictionary has terms for this
-// dictation, the vocabulary line the refiner was trained with (sidecar/polish_server.py refiner_system_prompt), then
-// the user header. Empty `vocab` gives exactly the head used before the vocabulary line existed.
-std::string headText(const std::string &mode, const std::string &vocab) {
-    std::string system = std::string(kSystemPrompt) + "\n" + modeLine(mode);
-    if (!vocab.empty()) system += "\nVocabulary the speaker may use: " + vocab;
+// The prompt head of a writing mode: the system prompt, the mode line, then `tail`, the rest of the system turn as
+// the Kotlin side builds it (RefinerPrompt.systemTail: the vocabulary and Before-cursor lines the refiner was trained
+// with, each led by "\n", or "" for none), then the user header. An empty `tail` gives exactly the head used before
+// those lines existed. RefinerPromptTest checks these strings against fixtures/refiner_prompt_cases.json.
+std::string headText(const std::string &mode, const std::string &tail) {
+    std::string system = std::string(kSystemPrompt) + "\n" + modeLine(mode) + tail;
     return "<|startoftext|><|im_start|>system\n" + system + "<|im_end|>\n<|im_start|>user\n";
 }
 

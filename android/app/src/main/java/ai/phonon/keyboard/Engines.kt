@@ -31,12 +31,14 @@ object Mem {
 
 /** The JNI side is app/src/main/cpp/refiner_jni.cpp, a port of ios/App/Refiner.swift. */
 class Refiner private constructor(private var handle: Long) {
-    /** [vocab]: the dictionary's vocabulary line terms ("A, B, C"), or "" for none (the prompt is then unchanged). */
-    fun refine(raw: String, mode: String, vocab: String = ""): String =
-        String(nativeRefine(handle, raw, mode, vocab), Charsets.UTF_8)
+    /** [raw]: the user turn (RefinerPrompt.userTurn). [tail]: the system turn after the mode line
+     *  (RefinerPrompt.systemTail: the vocabulary and Before-cursor lines), or "" for none (the prompt is then the one
+     *  without a dictionary). */
+    fun refine(raw: String, mode: String, tail: String = ""): String =
+        String(nativeRefine(handle, raw, mode, tail), Charsets.UTF_8)
 
     /** Prefills and caches the prompt head of [mode]; ms taken, 0 if it was already cached, -1 on failure. */
-    fun prime(mode: String, vocab: String = ""): Long = nativePrime(handle, mode, vocab)
+    fun prime(mode: String, tail: String = ""): Long = nativePrime(handle, mode, tail)
 
     /**
      * The keyboard's warm-up after a load, also run by the benches: one short refine in minimal mode (pages in the
@@ -62,8 +64,8 @@ class Refiner private constructor(private var handle: Long) {
         /** The writing modes the refiner was trained with (refiner_jni.cpp modeLine). */
         val MODES = listOf("minimal", "casual", "formal", "prompt")
 
-        @JvmStatic external fun nativeRefine(handle: Long, raw: String, mode: String, vocab: String): ByteArray
-        @JvmStatic external fun nativePrime(handle: Long, mode: String, vocab: String): Long
+        @JvmStatic external fun nativeRefine(handle: Long, raw: String, mode: String, tail: String): ByteArray
+        @JvmStatic external fun nativePrime(handle: Long, mode: String, tail: String): Long
         @JvmStatic external fun nativeFree(handle: Long)
         @JvmStatic external fun nativeCpuMs(): Long
 
