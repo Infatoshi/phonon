@@ -1,5 +1,8 @@
 import json
 import sys
+import time
+
+import pytest
 
 from sidecar.polish_server import (
     PROFILE_LEAD_IN,
@@ -327,6 +330,40 @@ def test_refiner_engine_round_trip_and_exit_on_close():
     assert engine.process.wait(timeout=5) == 0
 
 
+def test_a_hung_engine_is_killed_at_the_ready_timeout():
+    # An engine that never says it is ready (a hung GPU, a stuck shader build) must
+    # not hold up startup: it is killed and the caller falls back to MLX.
+    hang = "import time\ntime.sleep(60)\n"
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="did not answer within 0.5 s"):
+        RefinerEngine("", {}, command=[sys.executable, "-c", hang], ready_timeout=0.5)
+    assert time.monotonic() - started < 10
+
+
+def test_a_hung_probe_times_out_and_kills_the_engine():
+    ready_then_hang = (
+        "import json, sys, time\n"
+        'print(json.dumps({"ready": True, "init_s": 0.1}), flush=True)\n'
+        "sys.stdin.readline()\n"
+        "time.sleep(60)\n"
+    )
+    engine = RefinerEngine("", {}, command=[sys.executable, "-c", ready_then_hang])
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="did not answer"):
+        engine.generate("hello", 8, timeout=0.5)
+    assert time.monotonic() - started < 10
+    assert engine.process.poll() is not None
+
+
+def test_an_engine_ready_within_the_timeout_starts():
+    slow = "import time\ntime.sleep(0.3)\n" + FAKE_ENGINE
+    engine = RefinerEngine(
+        "", {}, command=[sys.executable, "-c", slow], ready_timeout=10
+    )
+    assert engine.init_seconds == 0.5
+    engine.close()
+
+
 def test_engine_command_prefers_the_directory_binary(tmp_path):
     own = tmp_path / "engine" / "bin" / "pe"
     own.parent.mkdir(parents=True)
@@ -470,9 +507,22 @@ def test_stopped_at_cap_tells_a_cut_from_an_end_token():
 def test_split_point_prefers_the_sentence_end_nearest_the_middle():
     from sidecar.polish_server import split_point
 
-    words = ["one", "two.", "three", "four", "five", "six.", "seven", "eight", "nine", "ten"]
+    words = [
+        "one",
+        "two.",
+        "three",
+        "four",
+        "five",
+        "six.",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+    ]
     assert split_point(words) == 6  # after "six." (the middle is 5; "two." is at 2)
-    assert split_point(["a", "b", "c", "d", "e", "f"]) == 3  # no sentence end: the middle
+    assert (
+        split_point(["a", "b", "c", "d", "e", "f"]) == 3
+    )  # no sentence end: the middle
     assert (
         split_point(["a", "b", "c", "d."]) == 2
     )  # the final word's period is not a split

@@ -146,6 +146,12 @@ REFINER_ENGINE_FILE = "phonon_engine.json"
 # the engine's own prime check (`llm_prime_passed`): no collapse, no runaway,
 # and at least half of the words kept (a refiner may rewrite "fluid voice").
 ENGINE_PROBE_TEXT = "hello fluid voice startup prime"
+# A native engine that has not said it is ready within this long (it maps a
+# GGUF of about 1 GB and builds its Metal pipelines; a cold disk at 50 MB/s
+# reads that GGUF in about 20 s), or has not answered the probe within
+# ENGINE_PROBE_TIMEOUT_S, counts as hung: it is killed and MLX takes over.
+ENGINE_READY_TIMEOUT_S = 120.0
+ENGINE_PROBE_TIMEOUT_S = 60.0
 
 
 # The engine's JSON-lines channel. isolate_protocol() moves it off fds 0 and 1,
@@ -621,6 +627,7 @@ class RefinerEngine:
         config: dict,
         command: list[str] | None = None,
         env: dict | None = None,
+        ready_timeout: float = ENGINE_READY_TIMEOUT_S,
     ):
         import subprocess
 
@@ -637,7 +644,7 @@ class RefinerEngine:
             bufsize=1,
             env=env,
         )
-        ready = self._reply()
+        ready = self._reply(ready_timeout)
         if not ready.get("ready"):
             raise RuntimeError(f"refiner engine did not start: {ready}")
         self.init_seconds = float(ready.get("init_s", 0.0))
@@ -649,22 +656,45 @@ class RefinerEngine:
         except Exception:  # noqa: BLE001, S110 - already gone
             pass
 
-    def _reply(self) -> dict:
-        line = self.process.stdout.readline()
+    def _reply(self, timeout: float | None = None) -> dict:
+        """The next reply line; with `timeout`, an engine silent for that long
+        is killed and this raises (the caller falls back to MLX)."""
+        if timeout is None:
+            line = self.process.stdout.readline()
+        else:
+            import threading
+
+            lines: list[str] = []
+            reader = threading.Thread(
+                target=lambda: lines.append(self.process.stdout.readline()),
+                daemon=True,
+            )
+            reader.start()
+            reader.join(timeout)
+            if reader.is_alive():
+                # killing the engine closes its stdout, which ends the reader
+                self.close()
+                reader.join(5)
+                raise RuntimeError(
+                    f"refiner engine did not answer within {timeout:g} s"
+                )
+            line = lines[0] if lines else ""
         if not line:
             raise RuntimeError(f"refiner engine exited (code {self.process.poll()})")
         return json.loads(line)
 
-    def call(self, request: dict) -> dict:
+    def call(self, request: dict, timeout: float | None = None) -> dict:
         self.process.stdin.write(json.dumps(request) + "\n")
         self.process.stdin.flush()
-        return self._reply()
+        return self._reply(timeout)
 
     def set_prefix(self, text: str) -> int:
         return int(self.call({"prefix": text})["prefix_tokens"])
 
-    def generate(self, prompt: str, max_tokens: int) -> dict:
-        return self.call({"max_tokens": max_tokens, "prompt": prompt})
+    def generate(
+        self, prompt: str, max_tokens: int, timeout: float | None = None
+    ) -> dict:
+        return self.call({"max_tokens": max_tokens, "prompt": prompt}, timeout)
 
 
 def register_vendored_models() -> None:
@@ -924,6 +954,7 @@ def main() -> None:
                 refiner_token_budget(
                     len(tokenizer.encode(ENGINE_PROBE_TEXT, add_special_tokens=False))
                 ),
+                timeout=ENGINE_PROBE_TIMEOUT_S,
             )
             if not probe.get("ok") or not engine_probe_passed(probe.get("text", "")):
                 raise RuntimeError(f"probe request failed: {probe}")
