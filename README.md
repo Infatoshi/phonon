@@ -294,8 +294,9 @@ assets/                startup clip, English word list, recording cues
 ml/                    refiner training and evaluation pipeline (runs on a GPU box)
 tools/                 vocabulary-mining research tools
 tools/dev/             developer benchmarks that call cloud APIs; not part of the app
-website/               phonon.sh
 ```
+
+The phonon.sh landing page lives in [Infatoshi/phonon-website](https://github.com/Infatoshi/phonon-website).
 
 ## License
 
