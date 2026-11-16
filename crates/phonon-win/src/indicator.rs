@@ -175,6 +175,7 @@ impl Smoother {
         self.shown
     }
 
+    #[cfg(test)]
     pub fn value(&self) -> f32 {
         self.shown
     }

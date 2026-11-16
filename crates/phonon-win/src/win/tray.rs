@@ -273,7 +273,7 @@ fn show_frame(rgba: Option<&[u8]>, size: u32) {
 /// A 32-bit icon from straight-alpha RGBA, or null when GDI refuses.
 fn icon_from_rgba(rgba: &[u8], size: u32) -> HICON {
     let mut bgra = rgba.to_vec();
-    for pixel in bgra.chunks_exact_mut(4) {
+    for pixel in bgra.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     // a 1-bit mask, every bit zero: the colour bitmap's alpha does the shaping
