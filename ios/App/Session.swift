@@ -381,6 +381,12 @@ final class Session: ObservableObject {
     }
 
     func loadRefiner() {
+        // an A12 iPhone (no dot product) never enters llama.cpp: refiner stays nil, so dictations take the
+        // dictionary-only path in refineAndDeliver
+        guard RefinerSupport.onThisDevice else {
+            refinerStatus = "Refiner: off, this iPhone's CPU has no dot product"
+            return
+        }
         guard refiner == nil, let url = Self.modelURL else { return }
         guard FileManager.default.fileExists(atPath: url.path) else {
             refinerStatus = "Refiner: no model at Documents/refiner.gguf"
@@ -412,6 +418,10 @@ final class Session: ObservableObject {
     /// Launched with --selftest: load the refiner, time it on fixed transcripts (each mode), write
     /// Documents/selftest.jsonl. No microphone, no recognizer.
     func selftest() {
+        guard RefinerSupport.onThisDevice else {
+            refinerStatus = "Self-test: refiner unsupported on this CPU"
+            return
+        }
         guard let url = Self.modelURL else { return }
         refinerStatus = "Self-test running"
         let cases = Self.selftestCases

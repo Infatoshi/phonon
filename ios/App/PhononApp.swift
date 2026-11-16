@@ -465,9 +465,11 @@ struct HomeView: View {
             Toggle(isOn: $session.useRefiner) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Clean up with the Phonon model").font(.system(size: 15, weight: .medium))
-                    Text("Off: you get the raw transcript.").font(.system(size: 12)).foregroundStyle(Ember.mute)
+                    Text(RefinerSupport.onThisDevice ? "Off: you get the raw transcript." : RefinerSupport.offNote)
+                        .font(.system(size: 12)).foregroundStyle(Ember.mute)
                 }
             }
+            .disabled(!RefinerSupport.onThisDevice)
             .padding(.top, 4)
         }
     }

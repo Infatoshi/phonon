@@ -42,6 +42,7 @@ final class Refiner: @unchecked Sendable {
     /// Stock ggml behaviour for A/B runs (selftest --stock 1): workers at QOS_CLASS_DEFAULT and the stock repack
     /// chunking. Process-wide; set before the Refiner is created.
     static func setStock(_ stock: Bool) {
+        guard RefinerSupport.onThisDevice else { return }
         ggml_cpu_phonon_set(stock ? 0 : 1, stock ? 0 : 64)
     }
 
@@ -49,7 +50,9 @@ final class Refiner: @unchecked Sendable {
     /// 3 runs each, cached 621.5 ms vs 640.5 at 4 and 882.5 at 2; decode per token equal at 4 and 5 (18.6, 18.7).
     static let defaultThreads: Int32 = 5
 
+    /// nil without touching llama.cpp on a CPU the build does not support (RefinerSupport: no dot product on A12).
     init?(path: String, threads: Int32 = Refiner.defaultThreads, persistentPool: Bool = true) {
+        guard RefinerSupport.onThisDevice else { return nil }
         llama_backend_init()
         var mp = llama_model_default_params()
         mp.n_gpu_layers = 0

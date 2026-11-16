@@ -131,6 +131,7 @@ targets:
       - App/Dictionary.swift
       - App/DictionaryView.swift
       - App/RefinerPrompt.swift
+      - App/RefinerSupport.swift
       - App/MicInterruption.swift
       - Shared/HostLookup.swift
       - Shared/DictationFlow.swift
