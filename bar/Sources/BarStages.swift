@@ -56,10 +56,20 @@ enum BarStages {
     static let reducedFadeSeconds = 0.3
     static let wideWidth = 0.5
     static let coreWidth = 0.08
-    /// Reduce Motion: the width never moves; processing is this steady medium core.
+    /// Half-way through the gather: where a paste at 0.6 s bursts from (0.29).
+    static let halfGatherWidth = (wideWidth + coreWidth) / 2
+    /// Reduce Motion (and Low Power Mode): the width never moves; every stage is this steady medium core.
     static let reducedWidth = 0.25
     static let reducedHeat = 0.65
     static let listeningFloor = 0.08
+    /// Listening's opacity: `dimOpacity` plus `energyOpacity` times the energy (the voice, or the ignite).
+    static let dimOpacity = 0.5
+    static let energyOpacity = 0.38
+    /// The ignite's opacity at the instant of the press: full energy (0.88).
+    static let ignitedOpacity = dimOpacity + energyOpacity
+    /// The gather starts at this heat, so its opacity starts at 0.65.
+    static let gatherStartHeat = 0.3
+    static let gatherStartOpacity = 0.5 + 0.5 * gatherStartHeat
 
     /// The Mac capsule's warm colour, the bright orange the gathered core reaches, and the burst's light orange.
     static let baseColor = (r: 0.42, g: 0.12, b: 0.035)
@@ -90,13 +100,15 @@ enum BarStages {
             let live = min(1, max(listeningFloor, level))
             let ignite = max(0, 1 - t / igniteSeconds)
             let energy = live + (1 - live) * ignite
-            return BarLook(width: wideWidth, heat: 0, opacity: 0.5 + energy * 0.38, burst: 0)
+            // Reduce Motion: the same medium width as the processing core, so key up changes no width
+            return BarLook(width: reduceMotion ? reducedWidth : wideWidth, heat: 0,
+                           opacity: dimOpacity + energy * energyOpacity, burst: 0)
         case .processing:
             if reduceMotion {
                 return BarLook(width: reducedWidth, heat: reducedHeat, opacity: 0.5 + 0.5 * reducedHeat, burst: 0)
             }
             let k = min(1, t / gatherSeconds)
-            let heat = 0.3 + 0.7 * k
+            let heat = gatherStartHeat + (1 - gatherStartHeat) * k
             return BarLook(width: wideWidth - (wideWidth - coreWidth) * k, heat: heat, opacity: 0.5 + 0.5 * heat,
                            burst: 0)
         case .burst:

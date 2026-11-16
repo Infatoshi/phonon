@@ -14,30 +14,44 @@ final class BarStagesTests: XCTestCase {
         BarStages.look(stage: stage, elapsed: t, level: level, reduceMotion: reduced, from: from)
     }
 
+    /// The named constants the other cases use, pinned to the spec's numbers once.
+    func testNamedConstantsHoldTheSpecValues() {
+        XCTAssertEqual(BarStages.ignitedOpacity, 0.88, accuracy: 1e-9)
+        XCTAssertEqual(BarStages.gatherStartOpacity, 0.65, accuracy: 1e-9)
+        XCTAssertEqual(BarStages.halfGatherWidth, 0.29, accuracy: 1e-9)
+        XCTAssertEqual(BarStages.igniteSeconds, 0.18)
+        XCTAssertEqual(BarStages.gatherSeconds, 1.2)
+        XCTAssertEqual(BarStages.burstSeconds, 0.6)
+        XCTAssertEqual(BarStages.fadeOutSeconds, 0.2)
+        XCTAssertEqual(BarStages.wideWidth, 0.5)
+        XCTAssertEqual(BarStages.coreWidth, 0.08)
+    }
+
     func testIgniteIsFullStrengthAtTheInstantOfThePressBeforeAnyLevelArrives() {
         // no audio yet: level 0
         let lit = look(.listening, 0, level: 0)
-        XCTAssertEqual(lit.opacity, 0.5 + 0.38, accuracy: 1e-9, "energy 1.0 at t = 0")
-        XCTAssertEqual(lit.width, 0.5)
+        XCTAssertEqual(lit.opacity, BarStages.ignitedOpacity, accuracy: 1e-9, "energy 1.0 at t = 0")
+        XCTAssertEqual(lit.width, BarStages.wideWidth)
         XCTAssertEqual(lit.heat, 0)
         // ...and with a level that has already arrived
-        XCTAssertEqual(look(.listening, 0, level: 0.3).opacity, 0.88, accuracy: 1e-9)
+        XCTAssertEqual(look(.listening, 0, level: 0.3).opacity, BarStages.ignitedOpacity, accuracy: 1e-9)
     }
 
     func testIgniteDecaysLinearlyToTheLiveLevelOverEighteenHundredthsOfASecond() {
         let live = 0.3
+        let dim = BarStages.dimOpacity, range = BarStages.energyOpacity
         let settled = look(.listening, 0.18, level: live).opacity
-        XCTAssertEqual(settled, 0.5 + 0.38 * live, accuracy: 1e-9)
+        XCTAssertEqual(settled, dim + range * live, accuracy: 1e-9)
         let half = look(.listening, 0.09, level: live).opacity
-        XCTAssertEqual(half, 0.5 + 0.38 * (live + (1 - live) * 0.5), accuracy: 1e-9)
+        XCTAssertEqual(half, dim + range * (live + (1 - live) * 0.5), accuracy: 1e-9)
         XCTAssertEqual(look(.listening, 5, level: live).opacity, settled, accuracy: 1e-9, "no ignite left later")
         // quiet: the floor of 0.08
-        XCTAssertEqual(look(.listening, 5, level: 0).opacity, 0.5 + 0.38 * 0.08, accuracy: 1e-9)
+        XCTAssertEqual(look(.listening, 5, level: 0).opacity, dim + range * BarStages.listeningFloor, accuracy: 1e-9)
     }
 
     func testGatherReachesTheCoreAtOnePointTwoSecondsAndHolds() {
         XCTAssertEqual(look(.processing, 0).width, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(look(.processing, 0.6).width, 0.5 - 0.42 * 0.5, accuracy: 1e-9, "linear")
+        XCTAssertEqual(look(.processing, 0.6).width, BarStages.halfGatherWidth, accuracy: 1e-9, "linear")
         let core = look(.processing, 1.2)
         XCTAssertEqual(core.width, 0.08, accuracy: 1e-9)
         XCTAssertEqual(core.heat, 1, accuracy: 1e-9)
@@ -46,7 +60,7 @@ final class BarStagesTests: XCTestCase {
             XCTAssertEqual(look(.processing, t), core, "held, no loop or breathing at \(t) s")
         }
         // it brightens as it gathers: base warm at 0.65 opacity, towards (227, 101, 29)
-        XCTAssertEqual(look(.processing, 0).opacity, 0.65, accuracy: 1e-9)
+        XCTAssertEqual(look(.processing, 0).opacity, BarStages.gatherStartOpacity, accuracy: 1e-9)
         XCTAssertLessThan(look(.processing, 0.3).opacity, look(.processing, 0.9).opacity)
         let c = core.rgba
         XCTAssertEqual(c.r * 255, 227, accuracy: 1e-6)
@@ -64,7 +78,7 @@ final class BarStagesTests: XCTestCase {
             XCTAssertEqual(b.burst, 1 - p, accuracy: 1e-9, "linear fade at \(p)")
         }
         // sqrt is front-loaded: past the half-way width by a quarter of the time
-        XCTAssertGreaterThan(look(.burst, 0.15, from: held).width, 0.29)
+        XCTAssertGreaterThan(look(.burst, 0.15, from: held).width, BarStages.halfGatherWidth)
         let end = look(.burst, 0.6, from: held)
         XCTAssertEqual(end.width, 0.5, accuracy: 1e-9)
         XCTAssertEqual(end.burst, 0, accuracy: 1e-9)
@@ -81,9 +95,10 @@ final class BarStagesTests: XCTestCase {
         let processing = BarBeat.ignite(at: t0).processing(at: t0)
         let early = processing.burst(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false)
         XCTAssertEqual(early.stage, .burst)
-        XCTAssertEqual(early.from.width, 0.29, accuracy: 1e-9, "finished half way through the gather")
-        XCTAssertEqual(early.look(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false).width, 0.29,
-                       accuracy: 1e-9, "continuous: no jump at the moment of the paste")
+        XCTAssertEqual(early.from.width, BarStages.halfGatherWidth, accuracy: 1e-9,
+                       "finished half way through the gather")
+        XCTAssertEqual(early.look(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false).width,
+                       BarStages.halfGatherWidth, accuracy: 1e-9, "continuous: no jump at the moment of the paste")
         XCTAssertEqual(early.look(at: t0.addingTimeInterval(1.2), level: 0.4, reduceMotion: false).width, 0.5,
                        accuracy: 1e-9)
     }
@@ -113,11 +128,22 @@ final class BarStagesTests: XCTestCase {
                 + [0.0, 0.1, 0.3, 1].map {
                     look(.burst, $0, reduced: true, from: look(.processing, 1, reduced: true)).width
                 })
-        XCTAssertEqual(widths.count, 2, "a wide light while listening and one steady medium core after: \(widths)")
+        XCTAssertEqual(widths, [BarStages.reducedWidth],
+                       "one steady medium width from key down to the end, key up changes nothing: \(widths)")
         XCTAssertEqual(look(.processing, 0, reduced: true), look(.processing, 99, reduced: true), "steady")
         let core = look(.processing, 1, reduced: true)
         XCTAssertGreaterThan(core.width, 0.08)
         XCTAssertLessThan(core.width, 0.5)
+        // the key up itself: the listening light and the core it becomes have the same width
+        let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+        let lit = BarBeat.ignite(at: t0)
+        let up = t0.addingTimeInterval(2)
+        XCTAssertEqual(lit.look(at: up, level: 0.7, reduceMotion: true).width,
+                       lit.processing(at: up).look(at: up, level: 0.7, reduceMotion: true).width)
+        // nothing pasted: the fade keeps that width too
+        let faded = lit.fadeOut(at: up, level: 0.7, reduceMotion: true)
+        XCTAssertEqual(faded.look(at: up.addingTimeInterval(0.1), level: 0, reduceMotion: true).width,
+                       BarStages.reducedWidth)
         // pasted: a plain 0.3 s fade, no burst colour
         let fade = { (t: Double) in self.look(.burst, t, reduced: true, from: core) }
         XCTAssertEqual(fade(0).opacity, core.opacity, accuracy: 1e-9)
@@ -145,7 +171,8 @@ final class BarStagesTests: XCTestCase {
     func testBeatReplacesOnEachRealEvent() {
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let lit = BarBeat.ignite(at: t0)
-        XCTAssertEqual(lit.look(at: t0, level: 0, reduceMotion: false).opacity, 0.88, accuracy: 1e-9)
+        XCTAssertEqual(lit.look(at: t0, level: 0, reduceMotion: false).opacity, BarStages.ignitedOpacity,
+                       accuracy: 1e-9)
         let p = lit.processing(at: t0.addingTimeInterval(3))
         XCTAssertEqual(p.processing(at: t0.addingTimeInterval(4)), p, "a second stop keeps the gather where it is")
         XCTAssertEqual(BarBeat.rest.burst(at: t0, level: 0, reduceMotion: false), .rest, "no burst from nothing")
@@ -161,7 +188,8 @@ final class BarStagesTests: XCTestCase {
         pill.ignite(now: t0)
         pill.reduceMotion = false
         XCTAssertEqual(pill.beat.stage, .listening)
-        XCTAssertEqual(pill.drawnBeat.look(at: t0, level: 0, reduceMotion: false).opacity, 0.88, accuracy: 1e-9)
+        XCTAssertEqual(pill.drawnBeat.look(at: t0, level: 0, reduceMotion: false).opacity, BarStages.ignitedOpacity,
+                       accuracy: 1e-9)
         pill.mode = .working
         pill.startProcessing(now: t0.addingTimeInterval(2))
         XCTAssertEqual(pill.beat.stage, .processing)
@@ -183,6 +211,50 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(bare.drawnBeat.stage, .processing)
         bare.mode = .idle
         XCTAssertEqual(bare.drawnBeat.stage, .rest)
+    }
+
+    /// Low Power Mode keeps the light's width still on the Mac, as Reduce Motion does.
+    func testLowPowerModeKeepsTheCapsuleWidthStill() {
+        XCTAssertTrue(PillState.stillLight(reduceMotion: false, lowPower: true))
+        XCTAssertTrue(PillState.stillLight(reduceMotion: true, lowPower: false))
+        XCTAssertFalse(PillState.stillLight(reduceMotion: false, lowPower: false))
+
+        let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+        let pill = PillState()
+        pill.mode = .listening
+        pill.level = 0.6
+        pill.ignite(now: t0, still: PillState.stillLight(reduceMotion: false, lowPower: true))
+        XCTAssertTrue(pill.reduceMotion)
+        var widths: Set<Double> = []
+        for t in [0.0, 0.1, 0.5] {
+            widths.insert(pill.drawnBeat.look(at: t0.addingTimeInterval(t), level: pill.level,
+                                              reduceMotion: pill.reduceMotion).width)
+        }
+        pill.mode = .working
+        pill.startProcessing(now: t0.addingTimeInterval(1))
+        for t in [1.0, 1.6, 2.2, 9.0] {
+            widths.insert(pill.drawnBeat.look(at: t0.addingTimeInterval(t), level: 0,
+                                              reduceMotion: pill.reduceMotion).width)
+        }
+        pill.delivered(now: t0.addingTimeInterval(9))
+        for t in [9.0, 9.1, 9.3] {
+            widths.insert(pill.drawnBeat.look(at: t0.addingTimeInterval(t), level: 0,
+                                              reduceMotion: pill.reduceMotion).width)
+        }
+        XCTAssertEqual(widths, [BarStages.reducedWidth], "Low Power: one width from key down to the end")
+        XCTAssertEqual(pill.beat.from.burst, 0)
+        XCTAssertEqual(pill.drawnBeat.look(at: t0.addingTimeInterval(9.1), level: 0, reduceMotion: true).burst, 0,
+                       "no burst colour either: a plain fade")
+    }
+
+    /// Engine errors end only the dictation they name. One without an id (prewarm, dictionary reload, an unknown
+    /// command) must not fade or kill the light of the dictation in flight.
+    func testOnlyTheActiveDictationsOwnErrorEndsIt() {
+        XCTAssertTrue(AppController.errorEndsDictation(errorId: "p3", activeId: "p3"))
+        XCTAssertFalse(AppController.errorEndsDictation(errorId: nil, activeId: "p3"), "no id: not about p3")
+        XCTAssertFalse(AppController.errorEndsDictation(errorId: "p2", activeId: "p3"), "an older pass")
+        XCTAssertFalse(AppController.errorEndsDictation(errorId: nil, activeId: nil))
+        XCTAssertFalse(AppController.errorEndsDictation(errorId: "p3", activeId: nil))
     }
 
     // MARK: stills

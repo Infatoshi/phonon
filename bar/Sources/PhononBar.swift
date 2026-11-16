@@ -81,12 +81,24 @@ final class PillState: ObservableObject {
     /// The dictation's stage for the capsule's light (BarStages.swift), replaced at each real event: key down,
     /// key up, text inserted, nothing inserted. Back to rest when the capsule goes idle.
     @Published var beat = BarBeat.rest
-    /// System Reduce Motion, read at each key-down: the stages use their no-motion look.
+    /// System Reduce Motion or Low Power Mode, read at each key-down: the stages use their no-motion look (no width
+    /// ever moves).
     var reduceMotion = false
 
-    /// Key down: the light is on this frame, before the mic opens or the model answers.
-    func ignite(now: Date = Date()) {
-        reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    /// Whether the light keeps its width still: Reduce Motion is on, or Low Power Mode is.
+    nonisolated static func stillLight(reduceMotion: Bool, lowPower: Bool) -> Bool { reduceMotion || lowPower }
+
+    /// The system's answer now (Accessibility > Display > Reduce motion; Battery > Low Power Mode).
+    static var systemWantsStillLight: Bool {
+        stillLight(
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
+    }
+
+    /// Key down: the light is on this frame, before the mic opens or the model answers. `still` is the system's
+    /// Reduce Motion / Low Power answer (tests pass it).
+    func ignite(now: Date = Date(), still: Bool? = nil) {
+        reduceMotion = still ?? Self.systemWantsStillLight
         beat = .ignite(at: now)
     }
 
@@ -1106,6 +1118,8 @@ struct PillView: View {
             else { return }
             let left = settle - Date().timeIntervalSince(drawn.since)
             if left > 0 { try? await Task.sleep(nanoseconds: UInt64((left + 0.05) * 1e9)) }
+            // a newer beat replaced this one mid-sleep: it is not settled, and its own task decides
+            guard !Task.isCancelled else { return }
             settledBeat = drawn
         }
     }
@@ -1666,6 +1680,10 @@ final class MicRecorder {
             NSLog("mic refresh: \(error.localizedDescription)")
         }
     }
+
+    /// The input hardware is already up (Instant microphone, or a dictation just ran): `start` will not block on a
+    /// hardware bring-up.
+    var hardwareRunning: Bool { configuredDeviceID != nil && engine.isRunning }
 
     /// `fastStart`: stream the opening seconds in short chunks (`StreamChunkCadence`), so the first
     /// live word shows sooner; the live text card asks for it.
@@ -3228,7 +3246,9 @@ final class AppController: NSObject, NSApplicationDelegate {
                 run(steps)
                 return
             }
-            if let id = ev["id"] as? String, id != activeId { return }
+            // Only this dictation's own error ends it. Errors without an id (prewarm, dictionary reload, a bad
+            // command) are not about any dictation; they used to fade or kill the light of the one in flight.
+            guard Self.errorEndsDictation(errorId: ev["id"] as? String, activeId: activeId) else { return }
             if isRecording { return }
             // Don't kill a queued first pass on boot-stream noise.
             if pendingTranscribe != nil { return }
@@ -3299,6 +3319,24 @@ final class AppController: NSObject, NSApplicationDelegate {
         state.level = 0
         state.beat = .rest
         state.mode = .idle
+    }
+
+    /// Whether an engine error ends the dictation in flight: only one that names it. An error with no id is about
+    /// no dictation at all.
+    nonisolated static func errorEndsDictation(errorId: String?, activeId: String?) -> Bool {
+        guard let errorId, let activeId else { return false }
+        return errorId == activeId
+    }
+
+    /// A cold microphone start (`MicRecorder.start` bringing the hardware up) blocks the main thread for its whole
+    /// bring-up, and SwiftUI only draws when the run loop gets back, so the key-down frame waited behind it and the
+    /// 0.18 s ignite was over before anything drew. This puts the capsule's current look on screen now. Only called
+    /// when the hardware is not already running: a warm start keeps its old order to the instruction.
+    private func flushPanelBeforeColdMicStart() {
+        guard let panel, panel.isVisible else { return }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
+        CATransaction.flush()
     }
 
     private func hideAfter(_ seconds: TimeInterval) {
@@ -3548,6 +3586,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         if enginesReady && state.streamingPreviewEnabled {
             startAsrStream()
         }
+        // The lit frame reaches the screen before a cold mic blocks the main thread. No audio depends on this: a
+        // warm mic (Instant microphone, hardware running) skips it, so its capture starts exactly as before; a cold
+        // mic captures nothing until its hardware start returns, which this precedes by one panel commit.
+        if !recorder.hardwareRunning { flushPanelBeforeColdMicStart() }
         do {
             try recorder.start(fastStart: liveTextPass)
             meetings.dictationStarted()
@@ -3563,7 +3605,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 engine.send(["cmd": "dictation_end", "id": activeId ?? "p\(pass)"])
             }
             ducker.stop()
-            hidePill()
+            state.undelivered()  // nothing was recorded: the lit light fades, no snap
+            hideAfter(BarStages.fadeOutSeconds)
             NSLog("mic: \(error.localizedDescription)")
         }
     }
@@ -3721,7 +3764,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.dictationEnded()
         _ = recorder.takeSamples()
         e2eTrace = nil
-        hidePill()
+        state.undelivered()  // nothing pasted: the light fades, no snap
+        hideAfter(BarStages.fadeOutSeconds)
         if competitors.hasPendingPrompt {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 self?.presentCompetitorPromptWhenIdle()
