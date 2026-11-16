@@ -125,6 +125,13 @@ fn forward_keys(source: Receiver<Action>, sink: Sender<Event>) {
                 }
                 continue;
             }
+            // The indicator moves on the key itself, here on the forwarding thread, not after
+            // the worker has opened the microphone: the press must be felt within a frame.
+            match action {
+                Action::Start => crate::indicator::press(),
+                Action::Stop => crate::indicator::release(),
+                Action::None => {}
+            }
             if sink.send(Event::Key(action)).is_err() {
                 break;
             }
@@ -317,6 +324,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                             if let Some(active) = recording.take() {
                                 active.discard();
                             }
+                            crate::indicator::dropped();
                             tray::set_status(&idle_text());
                         }
                     },
@@ -345,6 +353,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                 if recording.is_some() {
                     finish(&engine, recording.take());
                 } else {
+                    crate::indicator::press();
                     recording = begin();
                     if recording.is_some() {
                         engine.prepare(load::busy());
@@ -353,6 +362,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
             }
             Event::Key(Action::Start) => {
                 if recording.is_none() {
+                    crate::indicator::press(); // already lit by the key forwarder; a no-op then
                     recording = begin();
                     // After the microphone is recording. Returns at once; a
                     // fallback corrector it starts comes up in the background.
@@ -407,6 +417,7 @@ fn begin() -> Option<capture::Recording> {
                 );
             }
             eprintln!("phonon: cannot hear you: {text}");
+            crate::indicator::dropped();
             tray::notify("Phonon cannot hear you", &text, true);
             None
         }
@@ -419,11 +430,18 @@ fn idle_text() -> String {
 }
 
 fn finish(engine: &Engine, recording: Option<capture::Recording>) {
-    let Some(recording) = recording else { return };
+    let Some(recording) = recording else {
+        crate::indicator::abandon();
+        return;
+    };
+    // Processing starts at key-up (the key forwarder already said so; a menu stop or an
+    // auto-stop did not come through it).
+    crate::indicator::release();
     // The window the user was dictating into, at key-up.
     let target = inject::foreground();
     // A tap, or a recording a starved key-up cut to nothing: no word fits in it.
     if recording.seconds() < 0.25 {
+        crate::indicator::abandon();
         tray::set_status("nothing was said");
         return;
     }
@@ -437,6 +455,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
         Ok(captured) => captured,
         Err(error) => {
             eprintln!("phonon: {error:#}");
+            crate::indicator::abandon();
             tray::set_status(&idle_text());
             return;
         }
@@ -467,6 +486,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {
+                crate::indicator::abandon();
                 tray::set_status("nothing was said");
             } else {
                 // Before the paste, so the tray has it whatever happens next.
@@ -484,7 +504,10 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                 } else {
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
-                        Ok(path) => tray::set_status(&format!("inserted ({path})")),
+                        Ok(path) => {
+                            crate::indicator::pasted();
+                            tray::set_status(&format!("inserted ({path})"))
+                        }
                         Err(error) => {
                             // the error names the step that failed, never the text
                             eprintln!("phonon: could not insert the text: {error:#}");
@@ -496,6 +519,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
         }
         Err(error) => {
             eprintln!("phonon: {error:#}");
+            crate::indicator::abandon();
             tray::notify(
                 "Phonon could not transcribe that",
                 &format!("{error:#}"),
@@ -521,6 +545,8 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
     } else if !history::keep_wav(false, outcome.is_ok(), seconds) {
         history::remove_if_present(&path);
     }
+    // Whatever path got here, never leave the core lit (a no-op once pasted or dropped).
+    crate::indicator::abandon();
     tray::set_status(&idle_text());
 }
 
@@ -572,6 +598,8 @@ fn clear_history() {
 /// the clipboard answers, and always in the tray's "Copy last dictation"; the
 /// balloon says why and where it is (`pipeline::kept_notice`).
 fn keep_unpasted(text: &str, why: crate::pipeline::KeptBecause) {
+    // nothing went into an app: no burst
+    crate::indicator::abandon();
     let on_clipboard = match inject::copy(text) {
         Ok(()) => true,
         Err(error) => {

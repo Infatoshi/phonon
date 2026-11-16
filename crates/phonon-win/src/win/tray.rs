@@ -9,11 +9,13 @@
 //! loop the keyboard hook needs, so both live on the main thread.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
 use windows_sys::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
 };
@@ -28,11 +30,12 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId,
-    LoadIconW, LoadImageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-    TranslateMessage, EVENT_SYSTEM_FOREGROUND, HMENU, IDI_APPLICATION, IMAGE_ICON, MF_CHECKED,
+    CreateIconIndirect, DestroyIcon, GetCursorPos, GetForegroundWindow, GetMessageW,
+    GetSystemMetrics, GetWindowThreadProcessId, LoadIconW, LoadImageW, PostQuitMessage,
+    RegisterClassW, SetForegroundWindow, SystemParametersInfoW, TrackPopupMenu, TranslateMessage,
+    EVENT_SYSTEM_FOREGROUND, HICON, HMENU, ICONINFO, IDI_APPLICATION, IMAGE_ICON, MF_CHECKED,
     MF_DISABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
-    TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_DESTROY,
+    SPI_GETCLIENTAREAANIMATION, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_DESTROY,
     WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
@@ -200,12 +203,90 @@ pub fn create(commands: Sender<Command>) -> Result<()> {
     if data.hIcon.is_null() {
         data.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
     }
+    REST_ICON.store(data.hIcon as isize, Ordering::Release);
     fill(&mut data.szTip, "Phonon: starting");
     if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
         bail!("Shell_NotifyIconW could not add the icon");
     }
     watch_foreground();
+    // the dictation indicator (src/indicator.rs): sleeps until the first key press
+    crate::indicator::start(crate::indicator::Sink {
+        size: icon_size,
+        show: show_frame,
+        reduced_motion,
+    });
     Ok(())
+}
+
+/// The icon Phonon shows at rest (the embedded one), held as an integer so it can live in a static.
+static REST_ICON: AtomicIsize = AtomicIsize::new(0);
+/// The indicator frame currently in the tray, destroyed once the next icon replaces it.
+static FRAME_ICON: AtomicIsize = AtomicIsize::new(0);
+
+/// The notification area's small-icon size in pixels.
+fn icon_size() -> u32 {
+    (unsafe { GetSystemMetrics(SM_CXSMICON) }).clamp(16, 64) as u32
+}
+
+/// Windows Settings > Accessibility > Visual effects > Animation effects, off.
+fn reduced_motion() -> bool {
+    let mut on: i32 = 1;
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut on as *mut i32).cast(),
+            0,
+        )
+    };
+    ok != 0 && on == 0
+}
+
+/// Put an indicator frame (straight-alpha RGBA, `size` square) in the tray, or with `None` the normal
+/// icon back. Runs on the indicator thread; `Shell_NotifyIconW` takes calls from any thread, as
+/// `set_status` already relies on.
+fn show_frame(rgba: Option<&[u8]>, size: u32) {
+    let Some(hwnd) = hwnd() else { return };
+    let (icon, frame) = match rgba {
+        Some(rgba) => {
+            let icon = icon_from_rgba(rgba, size);
+            if icon.is_null() {
+                return;
+            }
+            (icon, true)
+        }
+        None => (REST_ICON.load(Ordering::Acquire) as HICON, false),
+    };
+    if icon.is_null() {
+        return;
+    }
+    let mut data = icon_data(hwnd);
+    data.uFlags = NIF_ICON;
+    data.hIcon = icon;
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+    let old = FRAME_ICON.swap(if frame { icon as isize } else { 0 }, Ordering::AcqRel);
+    if old != 0 {
+        unsafe { DestroyIcon(old as HICON) };
+    }
+}
+
+/// A 32-bit icon from straight-alpha RGBA, or null when GDI refuses.
+fn icon_from_rgba(rgba: &[u8], size: u32) -> HICON {
+    let mut bgra = rgba.to_vec();
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    // a 1-bit mask, every bit zero: the colour bitmap's alpha does the shaping
+    let mask_bits = vec![0u8; (size as usize).div_ceil(16) * 2 * size as usize];
+    unsafe {
+        let color = CreateBitmap(size as i32, size as i32, 1, 32, bgra.as_ptr().cast());
+        let mask = CreateBitmap(size as i32, size as i32, 1, 1, mask_bits.as_ptr().cast());
+        let info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+        let icon = CreateIconIndirect(&info);
+        DeleteObject(color);
+        DeleteObject(mask);
+        icon
+    }
 }
 
 /// Whether a process runs with an elevated (administrator) token. `None` when

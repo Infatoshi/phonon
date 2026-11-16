@@ -65,10 +65,17 @@ pub fn start() -> Result<Recording> {
                 &config,
                 move |data: &[$sample], _: &cpal::InputCallbackInfo| {
                     let Ok(mut buffer) = sink.lock() else { return };
+                    let mut energy = 0.0f32;
                     for frame in data.chunks(channels as usize) {
                         let mixed: Vec<f32> = frame.iter().copied().map($to_f32).collect();
-                        buffer.samples.push(downmix(&mixed, channels));
+                        let sample = downmix(&mixed, channels);
+                        let unit = sample as f32 / i16::MAX as f32;
+                        energy += unit * unit;
+                        buffer.samples.push(sample);
                     }
+                    // the indicator's voice level (src/indicator.rs)
+                    let frames = (data.len() / channels.max(1) as usize).max(1);
+                    crate::indicator::push_level((energy / frames as f32).sqrt());
                 },
                 on_error,
                 None,

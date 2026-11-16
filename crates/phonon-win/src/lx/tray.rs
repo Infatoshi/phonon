@@ -37,6 +37,9 @@ struct PhononTray {
     /// only, whatever Keep history says, so a paste that went nowhere is never
     /// lost and nothing is written to disk. Gone when Phonon quits.
     last: Option<String>,
+    /// The dictation indicator's current frame (src/indicator.rs), shown in place of the icon;
+    /// `None` at rest.
+    frame: Option<ksni::Icon>,
 }
 
 impl PhononTray {
@@ -145,8 +148,14 @@ impl ksni::Tray for PhononTray {
     fn title(&self) -> String {
         "Phonon".into()
     }
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.frame.iter().cloned().collect()
+    }
     fn icon_name(&self) -> String {
-        if self.recording {
+        // a host shows the named icon in preference to a pixmap, so name none while a frame shows
+        if self.frame.is_some() {
+            String::new()
+        } else if self.recording {
             "audio-input-microphone"
         } else {
             idle_icon()
@@ -274,6 +283,7 @@ pub fn create(commands: Sender<Command>) {
         history: false,
         recent: Vec::new(),
         last: None,
+        frame: None,
     };
     // At login Phonon can start before the shell's tray host (Ubuntu's AppIndicator extension) is up;
     // without this the icon never appeared (Ubuntu 26.04 VM, 2026-11-06). ksni registers once the host appears.
@@ -285,6 +295,37 @@ pub fn create(commands: Sender<Command>) {
         }
     };
     let _ = HANDLE.set(Mutex::new(handle));
+    // the dictation indicator (src/indicator.rs): sleeps until the first key press
+    crate::indicator::start(crate::indicator::Sink {
+        size: || 32,
+        show: show_frame,
+        reduced_motion,
+    });
+}
+
+/// Put an indicator frame (straight-alpha RGBA, `size` square) in the tray, or with `None` the
+/// normal icon back. The tray protocol wants ARGB32 in network byte order.
+fn show_frame(rgba: Option<&[u8]>, size: u32) {
+    let frame = rgba.map(|rgba| ksni::Icon {
+        width: size as i32,
+        height: size as i32,
+        data: rgba.chunks_exact(4).flat_map(|p| [p[3], p[0], p[1], p[2]]).collect(),
+    });
+    if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
+        if let Some(handle) = guard.as_ref() {
+            handle.update(move |t| t.frame = frame);
+        }
+    }
+}
+
+/// The desktop's animations setting where one can be read (GNOME's `enable-animations`, which GNOME
+/// Shell, Cinnamon and MATE follow); a desktop without it counts as animations on.
+fn reduced_motion() -> bool {
+    std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
+        .unwrap_or(false)
 }
 
 pub fn set_status(text: &str) {

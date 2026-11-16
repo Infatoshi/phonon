@@ -111,6 +111,11 @@ impl Recording {
     /// still discarded.
     pub fn auto_stop(&mut self, latched: bool) -> Decision {
         let fresh = self.appended().unwrap_or_default();
+        if !fresh.is_empty() {
+            // the indicator's voice level, as fine as this call's cadence (src/indicator.rs)
+            let energy: f32 = fresh.iter().map(|s| (*s as f32 / 32768.0).powi(2)).sum();
+            crate::indicator::push_level((energy / fresh.len() as f32).sqrt());
+        }
         self.auto.feed(&fresh);
         self.auto.decision(latched, self.seconds())
     }

@@ -20,6 +20,7 @@ mod dictionary;
 mod fetch;
 mod history;
 mod http;
+mod indicator;
 mod manifest;
 mod mode;
 mod paths;

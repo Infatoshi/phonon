@@ -138,6 +138,13 @@ fn app() -> Result<()> {
     hook::install(code, key_tx)?;
     std::thread::spawn(move || {
         while let Ok(a) = key_rx.recv() {
+            // The indicator moves on the key itself, on this thread, not after the worker has
+            // started the recorder: the press must be felt within a frame.
+            match a {
+                Action::Start => crate::indicator::press(),
+                Action::Stop => crate::indicator::release(),
+                Action::None => {}
+            }
             if events.send(Event::Key(a)).is_err() {
                 break;
             }
@@ -249,6 +256,7 @@ fn app() -> Result<()> {
                             if let Some(r) = recording.take() {
                                 r.discard();
                             }
+                            crate::indicator::dropped();
                             tray::set_status(&idle);
                         }
                     }
@@ -272,10 +280,14 @@ fn app() -> Result<()> {
                 if recording.is_some() {
                     finish(&engine, recording.take(), &idle);
                 } else {
+                    crate::indicator::press();
                     recording = begin();
                 }
             }
-            Event::Key(Action::Start) if recording.is_none() => recording = begin(),
+            Event::Key(Action::Start) if recording.is_none() => {
+                crate::indicator::press(); // already lit by the key thread; a no-op then
+                recording = begin()
+            }
             Event::Key(Action::Stop) => finish(&engine, recording.take(), &idle),
             Event::Key(_) => {}
             Event::Menu(tray::Command::ToggleHistory) => toggle_history(),
@@ -316,6 +328,7 @@ fn session_locked() -> bool {
 fn begin() -> Option<capture::Recording> {
     if session_locked() {
         eprintln!("phonon: screen is locked; not recording");
+        crate::indicator::dropped();
         return None;
     }
     let stamp = std::time::SystemTime::now()
@@ -328,6 +341,7 @@ fn begin() -> Option<capture::Recording> {
             Some(r)
         }
         Err(error) => {
+            crate::indicator::dropped();
             tray::notify("Phonon cannot hear you", &format!("{error:#}"), true);
             None
         }
@@ -335,7 +349,13 @@ fn begin() -> Option<capture::Recording> {
 }
 
 fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
-    let Some(recording) = recording else { return };
+    let Some(recording) = recording else {
+        crate::indicator::abandon();
+        return;
+    };
+    // Processing starts at key-up (the key thread already said so; a menu stop or an auto-stop
+    // did not come through it).
+    crate::indicator::release();
     let key_up = std::time::Instant::now();
     let seconds = recording.seconds();
     // The recorder writes this file as it records, so a long dictation survives
@@ -347,6 +367,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {
+                crate::indicator::abandon();
                 tray::set_status("nothing was said");
             } else {
                 // Before the paste, so the tray has it whatever happens next,
@@ -354,15 +375,19 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
                 tray::set_last(Some(result.polished.trim().to_string()));
                 if session_locked() {
                     eprintln!("phonon: screen locked while recording; text not inserted");
+                    crate::indicator::abandon();
                 } else {
                     let text = format!("{} ", result.polished.trim());
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
-                        Ok(path) => eprintln!(
-                            "phonon: {path} {} chars, key-up to insert {} ms",
-                            text.len(),
-                            key_up.elapsed().as_millis()
-                        ),
+                        Ok(path) => {
+                            crate::indicator::pasted();
+                            eprintln!(
+                                "phonon: {path} {} chars, key-up to insert {} ms",
+                                text.len(),
+                                key_up.elapsed().as_millis()
+                            )
+                        }
                         Err(error) => {
                             // the error names the step that failed, never the text
                             eprintln!("phonon: could not insert the text: {error:#}");
@@ -372,12 +397,17 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
                 }
             }
         }
-        Err(error) => tray::notify(
-            "Phonon could not transcribe that",
-            &format!("{error:#}"),
-            true,
-        ),
+        Err(error) => {
+            crate::indicator::abandon();
+            tray::notify(
+                "Phonon could not transcribe that",
+                &format!("{error:#}"),
+                true,
+            )
+        }
     }
+    // Whatever path got here, never leave the core lit (a no-op once pasted or dropped).
+    crate::indicator::abandon();
     if history::enabled() {
         let (raw, final_text) = match &outcome {
             Ok(result) => (result.raw.as_str(), result.polished.trim()),
@@ -441,6 +471,8 @@ fn clear_history(active: Option<&std::path::Path>) {
 /// A dictation that could not be pasted stays on the clipboard and in the
 /// tray's "Copy last dictation", and the notification says where it is.
 fn keep_unpasted(text: &str) {
+    // nothing went into an app: no burst
+    crate::indicator::abandon();
     match inject::copy(text) {
         Ok(()) => tray::notify_private(
             crate::pipeline::NOT_PASTED_TITLE,

@@ -22,8 +22,9 @@ import kotlin.math.sin
  *  - at rest a dark capsule with grey light drifting inside (no label), redrawn at most 20 times a second while the
  *    keyboard is on screen and animations are on;
  *  - listening: the Mac app's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2.6x, its ember centre
- *    lit and widened by the voice level;
- *  - working: the same capsule, smaller, breathing on a 1.6 s cycle;
+ *    lit and widened by the voice level; it flashes to full strength the moment the finger lands (BarStages);
+ *  - working: the same capsule, smaller; its light gathers to a tight bright core over 1.2 s and holds still, then
+ *    bursts outward when the text is in (markPasted) or fades out when nothing was pasted (BarStages);
  *  - [label] (not ready yet, or a status for about 2 s) is drawn over a dimmed resting fluid.
  * Touch handling (hold to talk, tap to latch) is the IME's; this view only draws.
  */
@@ -31,7 +32,11 @@ class TalkBar(context: Context) : View(context) {
     enum class Mode { REST, LISTENING, WORKING }
 
     var mode = Mode.REST
-        set(v) { field = v; invalidate() }
+        set(v) {
+            if (v != field) stageChange(field, v)
+            field = v
+            invalidate()
+        }
     /** 0..1 voice level while listening (smoothed here). */
     var level = 0.0
         set(v) { field = v; invalidate() }
@@ -54,7 +59,36 @@ class TalkBar(context: Context) : View(context) {
     }
     private val rect = RectF()
     private val clip = Path()
-    private var shownLevel = 0.0
+    private val smoother = BarStages.Smoother()
+    private val machine = BarStages.Machine()
+    private var lastFrame = 0.0
+    private var listeningSince = 0.0
+    /** The text went into the field: the next return to rest bursts instead of fading out. */
+    private var pastedPending = false
+    /** The bar left listening (not writing) for rest, so the fade-out keeps the listening shape. */
+    private var tailFromListening = false
+
+    /** The text was inserted. Call before the mode returns to REST. */
+    fun markPasted() { pastedPending = true }
+
+    private fun nowSeconds() = SystemClock.uptimeMillis() / 1000.0
+
+    /** Option B's stages ride on the mode changes: finger down lights the bar at once, let-go starts the gather,
+     *  and leaving for rest is a burst (text pasted) or a fade (nothing pasted). BarStages has the maths. */
+    private fun stageChange(from: Mode, to: Mode) {
+        val now = nowSeconds()
+        val reduced = !animationsOn()
+        when (to) {
+            Mode.LISTENING -> { machine.press(now); listeningSince = now; tailFromListening = false }
+            Mode.WORKING -> machine.release(now)
+            Mode.REST -> {
+                tailFromListening = from == Mode.LISTENING
+                if (pastedPending && from == Mode.WORKING) machine.pasted(now, reduced)
+                else machine.dropped(now, smoother.value, reduced)
+                pastedPending = false
+            }
+        }
+    }
 
     private data class Blob(val x: Double, val ax: Double, val ay: Double, val sx: Double, val sy: Double,
                             val phase: Double, val r: Double, val white: Double)
@@ -71,38 +105,55 @@ class TalkBar(context: Context) : View(context) {
         val w = width.toFloat()
         val h = height.toFloat()
         val t = if (animate && animationsOn()) (SystemClock.uptimeMillis() % 3_600_000L) / 1000.0 else 0.0
-        if (mode == Mode.REST) {
+        val now = nowSeconds()
+        val reduced = !animationsOn()
+        if (mode == Mode.LISTENING) {
+            smoother.step(min(1.0, max(BarStages.LEVEL_FLOOR, level)), now - lastFrame)
+        }
+        lastFrame = now
+        val look = machine.frame(now, smoother.value, reduced)
+        if (look == null) {
+            // at rest (a finished burst or fade hands back here)
             drawFluid(c, w, h, t)
             label?.let { c.drawText(ellipsize(it, w - 32 * dp), w / 2, h / 2 - (text.ascent() + text.descent()) / 2, text) }
             if (animate && animationsOn()) postInvalidateDelayed(50)
             return
         }
-        // Mac capsule at 2.6x, centred
-        val energy = if (mode == Mode.LISTENING) {
-            shownLevel += (min(1.0, max(0.08, level)) - shownLevel) * 0.35
-            shownLevel
-        } else {
-            0.18 + (sin(t * Math.PI * 2 / 1.6) + 1) / 2 * 0.18
-        }
-        val (sw, sh) = if (mode == Mode.LISTENING) (66 + 14 * energy) to (13 + 3 * energy) else (38 + 10 * energy) to (10 + 3 * energy)
+        // Mac capsule at 2.6x, centred; the size is the same as before, the light inside it follows the stages
+        val listeningShape = mode == Mode.LISTENING || (mode == Mode.REST && tailFromListening)
+        val energy = if (listeningShape) smoother.value else 0.27  // writing holds still: no breathing
+        val (sw, sh) = if (listeningShape) (66 + 14 * energy) to (13 + 3 * energy) else (38 + 10 * energy) to (10 + 3 * energy)
         val scale = 2.6f * dp
         val pw = (sw * scale).toFloat()
         val ph = (sh * scale).toFloat()
         rect.set(w / 2 - pw / 2, h / 2 - ph / 2, w / 2 + pw / 2, h / 2 + ph / 2)
-        val warmth = 0.50 + energy * 0.38
-        val glow = 0.22 + energy * 0.12
+        val glow = (0.22 + energy * 0.12) * min(1.0, look.strength)
         // the warm glow under the capsule (the Mac's shadow: radius 4, y 1, at the same 2.6x)
         fill.shader = null
         fill.color = Color.BLACK
         fill.setShadowLayer(4 * scale, 0f, scale, Color.argb((glow * 255).toInt(), 140, 41, 10))
         c.drawRoundRect(rect, ph / 2, ph / 2, fill)
         fill.clearShadowLayer()
+        // black at both ends always, one light at 0.5 with half-width w
+        val core = BarStages.centre(look)
+        val a = (0.5 - look.halfWidth).toFloat().coerceIn(0f, 0.5f)
+        val b = (0.5 + look.halfWidth).toFloat().coerceIn(0.5f, 1f)
         fill.shader = LinearGradient(rect.left, 0f, rect.right, 0f,
-            intArrayOf(Color.BLACK, Color.argb((warmth * 255).toInt(), 107, 31, 9), Color.BLACK), null, Shader.TileMode.CLAMP)
+            intArrayOf(Color.BLACK, Color.BLACK, Color.rgb(core[0], core[1], core[2]), Color.BLACK, Color.BLACK),
+            floatArrayOf(0f, a, 0.5f, b, 1f), Shader.TileMode.CLAMP)
         c.drawRoundRect(rect, ph / 2, ph / 2, fill)
         fill.shader = null
-        if (mode == Mode.WORKING && animate && animationsOn()) postInvalidateDelayed(33)
-        if (mode == Mode.LISTENING && kotlin.math.abs(shownLevel - level) > 0.01) postInvalidateDelayed(33)
+        if (mode == Mode.REST) {
+            label?.let { c.drawText(ellipsize(it, w - 32 * dp), w / 2, h / 2 - (text.ascent() + text.descent()) / 2, text) }
+        }
+        // Repaint only while the picture changes: the ignite, the gather, a burst or fade, the voice level.
+        // The held core and a steady reduced-motion core draw once.
+        val again = when (mode) {
+            Mode.LISTENING -> now - listeningSince < BarStages.IGNITE_SECONDS + 0.05 ||
+                kotlin.math.abs(smoother.value - max(BarStages.LEVEL_FLOOR, level)) > 0.01
+            else -> machine.moving(now, reduced)
+        }
+        if (again) postInvalidateOnAnimation()
     }
 
     private fun drawFluid(c: Canvas, w: Float, h: Float, t: Double) {
