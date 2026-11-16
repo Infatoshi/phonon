@@ -78,6 +78,44 @@ final class PillState: ObservableObject {
     @Published var startButtonShown = false
     /// Settings `show_idle_capsule`: off hides the capsule between dictations.
     @Published var showWhenIdle = true
+    /// The dictation's stage for the capsule's light (BarStages.swift), replaced at each real event: key down,
+    /// key up, text inserted, nothing inserted. Back to rest when the capsule goes idle.
+    @Published var beat = BarBeat.rest
+    /// System Reduce Motion, read at each key-down: the stages use their no-motion look.
+    var reduceMotion = false
+
+    /// Key down: the light is on this frame, before the mic opens or the model answers.
+    func ignite(now: Date = Date()) {
+        reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        beat = .ignite(at: now)
+    }
+
+    /// Key up: the light gathers into a tight core while the text is made. Called again while already gathering
+    /// (a queued first pass) it keeps the gather where it is.
+    func startProcessing(now: Date = Date()) {
+        guard beat.stage != .rest else { return }
+        beat = beat.processing(at: now)
+    }
+
+    /// The text was inserted: the burst.
+    func delivered(now: Date = Date()) {
+        beat = beat.burst(at: now, level: level, reduceMotion: reduceMotion)
+    }
+
+    /// Nothing was inserted (empty result, error, nowhere to paste): no burst, the core fades out.
+    func undelivered(now: Date = Date()) {
+        beat = beat.fadeOut(at: now, level: level, reduceMotion: reduceMotion)
+    }
+
+    /// The beat that draws: the real one, or the one the mode implies when no event set it (the demo modes).
+    var drawnBeat: BarBeat {
+        if beat.stage != .rest { return beat }
+        switch mode {
+        case .listening: return BarBeat(stage: .listening, since: .distantPast)
+        case .working: return BarBeat(stage: .processing, since: .distantPast)
+        case .hidden, .idle: return .rest
+        }
+    }
 
     /// Whether the capsule is drawn. Idle shows it only when the setting allows, or
     /// while a meeting records (its red light and stop button live in the capsule).
@@ -1009,28 +1047,32 @@ struct PillView: View {
     /// Renders one instant (offscreen tests); nil follows the clock.
     var fixedTime: Date?
 
+    /// The beat whose clock has run out: the held core needs no frames of its own.
+    @State private var settledBeat: BarBeat?
+
     var body: some View {
         // Idle and hidden draw nothing that changes over time, so the clock stops there: an unpaused timeline redrew
-        // the still capsule 30 times a second forever (about 5% of a core on an M4 Air, 2026-11-05).
-        TimelineView(
+        // the still capsule 30 times a second forever (about 5% of a core on an M4 Air, 2026-11-05). It also stops
+        // while the gathered core is held (processing, gather done) and after the burst, where the capsule goes idle.
+        let drawn = state.drawnBeat
+        let heldCore = state.mode == .working && !state.meetingRecording && settledBeat == drawn
+        return TimelineView(
             .animation(
                 minimumInterval: 1.0 / 30.0,
-                paused: (state.mode == .idle || state.mode == .hidden) && !state.meetingRecording)
+                paused: ((state.mode == .idle || state.mode == .hidden) && !state.meetingRecording) || heldCore)
         ) { context in
-            let date = fixedTime ?? context.date
+            // a stopped clock hands over a stale date; a held stage is at its end, so ask the time
+            let date = fixedTime ?? (heldCore ? Date() : context.date)
             let energy = visualEnergy(at: date)
             let size = shellSize(energy: energy)
             Capsule(style: .continuous)
                 .fill(
                     LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0),
-                            .init(
-                                color: Color(red: 0.42, green: 0.12, blue: 0.035)
-                                    .opacity(warmth(energy)),
-                                location: 0.5),
-                            .init(color: .black, location: 1),
-                        ],
+                        stops: lightLook(at: date, energy: energy).stops.map {
+                            Gradient.Stop(
+                                color: Color(red: $0.r, green: $0.g, blue: $0.b).opacity($0.a),
+                                location: $0.location)
+                        },
                         startPoint: .leading,
                         endPoint: .trailing
                     )
@@ -1058,6 +1100,24 @@ struct PillView: View {
                     value: size
                 )
         }
+        .task(id: drawn) {
+            guard state.mode == .working,
+                let settle = drawn.settleSeconds(reduceMotion: state.reduceMotion)
+            else { return }
+            let left = settle - Date().timeIntervalSince(drawn.since)
+            if left > 0 { try? await Task.sleep(nanoseconds: UInt64((left + 0.05) * 1e9)) }
+            settledBeat = drawn
+        }
+    }
+
+    /// The light: the stage's look while a dictation runs, else the resting capsule (a faint warmth while a meeting
+    /// records, nothing otherwise).
+    private func lightLook(at date: Date, energy: Double) -> BarLook {
+        let drawn = state.drawnBeat
+        guard drawn.stage != .rest else {
+            return BarLook(width: BarStages.wideWidth, heat: 0, opacity: warmth(energy), burst: 0)
+        }
+        return drawn.look(at: date, level: state.level, reduceMotion: state.reduceMotion)
     }
 
     /// Dictating while a meeting records: the capsule keeps its energy-driven
@@ -1109,8 +1169,8 @@ struct PillView: View {
         case .listening:
             return min(1, max(0.08, state.level))
         case .working:
-            let breath = (sin(date.timeIntervalSinceReferenceDate * .pi * 2 / 1.6) + 1) / 2
-            return 0.18 + breath * 0.18
+            // the capsule's size and glow hold at the middle of the old breath; the light does the gathering
+            return 0.27
         }
     }
 
@@ -3034,7 +3094,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                         hideLiveText()
                         notPasted.show(.notHeard(mic: recorder.selectedDeviceName))
                     }
-                    hideAfter(0.1)
+                    state.undelivered()  // nothing heard: the core fades, no burst
+                    hideAfter(BarStages.fadeOutSeconds)
                     return
                 }
                 submitFinalPolish(text, id: pid)
@@ -3127,9 +3188,20 @@ final class AppController: NSObject, NSApplicationDelegate {
                     }
                     e2eTrace = nil
                     finishRecordingRetention()
-                    hideAfter(state.streamingPreviewEnabled ? 0.55 : 0)
+                    if insertionSucceeded {
+                        // the text is in the field: the burst, then the capsule goes idle
+                        state.delivered()
+                        hideAfter(BarStages.burstSeconds + 0.05)
+                    } else {
+                        // shown for copying instead (nowhere to paste, or no accessibility access): no burst
+                        state.undelivered()
+                        hideAfter(
+                            state.streamingPreviewEnabled
+                                ? max(0.55, BarStages.fadeOutSeconds) : BarStages.fadeOutSeconds)
+                    }
                 } else {
-                    hidePill()
+                    state.undelivered()  // an empty result: the core fades, no burst
+                    hideAfter(BarStages.fadeOutSeconds)
                 }
             } else if kind == "draft" {
                 // Live text: the engine sends these only with settings.json `live_text` on,
@@ -3162,7 +3234,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             if pendingTranscribe != nil { return }
             processing = false
             finishRecordingRetention()
-            hideAfter(0.12)
+            state.undelivered()  // an engine error: the core fades, no burst
+            hideAfter(BarStages.fadeOutSeconds)
         default:
             break
         }
@@ -3176,6 +3249,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func showIdle() {
         hideWork?.cancel()
         state.level = 0
+        state.beat = .rest
         state.mode = .idle
         present()
     }
@@ -3183,12 +3257,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func showListening() {
         hideWork?.cancel()
         state.level = 0
+        state.ignite()  // key down: the light is on this frame, before the mic opens
         state.mode = .listening
         present()
     }
 
     private func showWorking() {
         hideWork?.cancel()
+        state.startProcessing()  // key up: the light starts gathering now
         state.level = 0
         state.mode = .working
         present()
@@ -3221,6 +3297,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         state.level = 0
+        state.beat = .rest
         state.mode = .idle
     }
 
@@ -3567,7 +3644,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                     self.engine.send(["cmd": "dictation_end", "id": id])
                     // Stay visible briefly so it doesn't feel broken, then hide.
                     self.processing = false
-                    self.hideAfter(0.25)
+                    self.state.undelivered()  // nothing captured: the core fades, no burst
+                    self.hideAfter(max(0.25, BarStages.fadeOutSeconds))
                     return
                 }
                 self.activeWavPath = path
