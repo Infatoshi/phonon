@@ -60,6 +60,11 @@ final class Refiner: @unchecked Sendable {
         cp.n_ubatch = 512
         cp.n_threads = threads
         cp.n_threads_batch = threads
+        // CPU only, as the comment above the class requires: n_gpu_layers = 0 keeps the weights on the CPU, but with
+        // op_offload on (the default) llama.cpp still sends large-batch ops (a long prompt's prefill) to the Metal
+        // device, which a backgrounded app may not use. The Mac meeting runtime and the Windows/Linux CPU server
+        // pass --device none for the same reason.
+        cp.op_offload = false
         guard let c = llama_init_from_model(m, cp) else {
             llama_model_free(m)
             return nil
