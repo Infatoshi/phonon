@@ -1,6 +1,6 @@
 //! The update card for Windows and Linux: tell the user once when a newer release is out, and offer
 //! its download page from the tray. Phonon never downloads or installs anything itself. The Mac
-//! counterpart is bar/Sources/UpdateCheck.swift (SPEC "Update check").
+//! counterpart is macos/Sources/UpdateCheck.swift (SPEC "Update check").
 //!
 //! - When: 60 s after start, then every 24 h while Phonon runs, if `check_for_updates` in
 //!   settings.json is not false (the Mac's key and default).

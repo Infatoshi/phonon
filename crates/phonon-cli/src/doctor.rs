@@ -40,12 +40,12 @@ pub fn run_doctor() -> Result<()> {
         check("native macOS app", true);
     } else {
         check(
-            "bar/Package.swift",
-            root.join("bar/Package.swift").is_file(),
+            "macos/Package.swift",
+            root.join("macos/Package.swift").is_file(),
         );
         check(
-            "signed bar app (bar/dist/Phonon.app)",
-            root.join("bar/dist/Phonon.app/Contents/MacOS/PhononBar")
+            "signed bar app (macos/dist/Phonon.app)",
+            root.join("macos/dist/Phonon.app/Contents/MacOS/PhononBar")
                 .is_file(),
         );
     }

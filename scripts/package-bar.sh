@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(cd "$script_dir/.." && pwd)
-bar_dir="$project_dir/bar"
+bar_dir="$project_dir/macos"
 app_path="$bar_dir/dist/Phonon.app"
 
 # Panic locations carry source paths: map the builder's home, Cargo registry

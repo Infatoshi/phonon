@@ -38,7 +38,7 @@ impl PassResult {
 }
 
 /// The notice for a dictation Phonon could not paste, in the words of the Mac's
-/// card (bar/Sources/NotPasted.swift): the text is never lost, it waits on the
+/// card (macos/Sources/NotPasted.swift): the text is never lost, it waits on the
 /// clipboard and in the tray.
 pub const NOT_PASTED_TITLE: &str = "Nothing was focused, so Phonon kept your text";
 pub const NOT_PASTED_BODY: &str =

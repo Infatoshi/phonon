@@ -1,7 +1,7 @@
 import XCTest
 
 /// The stage maths of the dictation light (BarStages.swift): ignite, listening, gather and hold, burst, fade-out, and
-/// the Reduce Motion path. The same cases run in the Mac app's tests (bar/Tests/BarStagesTests.swift).
+/// the Reduce Motion path. The same cases run in the Mac app's tests (macos/Tests/BarStagesTests.swift).
 final class BarStagesTests: XCTestCase {
     private func look(_ stage: BarStage, _ t: Double, level: Double = 0.4, reduced: Bool = false,
                       from: BarLook = BarLook(width: 0.08, heat: 1, opacity: 1, burst: 0)) -> BarLook {

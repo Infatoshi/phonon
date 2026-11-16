@@ -287,7 +287,7 @@ crates/phonon-cli/     the phonon command: app launcher, doctor, bench, data too
 crates/phonon-hotkey/  hold-to-talk and tap-to-toggle, shared by macOS and Windows
 crates/phonon-win/     Windows tray app, keyboard hook, WASAPI capture, insertion
 crates/phonon-mine/    source-identifier extraction for vocabulary mining
-bar/                   SwiftPM macOS app: Home, History, Dictionary, Settings, capsule
+macos/                 SwiftPM macOS app: Home, History, Dictionary, Settings, capsule
 sidecar/               speech recognition and correction servers (Python, run by uv)
 prompts/               correction prompt
 assets/                startup clip, English word list, recording cues

@@ -167,7 +167,7 @@ commits. There is no double-tap (removed 2026-11-09; `tap_to_toggle` from
 issue #34 is no longer read).
 
 A latched recording also stops on its own, so a stray tap cannot leave the mic
-on (macOS; `LatchAutoStop` in `bar/Sources/PhononBar.swift`, where both limits
+on (macOS; `LatchAutoStop` in `macos/Sources/PhononBar.swift`, where both limits
 live). Speech is the capsule's `VoiceDetector` on the level meter, counted only
 after 0.15 s of unbroken voice so keystrokes do not count. With no speech at all
 8 s after the start, the recording is dropped: no stop cue, no transcription,
@@ -246,7 +246,7 @@ still rank it. Detection is a `kAudioHardwarePropertyDevices` listener,
 scanned 1.5 s after the last change because a device and its input streams
 arrive separately. The card waits while dictating or inserting, never takes
 focus (the edit-learning card's non-activating panel, raised above it), and
-asks about several new devices one at a time. Code: `bar/Sources/NewMicrophone.swift`.
+asks about several new devices one at a time. Code: `macos/Sources/NewMicrophone.swift`.
 
 #### Windows (planned, not built)
 
@@ -302,7 +302,7 @@ which carry no buttons. The prompt needs, in order:
 
 ## Meeting notes (macOS)
 
-Rules (bar/Sources/MeetingRules.swift, since 2026-11-11): Settings › Notes › "When a call starts" is settings.json
+Rules (macos/Sources/MeetingRules.swift, since 2026-11-11): Settings › Notes › "When a call starts" is settings.json
 `meeting_mode`, three options named for a non-technical reader: "Remember per app" (`rules`, the default since
 2026-11-11), "Ask every time" (`every_call`: Record / Not now on every call, rules ignored), or "Don't detect
 calls" (`off`). Under "Remember per app" a call in an app or site with a rule in `meeting_rules`
@@ -329,7 +329,7 @@ gets them once on the non-activating card above the capsule (12 s after launch, 
 answer within 30 s keeps the current mode ("Remember per app" unless changed). Both offer the three options with
 "Remember per app" first and preselected. A "record everything" mode is not built (see the pull request for what it needs).
 
-Recording (bar/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
+Recording (macos/Sources/MeetingRecording.swift, MeetingController.swift): with Settings › Notes on, a detected call
 asks "take notes?" (or starts by itself with auto-start). Detection (`meeting_capture`) is on by default since
 2026-11-09 (owner's decision; settings schema 3); auto-start (`meeting_auto_start`) stays off, so nothing records
 without a click. Every settings save writes every key, so a stored `false` in a schema 1 or 2 file is the old
@@ -351,7 +351,7 @@ earlier track starts at 0.
   -40 dBFS white noise; 1,428 words) the normalised words were identical in both, and so was the WER: 0.0651 in
   each (stock parakeet-tdt-0.6b-v2 on MLX). `MeetingFormatLiveCheck` (opt in) records a WAV through this path.
 
-Detection (bar/Sources/MeetingDetection.swift), every 4 s, from CoreAudio's process list (who captures, who
+Detection (macos/Sources/MeetingDetection.swift), every 4 s, from CoreAudio's process list (who captures, who
 plays; Phonon left out), the frontmost app and, for a browser that is not private and itself captures, its tab:
 - A capturing process counts as the app it belongs to, compared without case (Wispr Flow 1.6's table): a
   `.helper` process is its app (Chrome, Edge, Brave, Arc, Slack, Discord), com.apple.WebKit.GPU is Safari,
@@ -378,7 +378,7 @@ plays; Phonon left out), the frontmost app and, for a browser that is not privat
   and a call app's own microphone test (Zoom's settings) is offered like a call. Which process captures for each
   app comes from Wispr's table: a live call per app remains the owner's check.
 
-Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
+Transcripts (macos/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
 `transcribe_span`), all on the Mac:
 
 - When a recording stops, an empty transcript.partial.json is written at once (so a quit from then on still
@@ -436,7 +436,7 @@ Transcripts (bar/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engi
   words in 17.7 s after the model loaded (17.5 s of it in the model); Parakeet's own 120 s / 15 s long-form
   chunking of each whole track gives 3,335 words. `MeetingTranscriptLiveCheck` (opt in by environment) reruns it.
 
-Cleanup (bar/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupRuntime.swift; engine `meeting.rs`
+Cleanup (macos/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanupRuntime.swift; engine `meeting.rs`
 `QuietWatch`), all on the Mac:
 
 - What: the meetings_v2 MB s1 adapter (GGUF LoRA, q8_0, 26,231,616 bytes, sha256 3401c8b51232…, published in
@@ -562,7 +562,7 @@ orphan exit, superwhisper default hotkey and idle mic state.
 A new user brings their words, snippets, past dictations, shortcut and
 microphone from the dictation app they used before. This is the "prior
 dictation apps" source of the vocabulary onboarding above, done in the app
-(`bar/Sources/DictationImport.swift`, sheet in `DictationImportView.swift`).
+(`macos/Sources/DictationImport.swift`, sheet in `DictationImportView.swift`).
 
 - When: first run, right after the privacy sheet, if any app below is
   detected; and any time from Settings › System › "Import from other dictation
@@ -637,7 +637,7 @@ land yet. When the Windows build gains a dictionary:
 ## Update check (macOS, since 1.0)
 
 Phonon tells its users when a newer Mac release is out. It never downloads or
-installs anything itself (`bar/Sources/UpdateCheck.swift`, `UpdateController.swift`).
+installs anything itself (`macos/Sources/UpdateCheck.swift`, `UpdateController.swift`).
 
 - When: 60 s after launch, then every 24 h while it runs, if Settings › System ›
   Check for updates is on (settings.json `check_for_updates`, default on). "Check
@@ -1056,7 +1056,7 @@ same `safeFinalText` check as for the paste. At the polish result the panel show
 text, then hides with the capsule; it hides on an empty or failed pass and at the next key down.
 It never becomes key and ignores the mouse; what is inserted is the polish result as before.
 
-The card (bar/Sources/LiveText.swift) is 420 pt wide, 13.5 pt text at line height 1.45. It
+The card (macos/Sources/LiveText.swift) is 420 pt wide, 13.5 pt text at line height 1.45. It
 is top-anchored in a panel that reserves room for five lines above the capsule: it starts one
 line tall and grows down as the text wraps (height eases over 140 ms, cubic-bezier(.2,.8,.3,1)),
 then scrolls to keep the newest line in view. The capsule is the usual PillView. After the

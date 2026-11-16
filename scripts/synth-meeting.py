@@ -13,7 +13,7 @@ dictation stamps out (the control). Writes <meeting_dir>.truth.json beside it.
 
 Transcribe the folder with the real sidecar (MeetingTranscriptLiveCheck):
     PHONON_MEETING_CHECK_DIR=<meeting_dir> PHONON_MEETING_CHECK_OUT=<empty dir> \\
-        swift test --package-path bar --filter MeetingTranscriptLiveCheck
+        swift test --package-path macos --filter MeetingTranscriptLiveCheck
 """
 import json
 import os

@@ -105,6 +105,6 @@ updated developer agreement to accept at developer.apple.com.
 
 The script refuses the placeholder refiner revision, builds the app with the
 engine, signs nested executables and the bundle with hardened runtime and
-secure timestamps, creates and signs `bar/dist/Phonon.dmg`, submits it to
+secure timestamps, creates and signs `macos/dist/Phonon.dmg`, submits it to
 Apple, saves the notarization log, staples the ticket, and verifies the final
 artifact with Gatekeeper.

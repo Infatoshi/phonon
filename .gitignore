@@ -1,6 +1,6 @@
 /target/
-/bar/.build/
-/bar/dist/
+/macos/.build/
+/macos/dist/
 /ref/
 /.pytest_cache/
 /.ruff_cache/

@@ -12,7 +12,7 @@ page switching" could carry the product surface without a webview. The four
 screenshots are that window.
 
 The answer was yes, and the shipping app then implemented the same surface in
-SwiftUI under `bar/`, so the design carried over and the code did not. Nothing
+SwiftUI under `macos/`, so the design carried over and the code did not. Nothing
 here is reachable from the built app.
 
 `SPEC.md` is the product spec the shipping app implements: the four recorder

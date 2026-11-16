@@ -30,7 +30,7 @@ pub use phonon_core::data::{DictionaryEntry, DictionaryFile};
 /// The file name in the data root, as on the Mac.
 pub const FILE: &str = "dictionary.json";
 
-/// The Mac's `source` for an entry the user typed in (bar/Sources/AppData.swift).
+/// The Mac's `source` for an entry the user typed in (macos/Sources/AppData.swift).
 const SOURCE: &str = "phonon-app";
 
 /// The Webster's word list the Mac ships (`assets/english_words.txt`). Phonetic

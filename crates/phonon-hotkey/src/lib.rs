@@ -1,6 +1,6 @@
 //! Hold or tap for one dictation key.
 //!
-//! This is the Rust port of the Swift `HoldKeyTapLatch` in `bar/Sources/PhononBar.swift`.
+//! This is the Rust port of the Swift `HoldKeyTapLatch` in `macos/Sources/PhononBar.swift`.
 //! macOS drives it from the Globe (fn) key. Windows drives it from Right Ctrl through
 //! a `WH_KEYBOARD_LL` hook. Both platforms must behave the same, so the rules live
 //! here and both test suites cover the same cases.

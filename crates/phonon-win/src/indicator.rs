@@ -47,7 +47,7 @@ pub const LEVEL_FLOOR: f32 = 0.08;
 
 /// Listening's light is this opaque over black in silence...
 pub const LISTEN_STRENGTH: f32 = 0.50;
-/// ...plus this much times the voice energy (0..1). The Mac capsule's numbers (bar/Sources/PhononBar.swift
+/// ...plus this much times the voice energy (0..1). The Mac capsule's numbers (macos/Sources/PhononBar.swift
 /// `warmth`: 0.50 + energy * 0.38).
 pub const LISTEN_STRENGTH_RANGE: f32 = 0.38;
 /// Full strength: energy 1, the ignite flash and the loudest voice, 0.50 + 0.38 = 0.88 opacity of the ember

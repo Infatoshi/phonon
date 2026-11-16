@@ -21,7 +21,7 @@ use crate::polish::{DEFAULT_MODE, MODES};
 #[cfg(test)]
 const FILE: &str = crate::settings::LEGACY_MODE;
 
-/// The tray menu's names, in `MODES` order (the Mac's titles, bar/Sources/AppData.swift).
+/// The tray menu's names, in `MODES` order (the Mac's titles, macos/Sources/AppData.swift).
 pub fn label(mode: &str) -> &'static str {
     match mode {
         "casual" => "Casual",

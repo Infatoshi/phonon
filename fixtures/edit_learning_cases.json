@@ -1,5 +1,5 @@
 {
-  "about": "Post-paste edit learning behaviour, shared by the engine (crates/phonon-core/src/edits.rs) and the bar (bar/Tests/EditLearningTests.swift). Each case is what Phonon pasted, what the user kept when the watch ended, and the engine's expected reply. The dictionary is empty unless `dictionary` lists terms.",
+  "about": "Post-paste edit learning behaviour, shared by the engine (crates/phonon-core/src/edits.rs) and the bar (macos/Tests/EditLearningTests.swift). Each case is what Phonon pasted, what the user kept when the watch ended, and the engine's expected reply. The dictionary is empty unless `dictionary` lists terms.",
   "cases": [
     {
       "name": "paste then retype a misheard term",

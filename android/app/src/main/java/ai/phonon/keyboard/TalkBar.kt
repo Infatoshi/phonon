@@ -21,7 +21,7 @@ import kotlin.math.sin
  * The keyboard's talk bar, the iPhone's design (ios/Shared/KeyboardUI.swift talkBar, IdleFluid, MacPill):
  *  - at rest a dark capsule with grey light drifting inside (no label), redrawn at most 20 times a second while the
  *    keyboard is on screen and animations are on;
- *  - listening: the Mac app's dictation capsule (bar/Sources/PhononBar.swift PillView) at 2.6x, its ember centre
+ *  - listening: the Mac app's dictation capsule (macos/Sources/PhononBar.swift PillView) at 2.6x, its ember centre
  *    lit and widened by the voice level; it flashes to full strength the moment the finger lands (BarStages);
  *  - working: the same capsule, smaller; its light gathers to a tight bright core over 1.2 s and holds still, then
  *    bursts outward when the text is in (markPasted) or fades out when nothing was pasted (BarStages);

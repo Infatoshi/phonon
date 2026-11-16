@@ -1,6 +1,6 @@
 //! When a latched dictation stops on its own.
 //!
-//! The Rust port of the Swift `LatchAutoStop` and `VoiceDetector` in `bar/Sources`, so a stray
+//! The Rust port of the Swift `LatchAutoStop` and `VoiceDetector` in `macos/Sources`, so a stray
 //! tap cannot leave the mic recording until the next press on any desktop. A held key never
 //! stops this way (its release does): [`AutoStop::decision`] answers only for a latched
 //! recording.

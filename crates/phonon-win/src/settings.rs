@@ -1,7 +1,7 @@
 //! `settings.json` in the data root: the settings window's file, read by the
 //! engine at each dictation.
 //!
-//! The keys are the Mac's (bar/Sources/AppData.swift `NativeSettings.CodingKeys`)
+//! The keys are the Mac's (macos/Sources/AppData.swift `NativeSettings.CodingKeys`)
 //! wherever the Mac has the setting, so the two files mean the same thing key for
 //! key: `shortcut_mode`, `writing_style`, `local_history`,
 //! `history_retention_days`, `clipboard_after_paste`, plus `launch_at_login` and

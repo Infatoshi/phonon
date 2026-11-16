@@ -21,7 +21,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: PYTHONPATH=. uv run --with pytest --with numpy pytest
       - run: uv run --with ruff ruff check sidecar tests scripts
-      - run: swift test --package-path bar
+      - run: swift test --package-path macos
 
   # Android JVM unit tests (app/src/test). testDebugUnitTest compiles the Kotlin and runs no CMake task, so neither
   # llama.cpp nor the sherpa-onnx JNI libraries are needed; only sherpa-onnx's Kotlin API sources, which

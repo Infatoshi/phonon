@@ -24,7 +24,7 @@ llama_commit=39febd2adb947b70da35e95f9351b3bf58ad170a
 llama_dir="$project_dir/target/llama.cpp-${llama_commit:0:7}"
 out_dir="$project_dir/target/engine"
 jobs=${PHONON_BUILD_JOBS:-4}
-min_macos=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$project_dir/bar/Resources/Info.plist")
+min_macos=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$project_dir/macos/Resources/Info.plist")
 # Without this the toolchain stamps the build machine's macOS as the minimum,
 # and dyld then refuses the engine on every older Mac.
 export MACOSX_DEPLOYMENT_TARGET=$min_macos

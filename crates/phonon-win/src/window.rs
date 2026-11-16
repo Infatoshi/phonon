@@ -3,7 +3,7 @@
 //! toolkit and a window crash cannot take dictation down.
 //!
 //! egui through eframe. Rows follow the Mac's SettingsView
-//! (bar/Sources/MainWindow.swift), limited to what this engine acts on. Every
+//! (macos/Sources/MainWindow.swift), limited to what this engine acts on. Every
 //! change is written to settings.json at once (settings.rs); the running app
 //! reads it at the next dictation, and picks up a new key on its next tick.
 
@@ -233,7 +233,7 @@ fn text_sizes(ctx: &egui::Context) {
 }
 
 /// Phonon's warm "ember" palette instead of egui's cold grey: the Mac app's
-/// dark colours (bar/Sources/MainWindow.swift EmberTheme, ios/Shared/Theme.swift)
+/// dark colours (macos/Sources/MainWindow.swift EmberTheme, ios/Shared/Theme.swift)
 /// and the Android app's light counterparts (android/.../TestActivity.kt).
 /// Body and help text meet WCAG AA (4.5:1) on every surface they sit on.
 mod theme {

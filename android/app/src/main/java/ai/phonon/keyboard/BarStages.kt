@@ -37,7 +37,7 @@ object BarStages {
     const val LEVEL_FLOOR = 0.08
 
     /** Listening's light is this opaque over black in silence, plus [LISTEN_STRENGTH_RANGE] times the voice
-     *  energy (0..1): the Mac capsule's 0.50 + energy * 0.38 (bar/Sources/PhononBar.swift warmth). */
+     *  energy (0..1): the Mac capsule's 0.50 + energy * 0.38 (macos/Sources/PhononBar.swift warmth). */
     const val LISTEN_STRENGTH = 0.50
     const val LISTEN_STRENGTH_RANGE = 0.38
     /** Full strength, energy 1 (the ignite flash and the loudest voice): 0.50 + 0.38 = 0.88 opacity over black.

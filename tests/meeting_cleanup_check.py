@@ -1,4 +1,4 @@
-"""Python reference for the app's meeting-cleanup check (bar/Sources/MeetingCleanup.swift,
+"""Python reference for the app's meeting-cleanup check (macos/Sources/MeetingCleanup.swift,
 `MeetingCleanupValidator.check`). The Swift checker and this file must give the same verdict on
 every answer: tests/test_meeting_cleanup_check.py runs both on fixtures/meeting_cleanup_cases.json,
 and `MeetingCleanupLiveCheck` compares the Swift side with answers scored here.

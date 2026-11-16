@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Mac app's ember palette (bar/Sources/MainWindow.swift EmberTheme), shared by the app and the keyboard.
+/// The Mac app's ember palette (macos/Sources/MainWindow.swift EmberTheme), shared by the app and the keyboard.
 enum Ember {
     static let window = Color(hex: 0x12100E)
     static let panel = Color(hex: 0x1A1512)

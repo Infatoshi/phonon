@@ -521,7 +521,7 @@ fn run_profile(command: ProfileCommands) -> Result<()> {
 }
 
 fn bar_root() -> PathBuf {
-    phonon_core::project_root().join("bar")
+    phonon_core::project_root().join("macos")
 }
 
 fn bar_bin() -> PathBuf {
