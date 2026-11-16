@@ -154,7 +154,7 @@ impl ksni::Tray for PhononTray {
     fn icon_name(&self) -> String {
         // a host shows the named icon in preference to a pixmap, so name none while a frame shows
         if self.frame.is_some() {
-            String::new()
+            ""
         } else if self.recording {
             "audio-input-microphone"
         } else {
