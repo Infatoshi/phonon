@@ -86,11 +86,12 @@ PROFILE_LEAD_IN = (
 # the user message) and the suffix after it. Never appears in real input.
 PROMPT_SPLIT_SENTINEL = "\x00PHONON_USER_TURN\x00"
 
-# A model directory holding this file is a trained refiner (ml/, phonon-bench
-# format) rather than an instruction-following polisher: it gets the exact
-# system prompt and vocabulary line it was trained on, the bare transcript as
-# the user turn, and the word-count guard. Byte-identical to
-# ml/research/bench_v0 prompts.py; a different wording is a different model.
+# A model directory holding this file is a trained refiner (phonon-research
+# ml/, phonon-bench format) rather than an instruction-following polisher: it
+# gets the exact system prompt and vocabulary line it was trained on, the bare
+# transcript as the user turn, and the word-count guard. Byte-identical to
+# ml/research/bench_v0 prompts.py in Infatoshi/phonon-research; a different
+# wording is a different model.
 REFINER_MARKER_FILE = "phonon_refiner.json"
 REFINER_SYSTEM_PROMPT = (
     "Rewrite the raw dictation transcript into the exact text the speaker intended. "
@@ -111,7 +112,7 @@ REFINER_VOCAB_LINES = (
 DICTIONARY_PATTERN = re.compile(
     r"<phonon_dictionary>(.*?)</phonon_dictionary>", re.DOTALL
 )
-# Word-count guard and output cap (ml/AGENTS.md: on for every reported number).
+# Word-count guard and output cap (phonon-research ml/AGENTS.md: on for every reported number).
 GUARD_TOK_MULT = 1.5
 GUARD_TOK_ADD = 32
 GUARD_MAX_RATIO = 2.0

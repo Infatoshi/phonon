@@ -1,7 +1,0 @@
-kind: eval
-adapter: harness_smoke_a
-sets: [real_580, term_new]
-backend: hf
-label: harness_smoke_a
-# smoke-sized: 40 rows a set, no numerics or latency stages
-extra: ["--limit", "40", "--no-numerics", "--no-latency", "--max-batch", "40"]

@@ -100,7 +100,7 @@ gate.sh, bench.sh, run_box.sh, ab.sh) and raw logs were kept locally, not in the
 ## Roofline rows
 
 Each box also ran a roofline probe (read bandwidth, int8 / fp16 / fp32 peaks, power cap,
-profiler check); 12 rows (stock and merged per card) are in `kernels/roofline/nvidia.tsv`. nsys works on the local 3090 box only
+profiler check); 12 rows (stock and merged per card) are in `kernels/roofline/nvidia.tsv` in [Infatoshi/phonon-research](https://github.com/Infatoshi/phonon-research). nsys works on the local 3090 box only
 (not installed in the vast.ai image); ncu has no counters anywhere (ERR_NVGPUCTRPERM), the local 3090 box included.
 
 ## Cost and instances (vast.ai)

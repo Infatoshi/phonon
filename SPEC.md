@@ -759,7 +759,8 @@ text is restored a quarter of a second later.
 
 ## Refiner (research)
 
-The next correction model is built in `ml/`: Parakeet TDT v2, then per-utterance retrieval over a
+The next correction model is built in `ml/` of
+[Infatoshi/phonon-research](https://github.com/Infatoshi/phonon-research): Parakeet TDT v2, then per-utterance retrieval over a
 vocabulary indexed from the user's own code, then LFM2.5-1.2B with a LoRA adapter, shipped as the
 same int4 weights on every platform. `ml/SPEC.md` has the design and the evaluation roadmap;
 `ml/AGENTS.md` has the current state and how to run the pipeline.

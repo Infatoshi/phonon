@@ -1,8 +1,0 @@
-# The whole corpus path as one job: 24 terms -> sentences -> Kokoro -> Parakeet -> training rows.
-run: harness_e2e
-agent: opus-harness
-gpus: [1]
-slots_per_gpu: 1
-jobs:
-  - {name: corpus_smoke, kind: corpus, gpu: 1, timeout_s: 3600,
-     config: research/harness/configs/corpus_smoke_e2e.yaml}

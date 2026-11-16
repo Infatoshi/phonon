@@ -32,7 +32,7 @@ also include the DMG for direct installation. To build from source instead, use
   when you correct yourself.
 - **Data:** 76,960 transcripts of public audio and synthetic dictations, each rewritten by DeepSeek
   following a written spec, in four writing modes (casual, formal, prompt, minimal). No personal dictation
-  went into it. The pipeline is in `ml/`.
+  went into it. The pipeline is in [Infatoshi/phonon-research](https://github.com/Infatoshi/phonon-research) under `ml/`.
 - **Mode:** picked from the app you dictate into: casual in chat apps (Slack, Teams, Discord), formal in email, prompt in
   AI assistants and terminals, minimal everywhere else.
 - **Speed:** both models work while you talk, so at key-up only the last seconds are left. The refiner runs
@@ -291,12 +291,11 @@ macos/                 SwiftPM macOS app: Home, History, Dictionary, Settings, c
 sidecar/               speech recognition and correction servers (Python, run by uv)
 prompts/               correction prompt
 assets/                startup clip, English word list, recording cues
-ml/                    refiner training and evaluation pipeline (runs on a GPU box)
-tools/                 vocabulary-mining research tools
-tools/dev/             developer benchmarks that call cloud APIs; not part of the app
 ```
 
 The phonon.sh landing page lives in [Infatoshi/phonon-website](https://github.com/Infatoshi/phonon-website).
+Refiner training, vocabulary-mining research tools, benchmarks and roofline tables live in
+[Infatoshi/phonon-research](https://github.com/Infatoshi/phonon-research).
 
 ## License
 

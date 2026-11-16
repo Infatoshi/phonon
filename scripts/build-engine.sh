@@ -10,7 +10,7 @@
 #   kernels/metal/refiner/  mk.metal (the refiner megakernel), df.metal (the DFlash2 drafter)
 #   kernels/metal/asr/      pa.metal (Parakeet encoder + TDT decode), melfb.npy (its GPU log-mel filterbank)
 #   kernels/cuda/<arch>/    llama.cpp b12132 patches for the tuned Windows/Linux CUDA builds
-#   kernels/roofline/       measured roofline tables per platform
+#   (measured roofline tables per platform live in Infatoshi/phonon-research, kernels/roofline/)
 # The built and installed layout above does not follow it: pe and pa still find their
 # shaders next to themselves (PE_DIR, PA_DIR), as before.
 #

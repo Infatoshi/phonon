@@ -1,9 +1,0 @@
-# The same ship adapter with the retrieval stage ON, so the multiprocess rerank is timed
-# inside a real benchmark run rather than on its own.
-kind: eval
-adapter: /data/phonon_corrector_v0/adapters/ship_lfm12_v0
-label: ship_lfm12_v0_retr
-backend: vllm
-exe: /data/venvs/vllm/bin/phonon-bench
-sets: [real_580, term_old_seen, term_old_unseen, term_new, term_pool2, term_pool3]
-extra: ["--no-numerics", "--max-batch", "96", "--gpu-frac", "0.30"]
