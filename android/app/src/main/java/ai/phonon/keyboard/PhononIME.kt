@@ -53,6 +53,8 @@ class PhononIME : InputMethodService() {
     private var cancel: View? = null
     private var keys: KeyPanel? = null
     private var micView: View? = null
+    /** A debuggable build: only then may a log line name the host app and the field's input type (Privacy). */
+    private val debug by lazy { Privacy.debuggable(this) }
 
     /** The talk bar's state, as on the iPhone: at rest, listening (held, or latched on by a tap) or writing. */
     private enum class Phase { READY, LISTENING, WORKING }
@@ -81,16 +83,17 @@ class PhononIME : InputMethodService() {
                         val t = SystemClock.elapsedRealtime()
                         val (out, json) = correct(text, m)
                         val ms = SystemClock.elapsedRealtime() - t
-                        Log.i(TAG, "REFINE total_ms=$ms ${Mem.snapshot()} out=\"$out\" $json")
+                        Log.i(TAG, "REFINE total_ms=$ms ${Mem.snapshot()} out_chars=${out.length} ${Privacy.refineStats(json)}")
                         if (commit) main.post { commitResult(out, t, "refine") }
                     }
                 }
                 ACTION_WAV -> {
                     val path = i.getStringExtra("path") ?: return
                     val tUp = SystemClock.elapsedRealtime()  // the simulated key-up
+                    val password = Privacy.isPassword(currentInputEditorInfo?.inputType ?: 0)
                     worker.post {
                         val samples = try { Wav.read(path) } catch (e: Throwable) { Log.e(TAG, "WAV read", e); return@post }
-                        process(samples, tUp, "wav")
+                        process(samples, tUp, "wav", password = password)
                     }
                 }
                 ACTION_STATUS -> Log.i(TAG, "STATUS asr=${asr != null} refiner=${refiner != null} ${Mem.snapshot()}")
@@ -137,7 +140,7 @@ class PhononIME : InputMethodService() {
         if (refiner != null) {  // warm-up, as on iOS: caches the minimal-mode prompt head
             val t = SystemClock.elapsedRealtime()
             val json = refiner!!.refine("warm up", "minimal")
-            Log.i(TAG, "WARMUP $json")  // ImeE2ETest waits for " WARMUP {"
+            Log.i(TAG, "WARMUP ${Privacy.refineStats(json)}")  // ImeE2ETest waits for " WARMUP {"
             Log.i(TAG, "WARMUP_MS ${SystemClock.elapsedRealtime() - t}")
         }
         main.post { setStatus("ready: asr=${asr != null} refiner=${refiner != null}") }
@@ -186,7 +189,7 @@ class PhononIME : InputMethodService() {
     /** Each time the keyboard opens: retries a download that failed (a running or finished one is left alone). */
     override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        Log.i(TAG, "INPUT_VIEW app=${info?.packageName} inputType=0x${Integer.toHexString(info?.inputType ?: 0)}")
+        Log.i(TAG, "INPUT_VIEW ${Privacy.field(info?.packageName, info?.inputType ?: 0, debug)}")
         if (ModelFetch.state.error != null) ModelFetch.start(this)
         keys?.reset()
         bar?.animate = !lowPower()
@@ -235,8 +238,9 @@ class PhononIME : InputMethodService() {
         main.postDelayed({ if (flashId == id) { flashText = null; paintBar() } }, 2000)
     }
 
-    /** Runs on the worker thread: ASR, refine, then commit on the main thread. */
-    private fun process(samples: FloatArray, tUp: Long, source: String, gen: Int = generation) {
+    /** Runs on the worker thread: ASR, refine, then commit on the main thread. A [password] field's transcript skips
+     *  the dictionary and the refiner and is committed as heard. */
+    private fun process(samples: FloatArray, tUp: Long, source: String, gen: Int = generation, password: Boolean = false) {
         val a = asr ?: run {
             Log.w(TAG, "ASR not loaded")
             main.post { setPhase(Phase.READY); flash("The speech model is not ready yet") }
@@ -246,10 +250,10 @@ class PhononIME : InputMethodService() {
         val t0 = SystemClock.elapsedRealtime()
         val raw = a.transcribe(samples)
         val t1 = SystemClock.elapsedRealtime()
-        val (text, json) = correct(raw, mode)
+        val (text, json) = if (password) raw to null else correct(raw, mode)
         val t2 = SystemClock.elapsedRealtime()
         Log.i(TAG, "PIPELINE source=$source audio_ms=${samples.size / 16} asr_ms=${t1 - t0} refine_ms=${t2 - t1} " +
-            "raw=\"$raw\" refined=${json ?: "null"} ${Mem.snapshot()}")
+            "password=$password raw_chars=${raw.length} refined=${Privacy.refineStats(json)} ${Mem.snapshot()}")
         main.post {
             if (gen != generation) { Log.i(TAG, "E2E source=$source cancelled"); return@post }
             commitResult(text, tUp, source)
@@ -322,13 +326,14 @@ class PhononIME : InputMethodService() {
         val bound = currentInputStarted && (currentInputEditorInfo?.inputType ?: InputType.TYPE_NULL) != InputType.TYPE_NULL
         val ok = (ic?.commitText(text, 1) ?: false) && bound
         Log.i(TAG, "E2E source=$source key_up_to_commit_ms=${SystemClock.elapsedRealtime() - tUp} committed=$ok " +
-            "bound=$bound text=\"$text\"")
+            "bound=$bound chars=${text.length}")
         if (ok) {
-            // what the field now holds before the cursor, read through the same connection: proof the text landed in
-            // apps whose fields a test cannot read (ImeE2ETest's Messages check)
-            val back = ic?.getTextBeforeCursor(text.length + 40, 0)?.toString()
-            Log.i(TAG, "E2E_READBACK app=${currentInputEditorInfo?.packageName} landed=${back?.endsWith(text) == true} " +
-                "before=\"${back?.replace("\n", "\\n")}\"")
+            // whether the field now ends with the text before the cursor, read through the same connection: proof the
+            // text landed in apps whose fields a test cannot read (ImeE2ETest's Messages check); only the verdict is logged
+            val back = ic?.getTextBeforeCursor(text.length, 0)?.toString()
+            val info = currentInputEditorInfo
+            Log.i(TAG, "E2E_READBACK ${Privacy.field(info?.packageName, info?.inputType ?: 0, debug)} " +
+                "landed=${back?.endsWith(text) == true}")
         }
         val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
         // the bar bursts only for text that went into a field; an empty result or no field fades out
@@ -462,7 +467,8 @@ class PhononIME : InputMethodService() {
         for (s in samples) peak = maxOf(peak, kotlin.math.abs(s))
         Log.i(TAG, "MIC_UP samples=${samples.size} peak=$peak")
         val gen = generation
-        worker.post { process(samples, tUp, "mic", gen) }
+        val password = Privacy.isPassword(currentInputEditorInfo?.inputType ?: 0)
+        worker.post { process(samples, tUp, "mic", gen, password) }
     }
 
     // ---------- keyboard view ----------
@@ -584,7 +590,7 @@ class PhononIME : InputMethodService() {
     private val keyHost = object : KeyPanel.Host {
         override fun type(s: String) {
             currentInputConnection?.commitText(s, 1)
-            Log.i(TAG, "KEY $s")
+            Log.i(TAG, "KEY ${Privacy.keyName(s, typesText = true)}")
         }
 
         override fun deleteBackward() {

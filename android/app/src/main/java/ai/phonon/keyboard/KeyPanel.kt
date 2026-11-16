@@ -171,7 +171,8 @@ class KeyPanel(context: Context, private val host: Host) : LinearLayout(context)
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     v.isPressed = true; v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                    android.util.Log.i(TAG, "TOUCH_DOWN key=$name")  // ImeE2ETest checks each injected press arrived
+                    // ImeE2ETest checks each injected press arrived; a key that types text logs as "char" (Privacy)
+                    android.util.Log.i(TAG, "TOUCH_DOWN key=${Privacy.keyName(name, typesText = !special && name != "space")}")
                 }
                 MotionEvent.ACTION_UP -> { v.isPressed = false; action() }
                 MotionEvent.ACTION_CANCEL -> v.isPressed = false

@@ -436,7 +436,7 @@ class ImeE2ETest {
             val text = fieldText(multi)
             openerOk = Regex("^(okay|ok)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
             log("OPENER ok=$openerOk e2e=${e2e?.substringAfter("E2E ")?.substringBefore(" text=")} field=\"${esc(text)}\"")
-            phononLog().lastOrNull { it.contains("REFINE total_ms=") }?.let { log("OPENER refiner_text=${it.substringAfter("{\"text\":").take(200)}") }
+            phononLog().lastOrNull { it.contains("REFINE total_ms=") }?.let { log("OPENER refine=${it.substringAfter("REFINE ").take(400)}") }  // stats only: the IME logs no text
         }
         val bar = talkBar(multi)
         log("MEM after_dictation ${meminfo()} ${Mem.snapshot()}")
@@ -479,7 +479,9 @@ class ImeE2ETest {
         ev.recycle()
     }
 
-    private fun downs(name: String) = phononLog().count { it.contains("TOUCH_DOWN key=$name") }
+    // a key that types text (one character) logs as "char", never which one (Privacy.keyName)
+    private fun downs(name: String) =
+        phononLog().count { it.contains("TOUCH_DOWN key=${Privacy.keyName(name, typesText = name.length == 1)}") }
 
     /** Press [name] for [holdMs] (a tap by default); false if the key is not on the keyboard or no press arrived.
      *  A press the IME did not log (TOUCH_DOWN) is lifted and sent again: the Xiaomi 14 dropped the first injected
