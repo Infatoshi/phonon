@@ -52,10 +52,10 @@ pub const ASR_MODEL_ID: &str = "Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx";
 pub const ASR_MODEL_REVISION: &str = "76fbda42bfcf7be26cca2488f8fe38ea4328f755";
 /// Phonon's public refiner; the repository is the macOS constant.
 pub use phonon_llm::POLISH_MODEL_ID;
-/// The revision Windows and Linux fetch: the 1.0 upload, which their builds were tested with. macOS 1.0.1 pins
-/// a later revision of the same repository (`phonon_llm::POLISH_MODEL_REVISION`); move this one when the
-/// Windows and Linux builds are retested with it.
-pub const POLISH_MODEL_REVISION: &str = "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e";
+/// The revision Windows and Linux fetch: the context refiner (s3d_ctx6_s1), the same commit and GGUF as
+/// macOS (`phonon_llm::POLISH_MODEL_REVISION`) and Android. Their prompt has no On-screen or Before-cursor
+/// line: they have neither text (`phonon_llm::refiner_prompt`).
+pub const POLISH_MODEL_REVISION: &str = "f5e269abf1fd05de59cb43947515d3c3194b79cf";
 /// The GGUF file name inside the correction model directory.
 pub const POLISH_GGUF: &str = "phonon-refiner-1.7b-Q4_K_S-e4.gguf";
 
@@ -175,13 +175,13 @@ pub const ASR_MODEL: Component = Component {
 /// The Phonon refiner (fine-tuned LFM3-1.7B), Q4_K_S with 4-bit embeddings and head: the same file the iPhone
 /// and Android builds run.
 pub const POLISH_MODEL: Component = Component {
-    dir: "models/phonon-refiner-1.7b-2b0ab74",
+    dir: "models/phonon-refiner-1.7b-f5e269a",
     label: "correction model",
     assets: &[Asset {
         name: POLISH_GGUF,
-        url: "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/2b0ab74bee7ab7cf364695bbe44f64ce4c47439e/phonon-refiner-1.7b-Q4_K_S-e4.gguf",
-        sha256: "059e6e503c6c2ec50cb61a39bd0d556fb6d946bb58e965fb9ddb8b0176dfc6cd",
-        bytes: 988_453_696,
+        url: "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/f5e269abf1fd05de59cb43947515d3c3194b79cf/phonon-refiner-1.7b-Q4_K_S-e4.gguf",
+        sha256: "8222be26ec129471331af4e13eefed9c5852cbb489f4e7043ceb6c4496f56856",
+        bytes: 988_453_504,
     }],
     unpack: Unpack::None,
     sentinel: POLISH_GGUF,
@@ -193,14 +193,20 @@ pub const ALL: &[Component] = &[SHERPA_RUNTIME, LLAMA_RUNTIME, ASR_MODEL, POLISH
 
 /// Data folders of earlier versions that `fetch::ensure_all` removes once the
 /// current components are in place: the stock Parakeet export (replaced by
-/// N8avg) and, on Windows, the CPU-only llama.cpp runtime (replaced by the
-/// Vulkan build, which carries the same CPU backends).
+/// N8avg), the 1.0 refiner (replaced by the context refiner) and, on Windows,
+/// the CPU-only llama.cpp runtime (replaced by the Vulkan build, which carries
+/// the same CPU backends).
 #[cfg(windows)]
-pub const SUPERSEDED: &[&str] = &["runtime/llama-b12132", "models/parakeet-tdt-0.6b-v2-int8"];
+pub const SUPERSEDED: &[&str] = &[
+    "runtime/llama-b12132",
+    "models/parakeet-tdt-0.6b-v2-int8",
+    "models/phonon-refiner-1.7b-2b0ab74",
+];
 #[cfg(not(windows))]
 pub const SUPERSEDED: &[&str] = &[
     "runtime/llama-b12132-linux-x64",
     "models/parakeet-tdt-0.6b-v2-int8",
+    "models/phonon-refiner-1.7b-2b0ab74",
 ];
 
 /// Total first-run download in bytes.

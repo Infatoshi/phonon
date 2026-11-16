@@ -81,16 +81,33 @@ enum MeetingCleanupManifest {
             bytes: 26_231_616),
         unpack: .none, sentinel: "phonon-meeting-lora-q8_0.gguf")
 
-    /// The correction model the adapter was trained on (RLQv4U Q4_K_S-e4): the pinned
-    /// refiner's GGUF (`phonon_llm::POLISH_MODEL_REVISION`).
+    /// The correction model the adapter was trained on (RLQv4U Q4_K_S-e4, the Phonon 1.0.1
+    /// refiner). Dictation moved on to a newer refiner (`phonon_llm::POLISH_MODEL_REVISION`),
+    /// so this one is no longer the dictation model's file: an adapter only fits the
+    /// weights it was trained on.
     static let baseSHA256 = "0439996bda5886b92c86db49249be7d7ad2175ccf35bf2630c09433684e502e5"
     static let baseBytes: Int64 = 988_453_696
     static let refinerRepo = "Infatoshi/phonon-refiner-1.7b"
     static let refinerRevision = "b20b28075046af94056ab5d5bff89a7abc0f6f50"
     static let refinerGGUF = "phonon-refiner-1.7b-Q4_K_S-e4.gguf"
 
+    /// The base model as meeting cleanup's own download, when no copy of it is on disk (a new
+    /// install, or the Hugging Face cache pruned the old refiner revision after an update).
+    static let base = PinnedComponent(
+        dir: "models/meeting-cleanup-base", label: "meeting cleanup base model",
+        asset: PinnedAsset(
+            name: refinerGGUF,
+            url: URL(
+                string:
+                    "https://huggingface.co/\(refinerRepo)/resolve/\(refinerRevision)/\(refinerGGUF)"
+            ),
+            sha256: baseSHA256,
+            bytes: baseBytes),
+        unpack: .none, sentinel: refinerGGUF)
+
     /// Where the base model may be: an installed refiner folder (models/refiner, its
-    /// phonon_engine.json target), then the pinned snapshot in the Hugging Face cache.
+    /// phonon_engine.json target), the pinned snapshot in the Hugging Face cache (a Mac that
+    /// ran the 1.0.1 refiner), then meeting cleanup's own download (`base`).
     static func baseCandidates(support: URL, environment: [String: String] = ProcessInfo.processInfo.environment)
         -> [URL]
     {
@@ -113,6 +130,7 @@ enum MeetingCleanupManifest {
         out.append(
             hub.appendingPathComponent("models--" + refinerRepo.replacingOccurrences(of: "/", with: "--"))
                 .appendingPathComponent("snapshots/\(refinerRevision)/\(refinerGGUF)"))
+        out.append(support.appendingPathComponent(base.dir, isDirectory: true).appendingPathComponent(base.sentinel))
         return out
     }
 }

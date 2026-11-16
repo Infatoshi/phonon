@@ -11,10 +11,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** The pinned public refiner (Infatoshi/phonon-refiner-1.7b @2b0ab74, Q4_K_S-e4), as on the desktop builds. */
+/** The pinned public refiner (Infatoshi/phonon-refiner-1.7b @f5e269a, Q4_K_S-e4), as on the desktop builds. */
 const val REFINER_URL = "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/" +
-    "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e/phonon-refiner-1.7b-Q4_K_S-e4.gguf"
-const val REFINER_BYTES = 988_453_696L
+    "f5e269abf1fd05de59cb43947515d3c3194b79cf/phonon-refiner-1.7b-Q4_K_S-e4.gguf"
+const val REFINER_BYTES = 988_453_504L
 
 /**
  * The refiner benchmark on a real phone (Firebase Test Lab): the same 4 transcripts x 2 as the iOS self-test

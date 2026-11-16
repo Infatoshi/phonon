@@ -285,13 +285,21 @@ extension MeetingCleaner {
                 },
                 makeRuntime: {
                     let candidates = MeetingCleanupManifest.baseCandidates(support: support)
-                    let base = await Task.detached(priority: .utility) {
+                    let found = await Task.detached(priority: .utility) {
                         PinnedFiles.firstMatching(
                             candidates, sha256: MeetingCleanupManifest.baseSHA256,
                             bytes: MeetingCleanupManifest.baseBytes)
                     }.value
-                    guard let base else {
-                        throw CleanupSetupError.baseModel
+                    // no copy on disk: meeting cleanup fetches the base it was trained on itself
+                    let base: URL
+                    if let found {
+                        base = found
+                    } else {
+                        do {
+                            base = try await downloader.ensure(MeetingCleanupManifest.base)
+                        } catch {
+                            throw CleanupSetupError.baseModel
+                        }
                     }
                     let adapterFile = try await downloader.ensure(adapter)
                     let server = try await downloader.ensure(MeetingCleanupManifest.runtime)
@@ -308,6 +316,6 @@ enum CleanupSetupError: LocalizedError {
     case baseModel
 
     var errorDescription: String? {
-        "The correction model the meeting adapter was made for is not installed."
+        "The correction model the meeting adapter was made for is not installed and could not be downloaded."
     }
 }

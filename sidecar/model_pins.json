@@ -67,23 +67,23 @@
    }
   },
   "Infatoshi/phonon-refiner-1.7b": {
-   "revision": "b20b28075046af94056ab5d5bff89a7abc0f6f50",
+   "revision": "f5e269abf1fd05de59cb43947515d3c3194b79cf",
    "files": {
     ".gitattributes": {
-     "size": 1718,
-     "sha256": "9cbf71b65ab9d165067f19a0ea06c050f7764b213617fd977f138145efe83756"
+     "size": 1784,
+     "sha256": "488b2a7e1d46491dc1e2381282a2af237861861dac616afc9b39ab161d770b88"
     },
     "LICENSE": {
      "size": 10574,
      "sha256": "4d28ca14dedc0b3d0fcc2b3339f0e79931faa33874f3d24f522183a8fc70068c"
     },
     "NOTICE": {
-     "size": 1293,
-     "sha256": "6e22035f2acf0564af88c389402bcda046a0ba5f6bfa46074b56741cd8df4d60"
+     "size": 1563,
+     "sha256": "42b5591959e9b43d6735a82fbc4b7777d53a4d7e0b3102caf87ed1fd408185a6"
     },
     "README.md": {
-     "size": 22325,
-     "sha256": "d3387af96c26feb0432f6ac790dd65ff8313f68199a94d6251e8dfd13ec0e91e"
+     "size": 5530,
+     "sha256": "e42d9a2dbfb8441aed179511e8321219ffc70f02b406f6e7b8c393344855fc56"
     },
     "chat_template.jinja": {
      "size": 12129,
@@ -98,16 +98,16 @@
      "sha256": "bfe4a6d7d5fd2218845f716157632fff5b7b137628055a69871e41026c0750b5"
     },
     "model.safetensors": {
-     "size": 1133072403,
-     "sha256": "4d901d5d36ece0ae628afaac08009c3550fd6832df5e78f20784e3402bfb2441"
+     "size": 1133072561,
+     "sha256": "a10067916f950da4829981230e62542b9894dfeac150ea0ed59efb4c959c6b0b"
     },
     "model.safetensors.index.json": {
      "size": 41831,
      "sha256": "a6b6a42bb621feacd690f99b658fc29ccbe771d61c2a8f28c936ab93c3fd203e"
     },
     "phonon-refiner-1.7b-Q4_K_S-e4.gguf": {
-     "size": 988453696,
-     "sha256": "0439996bda5886b92c86db49249be7d7ad2175ccf35bf2630c09433684e502e5"
+     "size": 988453504,
+     "sha256": "8222be26ec129471331af4e13eefed9c5852cbb489f4e7043ceb6c4496f56856"
     },
     "phonon-refiner-1.7b-dflash2-drafter.gguf": {
      "size": 214803168,
@@ -118,8 +118,8 @@
      "sha256": "5aff5a55a6734846c61e4ce3966b2078c549419b01a6f395d08dca670058067e"
     },
     "phonon_refiner.json": {
-     "size": 3389,
-     "sha256": "dd96b7f19aeed9e56576d4e7395c9936f87f946013547c11df663280cf0e376d"
+     "size": 2974,
+     "sha256": "4a4e6b6a6500d679072be96b221ba84653d3fd5523594363a221af3ff6dd1765"
     },
     "tokenizer.json": {
      "size": 17908634,

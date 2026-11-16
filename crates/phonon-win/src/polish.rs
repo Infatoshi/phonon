@@ -28,7 +28,9 @@ use crate::manifest;
 
 /// The refiner's prompt is defined once for Rust (`phonon_llm::refiner_prompt`, checked
 /// against the training-side builders' output in fixtures/refiner_prompt_cases.json).
-pub use phonon_llm::refiner_prompt::{mode_line, INSTRUCTION as SYSTEM_PROMPT, MODES};
+#[cfg(test)]
+pub use phonon_llm::refiner_prompt::mode_line;
+pub use phonon_llm::refiner_prompt::MODES;
 
 /// The mode a dictation uses until the user picks another from the tray
 /// (`crate::mode`), and the one the startup check, the warm-up and the speed probe

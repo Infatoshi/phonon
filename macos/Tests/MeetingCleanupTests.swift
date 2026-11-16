@@ -326,8 +326,17 @@ final class MeetingCleanupTests: XCTestCase {
     func testTheManifestPinsTheRefinerTheAdapterWasTrainedOn() throws {
         let paths = try String(
             contentsOf: Self.repo.appendingPathComponent("crates/phonon-llm/src/paths.rs"), encoding: .utf8)
-        XCTAssertTrue(paths.contains("POLISH_MODEL_REVISION: &str = \"\(MeetingCleanupManifest.refinerRevision)\""))
         XCTAssertTrue(paths.contains("POLISH_MODEL_ID: &str = \"\(MeetingCleanupManifest.refinerRepo)\""))
+        // the adapter's base is the 1.0.1 refiner, pinned by commit and hash, downloaded by itself when needed
+        let base = MeetingCleanupManifest.base
+        XCTAssertEqual(MeetingCleanupManifest.refinerRevision.count, 40)
+        XCTAssertEqual(
+            base.asset.url?.absoluteString,
+            "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/"
+                + "b20b28075046af94056ab5d5bff89a7abc0f6f50/phonon-refiner-1.7b-Q4_K_S-e4.gguf")
+        XCTAssertEqual(base.asset.sha256, MeetingCleanupManifest.baseSHA256)
+        XCTAssertEqual(base.asset.bytes, MeetingCleanupManifest.baseBytes)
+        XCTAssertEqual(base.unpack, .none)
         let win = try String(
             contentsOf: Self.repo.appendingPathComponent("crates/phonon-win/src/manifest.rs"), encoding: .utf8)
         XCTAssertTrue(win.contains("LLAMA_BUILD: &str = \"\(MeetingCleanupManifest.llamaBuild)\""), "the Windows/Linux build")
@@ -342,9 +351,12 @@ final class MeetingCleanupTests: XCTestCase {
         XCTAssertTrue(adapterURL.hasSuffix("/" + MeetingCleanupManifest.adapter.asset.name))
         let candidates = MeetingCleanupManifest.baseCandidates(support: directory, environment: ["HF_HUB_CACHE": "/hub"])
         XCTAssertEqual(
-            candidates.last?.path,
+            candidates.dropLast().last?.path,
             "/hub/models--Infatoshi--phonon-refiner-1.7b/snapshots/\(MeetingCleanupManifest.refinerRevision)/"
                 + MeetingCleanupManifest.refinerGGUF)
+        XCTAssertEqual(
+            candidates.last?.path,
+            directory.appendingPathComponent("models/meeting-cleanup-base/" + MeetingCleanupManifest.refinerGGUF).path)
     }
 
     @MainActor

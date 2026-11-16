@@ -39,9 +39,6 @@ const SOURCE: &str = "phonon-app";
 /// `static`, not a `const`: each use of a const may carry its own 1.8 MB copy.
 static ENGLISH_WORDS: &str = include_str!("../../../assets/english_words.txt");
 
-/// The vocabulary line's prefix, after the writing-mode line (`phonon_llm::refiner_prompt`).
-pub use phonon_llm::refiner_prompt::VOCAB_PREFIX;
-
 /// The dictionary file in the data root.
 pub fn path() -> PathBuf {
     crate::paths::data_root().join(FILE)

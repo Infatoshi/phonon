@@ -440,8 +440,9 @@ Cleanup (macos/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanu
 `QuietWatch`), all on the Mac:
 
 - What: the meetings_v2 MB s1 adapter (GGUF LoRA, q8_0, 26,231,616 bytes, sha256 3401c8b51232…, published in
-  Infatoshi/phonon-refiner-1.7b at commit 33da4bc; same tensors as the training export) on the shipped
-  correction model (Q4_K_S-e4, sha256 0439996bda58…, the pinned refiner revision) removes fillers, stutters and
+  Infatoshi/phonon-refiner-1.7b at commit 33da4bc; same tensors as the training export) on the correction model
+  it was trained on, the 1.0.1 refiner (Q4_K_S-e4, sha256 0439996bda58…, commit b20b280; dictation has since moved
+  to a newer refiner, and an adapter only fits its own base) removes fillers, stutters and
   false starts and fixes misrecognitions, keeping every speaker line in order. Blind judging preferred it to the
   uncorrected path 66-68% of the time (DEVLOG 2026-11-10 1:15 am). Its TL;DR line failed the attribution bar, so
   it is always dropped and never shown.
@@ -501,9 +502,10 @@ Cleanup (macos/Sources/MeetingCleanup.swift, MeetingCleaner.swift, MeetingCleanu
   hash matches, archives unpacked into a staging folder renamed at the end. The runtime: the GitHub release asset
   llama-b12132-bin-macos-arm64.tar.gz (16,671,755 bytes, sha256 0f7b107b860d…) into runtime/llama-b12132-macos-arm64.
   The adapter: `phonon-meeting-lora-q8_0.gguf` from Infatoshi/phonon-refiner-1.7b, pinned to commit 33da4bc in
-  `MeetingCleanupManifest`, into models/meeting-cleanup. The base model is the one dictation
-  already uses (models/refiner's target, else the pinned Hugging Face snapshot), verified by hash; with any other,
-  no cleanup.
+  `MeetingCleanupManifest`, into models/meeting-cleanup. The base model, verified by hash: models/refiner's
+  target, else the 1.0.1 snapshot in the Hugging Face cache (a Mac that ran that refiner), else meeting cleanup's
+  own download of the same file (`MeetingCleanupManifest.base`, pinned to commit b20b280 and its SHA-256) into
+  models/meeting-cleanup-base; with any other, no cleanup.
 - Notes: the cleaned text by default with a Cleaned / Raw switch (filler-only turns left out of Cleaned), "Cleaned
   on this Mac; N of M parts kept as heard" when some chunks fell back; "Cleaning up… N%" or "(paused while you
   dictate)" while it runs; Copy copies what is shown.
@@ -679,7 +681,7 @@ components, in this order:
 | sherpa-onnx tools and ONNX Runtime | release `v1.13.6` | 18 MB |
 | llama.cpp Vulkan build (CPU backends included) | release `b12132` | 38 MB |
 | Parakeet TDT 0.6b v2 (N8avg), int8 ONNX | commit `76fbda4` | 661 MB |
-| Phonon refiner 1.7B, Q4_K_S GGUF | commit `2b0ab74` | 988 MB |
+| Phonon refiner 1.7B (context refiner), Q4_K_S GGUF | commit `f5e269a` | 988 MB |
 
 Every file has its SHA-256 in `crates/phonon-win/src/manifest.rs`. A file that
 does not match is deleted, not used. A component is built in a staging
@@ -698,8 +700,10 @@ on MLX, exported to ONNX and quantised to int8. `sherpa-onnx-offline.exe` reads
 one wave file and writes one JSON object to standard output.
 
 Correction is the Phonon refiner (fine-tuned LFM3-1.7B), resident in
-`llama-server.exe`, with the iPhone build's prompt, greedy decoding, output
-budget and length guard (`crates/phonon-win/src/polish.rs`). It runs on the
+`llama-server.exe`, with the refiner's training prompt ("Refiner prompt" under
+"Intended text and writing modes",
+`phonon_llm::refiner_prompt`; no screen or cursor lines here), greedy decoding,
+output budget and length guard (`crates/phonon-win/src/polish.rs`). It runs on the
 first path that works: a tuned CUDA build from the backend manifest (none in
 this release), then a Vulkan GPU that decodes at least 60 tokens/s, then the
 CPU. `info` and the settings window name the path and why earlier ones were
@@ -837,6 +841,46 @@ no line, so its prompt is unchanged. Streaming refine needs the mode before key 
 known at key down in `stream_start` (`"app"`) and the resolved one (a browser tab's host) in `stream_app`; the
 engine sends its category with every `stream_commit`, so background drafts are refined under the same prompt as
 the final correction. A mode that changes after a draft only costs speed: the answer is the final prompt's.
+
+Refiner prompt (the context refiner, 2026-11-16): the shipped refiner (research name s3d_ctx6_s1, every platform)
+was trained with two more optional context lines.
+Its prompt, exactly as the training-side builders write it (phonon-research ctx builders: `ctxutil.join`, the
+`gt1` strings, `ctx6_joinrule.py`):
+
+- System turn: the instruction ("Rewrite the raw dictation transcript into the exact text the speaker intended. Fix
+  recognition errors and technical terms, keep the speaker's wording and casing style, do not add or drop
+  content."), a newline and the writing-mode line (always present), then, each on its own line and only when it has
+  text, in this order: `Vocabulary the speaker may use: a, b, c`; `On screen: ` + the first 350 words of the screen
+  text; `Before cursor: ` + the last 40 words before the insertion point. Both context texts have all whitespace
+  (line breaks too) collapsed to single spaces, as in training (training screens were at most 350 words, the
+  text before the cursor at most 40).
+- User turn: the transcript, trimmed. With a Before-cursor line it first goes through the join rule: when the text
+  before the cursor ends in a word or `,` / `;` (trailing spaces and tabs ignored, a final line break means no
+  change, then trailing closing quotes and brackets ignored), the transcript's first letter is lower-cased unless
+  the first word is "I" / I'm / I'll ..., or has another capital after its first letter (API, GitHub, OK). The
+  model's output is never changed by it.
+- The model's chat template with thinking off (`<think></think>` after the assistant header; llama-server
+  `enable_thinking: false`, the render every evaluation used), greedy, no repetition penalty, at most 1.5 x the
+  transcript's tokens + 32.
+
+One definition per language: `sidecar/refiner_prompt.py` (Mac), `crates/phonon-llm/src/refiner_prompt.rs`
+(Windows and Linux), `ios/App/RefinerPrompt.swift`, `android/.../RefinerPrompt.kt` (refiner_jni.cpp only adds the
+fixed instruction, mode line and chat markup). `fixtures/refiner_prompt_cases.json` was generated on the research
+host by the training-side code from synthetic inputs (28 prompts, the join rule's 31 self-test cases); each
+language's tests check their prompt against it byte for byte.
+
+Where the context comes from (no new screen reading anywhere):
+- Mac: On screen = the screen-context OCR text the bar already sends with a polish (setting `screen_context`), which
+  the engine now also passes to the sidecar as `context.screen_text` (first 350 words, collapsed; stream commits
+  carry it too). Before cursor = `context.textbox.before_text`, the text around the cursor the bar sends when
+  `textbox_context` is on (read at key down; secure fields never). Background drafts get no Before-cursor line (the
+  textbox arrives with the final polish only); the final answer is its own prompt's, so only speed changes. The
+  sidecar adds these lines only for a refiner whose `phonon_refiner.json` lists `"context_lines": ["on_screen",
+  "before_cursor"]`; an older refiner gets the prompt it always had. A long dictation split into parts gives the
+  Before-cursor line only to the part that starts it.
+- iPhone: Before cursor = the keyboard's `documentContextBeforeInput` at mic down (IPC `before_cursor`); no screen.
+- Android: Before cursor = `getTextBeforeCursor(600)` at mic down, never for a password field; no screen.
+- Windows and Linux: neither line (the training rows without them).
 
 Per-app override (Settings > Advanced > Writing mode per app; settings.json `writing_modes_by_app`, bundle id ->
 minimal | casual | formal | prompt): wins over `writing_style` and the category, for the final polish and background
