@@ -41,6 +41,9 @@ final class KeyboardModel: ObservableObject {
     @Published var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     /// The dictation's stage for the talk bar's light (BarStages.swift), replaced at each real event.
     @Published var beat = BarBeat.rest
+    /// The bar was pressed and the keyboard is asking the app (up to 0.4 s) before it listens: the bar is lit, so
+    /// the side button is already the X.
+    @Published var pendingMic = false
     /// Reduce Motion or Low Power Mode (the view keeps it current): the stages use their no-motion look.
     var reducedMotion = false
     weak var host: KeyboardHost?
@@ -49,17 +52,36 @@ final class KeyboardModel: ObservableObject {
 
     private var currentLevel: Double { VoiceLevel.smooth(levels) }
 
-    /// The press: the bar lights this frame, before the mic, the app or the model have answered.
+    /// The button beside the bar: the X whenever a dictation is lit or pending, the settings circle otherwise.
+    var sideControl: TalkBarSideControl { TalkBarSideControl(phase: phase, beat: beat.stage, pending: pendingMic) }
+
+    /// The press: the bar lights this frame, before the mic, the app or the model have answered. The previous
+    /// dictation's levels are cleared, so its last loudness never feeds this ignite's decay.
     func ignite() {
         restWork?.cancel()
+        levels = Array(repeating: 0, count: levels.count)
         beat = .ignite(at: Date())
     }
 
-    /// The key was released or the bar tapped to finish: the light gathers while the text is written.
+    /// The key was released or the bar tapped to finish: the light gathers while the text is written. Also from
+    /// rest while listening (the beat was lost, e.g. a start the keyboard did not light), so the gather still runs.
     func startProcessing() {
-        guard beat.stage != .rest else { return }
+        switch beat.stage {
+        case .listening, .processing: break
+        case .rest where phase == .listening: break
+        default: return
+        }
         restWork?.cancel()
         beat = beat.processing(at: Date())
+    }
+
+    /// The keyboard went off screen. The idle fluid stops; the light returns to rest only when no dictation is under
+    /// way, so one still running keeps its beat and its gather, burst or fade still happen.
+    func offScreen(dictating: Bool) {
+        visible = false
+        guard !dictating else { return }
+        restWork?.cancel()
+        beat = .rest
     }
 
     /// The text was inserted: the burst, then the resting bar.
@@ -136,10 +158,10 @@ struct KeyboardView: View {
     /// The side button is always there, so the bar never changes width: an X while dictating, a settings circle
     /// (opens Phonon) otherwise.
     private var toolbar: some View {
-        TalkBarStrip(control: TalkBarSideControl(phase: model.phase), onSide: {
+        TalkBarStrip(control: model.sideControl, onSide: {
             tick()
             press = .none
-            if let host = model.host { TalkBarSideControl(phase: model.phase).perform(on: host) }
+            if let host = model.host { model.sideControl.perform(on: host) }
         }) {
             talkBar
         }
@@ -540,11 +562,15 @@ enum VoiceLevel {
 }
 
 /// The button beside the talk bar: an X that cancels while dictating, a settings circle that opens Phonon otherwise.
+/// Dictating means the phase says so, the light is lit (listening or gathering, including the moment between the
+/// press and the app answering), or a press is waiting for the app.
 enum TalkBarSideControl: Equatable {
     case stop, settings
 
-    init(phase: KeyboardPhase) {
-        self = phase == .listening || phase == .working ? .stop : .settings
+    init(phase: KeyboardPhase, beat: BarStage = .rest, pending: Bool = false) {
+        let dictating = phase == .listening || phase == .working || beat == .listening || beat == .processing
+            || pending
+        self = dictating ? .stop : .settings
     }
 
     var symbol: String { self == .stop ? "xmark" : "gearshape.fill" }
@@ -625,6 +651,8 @@ struct TalkBarFill: View {
             guard let settle = drawn.settleSeconds(reduceMotion: reduced) else { return }
             let left = settle - Date().timeIntervalSince(drawn.since)
             if left > 0 { try? await Task.sleep(nanoseconds: UInt64((left + 0.05) * 1e9)) }
+            // a newer beat replaced this one mid-sleep: it is not settled, and its own task decides
+            guard !Task.isCancelled else { return }
             settledBeat = drawn
         }
         .clipShape(Capsule(style: .continuous))

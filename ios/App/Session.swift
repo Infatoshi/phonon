@@ -52,6 +52,9 @@ final class Session: ObservableObject {
     private var task: SFSpeechRecognitionTask?
     private var heartbeat: Timer?
     private var utteranceStart = 0.0
+    /// The current utterance and the keyboard's token for it: a cancelled or superseded utterance's late
+    /// transcription is dropped, and each result goes back with its dictation's token (DictationFlow.swift).
+    private var gate = UtteranceGate()
 
     /// One finished dictation, newest first in `history` (kept on this iPhone only, last 50).
     struct Dictation: Codable, Identifiable, Equatable {
@@ -131,6 +134,7 @@ final class Session: ObservableObject {
     }
 
     private func cancelUtterance() {
+        gate.cancel()  // a transcription already running finishes, but its result is never delivered
         _ = sink.end()
         feed.set(nil)
         task?.cancel()
@@ -301,6 +305,7 @@ final class Session: ObservableObject {
 
     private func beginUtterance() {
         guard live else { return }
+        let gen = gate.begin(token: IPC.string(IPC.dictationToken))
         utteranceStart = IPC.now()
         sink.begin()  // also drives the keyboard's level meter on the Apple-recognizer fallback
         if useParakeet {
@@ -322,11 +327,11 @@ final class Session: ObservableObject {
             let final = result?.isFinal ?? false
             let failed = error != nil
             Task { @MainActor in
-                guard let self, self.request === r else { return }
+                guard let self, self.request === r, self.gate.isCurrent(gen) else { return }
                 if final, let text {
-                    self.refineAndDeliver(text)
+                    self.refineAndDeliver(text, gen: gen)
                 } else if failed {
-                    self.deliver("", raw: "", refined: nil)
+                    self.deliver("", raw: "", refined: nil, gen: gen)
                 }
             }
         }
@@ -335,12 +340,15 @@ final class Session: ObservableObject {
     }
 
     private func endUtterance() {
+        let gen = gate.generation
         if useParakeet {
             let samples = sink.end()
             setStatus("Transcribing")
             Task {
                 let text = (try? await parakeet.transcribe(samples)) ?? ""
-                if text.isEmpty { deliver("", raw: "", refined: nil) } else { refineAndDeliver(text) }
+                // cancelled (or a new utterance began) while it transcribed: nothing goes to the keyboard
+                guard gate.isCurrent(gen) else { return }
+                if text.isEmpty { deliver("", raw: "", refined: nil, gen: gen) } else { refineAndDeliver(text, gen: gen) }
             }
             return
         }
@@ -480,14 +488,14 @@ final class Session: ObservableObject {
         return hist
     }
 
-    private func refineAndDeliver(_ raw: String) {
+    private func refineAndDeliver(_ raw: String, gen: Int) {
         asrDoneAt = IPC.now()
         // the dictionary, as on the Mac and Android: exact replacements and phonetic pre-corrections before the
         // refiner, its vocabulary line in the refiner's prompt; an empty dictionary leaves raw and the prompt as they are
         let dict = dictionary
         let prepared = raw.isEmpty ? UserDictionary.Prepared(text: raw, vocab: []) : dict.prepare(raw)
         guard useRefiner, let r = refiner, !raw.isEmpty else {
-            deliver(dict.isEmpty ? raw : dict.applyExact(prepared.text), raw: raw, refined: nil)
+            deliver(dict.isEmpty ? raw : dict.applyExact(prepared.text), raw: raw, refined: nil, gen: gen)
             return
         }
         setStatus("Refining")
@@ -497,16 +505,20 @@ final class Session: ObservableObject {
         refineQueue.async {
             let out = r.refine(prepared.text, mode: mode, vocab: prepared.vocab, spoken: raw,
                                dictionary: dict.isEmpty ? nil : dict)
-            DispatchQueue.main.async { self.deliver(out.text, raw: raw, refined: out) }
+            DispatchQueue.main.async { self.deliver(out.text, raw: raw, refined: out, gen: gen) }
         }
     }
 
-    private func deliver(_ text: String, raw: String? = nil, refined: Refiner.Output? = nil) {
+    /// Hands the result of utterance `gen` to the keyboard, with its dictation's token. A cancelled or superseded
+    /// utterance's result is dropped here: writing it would clear the current utterance's request and status.
+    private func deliver(_ text: String, raw: String? = nil, refined: Refiner.Output? = nil, gen: Int) {
+        guard gate.isCurrent(gen) else { return }
         request = nil
         task = nil
         let stopAt = IPC.double(IPC.stopAt)
         let ms = stopAt > 0 ? Int((IPC.now() - stopAt) * 1000) : nil
         IPC.set(text, IPC.resultText)
+        IPC.set(gate.token ?? "", IPC.resultToken)  // before the seq, which is what the keyboard reads first
         IPC.set(IPC.double(IPC.resultSeq) + 1, IPC.resultSeq)
         IPC.post(IPC.result)
         var row: [String: Any] = [

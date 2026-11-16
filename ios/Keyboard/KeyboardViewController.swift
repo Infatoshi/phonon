@@ -8,7 +8,15 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
     private let model = KeyboardModel()
     private var seenSeq = 0
     private var waiting = false
-    private var pendingMic = false  // mic pressed, waiting for the app's pong before listening
+    /// mic pressed, waiting for the app's pong before listening (the model shows the X meanwhile)
+    private var pendingMic: Bool {
+        get { model.pendingMic }
+        set { model.pendingMic = newValue }
+    }
+    /// The dictation this keyboard is waiting for (DictationToken): a result with another token is not its own.
+    private var token: String?
+    /// This appearance wrote a start wish (the user is on the way to Phonon): only the next appearance acts on it.
+    private var wishedThisAppearance = false
     private var pongTimer: Timer?
     private var lastInsert: String?
     private var heightConstraint: NSLayoutConstraint?
@@ -45,12 +53,17 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         IPC.observe(IPC.state) { [weak self] in
             guard let self, self.model.phase != .needsAccess else { return }
             let s = IPC.string(IPC.stateText) ?? ""
-            if self.waiting, s == "Refining" || s == "Transcribing" { self.model.phase = .working }
+            // a stop from the app's side (an audio interruption) gathers the light too, as a release does
+            if self.waiting, s == "Refining" || s == "Transcribing" {
+                self.model.startProcessing()
+                self.model.phase = .working
+            }
         }
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        wishedThisAppearance = false  // a wish from the last appearance (sent to Phonon) may now start
         model.visible = true
         model.showGlobe = needsInputModeSwitchKey
         model.mode = WritingMode(rawValue: IPC.string(IPC.modeKey) ?? "") ?? model.mode
@@ -59,8 +72,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        model.visible = false  // stops the idle fluid's redraw
-        model.beat = .rest
+        // stops the idle fluid's redraw; a dictation still under way keeps its light, so the gather, burst or fade
+        // still run when its result comes
+        model.offScreen(dictating: waiting || pendingMic)
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -114,17 +128,21 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
     func startViaApp() {
         guard hasFullAccess else { return openApp() }
         IPC.set(IPC.now(), IPC.startWish)
+        wishedThisAppearance = true
         openApp()
     }
 
-    /// Acts on a start wish left by `startViaApp` when the session is alive and the wish is fresh.
+    /// Acts on a start wish left by `startViaApp` when the session is alive and the wish is fresh, and not in the
+    /// appearance that wrote it: a pong arriving after the 0.4 s timeout sent the user to Phonon must not start a
+    /// dictation behind them. The keyboard's next appearance (back from Phonon) starts it without a second tap.
     private func resumeWishedStart() {
         let wanted = IPC.double(IPC.startWish)
         guard wanted > 0 else { return }
         let now = IPC.now()
         if PendingStart.isStale(wantedAt: wanted, now: now) {
             IPC.set(0, IPC.startWish)
-        } else if PendingStart.shouldResume(wantedAt: wanted, now: now, alive: IPC.sessionAlive), !waiting {
+        } else if PendingStart.shouldResume(wantedAt: wanted, now: now, alive: IPC.sessionAlive,
+                                            wroteThisAppearance: wishedThisAppearance), !waiting {
             IPC.set(0, IPC.startWish)
             model.latched = true
             beginListening()
@@ -293,6 +311,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         model.levels = Array(repeating: 0, count: model.levels.count)
         model.phase = .listening
         IPC.set(model.mode.rawValue, IPC.modeKey)
+        let t = DictationToken.make()
+        token = t
+        IPC.set(t, IPC.dictationToken)  // before start: the app reads it when the utterance begins
         IPC.post(IPC.start)
     }
 
@@ -311,11 +332,19 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         model.phase = .working
     }
 
+    /// The X: ends the dictation, or the press still waiting for the app's pong (which then never starts one).
     func cancelDictation() {
-        guard waiting else { return }
-        waiting = false
+        guard waiting || pendingMic else { return }
+        if pendingMic {
+            pendingMic = false
+            pongTimer?.invalidate()
+        }
+        if waiting {
+            waiting = false
+            IPC.post(IPC.cancel)
+        }
+        token = nil  // a late result for it is not taken
         model.latched = false
-        IPC.post(IPC.cancel)
         model.undelivered()
         model.phase = .ready
         model.status = "Cancelled"
@@ -339,7 +368,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         let seq = Int(IPC.double(IPC.resultSeq))
         guard seq != seenSeq else { return }
         seenSeq = seq
-        guard waiting else { return }
+        // only the result of the dictation this keyboard is waiting for: not a cancelled one's late result
+        guard waiting, DictationToken.accepts(result: IPC.string(IPC.resultToken), waitingFor: token) else { return }
+        token = nil
         waiting = false
         model.latched = false
         model.phase = IPC.sessionAlive ? .ready : .needsSession

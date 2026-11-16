@@ -24,6 +24,18 @@ final class TalkBarTests: XCTestCase {
         func startViaApp() { calls.append("start") }
     }
 
+    /// The side button the real keyboard shows in a stage: the phase that stage runs in, and the light itself (the X
+    /// while lit or gathering, the settings circle once the text is in or the fade has begun).
+    private func control(for beat: BarBeat) -> TalkBarSideControl {
+        let phase: KeyboardPhase
+        switch beat.stage {
+        case .listening: phase = .listening
+        case .processing: phase = .working
+        case .rest, .burst, .fadeOut: phase = .ready
+        }
+        return TalkBarSideControl(phase: phase, beat: beat.stage)
+    }
+
     private func strip(_ phase: KeyboardPhase, level: Double) -> some View {
         TalkBarStrip(control: TalkBarSideControl(phase: phase), onSide: {}) {
             TalkBarFill(state: TalkBarFill.Mode(phase: phase), level: level, animate: false)
@@ -133,6 +145,26 @@ final class TalkBarTests: XCTestCase {
                        TalkBarFill(state: .listening, level: 1, followLevel: false).look(at: .now))
     }
 
+    /// Reduce Motion, Low Power Mode or off screen (`animate` false): one width in every stage, so key up, the paste
+    /// and the fade change brightness only.
+    func testReducedBarKeepsOneWidthThroughEveryStage() {
+        let t0 = Date(timeIntervalSinceReferenceDate: 5000)
+        let lit = BarBeat.ignite(at: t0)
+        let up = t0.addingTimeInterval(2)
+        let gather = lit.processing(at: up)
+        let burst = gather.burst(at: up.addingTimeInterval(1), level: 0, reduceMotion: true)
+        let faded = gather.fadeOut(at: up.addingTimeInterval(1), level: 0, reduceMotion: true)
+        var widths: Set<Double> = []
+        for (beat, after) in [(lit, 0.0), (lit, 0.1), (lit, 1.0), (gather, 0.0), (gather, 0.6), (gather, 3.0),
+                              (burst, 0.0), (burst, 0.15), (faded, 0.1)] {
+            for fill in [TalkBarFill(state: .idle, level: 0.6, animate: false, beat: beat),
+                         TalkBarFill(state: .idle, level: 0.6, followLevel: false, beat: beat)] {
+                widths.insert(fill.look(at: beat.since.addingTimeInterval(after)).width)
+            }
+        }
+        XCTAssertEqual(widths, [BarStages.reducedWidth])
+    }
+
     /// The bar's frame is the same in every stage of the light, not just every phase.
     func testBarFrameIsTheSameInEveryStageOfTheLight() throws {
         let reference = try measure(.ready, level: 0)
@@ -145,7 +177,7 @@ final class TalkBarTests: XCTestCase {
             (gather.fadeOut(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false), 0.1),
         ]
         for (beat, after) in cases {
-            let view = TalkBarStrip(control: .settings, onSide: {}) {
+            let view = TalkBarStrip(control: control(for: beat), onSide: {}) {
                 TalkBarFill(state: .idle, level: 0, beat: beat, frozenAt: beat.since.addingTimeInterval(after))
             }
             .frame(width: width)
@@ -171,7 +203,7 @@ final class TalkBarTests: XCTestCase {
             ("4-gather-held", gather, 3, 0), ("5-burst-0.3s", burst, 0.3, 0),
         ]
         for (name, beat, after, level) in shots {
-            let view = TalkBarStrip(control: .settings, onSide: {}) {
+            let view = TalkBarStrip(control: control(for: beat), onSide: {}) {
                 TalkBarFill(state: .idle, level: level, beat: beat, frozenAt: beat.since.addingTimeInterval(after))
             }
             .frame(width: width)
