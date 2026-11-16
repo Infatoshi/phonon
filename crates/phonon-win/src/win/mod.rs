@@ -27,9 +27,10 @@ use crate::paths;
 use crate::pipeline::Engine;
 use crate::polish::Device;
 
-/// Everything the worker thread reacts to.
+/// Everything the worker thread reacts to. A key action carries the number of the dictation the
+/// indicator lit for its press (`indicator::press`).
 enum Event {
-    Key(Action),
+    Key(Action, u64),
     Menu(tray::Command),
 }
 
@@ -110,6 +111,8 @@ static READY: AtomicBool = AtomicBool::new(false);
 fn forward_keys(source: Receiver<Action>, sink: Sender<Event>) {
     std::thread::spawn(move || {
         let mut last_hint: Option<Instant> = None;
+        // the dictation the last press lit; its key-up releases that one and no other
+        let mut held = 0;
         while let Ok(action) = source.recv() {
             if !READY.load(Ordering::Acquire) {
                 let due = last_hint.is_none_or(|t| t.elapsed() >= Duration::from_secs(15));
@@ -127,12 +130,16 @@ fn forward_keys(source: Receiver<Action>, sink: Sender<Event>) {
             }
             // The indicator moves on the key itself, here on the forwarding thread, not after
             // the worker has opened the microphone: the press must be felt within a frame.
+            // A key-up lost to a locked session (Windows skips low-level hooks on the secure desktop)
+            // leaves the dictation recording, as before; the indicator stays lit only while audio
+            // keeps arriving (`indicator::SILENT_LISTENING_LIMIT`). Phonon registers for no session
+            // notifications, so there is no lock signal to end it sooner.
             match action {
-                Action::Start => crate::indicator::press(),
-                Action::Stop => crate::indicator::release(),
+                Action::Start => held = crate::indicator::press(),
+                Action::Stop => crate::indicator::release(held),
                 Action::None => {}
             }
-            if sink.send(Event::Key(action)).is_err() {
+            if sink.send(Event::Key(action, held)).is_err() {
                 break;
             }
         }
@@ -278,6 +285,9 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     });
 
     let mut recording: Option<capture::Recording> = None;
+    // The indicator's number for the dictation `recording` belongs to: every indicator call for it
+    // names it, so a dictation that finishes after the next key press leaves that one's light alone.
+    let mut lit: u64 = 0;
     let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);
     let _ = settings_watch.changed_in(&paths::data_root());
     // the settings window can clear the history; the tray's recent list follows
@@ -313,7 +323,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                                 autostop::SILENCE_AFTER_SPEECH_SECONDS
                             );
                             hook::reset_latch();
-                            finish(&engine, recording.take());
+                            finish(&engine, recording.take(), lit);
                         }
                         Decision::Discard => {
                             eprintln!(
@@ -324,7 +334,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                             if let Some(active) = recording.take() {
                                 active.discard();
                             }
-                            crate::indicator::dropped();
+                            crate::indicator::dropped(lit);
                             tray::set_status(&idle_text());
                         }
                     },
@@ -351,19 +361,22 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                 // must also clear a latch, or the next key press would restart.
                 hook::reset_latch();
                 if recording.is_some() {
-                    finish(&engine, recording.take());
+                    finish(&engine, recording.take(), lit);
                 } else {
-                    crate::indicator::press();
-                    recording = begin();
+                    lit = crate::indicator::press();
+                    recording = begin(lit);
                     if recording.is_some() {
                         engine.prepare(load::busy());
                     }
                 }
             }
-            Event::Key(Action::Start) => {
+            // The key forwarder lit this dictation at the press; the worker never lights it again,
+            // so a Start that waited here behind a slow dictation, its key long up, stays processing.
+            Event::Key(Action::Start, dictation) => {
+                // a press during a recording (a menu start, then the key) takes its light over
+                lit = dictation;
                 if recording.is_none() {
-                    crate::indicator::press(); // already lit by the key forwarder; a no-op then
-                    recording = begin();
+                    recording = begin(lit);
                     // After the microphone is recording. Returns at once; a
                     // fallback corrector it starts comes up in the background.
                     if recording.is_some() {
@@ -371,10 +384,12 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
                     }
                 }
             }
-            Event::Key(Action::Stop) => {
-                finish(&engine, recording.take());
+            Event::Key(Action::Stop, dictation) => {
+                // with no recording (the microphone failed to open), the key's own dictation
+                let dictation = if recording.is_some() { lit } else { dictation };
+                finish(&engine, recording.take(), dictation);
             }
-            Event::Key(Action::None) => {}
+            Event::Key(Action::None, _) => {}
             Event::Menu(tray::Command::KeyChanged) => {
                 if recording.is_none() {
                     tray::set_status(&idle_text());
@@ -401,7 +416,8 @@ fn startup_check(engine: &Engine) -> Result<String> {
     Ok(result.polished)
 }
 
-fn begin() -> Option<capture::Recording> {
+/// Open the microphone for dictation `lit` (the indicator's number), or fade its light.
+fn begin(lit: u64) -> Option<capture::Recording> {
     match capture::start() {
         Ok(recording) => {
             tray::set_status(&format!("recording from {}", recording.device()));
@@ -417,7 +433,7 @@ fn begin() -> Option<capture::Recording> {
                 );
             }
             eprintln!("phonon: cannot hear you: {text}");
-            crate::indicator::dropped();
+            crate::indicator::dropped(lit);
             tray::notify("Phonon cannot hear you", &text, true);
             None
         }
@@ -429,19 +445,23 @@ fn idle_text() -> String {
     format!("ready. Hold {} to dictate", hook::current_key().0)
 }
 
-fn finish(engine: &Engine, recording: Option<capture::Recording>) {
+/// End dictation `lit` (the indicator's number for it): transcribe, correct, insert.
+fn finish(engine: &Engine, recording: Option<capture::Recording>, lit: u64) {
+    // Whatever way this returns, a panic included, the light does not stay on (a no-op once the
+    // dictation was pasted or dropped, or once a newer dictation owns the indicator).
+    let _light = crate::indicator::Lit(lit);
     let Some(recording) = recording else {
-        crate::indicator::abandon();
         return;
     };
-    // Processing starts at key-up (the key forwarder already said so; a menu stop or an
-    // auto-stop did not come through it).
-    crate::indicator::release();
+    // Processing starts at key-up. The key forwarder already released this dictation; a menu stop,
+    // an auto-stop, or a key stopping a menu-started dictation did not come through it. Only this
+    // dictation's listening can end here, never a newer one's.
+    crate::indicator::release(lit);
     // The window the user was dictating into, at key-up.
     let target = inject::foreground();
     // A tap, or a recording a starved key-up cut to nothing: no word fits in it.
     if recording.seconds() < 0.25 {
-        crate::indicator::abandon();
+        crate::indicator::dropped(lit);
         tray::set_status("nothing was said");
         return;
     }
@@ -455,7 +475,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
         Ok(captured) => captured,
         Err(error) => {
             eprintln!("phonon: {error:#}");
-            crate::indicator::abandon();
+            crate::indicator::dropped(lit);
             tray::set_status(&idle_text());
             return;
         }
@@ -486,7 +506,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {
-                crate::indicator::abandon();
+                crate::indicator::dropped(lit);
                 tray::set_status("nothing was said");
             } else {
                 // Before the paste, so the tray has it whatever happens next.
@@ -497,21 +517,21 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
                 use crate::pipeline::KeptBecause;
                 if crate::pipeline::target_closed(target != 0, inject::still_open(target)) {
                     eprintln!("phonon: the window dictated into has closed; keeping the text");
-                    keep_unpasted(result.polished.trim(), KeptBecause::TargetClosed);
+                    keep_unpasted(result.polished.trim(), KeptBecause::TargetClosed, lit);
                 } else if inject::nowhere_to_paste() {
                     eprintln!("phonon: no window to paste into; keeping the text");
-                    keep_unpasted(result.polished.trim(), KeptBecause::NothingFocused);
+                    keep_unpasted(result.polished.trim(), KeptBecause::NothingFocused, lit);
                 } else {
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
                         Ok(path) => {
-                            crate::indicator::pasted();
+                            crate::indicator::pasted(lit);
                             tray::set_status(&format!("inserted ({path})"))
                         }
                         Err(error) => {
                             // the error names the step that failed, never the text
                             eprintln!("phonon: could not insert the text: {error:#}");
-                            keep_unpasted(result.polished.trim(), KeptBecause::PasteFailed);
+                            keep_unpasted(result.polished.trim(), KeptBecause::PasteFailed, lit);
                         }
                     }
                 }
@@ -519,7 +539,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
         }
         Err(error) => {
             eprintln!("phonon: {error:#}");
-            crate::indicator::abandon();
+            crate::indicator::dropped(lit);
             tray::notify(
                 "Phonon could not transcribe that",
                 &format!("{error:#}"),
@@ -545,8 +565,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>) {
     } else if !history::keep_wav(false, outcome.is_ok(), seconds) {
         history::remove_if_present(&path);
     }
-    // Whatever path got here, never leave the core lit (a no-op once pasted or dropped).
-    crate::indicator::abandon();
+    // Whatever path got here, never leave the core lit (`_light`, a no-op once pasted or dropped).
     tray::set_status(&idle_text());
 }
 
@@ -597,9 +616,9 @@ fn clear_history() {
 /// A dictation that could not be pasted stays on the clipboard (no restore) when
 /// the clipboard answers, and always in the tray's "Copy last dictation"; the
 /// balloon says why and where it is (`pipeline::kept_notice`).
-fn keep_unpasted(text: &str, why: crate::pipeline::KeptBecause) {
+fn keep_unpasted(text: &str, why: crate::pipeline::KeptBecause, lit: u64) {
     // nothing went into an app: no burst
-    crate::indicator::abandon();
+    crate::indicator::dropped(lit);
     let on_clipboard = match inject::copy(text) {
         Ok(()) => true,
         Err(error) => {

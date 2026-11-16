@@ -108,7 +108,8 @@ impl Recording {
     /// Whether a latched recording should stop by itself now (`phonon_hotkey::autostop`).
     /// The recorder writes to a file, so the meter reads what it appended since the last
     /// call. The clock is wall time since the start, so a recorder that writes nothing is
-    /// still discarded.
+    /// still discarded. The worker calls this every `LEVEL_POLL` (40 ms) while recording,
+    /// which is also how often the tray's voice level moves.
     pub fn auto_stop(&mut self, latched: bool) -> Decision {
         let fresh = self.appended().unwrap_or_default();
         if !fresh.is_empty() {

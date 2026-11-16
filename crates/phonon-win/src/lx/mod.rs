@@ -10,8 +10,9 @@ pub mod hook;
 pub mod inject;
 pub mod tray;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use phonon_hotkey::autostop::{self, Decision};
@@ -23,10 +24,21 @@ use crate::manifest;
 use crate::paths;
 use crate::pipeline::Engine;
 
+/// A key action carries the number of the dictation the indicator lit for its press (`indicator::press`).
 enum Event {
-    Key(Action),
+    Key(Action, u64),
     Menu(tray::Command),
 }
+
+/// Set once the startup check passes; the key thread drops presses until then (as on Windows), so a
+/// press during the first-run download neither lights the tray nor replays minutes later.
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// While recording, the worker reads the recorder's file this often: the indicator's voice level
+/// and the latched auto-stop both follow it.
+const LEVEL_POLL: Duration = Duration::from_millis(40);
+/// Between dictations (and for the tray's "recording 3.5 s"), the worker's slower beat.
+const IDLE_POLL: Duration = Duration::from_millis(500);
 
 /// The udev rule the .deb installs (linux/70-phonon.rules): the signed-in user may read keyboards and
 /// write /dev/uinput, through logind's uaccess, so no group change and no logging out.
@@ -137,15 +149,32 @@ fn app() -> Result<()> {
     let (name, code) = hook::configured_key();
     hook::install(code, key_tx)?;
     std::thread::spawn(move || {
+        let mut last_hint: Option<Instant> = None;
+        // the dictation the last press lit; its key-up releases that one and no other
+        let mut held = 0;
         while let Ok(a) = key_rx.recv() {
+            if !READY.load(Ordering::Acquire) {
+                let due = last_hint.is_none_or(|t| t.elapsed() >= Duration::from_secs(15));
+                if matches!(a, Action::Start) && due {
+                    let doing = tray::status();
+                    let body = if doing.is_empty() {
+                        "Dictation starts as soon as the models are ready.".to_string()
+                    } else {
+                        format!("Dictation starts as soon as the models are ready (now: {doing}).")
+                    };
+                    tray::notify("Phonon is still setting up", &body, false);
+                    last_hint = Some(Instant::now());
+                }
+                continue;
+            }
             // The indicator moves on the key itself, on this thread, not after the worker has
             // started the recorder: the press must be felt within a frame.
             match a {
-                Action::Start => crate::indicator::press(),
-                Action::Stop => crate::indicator::release(),
+                Action::Start => held = crate::indicator::press(),
+                Action::Stop => crate::indicator::release(held),
                 Action::None => {}
             }
-            if events.send(Event::Key(a)).is_err() {
+            if events.send(Event::Key(a, held)).is_err() {
                 break;
             }
         }
@@ -179,6 +208,7 @@ fn app() -> Result<()> {
 
     let mut idle = format!("ready. Hold {name} to dictate");
     tray::set_status(&idle);
+    READY.store(true, Ordering::Release);
     tray::notify(
         "Phonon is ready",
         // one line in a GNOME notification (about 45 characters): the longer
@@ -196,6 +226,9 @@ fn app() -> Result<()> {
     });
 
     let mut recording: Option<capture::Recording> = None;
+    // The indicator's number for the dictation `recording` belongs to: every indicator call for it
+    // names it, so a dictation that finishes after the next key press leaves that one's light alone.
+    let mut lit: u64 = 0;
     let mut settings_watch = crate::settings::Watch::of(crate::settings::FILE);
     let _ = settings_watch.changed_in(&paths::data_root());
     // the settings window can clear the history; the tray's recent list follows
@@ -203,21 +236,32 @@ fn app() -> Result<()> {
     let _ = history_watch.changed_in(&paths::data_root());
     // The last key, menu or recording activity: a long dictation's recogniser memory is given
     // back only after `asr::SHRINK_AFTER_IDLE` without any (`Engine::shrink_speech_model`).
-    let mut last_active = std::time::Instant::now();
+    let mut last_active = Instant::now();
+    // the last slow beat: status text, settings and history watches
+    let mut last_beat = Instant::now();
     loop {
-        let event = match inbox.recv_timeout(Duration::from_millis(500)) {
+        let wait = if recording.is_some() {
+            LEVEL_POLL
+        } else {
+            IDLE_POLL
+        };
+        let event = match inbox.recv_timeout(wait) {
             Ok(e) => {
-                last_active = std::time::Instant::now();
+                last_active = Instant::now();
                 e
             }
             Err(RecvTimeoutError::Timeout) => {
+                let beat = recording.is_none() || last_beat.elapsed() >= IDLE_POLL;
+                if beat {
+                    last_beat = Instant::now();
+                }
                 if recording.is_none() && last_active.elapsed() >= crate::asr::SHRINK_AFTER_IDLE {
                     engine.shrink_speech_model();
                 }
                 // The settings window writes settings.json; a new key applies here,
                 // between dictations. Mode, history and the clipboard rule are read
                 // at each dictation.
-                if recording.is_none() {
+                if recording.is_none() && beat {
                     let root = paths::data_root();
                     let settings_changed = settings_watch.changed_in(&root);
                     if settings_changed {
@@ -232,10 +276,13 @@ fn app() -> Result<()> {
                     }
                 }
                 if let Some(r) = &mut recording {
-                    last_active = std::time::Instant::now();
+                    last_active = Instant::now();
+                    // every LEVEL_POLL: also feeds the indicator's voice level (capture.rs)
                     match r.auto_stop(hook::latched()) {
                         Decision::KeepRecording => {
-                            tray::set_status(&format!("recording {:.1} s", r.seconds()))
+                            if beat {
+                                tray::set_status(&format!("recording {:.1} s", r.seconds()))
+                            }
                         }
                         // The key is up (it latched), so the next press must start, not
                         // stop; then the same stop the next tap would make.
@@ -245,7 +292,7 @@ fn app() -> Result<()> {
                                 autostop::SILENCE_AFTER_SPEECH_SECONDS
                             );
                             hook::reset_latch();
-                            finish(&engine, recording.take(), &idle);
+                            finish(&engine, recording.take(), lit, &idle);
                         }
                         Decision::Discard => {
                             eprintln!(
@@ -256,7 +303,7 @@ fn app() -> Result<()> {
                             if let Some(r) = recording.take() {
                                 r.discard();
                             }
-                            crate::indicator::dropped();
+                            crate::indicator::dropped(lit);
                             tray::set_status(&idle);
                         }
                     }
@@ -278,18 +325,27 @@ fn app() -> Result<()> {
             Event::Menu(tray::Command::Toggle) => {
                 hook::reset_latch();
                 if recording.is_some() {
-                    finish(&engine, recording.take(), &idle);
+                    finish(&engine, recording.take(), lit, &idle);
                 } else {
-                    crate::indicator::press();
-                    recording = begin();
+                    lit = crate::indicator::press();
+                    recording = begin(lit);
                 }
             }
-            Event::Key(Action::Start) if recording.is_none() => {
-                crate::indicator::press(); // already lit by the key thread; a no-op then
-                recording = begin()
+            // The key thread lit this dictation at the press; the worker never lights it again, so
+            // a Start that waited here behind a slow dictation, its key long up, stays processing.
+            Event::Key(Action::Start, dictation) => {
+                // a press during a recording (a menu start, then the key) takes its light over
+                lit = dictation;
+                if recording.is_none() {
+                    recording = begin(lit);
+                }
             }
-            Event::Key(Action::Stop) => finish(&engine, recording.take(), &idle),
-            Event::Key(_) => {}
+            Event::Key(Action::Stop, dictation) => {
+                // with no recording (the microphone failed to open), the key's own dictation
+                let dictation = if recording.is_some() { lit } else { dictation };
+                finish(&engine, recording.take(), dictation, &idle)
+            }
+            Event::Key(Action::None, _) => {}
             Event::Menu(tray::Command::ToggleHistory) => toggle_history(),
             // The recorder is still writing the active recording's file; leave it.
             Event::Menu(tray::Command::ClearHistory) => {
@@ -325,10 +381,11 @@ fn session_locked() -> bool {
         .unwrap_or(false)
 }
 
-fn begin() -> Option<capture::Recording> {
+/// Start the recorder for dictation `lit` (the indicator's number), or fade its light.
+fn begin(lit: u64) -> Option<capture::Recording> {
     if session_locked() {
         eprintln!("phonon: screen is locked; not recording");
-        crate::indicator::dropped();
+        crate::indicator::dropped(lit);
         return None;
     }
     let stamp = std::time::SystemTime::now()
@@ -341,21 +398,25 @@ fn begin() -> Option<capture::Recording> {
             Some(r)
         }
         Err(error) => {
-            crate::indicator::dropped();
+            crate::indicator::dropped(lit);
             tray::notify("Phonon cannot hear you", &format!("{error:#}"), true);
             None
         }
     }
 }
 
-fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
+/// End dictation `lit` (the indicator's number for it): transcribe, correct, insert.
+fn finish(engine: &Engine, recording: Option<capture::Recording>, lit: u64, idle: &str) {
+    // Whatever way this returns, a panic included, the light does not stay on (a no-op once the
+    // dictation was pasted or dropped, or once a newer dictation owns the indicator).
+    let light = crate::indicator::Lit(lit);
     let Some(recording) = recording else {
-        crate::indicator::abandon();
         return;
     };
-    // Processing starts at key-up (the key thread already said so; a menu stop or an auto-stop
-    // did not come through it).
-    crate::indicator::release();
+    // Processing starts at key-up. The key thread already released this dictation; a menu stop, an
+    // auto-stop, or a key stopping a menu-started dictation did not come through it. Only this
+    // dictation's listening can end here, never a newer one's.
+    crate::indicator::release(lit);
     let key_up = std::time::Instant::now();
     let seconds = recording.seconds();
     // The recorder writes this file as it records, so a long dictation survives
@@ -367,7 +428,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
         Ok(result) => {
             eprintln!("phonon: {}", result.summary());
             if result.polished.trim().is_empty() {
-                crate::indicator::abandon();
+                crate::indicator::dropped(lit);
                 tray::set_status("nothing was said");
             } else {
                 // Before the paste, so the tray has it whatever happens next,
@@ -375,13 +436,13 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
                 tray::set_last(Some(result.polished.trim().to_string()));
                 if session_locked() {
                     eprintln!("phonon: screen locked while recording; text not inserted");
-                    crate::indicator::abandon();
+                    crate::indicator::dropped(lit);
                 } else {
                     let text = format!("{} ", result.polished.trim());
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
                         Ok(path) => {
-                            crate::indicator::pasted();
+                            crate::indicator::pasted(lit);
                             eprintln!(
                                 "phonon: {path} {} chars, key-up to insert {} ms",
                                 text.len(),
@@ -391,14 +452,14 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
                         Err(error) => {
                             // the error names the step that failed, never the text
                             eprintln!("phonon: could not insert the text: {error:#}");
-                            keep_unpasted(result.polished.trim());
+                            keep_unpasted(result.polished.trim(), lit);
                         }
                     }
                 }
             }
         }
         Err(error) => {
-            crate::indicator::abandon();
+            crate::indicator::dropped(lit);
             tray::notify(
                 "Phonon could not transcribe that",
                 &format!("{error:#}"),
@@ -407,7 +468,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, idle: &str) {
         }
     }
     // Whatever path got here, never leave the core lit (a no-op once pasted or dropped).
-    crate::indicator::abandon();
+    drop(light);
     if history::enabled() {
         let (raw, final_text) = match &outcome {
             Ok(result) => (result.raw.as_str(), result.polished.trim()),
@@ -470,9 +531,9 @@ fn clear_history(active: Option<&std::path::Path>) {
 
 /// A dictation that could not be pasted stays on the clipboard and in the
 /// tray's "Copy last dictation", and the notification says where it is.
-fn keep_unpasted(text: &str) {
+fn keep_unpasted(text: &str, lit: u64) {
     // nothing went into an app: no burst
-    crate::indicator::abandon();
+    crate::indicator::dropped(lit);
     match inject::copy(text) {
         Ok(()) => tray::notify_private(
             crate::pipeline::NOT_PASTED_TITLE,

@@ -15,7 +15,10 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateBitmap, CreateDIBSection, DeleteObject, GetDC, ReleaseDC, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, DIB_RGB_COLORS,
+};
 use windows_sys::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
 };
@@ -271,16 +274,70 @@ fn show_frame(rgba: Option<&[u8]>, size: u32) {
 }
 
 /// A 32-bit icon from straight-alpha RGBA, or null when GDI refuses.
+///
+/// The colour is a 32-bit top-down BI_RGB DIB section, the documented way to hand
+/// `CreateIconIndirect` per-pixel alpha (a device-dependent `CreateBitmap` bitmap is not promised
+/// to keep its alpha channel). Icons take straight, not premultiplied, alpha. The mask is a
+/// 1-bit bitmap of zeros: the alpha does the shaping. `CreateIconIndirect` copies both bitmaps, so
+/// they are deleted here on every path and only the icon is handed back.
 fn icon_from_rgba(rgba: &[u8], size: u32) -> HICON {
-    let mut bgra = rgba.to_vec();
-    for pixel in bgra.as_chunks_mut::<4>().0 {
-        pixel.swap(0, 2);
+    let side = size as i32;
+    let bytes = size as usize * size as usize * 4;
+    if rgba.len() < bytes {
+        return std::ptr::null_mut();
     }
-    // a 1-bit mask, every bit zero: the colour bitmap's alpha does the shaping
+    let mut header: BITMAPINFO = unsafe { std::mem::zeroed() };
+    header.bmiHeader = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: side,
+        // negative: the first row is the top one, as `render_rgba` writes them
+        biHeight: -side,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: BI_RGB,
+        biSizeImage: 0,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+    };
+    // 1-bit rows are padded to 16 bits
     let mask_bits = vec![0u8; (size as usize).div_ceil(16) * 2 * size as usize];
     unsafe {
-        let color = CreateBitmap(size as i32, size as i32, 1, 32, bgra.as_ptr().cast());
-        let mask = CreateBitmap(size as i32, size as i32, 1, 1, mask_bits.as_ptr().cast());
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let screen = GetDC(std::ptr::null_mut());
+        let color = CreateDIBSection(
+            screen,
+            &header,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        if !screen.is_null() {
+            ReleaseDC(std::ptr::null_mut(), screen);
+        }
+        if color.is_null() || bits.is_null() {
+            if !color.is_null() {
+                DeleteObject(color);
+            }
+            return std::ptr::null_mut();
+        }
+        // RGBA to the DIB's BGRA, straight into the section's memory (32-bit rows need no padding)
+        let out = std::slice::from_raw_parts_mut(bits.cast::<u8>(), bytes);
+        for (to, from) in out
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(rgba.as_chunks::<4>().0)
+        {
+            *to = [from[2], from[1], from[0], from[3]];
+        }
+        let mask = CreateBitmap(side, side, 1, 1, mask_bits.as_ptr().cast());
+        if mask.is_null() {
+            DeleteObject(color);
+            return std::ptr::null_mut();
+        }
         let info = ICONINFO {
             fIcon: 1,
             xHotspot: 0,

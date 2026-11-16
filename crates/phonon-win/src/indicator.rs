@@ -15,10 +15,15 @@
 //!  5. Ended with nothing pasted: no burst, the core fades out in 0.2 s.
 //!  6. Reduced motion: the width never moves; processing is a steady medium core, pasted a 0.3 s fade.
 //!
+//! Every press starts a new dictation with its own number (`press` returns it). The events that move a
+//! dictation on (`release`, `pasted`, `dropped`) carry that number and do nothing when the indicator
+//! has moved on to a newer dictation, so a slow dictation's late paste never bursts the next one.
+//!
 //! `look` is the pure stage maths; `Machine` is the state the hooks drive; `start` runs the one thread
 //! that turns frames into icons for the platform's tray (the sink).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -39,6 +44,44 @@ pub const WIDE_WIDTH: f32 = 0.5;
 /// Reduced motion's processing core: steady, between wide and tight.
 pub const REDUCED_WIDTH: f32 = 0.25;
 pub const LEVEL_FLOOR: f32 = 0.08;
+
+/// Listening's light is this opaque over black in silence...
+pub const LISTEN_STRENGTH: f32 = 0.50;
+/// ...plus this much times the voice energy (0..1). The Mac capsule's numbers (bar/Sources/PhononBar.swift
+/// `warmth`: 0.50 + energy * 0.38).
+pub const LISTEN_STRENGTH_RANGE: f32 = 0.38;
+/// Full strength: energy 1, the ignite flash and the loudest voice, 0.50 + 0.38 = 0.88 opacity of the ember
+/// over black. It stays under 1.0 so the gather, which ends brighter at `GATHER_END_STRENGTH`, still reads
+/// as a change when the key comes up.
+pub const FULL_STRENGTH: f32 = LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE;
+/// The gather's strength at key-up (the Mac's 0.5 + 0.5 * heat 0.3) and once the core is tight.
+pub const GATHER_START_STRENGTH: f32 = 0.65;
+pub const GATHER_END_STRENGTH: f32 = 1.0;
+/// Reduced motion's steady processing core.
+pub const REDUCED_STRENGTH: f32 = 0.80;
+pub const REDUCED_HEAT: f32 = 0.5;
+
+/// A dictation still listening with no audio arriving for this long is dropped: the worker died, the
+/// microphone never opened, or a key-up was lost. A latched dictation that keeps receiving audio is never
+/// cut, however long it runs.
+pub const SILENT_LISTENING_LIMIT: f64 = 180.0;
+/// Processing (no progress signal reaches the indicator while the models run) is dropped after this long
+/// plus `PROCESSING_PER_SECOND_HEARD` times the seconds it listened, so a long recording's long
+/// transcription is never cut while a lost dictation does not stay lit for good.
+pub const PROCESSING_LIMIT: f64 = 300.0;
+pub const PROCESSING_PER_SECOND_HEARD: f64 = 2.0;
+
+/// The tray changes at most this often (about 15 frames a second).
+pub const FRAME_TIME: Duration = Duration::from_millis(66);
+/// With nothing moving, the thread wakes this often (or at once on an event or a new level) to check the
+/// watchdog; it paints nothing unless the frame changed.
+const IDLE_CHECK: Duration = Duration::from_secs(1);
+/// A voice level closer than this to the last one is not news (the frame cannot visibly change).
+const LEVEL_STEP: f32 = 0.01;
+/// The smoother is settled (the listening frame holds still) within this of its target.
+const SETTLED: f32 = 0.004;
+/// The reduced-motion setting is re-read at most this often, after a dictation, off the drawing thread.
+const REDUCED_MOTION_REREAD: Duration = Duration::from_secs(60);
 
 /// Where in a dictation the indicator is. The variants that end one carry what they fade from.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,26 +125,26 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
     match stage {
         Stage::Listening => {
             let ignite = (1.0 - elapsed / IGNITE_SECONDS).clamp(0.0, 1.0);
-            // 1.0 at the press, the live level 0.18 s later, linearly between
-            let energy = lerp(level, 1.0, ignite);
+            // full strength at the press, the live level 0.18 s later, linearly between
+            let live = LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE * level;
             Look {
                 half_width: WIDE_WIDTH,
-                strength: 0.50 + 0.38 * energy,
+                strength: lerp(live, FULL_STRENGTH, ignite),
                 heat: 0.0,
                 burst: 0.0,
             }
         }
         Stage::Processing if reduced => Look {
             half_width: REDUCED_WIDTH,
-            strength: 0.80,
-            heat: 0.5,
+            strength: REDUCED_STRENGTH,
+            heat: REDUCED_HEAT,
             burst: 0.0,
         },
         Stage::Processing => {
             let k = (elapsed / GATHER_SECONDS).clamp(0.0, 1.0);
             Look {
                 half_width: lerp(WIDE_WIDTH, TIGHT_WIDTH, k),
-                strength: lerp(0.65, 1.0, k),
+                strength: lerp(GATHER_START_STRENGTH, GATHER_END_STRENGTH, k),
                 heat: k,
                 burst: 0.0,
             }
@@ -175,6 +218,11 @@ impl Smoother {
         self.shown
     }
 
+    /// Whether the shown level has reached `target` (nothing left to animate).
+    pub fn settled(&self, target: f32) -> bool {
+        (self.shown - target.clamp(LEVEL_FLOOR, 1.0)).abs() < SETTLED
+    }
+
     #[cfg(test)]
     pub fn value(&self) -> f32 {
         self.shown
@@ -187,11 +235,18 @@ impl Default for Smoother {
     }
 }
 
-/// The indicator's state, in seconds on any steady clock. Events call these from any thread;
-/// each says what it does when it is not the right moment (then nothing happens).
+/// The indicator's state. Times are seconds on any steady clock, as f64 so that a Phonon running for weeks
+/// still times a 0.18 s ignite exactly (an f32 clock is 0.125 s coarse after 12 days). Events call these
+/// from any thread; each says what it does when it is not the right moment (then nothing happens).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Machine {
-    active: Option<(Stage, f32)>,
+    /// The stage and when it began.
+    active: Option<(Stage, f64)>,
+    /// The number of the last press; `owner` is the dictation the stage belongs to.
+    generation: u64,
+    owner: u64,
+    /// How long the dictation listened, for the processing watchdog.
+    listened: f64,
 }
 
 impl Machine {
@@ -203,33 +258,62 @@ impl Machine {
         self.active.map(|(stage, _)| stage)
     }
 
-    /// Key down or tap. Lights at once, whatever the indicator was doing (a press while the last
-    /// dictation is still processing starts the new one; that one's late paste is then ignored).
-    pub fn press(&mut self, now: f32) {
+    /// The last press's number: it changes on every press.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Key down, tap, or a menu start: a new dictation, lit at once whatever the indicator was doing (a
+    /// press while the last dictation is still processing starts the new one; that one's late events are
+    /// then ignored). Returns the new dictation's number. A press while another dictation still listens
+    /// takes that light over without a second flash.
+    pub fn press(&mut self, now: f64) -> u64 {
+        self.generation += 1;
+        self.owner = self.generation;
         if !matches!(self.active, Some((Stage::Listening, _))) {
             self.active = Some((Stage::Listening, now));
         }
+        self.generation
     }
 
-    /// Key up or stop: listening becomes processing.
-    pub fn release(&mut self, now: f32) {
-        if matches!(self.active, Some((Stage::Listening, _))) {
+    fn owns(&self, dictation: u64) -> bool {
+        dictation != 0 && dictation == self.owner
+    }
+
+    /// Key up or stop: dictation `dictation`'s listening becomes processing.
+    pub fn release(&mut self, dictation: u64, now: f64) {
+        if !self.owns(dictation) {
+            return;
+        }
+        if let Some((Stage::Listening, since)) = self.active {
+            self.listened = now - since;
             self.active = Some((Stage::Processing, now));
         }
     }
 
-    /// The text was inserted: burst from wherever the gather is.
-    pub fn pasted(&mut self, now: f32, reduced: bool) {
+    /// Dictation `dictation`'s text was inserted: burst from wherever the gather is.
+    pub fn pasted(&mut self, dictation: u64, now: f64, reduced: bool) {
+        if !self.owns(dictation) {
+            return;
+        }
         if let Some((Stage::Processing, since)) = self.active {
-            let from_width = look(Stage::Processing, now - since, LEVEL_FLOOR, reduced).half_width;
+            let elapsed = (now - since) as f32;
+            let from_width = look(Stage::Processing, elapsed, LEVEL_FLOOR, reduced).half_width;
             self.active = Some((Stage::Pasted { from_width }, now));
         }
     }
 
-    /// The dictation ended with nothing pasted: no burst, the core fades out.
-    pub fn dropped(&mut self, now: f32, level: f32, reduced: bool) {
+    /// Dictation `dictation` ended with nothing pasted: no burst, the light fades out from where it is
+    /// (`level` is the smoothed voice level it was showing).
+    pub fn dropped(&mut self, dictation: u64, now: f64, level: f32, reduced: bool) {
+        if self.owns(dictation) {
+            self.fade(now, level, reduced);
+        }
+    }
+
+    fn fade(&mut self, now: f64, level: f32, reduced: bool) {
         if let Some((stage @ (Stage::Listening | Stage::Processing), since)) = self.active {
-            let current = look(stage, now - since, level, reduced);
+            let current = look(stage, (now - since) as f32, level, reduced);
             self.active = Some((
                 Stage::Dropped {
                     from_width: current.half_width,
@@ -241,15 +325,47 @@ impl Machine {
         }
     }
 
+    /// Whether a lit stage has outlived any real dictation: listening with no audio since `heard` (or the
+    /// press) for `SILENT_LISTENING_LIMIT`, or processing past its bound.
+    pub fn stale(&self, now: f64, heard: f64) -> bool {
+        match self.active {
+            Some((Stage::Listening, since)) => now - heard.max(since) > SILENT_LISTENING_LIMIT,
+            Some((Stage::Processing, since)) => {
+                now - since > PROCESSING_LIMIT + PROCESSING_PER_SECOND_HEARD * self.listened
+            }
+            _ => false,
+        }
+    }
+
+    /// Fade out a stale stage (see `stale`). Returns whether it did.
+    pub fn watchdog(&mut self, now: f64, heard: f64, level: f32, reduced: bool) -> bool {
+        let stale = self.stale(now, heard);
+        if stale {
+            self.fade(now, level, reduced);
+        }
+        stale
+    }
+
     /// The frame to draw now, or `None` at rest. A stage that ends hands back to rest here.
-    pub fn frame(&mut self, now: f32, level: f32, reduced: bool) -> Option<Look> {
+    pub fn frame(&mut self, now: f64, level: f32, reduced: bool) -> Option<Look> {
         let (stage, since) = self.active?;
-        let elapsed = now - since;
+        let elapsed = (now - since) as f32;
         if finished(stage, elapsed, reduced) {
             self.active = None;
             return None;
         }
         Some(look(stage, elapsed, level, reduced))
+    }
+
+    /// Whether the next frame can differ from this one for any reason but the voice level: false at rest,
+    /// once the gather holds, for reduced motion's steady core, and for listening after the ignite.
+    pub fn moving(&self, now: f64, reduced: bool) -> bool {
+        match self.active {
+            None => false,
+            Some((Stage::Listening, since)) => now - since < f64::from(IGNITE_SECONDS),
+            Some((Stage::Processing, since)) => !reduced && now - since < f64::from(GATHER_SECONDS),
+            Some((Stage::Pasted { .. } | Stage::Dropped { .. }, _)) => true,
+        }
     }
 }
 
@@ -294,132 +410,224 @@ pub fn render_rgba(look: Look, size: u32) -> Vec<u8> {
 pub struct Sink {
     pub size: fn() -> u32,
     pub show: fn(Option<&[u8]>, u32),
-    /// Whether the system asks for reduced motion (read when a dictation ends and at start).
+    /// Whether the system asks for reduced motion. Called off the drawing thread: at start, then at most
+    /// once a minute after a dictation ends, so a slow answer never holds a frame.
     pub reduced_motion: fn() -> bool,
 }
 
+/// The machine and a count of the events that changed it, so the drawing thread can sleep until one does.
+struct State {
+    machine: Machine,
+    revision: u64,
+}
+
 struct Shared {
-    machine: Mutex<Machine>,
+    state: Mutex<State>,
     wake: Condvar,
+    /// The latest voice level (f32 bits), as pushed by the microphone.
     level: AtomicU32,
+    /// The smoothed level the drawing thread last showed (f32 bits): a fade starts from it.
+    shown: AtomicU32,
+    /// When audio last arrived (f64 seconds on `now`'s clock, as bits), for the watchdog.
+    heard: AtomicU64,
     reduced: AtomicBool,
+    /// Tells the reduced-motion reader a dictation ended.
+    reread: OnceLock<Mutex<mpsc::Sender<()>>>,
     origin: Instant,
 }
 
 fn shared() -> &'static Shared {
     static SHARED: OnceLock<Shared> = OnceLock::new();
     SHARED.get_or_init(|| Shared {
-        machine: Mutex::new(Machine::default()),
+        state: Mutex::new(State {
+            machine: Machine::default(),
+            revision: 0,
+        }),
         wake: Condvar::new(),
         level: AtomicU32::new(LEVEL_FLOOR.to_bits()),
+        shown: AtomicU32::new(LEVEL_FLOOR.to_bits()),
+        heard: AtomicU64::new(0f64.to_bits()),
         reduced: AtomicBool::new(false),
+        reread: OnceLock::new(),
         origin: Instant::now(),
     })
 }
 
-fn now() -> f32 {
-    shared().origin.elapsed().as_secs_f32()
+fn now() -> f64 {
+    shared().origin.elapsed().as_secs_f64()
 }
 
-fn with_machine(f: impl FnOnce(&mut Machine, f32)) {
+fn with_machine<R>(f: impl FnOnce(&mut Machine, f64) -> R) -> Option<R> {
     let s = shared();
-    if let Ok(mut machine) = s.machine.lock() {
-        f(&mut machine, now());
-    }
+    let result = s.state.lock().ok().map(|mut state| {
+        state.revision = state.revision.wrapping_add(1);
+        f(&mut state.machine, now())
+    });
     s.wake.notify_all();
+    result
 }
 
 fn reduced() -> bool {
     shared().reduced.load(Ordering::Relaxed)
 }
 
-/// The dictation key went down (or the menu started a dictation). Returns at once; the
-/// animation thread draws the next frame without waiting for the microphone or the models.
-pub fn press() {
-    with_machine(|m, t| m.press(t));
+fn shown_level() -> f32 {
+    f32::from_bits(shared().shown.load(Ordering::Relaxed))
 }
 
-/// The key came up (or a stop): processing begins.
-pub fn release() {
-    with_machine(|m, t| m.release(t));
+/// The dictation key went down (or the menu started a dictation): a new dictation, lit within a frame.
+/// Returns its number for `release`, `pasted` and `dropped`. Returns at once; the animation thread draws
+/// without waiting for the microphone or the models. The last dictation's voice level is forgotten, so
+/// the ignite falls to this one's voice, not to that one's last word.
+pub fn press() -> u64 {
+    let s = shared();
+    s.level.store(LEVEL_FLOOR.to_bits(), Ordering::Relaxed);
+    s.shown.store(LEVEL_FLOOR.to_bits(), Ordering::Relaxed);
+    with_machine(|m, t| m.press(t)).unwrap_or(0)
 }
 
-/// The text was inserted.
-pub fn pasted() {
+/// Dictation `dictation`'s key came up (or a stop): processing begins. Nothing for an older dictation.
+pub fn release(dictation: u64) {
+    with_machine(|m, t| m.release(dictation, t));
+}
+
+/// Dictation `dictation`'s text was inserted. Nothing for an older dictation.
+pub fn pasted(dictation: u64) {
     let reduced = reduced();
-    with_machine(|m, t| m.pasted(t, reduced));
+    with_machine(|m, t| m.pasted(dictation, t, reduced));
 }
 
-/// The dictation ended with nothing pasted: empty, error, cancelled, kept on the clipboard.
-pub fn dropped() {
+/// Dictation `dictation` ended with nothing pasted (empty, error, cancelled, kept on the clipboard): the
+/// light fades. Nothing once it was pasted or dropped, or for an older dictation.
+pub fn dropped(dictation: u64) {
     let reduced = reduced();
-    let level = f32::from_bits(shared().level.load(Ordering::Relaxed));
-    with_machine(|m, t| m.dropped(t, level, reduced));
+    let level = shown_level();
+    with_machine(|m, t| m.dropped(dictation, t, level, reduced));
 }
 
-/// Like `dropped`, for the end of a dictation's processing: a newer dictation already listening
-/// (its key came down while this one finished) is left alone.
-pub fn abandon() {
-    let reduced = reduced();
-    let level = f32::from_bits(shared().level.load(Ordering::Relaxed));
-    with_machine(|m, t| {
-        if m.stage() == Some(Stage::Processing) {
-            m.dropped(t, level, reduced)
-        }
-    });
+/// Drops its dictation when it goes out of scope, so no path out of a dictation's processing, a panic
+/// included, leaves the light on. A no-op once the dictation was pasted or dropped.
+pub struct Lit(pub u64);
+
+impl Drop for Lit {
+    fn drop(&mut self) {
+        dropped(self.0);
+    }
 }
 
-/// The microphone's RMS for the latest buffer (0..1 of full scale).
+/// The microphone's RMS for the latest buffer (0..1 of full scale). Wakes the drawing thread only when
+/// the level moved enough to show.
 pub fn push_level(rms: f32) {
-    shared()
-        .level
-        .store(level_from_rms(rms).to_bits(), Ordering::Relaxed);
+    let s = shared();
+    s.heard.store(now().to_bits(), Ordering::Relaxed);
+    let level = level_from_rms(rms);
+    let old = f32::from_bits(s.level.load(Ordering::Relaxed));
+    if (level - old).abs() < LEVEL_STEP {
+        return;
+    }
+    s.level.store(level.to_bits(), Ordering::Relaxed);
+    // through the lock, so a drawing thread about to sleep either sees the new level or this wake-up
+    drop(s.state.lock());
+    s.wake.notify_all();
 }
 
 /// Start the animation thread. It sleeps until the first press and sleeps again at rest, so an idle
 /// Phonon repaints nothing.
 pub fn start(sink: Sink) {
-    shared()
-        .reduced
-        .store((sink.reduced_motion)(), Ordering::Relaxed);
+    let (reread, requests) = mpsc::channel::<()>();
+    let _ = shared().reread.set(Mutex::new(reread));
+    let read = sink.reduced_motion;
+    let _ = std::thread::Builder::new()
+        .name("reduced-motion".into())
+        .spawn(move || follow_reduced_motion(read, requests));
     let _ = std::thread::Builder::new()
         .name("indicator".into())
         .spawn(move || run(sink));
+}
+
+/// Read the reduced-motion setting at start, then again after a dictation ends, at most once a minute: a
+/// setting changed during one dictation applies from a later one.
+fn follow_reduced_motion(read: fn() -> bool, requests: mpsc::Receiver<()>) {
+    let s = shared();
+    s.reduced.store(read(), Ordering::Relaxed);
+    while requests.recv().is_ok() {
+        s.reduced.store(read(), Ordering::Relaxed);
+        std::thread::sleep(REDUCED_MOTION_REREAD);
+        while requests.try_recv().is_ok() {}
+    }
+}
+
+fn ask_reread() {
+    if let Some(Ok(sender)) = shared().reread.get().map(|s| s.lock()) {
+        let _ = sender.send(());
+    }
 }
 
 fn run(sink: Sink) {
     let s = shared();
     let mut smoother = Smoother::new();
     let mut last = now();
-    let mut drawing = false;
-    let frame_time = Duration::from_millis(33);
+    let mut seen_generation = 0;
+    // the frame in the tray now, `None` with the normal icon there
+    let mut showing: Option<Vec<u8>> = None;
     loop {
-        let Ok(guard) = s.machine.lock() else { return };
-        let mut guard = match s.wake.wait_while(guard, |m| m.is_rest() && !drawing) {
-            Ok(guard) => guard,
-            Err(_) => return,
+        let Ok(state) = s.state.lock() else { return };
+        let drawing = showing.is_some();
+        let Ok(mut state) = s
+            .wake
+            .wait_while(state, |st| st.machine.is_rest() && !drawing)
+        else {
+            return;
         };
         let t = now();
-        let dt = t - last;
+        if state.machine.generation() != seen_generation {
+            // a new dictation: its own level from the floor, no time carried over from the last
+            seen_generation = state.machine.generation();
+            smoother = Smoother::new();
+            last = t;
+        }
+        let dt = (t - last) as f32;
         last = t;
-        let target = f32::from_bits(s.level.load(Ordering::Relaxed));
+        let target_bits = s.level.load(Ordering::Relaxed);
+        let target = f32::from_bits(target_bits);
         let level = smoother.step(target, dt);
-        let look = guard.frame(t, level, reduced());
-        drop(guard);
+        s.shown.store(level.to_bits(), Ordering::Relaxed);
+        let reduced = reduced();
+        let heard = f64::from_bits(s.heard.load(Ordering::Relaxed));
+        if state.machine.watchdog(t, heard, level, reduced) {
+            eprintln!("phonon: the dictation indicator outlived its dictation; fading it");
+        }
+        let look = state.machine.frame(t, level, reduced);
+        let listening = state.machine.stage() == Some(Stage::Listening);
+        let moving = state.machine.moving(t, reduced) || (listening && !smoother.settled(target));
+        let revision = state.revision;
+        drop(state);
         match look {
             Some(look) => {
-                drawing = true;
                 let size = (sink.size)();
-                (sink.show)(Some(&render_rgba(look, size)), size);
-                std::thread::sleep(frame_time);
+                let rgba = render_rgba(look, size);
+                // the same pixels again (the held core, a steady level) are not sent to the tray
+                if showing.as_deref() != Some(rgba.as_slice()) {
+                    (sink.show)(Some(&rgba), size);
+                    showing = Some(rgba);
+                }
             }
-            None if drawing => {
-                drawing = false;
-                (sink.show)(None, 0);
-                // a setting changed in the last dictation applies from the next
-                s.reduced.store((sink.reduced_motion)(), Ordering::Relaxed);
+            None => {
+                if showing.take().is_some() {
+                    (sink.show)(None, 0);
+                    ask_reread();
+                }
+                continue;
             }
-            None => {}
+        }
+        if moving {
+            std::thread::sleep(FRAME_TIME);
+        } else {
+            // Still: sleep until an event, a new voice level, or the watchdog's next look.
+            let Ok(state) = s.state.lock() else { return };
+            let _ = s.wake.wait_timeout_while(state, IDLE_CHECK, |st| {
+                st.revision == revision && s.level.load(Ordering::Relaxed) == target_bits
+            });
         }
     }
 }
@@ -430,10 +638,28 @@ mod tests {
 
     const EPS: f32 = 1e-4;
 
+    /// Listening's strength at a voice energy (0..1).
+    fn listening(energy: f32) -> f32 {
+        LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE * energy
+    }
+
+    #[test]
+    fn full_strength_is_the_mac_capsules_listening_maximum() {
+        // 0.50 + 0.38 opacity over black, the loudest voice and the ignite alike
+        let loudest = look(Stage::Listening, 5.0, 1.0, false).strength;
+        assert!((loudest - 0.88).abs() < EPS && (loudest - FULL_STRENGTH).abs() < EPS);
+        // and the held core is brighter still, so the key-up reads as a change
+        let held = look(Stage::Processing, GATHER_SECONDS, 0.5, false).strength;
+        assert!(held > loudest, "{held} after {loudest}");
+    }
+
     #[test]
     fn ignite_is_full_strength_at_the_press_before_any_level_arrives() {
         let at_press = look(Stage::Listening, 0.0, 0.0, false);
-        assert!((at_press.strength - 0.88).abs() < EPS, "{at_press:?}");
+        assert!(
+            (at_press.strength - FULL_STRENGTH).abs() < EPS,
+            "{at_press:?}"
+        );
         // whatever the level, the first frame is the same
         assert_eq!(at_press, look(Stage::Listening, 0.0, 0.3, false));
         assert_eq!(at_press.half_width, WIDE_WIDTH);
@@ -442,26 +668,29 @@ mod tests {
     #[test]
     fn ignite_decays_linearly_to_the_live_level_in_0_18_seconds() {
         let level = 0.4;
-        let live = 0.50 + 0.38 * level;
         let mid = look(Stage::Listening, 0.09, level, false).strength;
-        let want = 0.50 + 0.38 * (0.5 * 1.0 + 0.5 * level);
-        assert!((mid - want).abs() < EPS);
-        assert!((look(Stage::Listening, 0.18, level, false).strength - live).abs() < EPS);
-        assert!((look(Stage::Listening, 2.0, level, false).strength - live).abs() < EPS);
+        // half way through the ignite: half full energy, half the live level
+        assert!((mid - listening(0.5 + 0.5 * level)).abs() < EPS);
+        assert!(
+            (look(Stage::Listening, 0.18, level, false).strength - listening(level)).abs() < EPS
+        );
+        assert!(
+            (look(Stage::Listening, 2.0, level, false).strength - listening(level)).abs() < EPS
+        );
         // the floor holds in silence
         let quiet = look(Stage::Listening, 5.0, 0.0, false).strength;
-        assert!((quiet - (0.50 + 0.38 * LEVEL_FLOOR)).abs() < EPS);
+        assert!((quiet - listening(LEVEL_FLOOR)).abs() < EPS);
     }
 
     #[test]
     fn gather_reaches_0_08_at_1_2_seconds_and_holds() {
         let start = look(Stage::Processing, 0.0, 0.5, false);
         assert!((start.half_width - 0.5).abs() < EPS);
-        assert!((start.strength - 0.65).abs() < EPS);
+        assert!((start.strength - GATHER_START_STRENGTH).abs() < EPS);
         assert!((look(Stage::Processing, 0.6, 0.5, false).half_width - 0.29).abs() < EPS);
         let end = look(Stage::Processing, 1.2, 0.5, false);
         assert!((end.half_width - 0.08).abs() < EPS);
-        assert!((end.strength - 1.0).abs() < EPS);
+        assert!((end.strength - GATHER_END_STRENGTH).abs() < EPS);
         assert!((end.heat - 1.0).abs() < EPS);
         for t in [1.3, 5.0, 60.0] {
             assert_eq!(
@@ -489,9 +718,9 @@ mod tests {
     #[test]
     fn a_paste_before_the_gather_ends_bursts_from_where_it_is() {
         let mut m = Machine::default();
-        m.press(0.0);
-        m.release(1.0);
-        m.pasted(1.6, false); // half way through the gather: w = 0.29
+        let a = m.press(0.0);
+        m.release(a, 1.0);
+        m.pasted(a, 1.6, false); // half way through the gather: w = 0.29
         let Some(Stage::Pasted { from_width }) = m.stage() else {
             panic!("{:?}", m.stage())
         };
@@ -506,31 +735,37 @@ mod tests {
     #[test]
     fn ending_with_nothing_pasted_skips_the_burst() {
         let mut m = Machine::default();
-        m.press(0.0);
-        m.release(1.0);
-        m.dropped(3.0, 0.5, false); // gather done: the tight bright core
+        let a = m.press(0.0);
+        m.release(a, 1.0);
+        m.dropped(a, 3.0, 0.5, false); // gather done: the tight bright core
         let first = m.frame(3.0, 0.5, false).unwrap();
-        assert!((first.half_width - 0.08).abs() < EPS && (first.strength - 1.0).abs() < EPS);
+        assert!(
+            (first.half_width - TIGHT_WIDTH).abs() < EPS
+                && (first.strength - GATHER_END_STRENGTH).abs() < EPS
+        );
         for t in [3.05, 3.1, 3.19] {
             let f = m.frame(t, 0.5, false).unwrap();
             assert_eq!(f.burst, 0.0);
             assert!(
-                (f.half_width - 0.08).abs() < EPS,
+                (f.half_width - TIGHT_WIDTH).abs() < EPS,
                 "the core only fades, it does not open"
             );
         }
-        let mid = look(m.stage().unwrap(), 0.1, 0.5, false);
-        assert!((mid.strength - 0.5).abs() < EPS);
-        assert!(m.frame(3.2, 0.5, false).is_none() && m.is_rest());
+        let mid = look(m.stage().unwrap(), DROP_SECONDS / 2.0, 0.5, false);
+        assert!((mid.strength - GATHER_END_STRENGTH / 2.0).abs() < EPS);
+        assert!(m.frame(3.0 + f64::from(DROP_SECONDS), 0.5, false).is_none() && m.is_rest());
     }
 
     #[test]
-    fn a_failure_while_listening_fades_too() {
+    fn a_failure_while_listening_fades_from_the_level_it_showed() {
         let mut m = Machine::default();
-        m.press(0.0);
-        m.dropped(0.05, 0.3, false);
-        assert!(matches!(m.stage(), Some(Stage::Dropped { .. })));
-        assert!(m.frame(0.30, 0.3, false).is_none());
+        let a = m.press(0.0);
+        m.dropped(a, 1.0, 0.3, false);
+        let Some(Stage::Dropped { from_strength, .. }) = m.stage() else {
+            panic!("{:?}", m.stage())
+        };
+        assert!((from_strength - listening(0.3)).abs() < EPS);
+        assert!(m.frame(1.0 + f64::from(DROP_SECONDS), 0.3, false).is_none());
     }
 
     #[test]
@@ -544,9 +779,10 @@ mod tests {
             "{widths:?}"
         );
         let mut m = Machine::default();
-        m.press(0.0);
-        m.release(1.0);
-        m.pasted(2.0, true);
+        let a = m.press(0.0);
+        m.release(a, 1.0);
+        assert!(!m.moving(1.0, true), "the steady core does not repaint");
+        m.pasted(a, 2.0, true);
         let s = m.stage().unwrap();
         for t in [0.0, 0.1, 0.29] {
             assert!((look(s, t, 0.5, true).half_width - REDUCED_WIDTH).abs() < EPS);
@@ -558,18 +794,122 @@ mod tests {
     #[test]
     fn events_out_of_order_do_nothing() {
         let mut m = Machine::default();
-        m.pasted(0.0, false);
-        m.release(0.0);
-        m.dropped(0.0, 0.5, false);
+        m.pasted(0, 0.0, false);
+        m.release(0, 0.0);
+        m.dropped(0, 0.0, 0.5, false);
         assert!(m.is_rest());
+        let a = m.press(1.0);
+        m.pasted(a, 1.1, false); // not processing yet
+        assert_eq!(m.stage(), Some(Stage::Listening));
+        m.release(a, 2.0);
+        m.release(a, 2.2); // a second stop restarts nothing: the gather still ends 1.2 s after the first
+        assert!(!m.moving(2.0 + f64::from(GATHER_SECONDS) + 0.1, false));
+    }
+
+    #[test]
+    fn a_late_paste_of_a_does_not_burst_b_while_b_processes() {
+        let mut m = Machine::default();
+        let a = m.press(0.0);
+        m.release(a, 1.0);
+        let b = m.press(2.0); // B's key while A is still processing
+        m.release(b, 3.0);
+        m.pasted(a, 3.5, false);
+        assert_eq!(m.stage(), Some(Stage::Processing), "A's paste is not B's");
+        m.dropped(a, 3.6, 0.5, false);
+        assert_eq!(m.stage(), Some(Stage::Processing), "nor is A's drop");
+        m.pasted(b, 4.0, false);
+        assert!(matches!(m.stage(), Some(Stage::Pasted { .. })));
+    }
+
+    #[test]
+    fn a_abandoning_does_not_fade_b_while_b_listens() {
+        let mut m = Machine::default();
+        let a = m.press(0.0);
+        m.release(a, 1.0);
+        let b = m.press(2.0);
+        m.dropped(a, 2.5, 0.5, false); // A ended empty while B is held
+        assert_eq!(m.stage(), Some(Stage::Listening));
+        m.release(b, 4.0);
+        assert_eq!(m.stage(), Some(Stage::Processing));
+    }
+
+    #[test]
+    fn releasing_a_after_b_was_pressed_leaves_b_listening() {
+        let mut m = Machine::default();
+        let a = m.press(0.0);
+        let b = m.press(0.5); // a menu start, or a press the hook saw before A's stop reached the worker
+        m.release(a, 1.0);
+        assert_eq!(m.stage(), Some(Stage::Listening), "A's stop is not B's");
+        m.release(b, 2.0);
+        assert_eq!(m.stage(), Some(Stage::Processing));
+    }
+
+    #[test]
+    fn a_press_while_listening_does_not_flash_again() {
+        let mut m = Machine::default();
+        m.press(0.0);
         m.press(1.0);
-        m.pasted(1.1, false); // not processing yet
-        assert_eq!(m.stage(), Some(Stage::Listening));
-        m.release(2.0);
-        m.press(2.5); // a new dictation while the last one still processes
-        assert_eq!(m.stage(), Some(Stage::Listening));
-        m.pasted(3.0, false); // the old one's late paste must not light the new one
-        assert_eq!(m.stage(), Some(Stage::Listening));
+        let f = m.frame(1.0, LEVEL_FLOOR, false).unwrap();
+        assert!((f.strength - listening(LEVEL_FLOOR)).abs() < EPS);
+    }
+
+    #[test]
+    fn a_long_latched_dictation_is_never_cut_while_audio_arrives() {
+        let mut m = Machine::default();
+        m.press(0.0);
+        // an hour of dictation, audio arriving all along
+        for minute in 1..=60u32 {
+            let t = f64::from(minute) * 60.0;
+            assert!(!m.watchdog(t, t - 0.05, 0.5, false), "cut at {t} s");
+        }
+        // the key-up never came and the audio stopped: dropped after the limit
+        let quiet_from = 3600.0;
+        assert!(!m.stale(quiet_from + SILENT_LISTENING_LIMIT - 1.0, quiet_from));
+        assert!(m.watchdog(
+            quiet_from + SILENT_LISTENING_LIMIT + 1.0,
+            quiet_from,
+            0.5,
+            false
+        ));
+        assert!(matches!(m.stage(), Some(Stage::Dropped { .. })));
+    }
+
+    #[test]
+    fn processing_is_given_time_in_proportion_to_what_was_heard() {
+        let mut m = Machine::default();
+        let a = m.press(0.0);
+        m.release(a, 600.0); // a ten-minute dictation
+        let bound = PROCESSING_LIMIT + PROCESSING_PER_SECOND_HEARD * 600.0;
+        assert!(!m.stale(600.0 + bound - 1.0, 600.0));
+        assert!(m.watchdog(600.0 + bound + 1.0, 600.0, 0.5, false));
+        assert!(matches!(m.stage(), Some(Stage::Dropped { .. })));
+    }
+
+    #[test]
+    fn nothing_moves_once_the_gather_holds() {
+        let mut m = Machine::default();
+        assert!(!m.moving(0.0, false), "rest");
+        let a = m.press(0.0);
+        assert!(m.moving(0.0, false), "the ignite");
+        assert!(!m.moving(f64::from(IGNITE_SECONDS) + 0.01, false));
+        m.release(a, 1.0);
+        assert!(m.moving(1.5, false), "the gather");
+        assert!(
+            !m.moving(1.0 + f64::from(GATHER_SECONDS) + 0.01, false),
+            "the held core"
+        );
+        m.pasted(a, 5.0, false);
+        assert!(m.moving(5.1, false), "the burst");
+    }
+
+    #[test]
+    fn an_old_clock_still_times_the_ignite() {
+        // twelve days of uptime
+        let start = 12.0 * 24.0 * 3600.0;
+        let mut m = Machine::default();
+        m.press(start);
+        let mid = m.frame(start + 0.09, 0.0, false).unwrap();
+        assert!((mid.strength - listening(0.5 + 0.5 * LEVEL_FLOOR)).abs() < 1e-3);
     }
 
     #[test]
@@ -582,18 +922,20 @@ mod tests {
             down > 0.55 && down < up,
             "release is slow: {down} after {up}"
         );
+        assert!(!s.settled(0.0));
         for _ in 0..200 {
             s.step(0.0, 0.05);
         }
         assert!((s.value() - LEVEL_FLOOR).abs() < 1e-3);
+        assert!(s.settled(0.0));
     }
 
     #[test]
     fn the_frame_is_black_at_the_ends_and_lit_in_the_middle() {
         let wide = render_rgba(
             Look {
-                half_width: 0.5,
-                strength: 0.88,
+                half_width: WIDE_WIDTH,
+                strength: FULL_STRENGTH,
                 heat: 0.0,
                 burst: 0.0,
             },
@@ -612,8 +954,8 @@ mod tests {
         // the tight core lights less of the width
         let tight = render_rgba(
             Look {
-                half_width: 0.08,
-                strength: 1.0,
+                half_width: TIGHT_WIDTH,
+                strength: GATHER_END_STRENGTH,
                 heat: 1.0,
                 burst: 0.0,
             },

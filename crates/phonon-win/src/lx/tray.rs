@@ -324,13 +324,38 @@ fn show_frame(rgba: Option<&[u8]>, size: u32) {
 }
 
 /// The desktop's animations setting where one can be read (GNOME's `enable-animations`, which GNOME
-/// Shell, Cinnamon and MATE follow); a desktop without it counts as animations on.
+/// Shell, Cinnamon and MATE follow); a desktop without it counts as animations on. The indicator
+/// calls this off its drawing thread, at start and at most once a minute after a dictation; a
+/// `gsettings` that does not answer within a second is killed and counts as animations on.
 fn reduced_motion() -> bool {
-    std::process::Command::new("gsettings")
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    let Ok(mut child) = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
-        .unwrap_or(false)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut out);
+    }
+    out.trim() == "false"
 }
 
 pub fn set_status(text: &str) {
