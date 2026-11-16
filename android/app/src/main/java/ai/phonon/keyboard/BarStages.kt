@@ -36,6 +36,20 @@ object BarStages {
     const val REDUCED_WIDTH = 0.25
     const val LEVEL_FLOOR = 0.08
 
+    /** Listening's light is this opaque over black in silence, plus [LISTEN_STRENGTH_RANGE] times the voice
+     *  energy (0..1): the Mac capsule's 0.50 + energy * 0.38 (bar/Sources/PhononBar.swift warmth). */
+    const val LISTEN_STRENGTH = 0.50
+    const val LISTEN_STRENGTH_RANGE = 0.38
+    /** Full strength, energy 1 (the ignite flash and the loudest voice): 0.50 + 0.38 = 0.88 opacity over black.
+     *  It stays under 1.0 so the gather, which ends brighter at [GATHER_END_STRENGTH], still reads as a change. */
+    const val FULL_STRENGTH = LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE
+    /** The gather's strength at let-go (the Mac's 0.5 + 0.5 * heat 0.3) and once the core is tight. */
+    const val GATHER_START_STRENGTH = 0.65
+    const val GATHER_END_STRENGTH = 1.0
+    /** Reduced motion's steady processing core. */
+    const val REDUCED_STRENGTH = 0.80
+    const val REDUCED_HEAT = 0.5
+
     /** Where in a dictation the bar is. The ending stages carry what they fade from. */
     sealed class Stage {
         /** Finger down until let-go. Elapsed counts from the press. */
@@ -70,14 +84,14 @@ object BarStages {
         return when (stage) {
             Stage.Listening -> {
                 val ignite = unit(1.0 - e / IGNITE_SECONDS)
-                // 1.0 at the press, the live level 0.18 s later, linearly between
-                Look(WIDE_WIDTH, 0.50 + 0.38 * lerp(lv, 1.0, ignite), 0.0, 0.0)
+                // full strength at the press, the live level 0.18 s later, linearly between
+                Look(WIDE_WIDTH, lerp(LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE * lv, FULL_STRENGTH, ignite), 0.0, 0.0)
             }
             Stage.Processing ->
-                if (reduced) Look(REDUCED_WIDTH, 0.80, 0.5, 0.0)
+                if (reduced) Look(REDUCED_WIDTH, REDUCED_STRENGTH, REDUCED_HEAT, 0.0)
                 else {
                     val k = unit(e / GATHER_SECONDS)
-                    Look(lerp(WIDE_WIDTH, TIGHT_WIDTH, k), lerp(0.65, 1.0, k), k, 0.0)
+                    Look(lerp(WIDE_WIDTH, TIGHT_WIDTH, k), lerp(GATHER_START_STRENGTH, GATHER_END_STRENGTH, k), k, 0.0)
                 }
             is Stage.Pasted ->
                 if (reduced) Look(stage.fromWidth, 0.0, 0.0, 1.0 - unit(e / REDUCED_FADE_SECONDS))

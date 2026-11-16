@@ -59,33 +59,44 @@ class TalkBar(context: Context) : View(context) {
     }
     private val rect = RectF()
     private val clip = Path()
-    private val smoother = BarStages.Smoother()
+    private var smoother = BarStages.Smoother()
     private val machine = BarStages.Machine()
     private var lastFrame = 0.0
     private var listeningSince = 0.0
-    /** The text went into the field: the next return to rest bursts instead of fading out. */
-    private var pastedPending = false
     /** The bar left listening (not writing) for rest, so the fade-out keeps the listening shape. */
     private var tailFromListening = false
 
-    /** The text was inserted. Call before the mode returns to REST. */
-    fun markPasted() { pastedPending = true }
+    /** The text was inserted: the gather bursts now. Nothing is remembered for later, so a paste can never carry
+     *  into the next dictation; outside the writing stage this does nothing. */
+    fun markPasted() { machine.pasted(nowSeconds(), !animationsOn()) }
 
     private fun nowSeconds() = SystemClock.uptimeMillis() / 1000.0
 
     /** Option B's stages ride on the mode changes: finger down lights the bar at once, let-go starts the gather,
-     *  and leaving for rest is a burst (text pasted) or a fade (nothing pasted). BarStages has the maths. */
+     *  and leaving for rest after markPasted is the burst, otherwise a fade (nothing pasted). BarStages has the
+     *  maths. */
     private fun stageChange(from: Mode, to: Mode) {
         val now = nowSeconds()
         val reduced = !animationsOn()
         when (to) {
-            Mode.LISTENING -> { machine.press(now); listeningSince = now; tailFromListening = false }
-            Mode.WORKING -> machine.release(now)
+            Mode.LISTENING -> {
+                // a new dictation: its own voice level from the floor, not the last one's last word
+                level = 0.0
+                smoother = BarStages.Smoother()
+                lastFrame = now
+                machine.press(now); listeningSince = now; tailFromListening = false
+            }
+            Mode.WORKING -> {
+                // A bar created mid-dictation (the keyboard view rebuilt while writing), or one still fading the
+                // last dictation, has nothing listening to release: it starts the gather from the wide light.
+                val s = machine.current
+                if (s != BarStages.Stage.Listening && s != BarStages.Stage.Processing) machine.press(now)
+                machine.release(now)
+            }
             Mode.REST -> {
                 tailFromListening = from == Mode.LISTENING
-                if (pastedPending && from == Mode.WORKING) machine.pasted(now, reduced)
-                else machine.dropped(now, smoother.value, reduced)
-                pastedPending = false
+                // a no-op after markPasted: the burst is already under way
+                machine.dropped(now, smoother.value, reduced)
             }
         }
     }

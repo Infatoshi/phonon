@@ -10,10 +10,23 @@ import org.junit.Test
 class BarStagesTest {
     private val eps = 1e-4
 
+    /** Listening's strength at a voice energy (0..1). */
+    private fun listening(energy: Double) = BarStages.LISTEN_STRENGTH + BarStages.LISTEN_STRENGTH_RANGE * energy
+
+    @Test
+    fun fullStrengthIsTheMacCapsulesListeningMaximum() {
+        // 0.50 + 0.38 opacity over black, the loudest voice and the ignite alike
+        val loudest = BarStages.look(Stage.Listening, 5.0, 1.0, false).strength
+        assertEquals(0.88, loudest, eps)
+        assertEquals(BarStages.FULL_STRENGTH, loudest, eps)
+        // the held core is brighter still, so the let-go reads as a change
+        assertTrue(BarStages.look(Stage.Processing, BarStages.GATHER_SECONDS, 0.5, false).strength > loudest)
+    }
+
     @Test
     fun igniteIsFullStrengthAtThePressBeforeAnyLevelArrives() {
         val atPress = BarStages.look(Stage.Listening, 0.0, 0.0, false)
-        assertEquals(0.88, atPress.strength, eps)
+        assertEquals(BarStages.FULL_STRENGTH, atPress.strength, eps)
         assertEquals(atPress, BarStages.look(Stage.Listening, 0.0, 0.3, false))
         assertEquals(BarStages.WIDE_WIDTH, atPress.halfWidth, eps)
     }
@@ -21,22 +34,22 @@ class BarStagesTest {
     @Test
     fun igniteDecaysLinearlyToTheLiveLevelIn018Seconds() {
         val level = 0.4
-        val live = 0.50 + 0.38 * level
-        assertEquals(0.50 + 0.38 * (0.5 + 0.5 * level), BarStages.look(Stage.Listening, 0.09, level, false).strength, eps)
-        assertEquals(live, BarStages.look(Stage.Listening, 0.18, level, false).strength, eps)
-        assertEquals(live, BarStages.look(Stage.Listening, 2.0, level, false).strength, eps)
-        assertEquals(0.50 + 0.38 * BarStages.LEVEL_FLOOR, BarStages.look(Stage.Listening, 5.0, 0.0, false).strength, eps)
+        // half way through the ignite: half full energy, half the live level
+        assertEquals(listening(0.5 + 0.5 * level), BarStages.look(Stage.Listening, 0.09, level, false).strength, eps)
+        assertEquals(listening(level), BarStages.look(Stage.Listening, 0.18, level, false).strength, eps)
+        assertEquals(listening(level), BarStages.look(Stage.Listening, 2.0, level, false).strength, eps)
+        assertEquals(listening(BarStages.LEVEL_FLOOR), BarStages.look(Stage.Listening, 5.0, 0.0, false).strength, eps)
     }
 
     @Test
     fun gatherReaches008At12SecondsAndHolds() {
         val start = BarStages.look(Stage.Processing, 0.0, 0.5, false)
         assertEquals(0.5, start.halfWidth, eps)
-        assertEquals(0.65, start.strength, eps)
+        assertEquals(BarStages.GATHER_START_STRENGTH, start.strength, eps)
         assertEquals(0.29, BarStages.look(Stage.Processing, 0.6, 0.5, false).halfWidth, eps)
         val end = BarStages.look(Stage.Processing, 1.2, 0.5, false)
         assertEquals(0.08, end.halfWidth, eps)
-        assertEquals(1.0, end.strength, eps)
+        assertEquals(BarStages.GATHER_END_STRENGTH, end.strength, eps)
         assertEquals(1.0, end.heat, eps)
         for (t in listOf(1.3, 5.0, 60.0)) assertEquals("no loop, no breathing at $t", end, BarStages.look(Stage.Processing, t, 0.9, false))
     }
@@ -75,14 +88,15 @@ class BarStagesTest {
         val m = BarStages.Machine()
         m.press(0.0); m.release(1.0); m.dropped(3.0, 0.5, false)
         val first = m.frame(3.0, 0.5, false)!!
-        assertEquals(0.08, first.halfWidth, eps)
-        assertEquals(1.0, first.strength, eps)
+        assertEquals(BarStages.TIGHT_WIDTH, first.halfWidth, eps)
+        assertEquals(BarStages.GATHER_END_STRENGTH, first.strength, eps)
         for (t in listOf(3.05, 3.1, 3.19)) {
             val f = m.frame(t, 0.5, false)!!
             assertEquals(0.0, f.burst, 0.0)
-            assertEquals("the core only fades, it does not open", 0.08, f.halfWidth, eps)
+            assertEquals("the core only fades, it does not open", BarStages.TIGHT_WIDTH, f.halfWidth, eps)
         }
-        assertEquals(0.5, BarStages.look(m.current!!, 0.1, 0.5, false).strength, eps)
+        assertEquals(BarStages.GATHER_END_STRENGTH / 2,
+            BarStages.look(m.current!!, BarStages.DROP_SECONDS / 2, 0.5, false).strength, eps)
         assertNull(m.frame(3.2, 0.5, false))
         assertTrue(m.isRest)
     }
@@ -124,6 +138,31 @@ class BarStagesTest {
         assertEquals(Stage.Listening, m.current)
         m.pasted(3.0, false) // the old one's late paste must not light the new one
         assertEquals(Stage.Listening, m.current)
+    }
+
+    /** TalkBar's WORKING entry for a bar created mid-dictation: press then release on a resting machine. */
+    @Test
+    fun aBarCreatedWhileWritingStartsTheGatherNotTheRestingFluid() {
+        val m = BarStages.Machine()
+        m.press(5.0); m.release(5.0)
+        assertEquals(Stage.Processing, m.current)
+        val f = m.frame(5.0, 0.5, false)!!
+        assertEquals(BarStages.WIDE_WIDTH, f.halfWidth, eps)
+        assertEquals(BarStages.GATHER_START_STRENGTH, f.strength, eps)
+    }
+
+    /** TalkBar.markPasted bursts at once; the let-go to rest after it changes nothing, and a paste outside the
+     *  writing stage leaves no trace for the next dictation. */
+    @Test
+    fun aPasteBurstsAtOnceAndCarriesNothingOver() {
+        val m = BarStages.Machine()
+        m.press(0.0); m.release(1.0); m.pasted(3.0, false)
+        m.dropped(3.0, 0.5, false) // the return to rest
+        assertTrue(m.current is Stage.Pasted)
+        assertNull(m.frame(3.0 + BarStages.BURST_SECONDS, 0.5, false))
+        m.pasted(4.0, false) // a stray paste at rest
+        m.press(5.0); m.release(6.0); m.dropped(7.0, 0.5, false) // the next dictation pastes nothing
+        assertTrue(m.current is Stage.Dropped)
     }
 
     @Test
