@@ -204,7 +204,7 @@ fn app() -> Result<()> {
     std::fs::write(&wav, crate::STARTUP_WAV).context("write the startup fixture")?;
     let check = crate::startup_check_with_fallback(&mut engine, &wav, false)?;
     eprintln!("phonon: startup check passed: {}", check.polished);
-    crate::settings::record_engine(engine.device());
+    crate::settings::record_engine(&engine.route());
 
     let mut idle = format!("ready. Hold {name} to dictate");
     tray::set_status(&idle);

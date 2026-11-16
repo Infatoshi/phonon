@@ -241,6 +241,15 @@ fn info() {
     );
     println!("  correction runtime: llama.cpp {}", manifest::LLAMA_BUILD);
     println!(
+        "  compute setting:  {} (settings.json \"{}\")",
+        settings::Settings::load().compute().name(),
+        settings::COMPUTE
+    );
+    println!(
+        "  last engine:      {}",
+        settings::engine_status_in(&paths::data_root()).unwrap_or_else(|| "not started yet".into())
+    );
+    println!(
         "  speech model:     {}@{}",
         manifest::ASR_MODEL_ID,
         &manifest::ASR_MODEL_REVISION[..7]
@@ -319,8 +328,8 @@ fn selftest(wav: Option<PathBuf>, any_audio: bool, backends: Option<&str>) -> Re
     let started = std::time::Instant::now();
     let mut engine = pipeline::Engine::start(backends)?;
     println!(
-        "  correction device: {:?} (engine ready in {} ms)",
-        engine.device(),
+        "  correction path: {} (engine ready in {} ms)",
+        engine.route().describe(),
         started.elapsed().as_millis()
     );
     // as at key-down: a saturated CPU (Windows) moves the correction to one thread
@@ -342,10 +351,10 @@ fn selftest(wav: Option<PathBuf>, any_audio: bool, backends: Option<&str>) -> Re
     println!("  raw:      {:?}", result.raw);
     println!("  polished: {:?}", result.polished);
     println!(
-        "  asr {:.0} ms, correction {:.0} ms on {:?}",
+        "  asr {:.0} ms, correction {:.0} ms on {}",
         result.asr_ms,
         result.polish_ms,
-        engine.device()
+        engine.route().describe()
     );
     println!("selftest passed");
     Ok(())
@@ -389,14 +398,14 @@ pub fn startup_check_with_fallback(
 
 /// What the startup check needs from an engine (a trait so tests can use a fake).
 trait Fallback {
-    fn device(&self) -> polish::Device;
+    fn on_gpu(&self) -> bool;
     fn confirm_backend(&mut self);
     fn fall_back_to_cpu(&mut self) -> Result<()>;
 }
 
 impl Fallback for pipeline::Engine {
-    fn device(&self) -> polish::Device {
-        pipeline::Engine::device(self)
+    fn on_gpu(&self) -> bool {
+        pipeline::Engine::on_gpu(self)
     }
     fn confirm_backend(&mut self) {
         pipeline::Engine::confirm_backend(self)
@@ -417,7 +426,7 @@ fn check_with_fallback<E: Fallback, R>(
             engine.confirm_backend();
             Ok(result)
         }
-        Err(error) if engine.device() == polish::Device::Gpu => {
+        Err(error) if engine.on_gpu() => {
             eprintln!("phonon: startup check failed on the GPU ({error:#}); retrying on the CPU");
             engine.fall_back_to_cpu()?;
             check(engine)
@@ -504,17 +513,20 @@ mod tests {
 
     /// An engine whose check passes or fails per device, recording what happened.
     struct FakeEngine {
-        device: polish::Device,
+        on_gpu: bool,
         gpu_passes: bool,
         cpu_starts: bool,
         confirmed: u32,
         fallbacks: u32,
     }
 
+    const GPU: bool = true;
+    const CPU: bool = false;
+
     impl FakeEngine {
-        fn on(device: polish::Device, gpu_passes: bool) -> Self {
+        fn on(on_gpu: bool, gpu_passes: bool) -> Self {
             Self {
-                device,
+                on_gpu,
                 gpu_passes,
                 cpu_starts: true,
                 confirmed: 0,
@@ -524,8 +536,8 @@ mod tests {
     }
 
     impl Fallback for FakeEngine {
-        fn device(&self) -> polish::Device {
-            self.device
+        fn on_gpu(&self) -> bool {
+            self.on_gpu
         }
         fn confirm_backend(&mut self) {
             self.confirmed += 1;
@@ -535,23 +547,24 @@ mod tests {
             if !self.cpu_starts {
                 bail!("the CPU server did not start");
             }
-            self.device = polish::Device::Cpu;
+            self.on_gpu = CPU;
             Ok(())
         }
     }
 
-    fn fake_check(engine: &FakeEngine) -> Result<polish::Device> {
-        match engine.device {
-            polish::Device::Gpu if !engine.gpu_passes => bail!("the GPU answered wrongly"),
-            device => Ok(device),
+    /// Whether the check ran on the GPU.
+    fn fake_check(engine: &FakeEngine) -> Result<bool> {
+        if engine.on_gpu && !engine.gpu_passes {
+            bail!("the GPU answered wrongly");
         }
+        Ok(engine.on_gpu)
     }
 
     #[test]
     fn a_gpu_that_passes_the_startup_check_is_confirmed() {
-        let mut engine = FakeEngine::on(polish::Device::Gpu, true);
-        let device = check_with_fallback(&mut engine, fake_check).unwrap();
-        assert_eq!(device, polish::Device::Gpu);
+        let mut engine = FakeEngine::on(GPU, true);
+        let on_gpu = check_with_fallback(&mut engine, fake_check).unwrap();
+        assert!(on_gpu, "the check ran on the GPU");
         assert_eq!((engine.confirmed, engine.fallbacks), (1, 0));
     }
 
@@ -559,20 +572,20 @@ mod tests {
     /// (the family's earlier build stays on disk for the next start).
     #[test]
     fn a_gpu_that_fails_the_startup_check_ends_on_the_cpu() {
-        let mut engine = FakeEngine::on(polish::Device::Gpu, false);
-        let device = check_with_fallback(&mut engine, fake_check).unwrap();
-        assert_eq!(device, polish::Device::Cpu);
+        let mut engine = FakeEngine::on(GPU, false);
+        let on_gpu = check_with_fallback(&mut engine, fake_check).unwrap();
+        assert!(!on_gpu, "the check ran again on the CPU");
         assert_eq!((engine.confirmed, engine.fallbacks), (0, 1));
     }
 
     #[test]
     fn a_failing_cpu_check_is_an_error_without_a_fallback() {
-        let mut engine = FakeEngine::on(polish::Device::Cpu, true);
+        let mut engine = FakeEngine::on(CPU, true);
         let failing = |_: &FakeEngine| -> Result<()> { bail!("wrong transcript") };
         assert!(check_with_fallback(&mut engine, failing).is_err());
         assert_eq!((engine.confirmed, engine.fallbacks), (0, 0));
         // the GPU fails and the CPU server cannot start: the error surfaces
-        let mut engine = FakeEngine::on(polish::Device::Gpu, false);
+        let mut engine = FakeEngine::on(GPU, false);
         engine.cpu_starts = false;
         assert!(check_with_fallback(&mut engine, fake_check).is_err());
         assert_eq!(engine.fallbacks, 1);

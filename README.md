@@ -83,6 +83,9 @@ where Right Alt types characters) the first time that key is pressed.
 **Writing mode** in the tray menu (Windows and Linux) picks how the refiner rewrites every
 dictation: Minimal (the default, only cleans up), Casual, Formal or Prompt. It applies from
 the next dictation and is saved as `writing_mode.txt` in the data folder.
+`"compute"` in the data folder's `settings.json` (Windows and Linux) picks where correction runs from the
+next start: `auto` (the default: GPU when one is fast enough, else CPU), `cpu`, `vulkan` or `cuda`; a forced GPU
+that fails still ends on the CPU. `phonon-win.exe info` shows the setting and the path the last start took.
 
 ```
 phonon-win.exe info      # what first run downloads, and what is installed

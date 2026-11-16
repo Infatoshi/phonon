@@ -10,7 +10,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 
 use crate::asr::Recognizer;
-use crate::polish::{Corrector, Device};
+use crate::polish::{Corrector, Route};
 
 /// What one pass produced, and what each stage cost.
 #[derive(Debug, Clone)]
@@ -121,9 +121,14 @@ impl Engine {
         })
     }
 
-    /// Where the correction model runs.
-    pub fn device(&self) -> Device {
-        self.corrector.device()
+    /// Where the correction model runs, and what the start passed over.
+    pub fn route(&self) -> Route {
+        self.corrector.route()
+    }
+
+    /// Whether the correction model runs on a GPU.
+    pub fn on_gpu(&self) -> bool {
+        self.corrector.route().on_gpu()
     }
 
     /// Whether the next correction goes to the fallback server (saturated CPU).
@@ -219,6 +224,11 @@ impl Engine {
                 raw.clone()
             }
         };
+        // a dead or hung GPU server moved correction to the CPU: say so where the
+        // settings window and `info` look
+        if let Some(route) = self.corrector.take_route_change() {
+            crate::settings::record_engine(&route);
+        }
         PassResult {
             raw,
             polished,

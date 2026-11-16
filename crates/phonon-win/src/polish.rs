@@ -62,6 +62,16 @@ const GPU_STEP: Duration = Duration::from_secs(30);
 /// checks) may take this long.
 const CORRECTION_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// One correction request on a GPU that passed its checks may take this long;
+/// past it the GPU server counts as hung and correction moves to the CPU. The
+/// largest request is one sentence group: about 330 transcript tokens of prompt
+/// and at most 1.5 x 330 + 32 = 527 generated tokens. At the `MIN_GPU_DECODE`
+/// floor of 60 tokens/s that is under 9 s of decoding plus well under 2 s of GPU
+/// prefill, so 60 s leaves more than 5x headroom for a GPU that slowed down (a
+/// game sharing it) before calling it hung. The CPU keeps `CORRECTION_TIMEOUT`:
+/// a slow CPU at 4 tokens/s needs over two minutes for the same request.
+const GPU_CORRECTION_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// What is left of `deadline`, at most `cap`.
 fn left(deadline: Instant, cap: Duration) -> Duration {
     deadline.saturating_duration_since(Instant::now()).min(cap)
@@ -160,14 +170,123 @@ fn fields(value: &serde_json::Value) -> String {
     }
 }
 
-/// What the correction server computes on.
+/// The compute path the correction server runs on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComputePath {
+    /// A tuned CUDA runtime from the backend manifest, every layer offloaded:
+    /// the build's directory name and the card's name.
+    TunedCuda { build: String, device: String },
+    /// The bundled runtime's Vulkan backend, every layer offloaded: the device's
+    /// name as llama.cpp lists it, and its measured decode speed.
+    Vulkan { device: String, tokens_per_s: f64 },
+    /// llama.cpp's CPU backend; no layer or op leaves the CPU. `reason` says why
+    /// no GPU path is in use.
+    Cpu { reason: String },
+}
+
+impl ComputePath {
+    /// The path's short name, as reasons and the log use it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::TunedCuda { .. } => TUNED_CUDA,
+            Self::Vulkan { .. } => VULKAN,
+            Self::Cpu { .. } => "CPU",
+        }
+    }
+}
+
+const TUNED_CUDA: &str = "tuned CUDA";
+const VULKAN: &str = "Vulkan";
+
+/// A path the start passed over before the one in use, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skipped {
+    pub path: &'static str,
+    pub reason: String,
+}
+
+/// Where correction runs, and why each earlier path in the fallback order is not
+/// in use.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Route {
+    pub path: ComputePath,
+    pub skipped: Vec<Skipped>,
+}
+
+impl Route {
+    pub fn on_gpu(&self) -> bool {
+        !matches!(self.path, ComputePath::Cpu { .. })
+    }
+
+    /// Where correction runs, in words: "the CPU (Vulkan: no NVIDIA, AMD or Intel
+    /// GPU)". A CPU route's reason already covers what was passed over; a GPU route
+    /// lists it after the device.
+    pub fn describe(&self) -> String {
+        let place = match &self.path {
+            ComputePath::TunedCuda { build, device } => {
+                format!("{device} with the tuned CUDA build {build}")
+            }
+            ComputePath::Vulkan {
+                device,
+                tokens_per_s,
+            } => format!("{device} through Vulkan ({tokens_per_s:.0} tokens/s)"),
+            ComputePath::Cpu { reason } => return format!("the CPU ({reason})"),
+        };
+        if self.skipped.is_empty() {
+            place
+        } else {
+            format!("{place}; passed over {}", reasons(&self.skipped))
+        }
+    }
+
+    /// The status line the settings window and `info` show (`engine-status.txt`).
+    pub fn status(&self) -> String {
+        format!(
+            "Speech recognition on the CPU, correction on {}",
+            self.describe()
+        )
+    }
+}
+
+/// "tuned CUDA: none in this release; Vulkan: no NVIDIA, AMD or Intel GPU".
+fn reasons(skipped: &[Skipped]) -> String {
+    skipped
+        .iter()
+        .map(|skip| format!("{}: {}", skip.path, skip.reason))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// settings.json `compute`: which paths the start may try. `Auto` is the
+/// fallback order (tuned CUDA, Vulkan, CPU); the others force one path, and a
+/// forced GPU path that fails still ends on the CPU with the reason recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Device {
-    /// llama.cpp's CPU backend; no layer or op leaves the CPU.
+pub enum Compute {
+    Auto,
     Cpu,
-    /// A GPU, every layer offloaded: a tuned CUDA runtime from the backend
-    /// manifest, or (Windows) a discrete GPU through Vulkan.
-    Gpu,
+    Vulkan,
+    Cuda,
+}
+
+impl Compute {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Vulkan => "vulkan",
+            Self::Cuda => "cuda",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "cpu" => Some(Self::Cpu),
+            "vulkan" => Some(Self::Vulkan),
+            "cuda" => Some(Self::Cuda),
+            _ => None,
+        }
+    }
 }
 
 /// A CPU at or above this busy fraction is "saturated": ggml's threads meet at a
@@ -237,6 +356,12 @@ fn gpu_vendor_present() -> bool {
     linux_gpu_vendor_in(Path::new("/sys/class/drm"))
 }
 
+/// macOS runs this crate's tests only; its app corrects through the Mac engine.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn gpu_vendor_present() -> bool {
+    false
+}
+
 /// Whether any display adapter id ("PCI\VEN_10DE&DEV_2204&...") is from a GPU vendor.
 #[cfg(any(windows, test))]
 fn any_gpu_vendor(adapter_ids: &[String]) -> bool {
@@ -281,6 +406,19 @@ pub fn pick_device(listing: &str, kind: &str) -> Option<String> {
     })
 }
 
+/// The name the listing gives device `id` ("Vulkan0" in "  Vulkan0: NVIDIA
+/// GeForce RTX 3090 (24322 MiB, 23554 MiB free)" is "NVIDIA GeForce RTX 3090").
+fn device_name(listing: &str, id: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let (device, rest) = line.trim().split_once(':')?;
+        if device != id {
+            return None;
+        }
+        let name = rest.split(" (").next().unwrap_or(rest).trim();
+        (!name.is_empty()).then(|| name.to_string())
+    })
+}
+
 /// A GPU that decodes slower than this stays unused: a CPU gives the refiner 15-57
 /// tokens/s (laptop 4-core to 9950X3D), and an integrated GPU sharing the CPU's
 /// memory was not measured. The 3090 on Vulkan decodes about 400 (b12132, 2026-11-07).
@@ -314,13 +452,32 @@ fn decode_rate(base: &str, timeout: Duration) -> Option<f64> {
 }
 
 /// One running `llama-server`.
-struct Server {
-    child: Child,
+pub struct Server {
+    /// None only for the stand-ins the start tests use (no process at all).
+    child: Option<Child>,
     base: String,
     /// The kill-on-close job that holds the server (Windows), kept open for the
     /// life of the process.
     #[cfg(windows)]
     job: isize,
+}
+
+impl Server {
+    /// How the server's process ended, if it has.
+    fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.as_mut()?.try_wait().ok().flatten()
+    }
+
+    /// A server already running as `child` at `base` (a test's fake server).
+    #[cfg(test)]
+    fn from_child(child: Option<Child>, base: &str) -> Self {
+        Self {
+            child,
+            base: base.to_string(),
+            #[cfg(windows)]
+            job: 0,
+        }
+    }
 }
 
 /// Put the server in a job that Windows kills when its last handle closes. Phonon
@@ -435,13 +592,22 @@ fn device_listing(
 }
 
 /// Which GPU a runtime should offload to, and how to make it see that GPU.
-struct Target<'a> {
+pub struct Target<'a> {
     /// "Vulkan" or "CUDA": the device name prefix the server lists.
-    kind: &'a str,
+    pub kind: &'a str,
     /// Set on every child of this runtime (the tuned runtime's device pin).
-    env: Vec<(String, String)>,
+    pub env: Vec<(String, String)>,
     /// For a pinned CUDA device: its name; the listing must hold that device alone.
-    pinned: Option<&'a str>,
+    pub pinned: Option<&'a str>,
+}
+
+/// A server that started on a GPU, before the decode floor is applied.
+pub struct GpuStart {
+    pub server: Server,
+    /// The device's name as the runtime lists it ("NVIDIA GeForce RTX 3090").
+    pub device: String,
+    /// The faster of two measured 32-token decodes; None when neither finished.
+    pub tokens_per_s: Option<f64>,
 }
 
 /// How long a server may take to become ready and to answer its warm-up.
@@ -469,37 +635,34 @@ impl Limits {
     }
 }
 
-/// A server on the target GPU of the runtime at `server`, if it lists it, starts,
-/// and decodes fast enough, all by `deadline`. `label` names the runtime in the log.
-#[allow(clippy::too_many_arguments)]
+/// A server on the target GPU of the runtime at `server`, if it lists it and
+/// starts, all by `deadline`, with its measured decode speed; otherwise why not.
+/// The caller applies the decode floor.
 fn gpu_server(
     server: &Path,
     target: &Target,
-    label: &str,
     model: &Path,
     threads: usize,
     workdir: &Path,
     deadline: Instant,
-) -> Option<Server> {
+) -> std::result::Result<GpuStart, String> {
     let kind = target.kind;
     let budget = left(deadline, GPU_STEP);
     if budget.is_zero() {
-        eprintln!("phonon: no time left to try {label}");
-        return None;
+        return Err("no time left in the GPU budget".into());
     }
     let listing = device_listing(server, &target.env, workdir, budget).unwrap_or_default();
     if let Some(name) = target.pinned {
         if !crate::backends::listing_matches(&listing, name) {
-            eprintln!("phonon: {label} does not list the chosen {name} alone; not using it");
-            return None;
+            return Err(format!("does not list the chosen {name} alone"));
         }
     }
     let Some(gpu) = pick_device(&listing, kind) else {
-        eprintln!("phonon: {label} lists no {kind} device");
-        return None;
+        return Err(format!("lists no {kind} device"));
     };
+    let device = device_name(&listing, &gpu).unwrap_or_else(|| gpu.clone());
     let limits = Limits::gpu(deadline);
-    match Server::spawn(
+    let main = Server::spawn(
         server,
         model,
         threads,
@@ -507,33 +670,125 @@ fn gpu_server(
         &target.env,
         workdir,
         limits,
-    ) {
-        // Twice: the first Vulkan run after an install compiles the GPU's shaders
-        // (3090: 66 tokens/s cold, 300 warm).
-        Ok(main) => match [
-            decode_rate(&main.base, left(deadline, GPU_STEP)),
-            decode_rate(&main.base, left(deadline, GPU_STEP)),
-        ]
-        .into_iter()
-        .flatten()
-        .reduce(f64::max)
-        {
-            Some(rate) if rate >= MIN_GPU_DECODE => {
-                eprintln!("phonon: correction runs on {gpu} with {label} ({rate:.0} tokens/s)");
-                Some(main)
-            }
-            rate => {
-                eprintln!(
-                    "phonon: {gpu} with {label} decodes {:.0} tokens/s; not using it",
-                    rate.unwrap_or(0.0)
-                );
-                None
-            }
-        },
-        Err(error) => {
-            eprintln!("phonon: {gpu} with {label} failed ({error:#})");
-            None
-        }
+    )
+    .map_err(|error| format!("{device} did not start ({error:#})"))?;
+    // Twice: the first Vulkan run after an install compiles the GPU's shaders
+    // (3090: 66 tokens/s cold, 300 warm).
+    let tokens_per_s = [
+        decode_rate(&main.base, left(deadline, GPU_STEP)),
+        decode_rate(&main.base, left(deadline, GPU_STEP)),
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(f64::max);
+    Ok(GpuStart {
+        server: main,
+        device,
+        tokens_per_s,
+    })
+}
+
+/// A started GPU server that decodes at `floor` tokens/s or faster; otherwise why
+/// not (the server is dropped, which stops it).
+fn fast_enough(start: GpuStart, floor: f64) -> std::result::Result<GpuStart, String> {
+    match start.tokens_per_s {
+        Some(rate) if rate >= floor => Ok(start),
+        Some(rate) => Err(format!(
+            "{} decodes {rate:.0} tokens/s, under the {floor:.0} tokens/s floor",
+            start.device
+        )),
+        None => Err(format!("{} finished no speed probe", start.device)),
+    }
+}
+
+/// What `Corrector::start_with` asks of the machine: adapter detection, the tuned
+/// build, and the servers. `RealProbes` is the machine; the tests use fakes.
+pub trait Probes: Send + Sync {
+    /// Whether the machine has an NVIDIA, AMD or Intel GPU. Without one no
+    /// Vulkan device listing runs (unless `compute` forces Vulkan).
+    fn gpu_vendor(&self) -> bool;
+    /// The tuned CUDA runtime for this machine; Ok(None) when the manifest has no
+    /// build for it, Err(reason) when there is no manifest or it failed.
+    fn tuned(&self) -> std::result::Result<Option<crate::backends::Accelerated>, String>;
+    /// A server on `target`'s GPU through the runtime `server` (None: the bundled
+    /// runtime), by `deadline`.
+    fn gpu(
+        &self,
+        server: Option<&Path>,
+        target: &Target,
+        deadline: Instant,
+    ) -> std::result::Result<GpuStart, String>;
+    /// A server on the CPU; `lean`: the saturated-CPU fallback's thread count.
+    fn cpu(&self, lean: bool) -> Result<Server>;
+}
+
+/// The real machine: the installed runtime and model.
+struct RealProbes {
+    server: PathBuf,
+    model: PathBuf,
+    /// Every server runs from the CPU runtime's directory (see `server_command`).
+    workdir: PathBuf,
+    logical_cpus: usize,
+    backends: Option<String>,
+}
+
+impl RealProbes {
+    fn new(backends: Option<&str>) -> Result<Self> {
+        let (server, model) = runtime_files()?;
+        let workdir = server.parent().unwrap_or(Path::new(".")).to_path_buf();
+        Ok(Self {
+            server,
+            model,
+            workdir,
+            logical_cpus: std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(2),
+            backends: backends.map(str::to_string),
+        })
+    }
+}
+
+impl Probes for RealProbes {
+    fn gpu_vendor(&self) -> bool {
+        gpu_vendor_present()
+    }
+
+    fn tuned(&self) -> std::result::Result<Option<crate::backends::Accelerated>, String> {
+        let Some(url) = &self.backends else {
+            return Err("none in this release".into());
+        };
+        let started = Instant::now();
+        let prepared = crate::backends::prepare_within(url, crate::backends::PREPARE_BUDGET);
+        eprintln!(
+            "phonon: tuned GPU runtime prepared in {} ms",
+            started.elapsed().as_millis()
+        );
+        prepared.map_err(|error| format!("unavailable ({error:#})"))
+    }
+
+    fn gpu(
+        &self,
+        server: Option<&Path>,
+        target: &Target,
+        deadline: Instant,
+    ) -> std::result::Result<GpuStart, String> {
+        gpu_server(
+            server.unwrap_or(&self.server),
+            target,
+            &self.model,
+            thread_count(self.logical_cpus),
+            &self.workdir,
+            deadline,
+        )
+    }
+
+    fn cpu(&self, lean: bool) -> Result<Server> {
+        let threads = if lean {
+            lean_threads(self.logical_cpus)
+        } else {
+            thread_count(self.logical_cpus)
+        };
+        Server::cpu(&self.server, &self.model, threads)
     }
 }
 
@@ -670,7 +925,7 @@ impl Server {
             child.stderr.take();
         }
         let server = Self {
-            child,
+            child: Some(child),
             base,
             #[cfg(windows)]
             job,
@@ -685,8 +940,10 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         #[cfg(windows)]
         if self.job != 0 {
             unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job as _) };
@@ -711,12 +968,14 @@ fn tokenize(base: &str, text: &str) -> Result<Vec<serde_json::Value>> {
 }
 
 /// Correct one transcript on the server at `base`, with the personal dictionary
-/// when there is one (`crate::dictionary`; an empty one changes nothing).
+/// when there is one (`crate::dictionary`; an empty one changes nothing). Each
+/// request's completion may take `timeout`.
 fn correct_at(
     base: &str,
     raw: &str,
     mode: &str,
     dictionary: Option<&crate::dictionary::DictionaryFile>,
+    timeout: Duration,
 ) -> Result<String> {
     if raw.trim().is_empty() {
         return Ok(String::new());
@@ -733,7 +992,7 @@ fn correct_at(
     let mut parts = Vec::new();
     let mut guard_fired = false;
     for group in sentence_groups(input, GROUP_WORDS) {
-        let (text, fired) = correct_one(base, &group, mode, vocabulary)?;
+        let (text, fired) = correct_one_within(base, &group, mode, vocabulary, timeout)?;
         guard_fired |= fired;
         parts.push(text);
     }
@@ -837,12 +1096,7 @@ fn sentence_groups(raw: &str, max_words: usize) -> Vec<String> {
 }
 
 /// One correction request, with the length guard (true when it kept the raw
-/// text); no layout.
-fn correct_one(base: &str, raw: &str, mode: &str, vocabulary: &[String]) -> Result<(String, bool)> {
-    correct_one_within(base, raw, mode, vocabulary, CORRECTION_TIMEOUT)
-}
-
-/// `correct_one` with the completion request bounded by `timeout`.
+/// text); no layout. The completion request is bounded by `timeout`.
 fn correct_one_within(
     base: &str,
     raw: &str,
@@ -876,19 +1130,42 @@ fn correct_one_within(
     Ok((text, fired))
 }
 
-/// The correction model, resident: a server on the GPU when the machine has a
-/// discrete one (Windows), otherwise on the CPU, plus (Windows, CPU only) a
-/// small fallback server (`LEAN_THREADS` threads) for dictations that start while
-/// every core is busy.
+/// The correction model, resident: a server on the first path of the fallback
+/// order that works (tuned CUDA, Vulkan, CPU; see `start_with`), plus (Windows,
+/// CPU only) a small fallback server (`LEAN_THREADS` threads) for dictations that
+/// start while every core is busy. A GPU server that dies or hangs mid-session
+/// is replaced by a CPU one (`correct_with`).
 pub struct Corrector {
-    main: Server,
-    device: Device,
-    server: PathBuf,
-    model: PathBuf,
+    main: Mutex<Server>,
+    route: Mutex<Route>,
+    /// Set when `route` changed after the start (a mid-session fallback), until
+    /// `take_route_change` reports it.
+    route_changed: AtomicBool,
+    probes: Arc<dyn Probes>,
+    /// A correction request on a GPU may take this long (`GPU_CORRECTION_TIMEOUT`;
+    /// shorter in tests).
+    gpu_timeout: Duration,
     lean: Arc<Mutex<Lean>>,
     use_lean: AtomicBool,
     /// The tuned build in use, until the startup check confirms it.
     pending: Option<crate::backends::Installed>,
+}
+
+/// A lock that a panicked holder did not poison for good: the data (a server
+/// handle, a route) stays usable.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether the server at `base` answers its health check within 5 s.
+fn healthy(base: &str) -> bool {
+    http::agent()
+        .get(&format!("{base}/health"))
+        .timeout(Duration::from_secs(5))
+        .call()
+        .is_ok()
 }
 
 /// The fallback server's state. It starts on a background thread: on the QA VM
@@ -902,30 +1179,37 @@ enum Lean {
 }
 
 impl Corrector {
-    /// Start the server and wait until the model answers. Call after
-    /// `fetch::ensure_all`.
-    ///
-    /// The fallback order: a tuned GPU runtime from the backend manifest at
-    /// `backends` (when given and this machine has a build), then any Vulkan GPU
-    /// (Windows and Linux), then the CPU. Each GPU path has to list its device, start, and
-    /// decode at `MIN_GPU_DECODE` or faster before it is used.
+    /// Start the server and wait until the model answers, on the path the
+    /// `compute` setting allows. Call after `fetch::ensure_all`. `backends` is the
+    /// tuned-runtime manifest URL (see `backends::DEFAULT_MANIFEST`).
     pub fn start(backends: Option<&str>) -> Result<Self> {
-        let (server, model) = runtime_files()?;
-        let threads = thread_count(
-            std::thread::available_parallelism()
-                .map(|count| count.get())
-                .unwrap_or(2),
-        );
-        // every server runs from the CPU runtime's directory (see `server_command`)
-        let workdir = server.parent().unwrap_or(Path::new(".")).to_path_buf();
-        if let Some(url) = backends {
-            let started = Instant::now();
-            let prepared = crate::backends::prepare_within(url, crate::backends::PREPARE_BUDGET);
-            eprintln!(
-                "phonon: tuned GPU runtime prepared in {} ms",
-                started.elapsed().as_millis()
-            );
-            match prepared {
+        let probes = RealProbes::new(backends)?;
+        let compute = crate::settings::Settings::load().compute();
+        Self::start_with(compute, Arc::new(probes))
+    }
+
+    /// `start` with the machine behind `probes`.
+    ///
+    /// The fallback order under `Compute::Auto`: a tuned CUDA runtime from the
+    /// backend manifest (when there is one and it has a build for this machine),
+    /// then a Vulkan GPU (only when an NVIDIA, AMD or Intel adapter is present),
+    /// then the CPU. Each GPU path has to list its device, start, and decode at
+    /// `MIN_GPU_DECODE` or faster before it is used. A forced path (`cuda`,
+    /// `vulkan`) skips the vendor check and the floor (any measured speed will do)
+    /// and still ends on the CPU when it fails; `cpu` tries no GPU at all. The CPU
+    /// server failing to start is the only error.
+    pub fn start_with(compute: Compute, probes: Arc<dyn Probes>) -> Result<Self> {
+        let floor = if compute == Compute::Auto {
+            MIN_GPU_DECODE
+        } else {
+            f64::MIN_POSITIVE
+        };
+        let forced =
+            |path: &str| format!("compute is set to {} ({path} not tried)", compute.name());
+        let mut skipped = Vec::new();
+
+        match compute {
+            Compute::Auto | Compute::Cuda => match probes.tuned() {
                 Ok(Some(tuned)) => {
                     let target = Target {
                         kind: "CUDA",
@@ -933,76 +1217,164 @@ impl Corrector {
                         pinned: Some(&tuned.device.name),
                     };
                     let deadline = Instant::now() + GPU_BUDGET;
+                    let mut failures = Vec::new();
                     // the manifest's build first, then earlier builds still on disk
                     for candidate in &tuned.servers {
-                        let label = candidate
+                        let build = candidate
                             .parent()
                             .and_then(|dir| dir.file_name())
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_else(|| tuned.id.clone());
-                        if let Some(main) = gpu_server(
-                            candidate, &target, &label, &model, threads, &workdir, deadline,
-                        ) {
-                            let mut corrector = Self::new(main, Device::Gpu, server, model);
-                            corrector.pending =
-                                candidate.parent().map(|dir| crate::backends::Installed {
-                                    id: tuned.id.clone(),
-                                    dir: dir.to_path_buf(),
-                                });
-                            return Ok(corrector);
+                        match probes
+                            .gpu(Some(candidate), &target, deadline)
+                            .and_then(|start| fast_enough(start, floor))
+                        {
+                            Ok(start) => {
+                                let route = Route {
+                                    path: ComputePath::TunedCuda {
+                                        build,
+                                        device: tuned.device.name.clone(),
+                                    },
+                                    skipped,
+                                };
+                                eprintln!(
+                                    "phonon: correction runs on {} ({:.0} tokens/s)",
+                                    route.describe(),
+                                    start.tokens_per_s.unwrap_or(0.0)
+                                );
+                                let mut corrector = Self::new(start.server, route, probes);
+                                corrector.pending =
+                                    candidate.parent().map(|dir| crate::backends::Installed {
+                                        id: tuned.id.clone(),
+                                        dir: dir.to_path_buf(),
+                                    });
+                                return Ok(corrector);
+                            }
+                            Err(reason) => {
+                                eprintln!("phonon: tuned CUDA build {build}: {reason}");
+                                failures.push(format!("{build} {reason}"));
+                            }
                         }
                     }
+                    let reason = if failures.is_empty() {
+                        "no build on disk".to_string()
+                    } else {
+                        failures.join(", ")
+                    };
+                    skipped.push(Skipped {
+                        path: TUNED_CUDA,
+                        reason,
+                    });
                 }
-                Ok(None) => eprintln!("phonon: no tuned GPU runtime for this machine"),
-                Err(error) => eprintln!("phonon: tuned GPU runtime unavailable ({error:#})"),
-            }
+                Ok(None) => skipped.push(Skipped {
+                    path: TUNED_CUDA,
+                    reason: "no build for this machine".into(),
+                }),
+                Err(reason) => skipped.push(Skipped {
+                    path: TUNED_CUDA,
+                    reason,
+                }),
+            },
+            Compute::Vulkan => skipped.push(Skipped {
+                path: TUNED_CUDA,
+                reason: forced(TUNED_CUDA),
+            }),
+            Compute::Cpu => {}
         }
-        #[cfg(any(windows, target_os = "linux"))]
-        {
-            if gpu_vendor_present() {
-                let vulkan = Target {
-                    kind: "Vulkan",
-                    env: Vec::new(),
-                    pinned: None,
-                };
-                let deadline = Instant::now() + GPU_BUDGET;
-                if let Some(main) = gpu_server(
-                    &server, &vulkan, "vulkan", &model, threads, &workdir, deadline,
-                ) {
-                    return Ok(Self::new(main, Device::Gpu, server, model));
+
+        match compute {
+            Compute::Auto | Compute::Vulkan => {
+                if compute == Compute::Vulkan || probes.gpu_vendor() {
+                    let target = Target {
+                        kind: "Vulkan",
+                        env: Vec::new(),
+                        pinned: None,
+                    };
+                    let deadline = Instant::now() + GPU_BUDGET;
+                    match probes
+                        .gpu(None, &target, deadline)
+                        .and_then(|start| fast_enough(start, floor))
+                    {
+                        Ok(start) => {
+                            let route = Route {
+                                path: ComputePath::Vulkan {
+                                    device: start.device.clone(),
+                                    tokens_per_s: start.tokens_per_s.unwrap_or(0.0),
+                                },
+                                skipped,
+                            };
+                            eprintln!("phonon: correction runs on {}", route.describe());
+                            return Ok(Self::new(start.server, route, probes));
+                        }
+                        Err(reason) => {
+                            eprintln!("phonon: Vulkan: {reason}");
+                            skipped.push(Skipped {
+                                path: VULKAN,
+                                reason,
+                            });
+                        }
+                    }
+                } else {
+                    skipped.push(Skipped {
+                        path: VULKAN,
+                        reason: "no NVIDIA, AMD or Intel GPU".into(),
+                    });
                 }
-            } else {
-                eprintln!(
-                    "phonon: no NVIDIA, AMD or Intel display adapter; not listing Vulkan devices"
-                );
             }
+            Compute::Cuda => skipped.push(Skipped {
+                path: VULKAN,
+                reason: forced(VULKAN),
+            }),
+            Compute::Cpu => {}
         }
-        let main = Server::cpu(&server, &model, threads)?;
-        eprintln!("phonon: correction runs on the CPU");
-        Ok(Self::new(main, Device::Cpu, server, model))
+
+        let reason = if compute == Compute::Cpu {
+            "compute is set to cpu".to_string()
+        } else {
+            reasons(&skipped)
+        };
+        let main = probes.cpu(false)?;
+        let route = Route {
+            path: ComputePath::Cpu { reason },
+            skipped,
+        };
+        eprintln!("phonon: correction runs on {}", route.describe());
+        Ok(Self::new(main, route, probes))
     }
 
-    fn new(main: Server, device: Device, server: PathBuf, model: PathBuf) -> Self {
+    fn new(main: Server, route: Route, probes: Arc<dyn Probes>) -> Self {
         Self {
-            main,
-            device,
-            server,
-            model,
+            main: Mutex::new(main),
+            route: Mutex::new(route),
+            route_changed: AtomicBool::new(false),
+            probes,
+            gpu_timeout: GPU_CORRECTION_TIMEOUT,
             lean: Arc::new(Mutex::new(Lean::Absent)),
             use_lean: AtomicBool::new(false),
             pending: None,
         }
     }
 
-    /// Where the correction model runs.
-    pub fn device(&self) -> Device {
-        self.device
+    /// Where the correction model runs, and what the start passed over.
+    pub fn route(&self) -> Route {
+        lock(&self.route).clone()
+    }
+
+    fn on_gpu(&self) -> bool {
+        lock(&self.route).on_gpu()
+    }
+
+    /// The route, once after each mid-session change (for the status file).
+    pub fn take_route_change(&self) -> Option<Route> {
+        self.route_changed
+            .swap(false, Ordering::AcqRel)
+            .then(|| self.route())
     }
 
     /// The startup check passed: a tuned build in use becomes the family's only
     /// build on disk (earlier ones were kept in case this one failed).
     pub fn confirm(&mut self) {
-        if self.device == Device::Gpu {
+        if self.on_gpu() {
             if let Some(installed) = self.pending.take() {
                 installed.confirm();
             }
@@ -1012,15 +1384,46 @@ impl Corrector {
     /// Move from the GPU to the CPU, after the GPU gave a wrong answer. Earlier
     /// tuned builds stay on disk.
     pub fn fall_back_to_cpu(&mut self) -> Result<()> {
-        let threads = thread_count(
-            std::thread::available_parallelism()
-                .map(|count| count.get())
-                .unwrap_or(2),
-        );
-        self.main = Server::cpu(&self.server, &self.model, threads)?;
-        self.device = Device::Cpu;
         self.pending = None;
-        Ok(())
+        self.move_to_cpu("failed the startup check").map(|_| ())
+    }
+
+    /// Replace the main server with a CPU one; the route becomes the CPU with
+    /// `why` (said of the path that was in use) as the reason.
+    fn move_to_cpu(&self, why: &str) -> Result<Route> {
+        let server = self.probes.cpu(false)?;
+        // the old server (dropped here) is stopped
+        *lock(&self.main) = server;
+        let mut route = lock(&self.route);
+        let reason = format!("{} {why}", route.path.name());
+        route.path = ComputePath::Cpu { reason };
+        eprintln!("phonon: correction moved to {}", route.describe());
+        Ok(route.clone())
+    }
+
+    /// After a correction on the main server failed `elapsed` into it: why that
+    /// server cannot be used any more, if it cannot. Its process exited (a GPU
+    /// reset, a driver update, a crash), or, on a GPU, it ran out the GPU timeout
+    /// or stops answering its health check. A server that answered with an error
+    /// (a bad request) stays.
+    fn main_is_gone(&self, elapsed: Duration) -> Option<String> {
+        let base = {
+            let mut main = lock(&self.main);
+            if let Some(status) = main.exited() {
+                return Some(format!("server exited mid-session ({status})"));
+            }
+            main.base.clone()
+        };
+        if !self.on_gpu() {
+            return None;
+        }
+        if elapsed >= self.gpu_timeout {
+            return Some(format!(
+                "server did not answer within {} s",
+                self.gpu_timeout.as_secs()
+            ));
+        }
+        (!healthy(&base)).then(|| "server stopped answering mid-session".to_string())
     }
 
     /// Call while idle and at key-down with the machine's busy fraction. The first
@@ -1030,7 +1433,7 @@ impl Corrector {
     /// dictation can use it. Windows only: Linux's scheduler degrades gracefully
     /// (QA VM, all 8 vCPUs busy: 1.9x slower, no stall).
     pub fn warm(&self, busy: Option<f64>) -> bool {
-        if self.device != Device::Cpu || !cfg!(windows) {
+        if self.on_gpu() || !cfg!(windows) {
             return false;
         }
         if !busy.is_some_and(|busy| busy >= SATURATED) {
@@ -1044,7 +1447,7 @@ impl Corrector {
     /// first-busy-moment start in `warm` left that dictation waiting for it
     /// (W2, Windows 11 VM, 2026-11-10: ready 8.1 s and 25.4 s after the load began).
     pub fn start_lean(&self) {
-        if self.device == Device::Cpu && cfg!(windows) {
+        if !self.on_gpu() && cfg!(windows) {
             self.spawn_lean();
         }
     }
@@ -1057,28 +1460,21 @@ impl Corrector {
         };
         if matches!(*lean, Lean::Absent) {
             *lean = Lean::Starting;
-            let (slot, server, model) = (
-                Arc::clone(&self.lean),
-                self.server.clone(),
-                self.model.clone(),
-            );
-            let threads = lean_threads(
-                std::thread::available_parallelism()
-                    .map(|count| count.get())
-                    .unwrap_or(2),
-            );
+            let (slot, probes) = (Arc::clone(&self.lean), Arc::clone(&self.probes));
             std::thread::spawn(move || {
                 let started = Instant::now();
-                let next = match Server::cpu(&server, &model, threads) {
+                let next = match probes.cpu(true) {
                     Ok(server) => {
                         eprintln!(
-                            "phonon: {threads}-thread corrector ready in {} ms",
+                            "phonon: {LEAN_THREADS}-thread corrector ready in {} ms",
                             started.elapsed().as_millis()
                         );
                         Lean::Ready(server)
                     }
                     Err(error) => {
-                        eprintln!("phonon: {threads}-thread corrector did not start: {error:#}");
+                        eprintln!(
+                            "phonon: {LEAN_THREADS}-thread corrector did not start: {error:#}"
+                        );
                         Lean::Failed
                     }
                 };
@@ -1117,7 +1513,7 @@ impl Corrector {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        self.main.base.clone()
+        lock(&self.main).base.clone()
     }
 
     /// Correct one transcript in the default writing mode.
@@ -1127,7 +1523,7 @@ impl Corrector {
 
     /// Correct one transcript in a writing mode (minimal, casual, formal, prompt).
     pub fn correct_in(&self, raw: &str, mode: &str) -> Result<String> {
-        correct_at(&self.base(), raw, mode, None)
+        self.correct_recovering(raw, mode, None)
     }
 
     /// `correct_in` with the personal dictionary (a dictation).
@@ -1137,7 +1533,46 @@ impl Corrector {
         mode: &str,
         dictionary: &crate::dictionary::DictionaryFile,
     ) -> Result<String> {
-        correct_at(&self.base(), raw, mode, Some(dictionary))
+        self.correct_recovering(raw, mode, Some(dictionary))
+    }
+
+    /// One correction. When it fails because the main server is gone
+    /// (`main_is_gone`: exited, or a GPU server that hangs), correction moves to a
+    /// new CPU server and this correction is tried once more there; without that,
+    /// every later dictation would insert the raw transcript until a restart.
+    fn correct_recovering(
+        &self,
+        raw: &str,
+        mode: &str,
+        dictionary: Option<&crate::dictionary::DictionaryFile>,
+    ) -> Result<String> {
+        let lean = self.lean();
+        let base = self.base();
+        let timeout = if !lean && self.on_gpu() {
+            self.gpu_timeout
+        } else {
+            CORRECTION_TIMEOUT
+        };
+        let started = Instant::now();
+        let error = match correct_at(&base, raw, mode, dictionary, timeout) {
+            Ok(text) => return Ok(text),
+            Err(error) => error,
+        };
+        // the one-thread fallback server is the CPU already; its failure is the error
+        if lean {
+            return Err(error);
+        }
+        let Some(why) = self.main_is_gone(started.elapsed()) else {
+            return Err(error);
+        };
+        eprintln!("phonon: correction failed ({error:#}); the correction {why}");
+        if let Err(restart) = self.move_to_cpu(&why) {
+            return Err(error.context(format!("the CPU server did not start: {restart:#}")));
+        }
+        self.route_changed.store(true, Ordering::Release);
+        // on Windows a CPU route gets its one-thread fallback for saturated moments
+        self.start_lean();
+        correct_at(&self.base(), raw, mode, dictionary, CORRECTION_TIMEOUT)
     }
 }
 
@@ -1324,6 +1759,12 @@ mod tests {
         let listing = "load_backend: loaded Vulkan backend from ggml-vulkan.dll\n\
             Available devices:\n  Vulkan0: NVIDIA GeForce RTX 3090 (24322 MiB, 23554 MiB free)\n";
         assert_eq!(pick_device(listing, "Vulkan").as_deref(), Some("Vulkan0"));
+        assert_eq!(
+            device_name(listing, "Vulkan0").as_deref(),
+            Some("NVIDIA GeForce RTX 3090")
+        );
+        assert_eq!(device_name(listing, "Vulkan1"), None);
+        assert_eq!(device_name("  Vulkan0:  ", "Vulkan0"), None);
         let two = "Available devices:\n  Vulkan1: AMD Radeon RX 7600 (8176 MiB, 8000 MiB free)\n";
         assert_eq!(pick_device(two, "Vulkan").as_deref(), Some("Vulkan1"));
         // no Vulkan driver (the QA VM): the CPU
@@ -1422,16 +1863,8 @@ mod tests {
             let server = fake_server(&dir, listing, serve);
             let started = Instant::now();
             let deadline = started + Duration::from_secs(3);
-            let main = gpu_server(
-                &server,
-                &target,
-                name,
-                &dir.join("model.gguf"),
-                1,
-                &dir,
-                deadline,
-            );
-            assert!(main.is_none(), "{name}");
+            let main = gpu_server(&server, &target, &dir.join("model.gguf"), 1, &dir, deadline);
+            assert!(main.is_err(), "{name}");
             assert!(
                 started.elapsed() < Duration::from_secs(10),
                 "{name} took {:?}",
@@ -1441,9 +1874,484 @@ mod tests {
         // no time left: nothing is started at all
         let server = fake_server(&root.join("late"), rtx3090, "exit 1");
         let started = Instant::now();
-        assert!(gpu_server(&server, &target, "late", &root.join("m"), 1, &root, started).is_none());
+        let late = gpu_server(&server, &target, &root.join("m"), 1, &root, started);
+        assert_eq!(
+            late.err().as_deref(),
+            Some("no time left in the GPU budget")
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- the fallback order (`Corrector::start_with`), against a fake machine ----
+
+    /// What the fake machine does for each probe; every call is recorded.
+    struct FakeMachine {
+        vendor: bool,
+        /// None: no manifest in this release; Some(None): no build for this
+        /// machine; Some(Some(result)): a build whose server gives `result`.
+        tuned: Option<Option<std::result::Result<f64, String>>>,
+        vulkan: std::result::Result<f64, String>,
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl FakeMachine {
+        fn new(
+            vendor: bool,
+            tuned: Option<Option<std::result::Result<f64, String>>>,
+            vulkan: std::result::Result<f64, String>,
+        ) -> Self {
+            Self {
+                vendor,
+                tuned,
+                vulkan,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn called(&self, what: &'static str) {
+            lock(&self.calls).push(what);
+        }
+    }
+
+    /// A stand-in server: no process, an address nothing answers on.
+    fn no_server() -> Server {
+        Server::from_child(None, "http://127.0.0.1:9")
+    }
+
+    impl Probes for FakeMachine {
+        fn gpu_vendor(&self) -> bool {
+            self.called("vendor");
+            self.vendor
+        }
+
+        fn tuned(&self) -> std::result::Result<Option<crate::backends::Accelerated>, String> {
+            self.called("tuned");
+            match &self.tuned {
+                None => Err("none in this release".into()),
+                Some(None) => Ok(None),
+                Some(Some(_)) => Ok(Some(crate::backends::Accelerated {
+                    id: "cuda-sm86".into(),
+                    servers: vec![PathBuf::from("backends")
+                        .join("cuda-sm86-b12132")
+                        .join("llama-server")],
+                    device: crate::backends::CudaDevice {
+                        uuid: "GPU-test".into(),
+                        name: "NVIDIA GeForce RTX 3090".into(),
+                        cc: (8, 6),
+                        pci: "0000:01:00.0".into(),
+                    },
+                })),
+            }
+        }
+
+        fn gpu(
+            &self,
+            server: Option<&Path>,
+            target: &Target,
+            _deadline: Instant,
+        ) -> std::result::Result<GpuStart, String> {
+            let result = match (target.kind, server) {
+                ("CUDA", Some(_)) => {
+                    self.called("cuda");
+                    self.tuned.clone().flatten().expect("a tuned build")
+                }
+                ("Vulkan", None) => {
+                    self.called("vulkan");
+                    self.vulkan.clone()
+                }
+                other => panic!("unexpected GPU probe {other:?}"),
+            };
+            result.map(|rate| GpuStart {
+                server: no_server(),
+                device: "NVIDIA GeForce RTX 3090".into(),
+                tokens_per_s: Some(rate),
+            })
+        }
+
+        fn cpu(&self, _lean: bool) -> Result<Server> {
+            self.called("cpu");
+            Ok(no_server())
+        }
+    }
+
+    #[test]
+    fn the_start_takes_the_first_path_that_works_and_says_which() {
+        let no_listing = || Err::<f64, String>("lists no Vulkan device".into());
+        struct Case {
+            name: &'static str,
+            compute: Compute,
+            machine: FakeMachine,
+            calls: &'static [&'static str],
+            status: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "tuned ok",
+                compute: Compute::Auto,
+                machine: FakeMachine::new(true, Some(Some(Ok(250.0))), Ok(400.0)),
+                calls: &["tuned", "cuda"],
+                status: "Speech recognition on the CPU, correction on NVIDIA GeForce RTX 3090 \
+                         with the tuned CUDA build cuda-sm86-b12132",
+            },
+            Case {
+                name: "no tuned build, Vulkan ok",
+                compute: Compute::Auto,
+                machine: FakeMachine::new(true, Some(None), Ok(412.4)),
+                calls: &["tuned", "vendor", "vulkan"],
+                status: "Speech recognition on the CPU, correction on NVIDIA GeForce RTX 3090 \
+                         through Vulkan (412 tokens/s); passed over tuned CUDA: no build for \
+                         this machine",
+            },
+            Case {
+                name: "tuned fails, Vulkan under the floor",
+                compute: Compute::Auto,
+                machine: FakeMachine::new(
+                    true,
+                    Some(Some(Err("lists no CUDA device".into()))),
+                    Ok(41.0),
+                ),
+                calls: &["tuned", "cuda", "vendor", "vulkan", "cpu"],
+                status: "Speech recognition on the CPU, correction on the CPU (tuned CUDA: \
+                         cuda-sm86-b12132 lists no CUDA device; Vulkan: NVIDIA GeForce RTX \
+                         3090 decodes 41 tokens/s, under the 60 tokens/s floor)",
+            },
+            Case {
+                name: "no GPU vendor, so no device listing",
+                compute: Compute::Auto,
+                machine: FakeMachine::new(false, None, Ok(400.0)),
+                calls: &["tuned", "vendor", "cpu"],
+                status: "Speech recognition on the CPU, correction on the CPU (tuned CUDA: none \
+                         in this release; Vulkan: no NVIDIA, AMD or Intel GPU)",
+            },
+            Case {
+                name: "forced cpu",
+                compute: Compute::Cpu,
+                machine: FakeMachine::new(true, Some(Some(Ok(250.0))), Ok(400.0)),
+                calls: &["cpu"],
+                status: "Speech recognition on the CPU, correction on the CPU (compute is set \
+                         to cpu)",
+            },
+            Case {
+                name: "forced vulkan that fails ends on the CPU",
+                compute: Compute::Vulkan,
+                machine: FakeMachine::new(false, Some(Some(Ok(250.0))), no_listing()),
+                calls: &["vulkan", "cpu"],
+                status: "Speech recognition on the CPU, correction on the CPU (tuned CUDA: \
+                         compute is set to vulkan (tuned CUDA not tried); Vulkan: lists no \
+                         Vulkan device)",
+            },
+            Case {
+                name: "forced vulkan below the floor is still used",
+                compute: Compute::Vulkan,
+                machine: FakeMachine::new(false, None, Ok(20.0)),
+                calls: &["vulkan"],
+                status: "Speech recognition on the CPU, correction on NVIDIA GeForce RTX 3090 \
+                         through Vulkan (20 tokens/s); passed over tuned CUDA: compute is set \
+                         to vulkan (tuned CUDA not tried)",
+            },
+            Case {
+                name: "forced cuda without a manifest ends on the CPU",
+                compute: Compute::Cuda,
+                machine: FakeMachine::new(true, None, Ok(400.0)),
+                calls: &["tuned", "cpu"],
+                status: "Speech recognition on the CPU, correction on the CPU (tuned CUDA: none \
+                         in this release; Vulkan: compute is set to cuda (Vulkan not tried))",
+            },
+        ];
+        for case in cases {
+            let machine = Arc::new(case.machine);
+            let probes: Arc<dyn Probes> = machine.clone();
+            let corrector = Corrector::start_with(case.compute, probes).expect(case.name);
+            let route = corrector.route();
+            assert_eq!(route.status(), case.status, "{}", case.name);
+            assert_eq!(*lock(&machine.calls), case.calls, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn the_named_path_carries_its_details() {
+        let machine = Arc::new(FakeMachine::new(true, Some(Some(Ok(250.0))), Ok(400.0)));
+        let corrector = Corrector::start_with(Compute::Auto, machine).unwrap();
+        assert_eq!(
+            corrector.route(),
+            Route {
+                path: ComputePath::TunedCuda {
+                    build: "cuda-sm86-b12132".into(),
+                    device: "NVIDIA GeForce RTX 3090".into(),
+                },
+                skipped: Vec::new(),
+            }
+        );
+        assert!(corrector.pending.is_some(), "the build waits for the check");
+        let machine = Arc::new(FakeMachine::new(false, Some(None), Ok(400.0)));
+        let corrector = Corrector::start_with(Compute::Auto, machine).unwrap();
+        assert_eq!(
+            corrector.route().skipped,
+            vec![
+                Skipped {
+                    path: TUNED_CUDA,
+                    reason: "no build for this machine".into()
+                },
+                Skipped {
+                    path: VULKAN,
+                    reason: "no NVIDIA, AMD or Intel GPU".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gpu_that_fails_the_startup_check_moves_to_the_cpu_and_says_so() {
+        let machine = Arc::new(FakeMachine::new(true, Some(None), Ok(400.0)));
+        let mut corrector = Corrector::start_with(Compute::Auto, machine).unwrap();
+        assert!(corrector.route().on_gpu());
+        corrector.fall_back_to_cpu().unwrap();
+        let route = corrector.route();
+        assert!(!route.on_gpu());
+        assert_eq!(
+            route.status(),
+            "Speech recognition on the CPU, correction on the CPU (Vulkan failed the startup check)"
+        );
+        // the startup path writes the status itself; no mid-session change is pending
+        assert!(corrector.take_route_change().is_none());
+    }
+
+    #[test]
+    fn the_compute_setting_parses() {
+        for compute in [Compute::Auto, Compute::Cpu, Compute::Vulkan, Compute::Cuda] {
+            assert_eq!(Compute::parse(compute.name()), Some(compute));
+        }
+        assert_eq!(Compute::parse(" Vulkan\n"), Some(Compute::Vulkan));
+        assert_eq!(Compute::parse("gpu"), None);
+    }
+
+    // ---- mid-session recovery, against a fake llama-server process ----
+
+    /// Set on the test binary re-run as a fake llama-server: "port,completions,after"
+    /// where `after` ("exit" or "hang") is what happens once it has answered
+    /// `completions` completion requests.
+    const FAKE_SERVER: &str = "PHONON_TEST_FAKE_LLAMA_SERVER";
+
+    /// The fake llama-server: this test binary, run again with `FAKE_SERVER` set,
+    /// so the same fake runs on Windows, Linux and macOS. It answers /health,
+    /// /tokenize and /completion, one connection at a time. Without `FAKE_SERVER`
+    /// (`cargo test -- --ignored`) it returns at once.
+    #[test]
+    #[ignore = "a fake llama-server process for the recovery tests"]
+    fn fake_llama_server() {
+        use std::io::{BufRead, BufReader, Write};
+        let Ok(spec) = std::env::var(FAKE_SERVER) else {
+            return;
+        };
+        let parts: Vec<&str> = spec.split(',').collect();
+        let port: u16 = parts[0].parse().unwrap();
+        let completions: u32 = parts[1].parse().unwrap();
+        let after = parts[2].to_string();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let mut served = 0;
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let mut reader = BufReader::new(stream);
+            let mut request = String::new();
+            if reader.read_line(&mut request).is_err() {
+                continue;
+            }
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = std::io::Read::read_exact(&mut reader, &mut body);
+            let path = request.split_whitespace().nth(1).unwrap_or("");
+            let reply = match path {
+                "/tokenize" => r#"{"tokens":[1,2,3]}"#.to_string(),
+                "/completion" => {
+                    if served >= completions {
+                        if after == "hang" {
+                            std::thread::sleep(Duration::from_secs(3600));
+                        }
+                        std::process::exit(3);
+                    }
+                    served += 1;
+                    r#"{"content":"Hello there.","timings":{"predicted_per_second":400.0}}"#
+                        .to_string()
+                }
+                _ => r#"{"status":"ok"}"#.to_string(),
+            };
+            let mut stream = reader.into_inner();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = stream.flush();
+            if path == "/completion" && served >= completions && after == "exit" {
+                std::process::exit(3);
+            }
+        }
+    }
+
+    /// Start the fake llama-server and wait until it answers.
+    fn fake_process(completions: u32, after: &str) -> Server {
+        let port = free_port().unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "polish::tests::fake_llama_server",
+                "--ignored",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(FAKE_SERVER, format!("{port},{completions},{after}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let server = Server::from_child(Some(child), &format!("http://127.0.0.1:{port}"));
+        let started = Instant::now();
+        while !healthy(&server.base) {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the fake server did not start"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        server
+    }
+
+    /// A machine whose Vulkan GPU server is a fake process that, after
+    /// `completions` corrections, exits or hangs; its CPU server keeps answering.
+    struct FlakyGpu {
+        completions: u32,
+        after: &'static str,
+        cpu_starts: Mutex<u32>,
+    }
+
+    impl Probes for FlakyGpu {
+        fn gpu_vendor(&self) -> bool {
+            true
+        }
+        fn tuned(&self) -> std::result::Result<Option<crate::backends::Accelerated>, String> {
+            Ok(None)
+        }
+        fn gpu(
+            &self,
+            _server: Option<&Path>,
+            _target: &Target,
+            _deadline: Instant,
+        ) -> std::result::Result<GpuStart, String> {
+            Ok(GpuStart {
+                server: fake_process(self.completions, self.after),
+                device: "Fake GPU".into(),
+                tokens_per_s: Some(400.0),
+            })
+        }
+        fn cpu(&self, lean: bool) -> Result<Server> {
+            // Windows also starts the one-thread server once on the CPU; not counted
+            if !lean {
+                *lock(&self.cpu_starts) += 1;
+            }
+            Ok(fake_process(u32::MAX, "exit"))
+        }
+    }
+
+    /// The GPU server dies after a good start (a driver update, a GPU reset): the
+    /// next correction moves to the CPU, is retried there, and the route says so.
+    #[test]
+    fn a_gpu_server_that_exits_mid_session_falls_back_to_the_cpu() {
+        let machine = Arc::new(FlakyGpu {
+            completions: 1,
+            after: "exit",
+            cpu_starts: Mutex::new(0),
+        });
+        let corrector = Corrector::start_with(Compute::Auto, machine.clone()).unwrap();
+        assert!(corrector.route().on_gpu());
+        assert!(!corrector.correct("hello there").unwrap().is_empty());
+        assert!(corrector.take_route_change().is_none());
+        // the server exits after that answer; wait until it has
+        let started = Instant::now();
+        while lock(&corrector.main).exited().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "it did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!corrector.correct("hello there").unwrap().is_empty());
+        assert_eq!(*lock(&machine.cpu_starts), 1);
+        let route = corrector.take_route_change().expect("the route changed");
+        assert!(!route.on_gpu());
+        assert!(
+            route.status().starts_with(
+                "Speech recognition on the CPU, correction on the CPU (Vulkan server exited \
+                 mid-session"
+            ),
+            "{}",
+            route.status()
+        );
+        // reported once; later corrections stay on the CPU without another restart
+        assert!(corrector.take_route_change().is_none());
+        assert!(!corrector.correct("hello there").unwrap().is_empty());
+        assert_eq!(*lock(&machine.cpu_starts), 1);
+    }
+
+    /// A GPU server that stops answering is given `gpu_timeout`, not the CPU's
+    /// five minutes, then the correction moves to the CPU.
+    #[test]
+    fn a_hung_gpu_server_falls_back_to_the_cpu_within_the_gpu_timeout() {
+        let machine = Arc::new(FlakyGpu {
+            completions: 1,
+            after: "hang",
+            cpu_starts: Mutex::new(0),
+        });
+        let mut corrector = Corrector::start_with(Compute::Auto, machine.clone()).unwrap();
+        corrector.gpu_timeout = Duration::from_secs(2);
+        assert!(!corrector.correct("hello there").unwrap().is_empty());
+        let started = Instant::now();
+        assert!(!corrector.correct("hello there").unwrap().is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(*lock(&machine.cpu_starts), 1);
+        let route = corrector.take_route_change().expect("the route changed");
+        assert_eq!(
+            route.path,
+            ComputePath::Cpu {
+                reason: "Vulkan server did not answer within 2 s".into()
+            }
+        );
+    }
+
+    /// A CPU server that answers with an error is not restarted: only a gone
+    /// server is.
+    #[test]
+    fn a_failing_correction_on_a_live_cpu_server_is_just_an_error() {
+        let machine = Arc::new(FakeMachine::new(false, None, Ok(400.0)));
+        let corrector = Corrector::start_with(Compute::Auto, machine.clone()).unwrap();
+        // the stand-in server's address answers nothing
+        assert!(corrector.correct("hello there").is_err());
+        assert!(corrector.take_route_change().is_none());
+        assert_eq!(
+            lock(&machine.calls)
+                .iter()
+                .filter(|call| **call == "cpu")
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -4,7 +4,8 @@
 //! The keys are the Mac's (bar/Sources/AppData.swift `NativeSettings.CodingKeys`)
 //! wherever the Mac has the setting, so the two files mean the same thing key for
 //! key: `shortcut_mode`, `writing_style`, `local_history`,
-//! `history_retention_days`, `clipboard_after_paste`, plus `launch_at_login`.
+//! `history_retention_days`, `clipboard_after_paste`, plus `launch_at_login` and
+//! `compute` (Windows and Linux only).
 //!
 //! Rules:
 //! - Unknown keys are kept: a write reads the file, changes one key and writes
@@ -36,6 +37,9 @@ pub const LOCAL_HISTORY: &str = "local_history";
 pub const HISTORY_RETENTION_DAYS: &str = "history_retention_days";
 pub const CLIPBOARD_AFTER_PASTE: &str = "clipboard_after_paste";
 pub const LAUNCH_AT_LOGIN: &str = "launch_at_login";
+/// Which compute paths correction may use: "auto" (the default: tuned CUDA,
+/// Vulkan, CPU), "cpu", "vulkan" or "cuda" (`polish::Compute`). Read at start.
+pub const COMPUTE: &str = "compute";
 
 /// The legacy one-setting files.
 pub const LEGACY_HOTKEY: &str = "hotkey.txt";
@@ -215,6 +219,13 @@ impl Settings {
             .unwrap_or(ClipboardAfterPaste::Restore)
     }
 
+    /// Which compute paths correction may use; `Auto` unless set to a known value.
+    pub fn compute(&self) -> crate::polish::Compute {
+        self.string(COMPUTE)
+            .and_then(crate::polish::Compute::parse)
+            .unwrap_or(crate::polish::Compute::Auto)
+    }
+
     /// The saved launch-at-login choice. The operating system's own state
     /// (`autostart::enabled`) is the truth; this records what the user picked.
     #[cfg(test)]
@@ -308,16 +319,10 @@ pub fn record_engine_in(root: &Path, text: &str) {
     }
 }
 
-/// Record where the engine that just passed its startup check runs.
-pub fn record_engine(device: crate::polish::Device) {
-    let place = match device {
-        crate::polish::Device::Gpu => "the GPU",
-        crate::polish::Device::Cpu => "the CPU",
-    };
-    record_engine_in(
-        &paths::data_root(),
-        &format!("Speech recognition on the CPU, correction on {place}"),
-    )
+/// Record where the engine runs: after its startup check, and again when a
+/// mid-session fallback moved correction to the CPU.
+pub fn record_engine(route: &crate::polish::Route) {
+    record_engine_in(&paths::data_root(), &route.status())
 }
 
 pub fn engine_status_in(root: &Path) -> Option<String> {
@@ -500,6 +505,26 @@ mod tests {
             engine_status_in(&root).as_deref(),
             Some("Correction on the CPU")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compute_is_auto_unless_set_to_a_known_path() {
+        use crate::polish::Compute;
+        let root = scratch("compute");
+        assert_eq!(Settings::load_in(&root).compute(), Compute::Auto);
+        for (value, compute) in [
+            ("cpu", Compute::Cpu),
+            ("Vulkan", Compute::Vulkan),
+            ("cuda", Compute::Cuda),
+            ("auto", Compute::Auto),
+            ("gpu", Compute::Auto),
+        ] {
+            set_in(&root, COMPUTE, value.into()).unwrap();
+            assert_eq!(Settings::load_in(&root).compute(), compute, "{value}");
+        }
+        set_in(&root, COMPUTE, Value::Bool(true)).unwrap();
+        assert_eq!(Settings::load_in(&root).compute(), Compute::Auto);
         let _ = std::fs::remove_dir_all(&root);
     }
 

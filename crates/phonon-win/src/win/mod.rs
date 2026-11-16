@@ -25,7 +25,6 @@ use crate::history;
 use crate::manifest;
 use crate::paths;
 use crate::pipeline::Engine;
-use crate::polish::Device;
 
 /// Everything the worker thread reacts to. A key action carries the number of the dictation the
 /// indicator lit for its press (`indicator::press`).
@@ -248,7 +247,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     if check.is_ok() {
         engine.confirm_backend();
     }
-    if check.is_err() && engine.device() == Device::Gpu {
+    if check.is_err() && engine.on_gpu() {
         // A GPU driver that answers wrongly must not cost the user dictation.
         eprintln!("phonon: startup check failed on the GPU; retrying on the CPU");
         tray::set_status("loading the correction model on the CPU");
@@ -265,7 +264,7 @@ fn work(inbox: Receiver<Event>) -> Result<()> {
     // On the CPU, the fallback corrector for a saturated machine starts now, not
     // at the first busy moment, so the first dictation under load does not wait.
     engine.start_lean();
-    crate::settings::record_engine(engine.device());
+    crate::settings::record_engine(&engine.route());
 
     let (name, _) = hook::current_key();
     tray::set_status(&idle_text());
