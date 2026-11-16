@@ -125,12 +125,68 @@ final class TalkBarTests: XCTestCase {
     }
 
     func testFillBrightensWithLevel() {
-        let quiet = TalkBarFill(state: .listening, level: 0, animate: false).energy(at: .now)
-        let loud = TalkBarFill(state: .listening, level: 1, animate: false).energy(at: .now)
+        let quiet = TalkBarFill(state: .listening, level: 0, animate: false).look(at: .now).opacity
+        let loud = TalkBarFill(state: .listening, level: 1, animate: false).look(at: .now).opacity
         XCTAssertLessThan(quiet, loud)
-        // Reduce Motion: one static red whatever the level
-        XCTAssertEqual(TalkBarFill(state: .listening, level: 0, followLevel: false).energy(at: .now),
-                       TalkBarFill(state: .listening, level: 1, followLevel: false).energy(at: .now))
+        // Reduce Motion: one static brightness whatever the level
+        XCTAssertEqual(TalkBarFill(state: .listening, level: 0, followLevel: false).look(at: .now),
+                       TalkBarFill(state: .listening, level: 1, followLevel: false).look(at: .now))
+    }
+
+    /// The bar's frame is the same in every stage of the light, not just every phase.
+    func testBarFrameIsTheSameInEveryStageOfTheLight() throws {
+        let reference = try measure(.ready, level: 0)
+        let t0 = Date(timeIntervalSinceReferenceDate: 5000)
+        let lit = BarBeat.ignite(at: t0)
+        let gather = lit.processing(at: t0)
+        let cases: [(BarBeat, Double)] = [
+            (lit, 0), (gather, 0.6), (gather, 3),
+            (gather.burst(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false), 0.3),
+            (gather.fadeOut(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false), 0.1),
+        ]
+        for (beat, after) in cases {
+            let view = TalkBarStrip(control: .settings, onSide: {}) {
+                TalkBarFill(state: .idle, level: 0, beat: beat, frozenAt: beat.since.addingTimeInterval(after))
+            }
+            .frame(width: width)
+            let image = try render(view)
+            let bar = try XCTUnwrap(runs(image, row: image.height / 2).last)
+            let col = try XCTUnwrap(column(image, x: (bar.0 + bar.1) / 2))
+            XCTAssertEqual(bar.0, reference.barX, "\(beat.stage) at \(after)")
+            XCTAssertEqual(bar.1, reference.barRight, "\(beat.stage) at \(after)")
+            XCTAssertEqual(col.0, reference.barTop, "\(beat.stage) at \(after)")
+            XCTAssertEqual(col.1, reference.barBottom, "\(beat.stage) at \(after)")
+        }
+    }
+
+    /// Stage stills for a person to look at: ignite at t = 0, listening, the gather at 0.6 s, the held core, the burst
+    /// at 0.3 s. Written to PHONON_SHOTS_DIR as stage-*.png when it is set.
+    func testWritesStageShots() throws {
+        let t0 = Date(timeIntervalSinceReferenceDate: 5000)
+        let lit = BarBeat.ignite(at: t0)
+        let gather = lit.processing(at: t0)
+        let burst = gather.burst(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false)
+        let shots: [(String, BarBeat, Double, Double)] = [
+            ("1-ignite-t0", lit, 0, 0), ("2-listening-mid", lit, 1, 0.5), ("3-gather-0.6s", gather, 0.6, 0),
+            ("4-gather-held", gather, 3, 0), ("5-burst-0.3s", burst, 0.3, 0),
+        ]
+        for (name, beat, after, level) in shots {
+            let view = TalkBarStrip(control: .settings, onSide: {}) {
+                TalkBarFill(state: .idle, level: level, beat: beat, frozenAt: beat.since.addingTimeInterval(after))
+            }
+            .frame(width: width)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+            .background(Color(hex: 0x16120F))
+            .environment(\.colorScheme, .dark)
+            let r = ImageRenderer(content: view)
+            r.scale = scale
+            let image = try XCTUnwrap(r.uiImage, "\(name) did not render")
+            guard let dir = ProcessInfo.processInfo.environment["PHONON_SHOTS_DIR"] else { continue }
+            let url = URL(fileURLWithPath: dir).appendingPathComponent("stage-\(name).png")
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try XCTUnwrap(image.pngData()).write(to: url)
+        }
     }
 
     func testVoiceLevelGlidesInsteadOfFlickering() {

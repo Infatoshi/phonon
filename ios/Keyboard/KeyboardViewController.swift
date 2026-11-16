@@ -60,6 +60,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         model.visible = false  // stops the idle fluid's redraw
+        model.beat = .rest
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -280,6 +281,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         pongTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self, self.pendingMic else { return }
             self.pendingMic = false
+            self.model.undelivered()  // the app never answered: the lit bar fades out
             self.model.phase = .needsSession
             self.startViaApp()
         }
@@ -287,6 +289,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     private func beginListening() {
         waiting = true
+        if model.beat.stage != .listening { model.ignite() }  // a start that did not come from a press (resumed from the app)
         model.levels = Array(repeating: 0, count: model.levels.count)
         model.phase = .listening
         IPC.set(model.mode.rawValue, IPC.modeKey)
@@ -297,12 +300,14 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         if pendingMic && !model.latched {  // a hold released before the app answered: nothing was recorded
             pendingMic = false
             pongTimer?.invalidate()
+            model.undelivered()
             model.phase = .ready
             return
         }
         guard waiting else { return }
         IPC.set(IPC.now(), IPC.stopAt)
         IPC.post(IPC.stop)
+        model.startProcessing()  // the light starts gathering at the release, not when the app reports Transcribing
         model.phase = .working
     }
 
@@ -311,6 +316,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         waiting = false
         model.latched = false
         IPC.post(IPC.cancel)
+        model.undelivered()
         model.phase = .ready
         model.status = "Cancelled"
     }
@@ -346,6 +352,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
             text = text.replacingOccurrences(of: "\n", with: " ")
         }
         guard !text.isEmpty else {
+            model.undelivered()  // nothing to paste: the core fades, no burst
             model.status = "Didn't catch that"
             return
         }
@@ -353,6 +360,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         let lead = before.isEmpty || before.hasSuffix(" ") || before.hasSuffix("\n") ? "" : " "
         let insert = lead + text + " "
         textDocumentProxy.insertText(insert)
+        model.delivered()  // the text is in the field: the burst
         model.contextVersion += 1
         lastInsert = insert
         model.canUndo = true

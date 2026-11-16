@@ -136,6 +136,7 @@ targets:
       - Shared/Theme.swift
       # the keyboard's SwiftUI (TalkBarTests); plain SwiftUI + UIKit, no IPC or extension APIs
       - Shared/KeyboardUI.swift
+      - Shared/BarStages.swift
       - path: ../crates/phonon-llm/src/opener_cases.json
         buildPhase: resources
       - path: ../crates/phonon-llm/src/linebreak_cases.json

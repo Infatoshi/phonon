@@ -39,8 +39,50 @@ final class KeyboardModel: ObservableObject {
     @Published var visible = true
     /// Low Power Mode: the idle fluid holds still.
     @Published var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    /// The dictation's stage for the talk bar's light (BarStages.swift), replaced at each real event.
+    @Published var beat = BarBeat.rest
+    /// Reduce Motion or Low Power Mode (the view keeps it current): the stages use their no-motion look.
+    var reducedMotion = false
     weak var host: KeyboardHost?
     private var powerObserver: NSObjectProtocol?
+    private var restWork: DispatchWorkItem?
+
+    private var currentLevel: Double { VoiceLevel.smooth(levels) }
+
+    /// The press: the bar lights this frame, before the mic, the app or the model have answered.
+    func ignite() {
+        restWork?.cancel()
+        beat = .ignite(at: Date())
+    }
+
+    /// The key was released or the bar tapped to finish: the light gathers while the text is written.
+    func startProcessing() {
+        guard beat.stage != .rest else { return }
+        restWork?.cancel()
+        beat = beat.processing(at: Date())
+    }
+
+    /// The text was inserted: the burst, then the resting bar.
+    func delivered() {
+        end(beat.burst(at: Date(), level: currentLevel, reduceMotion: reducedMotion))
+    }
+
+    /// Nothing was inserted (empty result, error, cancelled, released before the app answered): no burst.
+    func undelivered() {
+        end(beat.fadeOut(at: Date(), level: currentLevel, reduceMotion: reducedMotion))
+    }
+
+    private func end(_ next: BarBeat) {
+        beat = next
+        restWork?.cancel()
+        guard let settle = next.settleSeconds(reduceMotion: reducedMotion) else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.beat == next else { return }
+            self.beat = .rest
+        }
+        restWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle + 0.05, execute: work)
+    }
 
     init() {
         powerObserver = NotificationCenter.default.addObserver(
@@ -126,7 +168,10 @@ struct KeyboardView: View {
     private var talkBar: some View {
         let animate = model.visible && !model.lowPower && !reduceMotion
         return TalkBarFill(state: TalkBarFill.Mode(phase: model.phase), level: voiceLevel, animate: animate,
-                           followLevel: !reduceMotion)
+                           followLevel: !reduceMotion, beat: model.beat)
+            .onAppear { model.reducedMotion = reduceMotion || model.lowPower }
+            .onChange(of: reduceMotion) { _, _ in model.reducedMotion = reduceMotion || model.lowPower }
+            .onChange(of: model.lowPower) { _, _ in model.reducedMotion = reduceMotion || model.lowPower }
             .overlay {
                 if model.phase == .needsAccess {
                     barText(barLabel)
@@ -153,6 +198,7 @@ struct KeyboardView: View {
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         press = .starting
                         model.latched = false
+                        model.ignite()  // lit this frame, before the mic, the app or the model answer
                         model.host?.micDown()
                     }
                 }
@@ -513,8 +559,9 @@ enum TalkBarSideControl: Equatable {
 }
 
 /// The talk bar's fill. It takes exactly the frame it is given in every state and audio level; voice and state show
-/// only in colour and brightness. Idle: the grey fluid. Listening: a red band whose brightness follows the smoothed
-/// level. Working: the same red breathing on a 1.6 s cycle. No scale, size or layout ever depends on the level.
+/// only in colour and brightness. Idle: the grey fluid. Then the stages of BarStages.swift: ignite on the press,
+/// listening (brightness follows the smoothed level), the gather into a tight core while the text is written, the
+/// burst when it is inserted. No scale, size or layout ever depends on the stage or the level.
 struct TalkBarFill: View {
     enum Mode: Equatable {
         case idle, noAccess, listening, working
@@ -531,52 +578,74 @@ struct TalkBarFill: View {
 
     let state: Mode
     let level: Double
-    /// False with Reduce Motion, Low Power Mode or the keyboard off screen: the fluid and the breath hold still.
+    /// False with Reduce Motion, Low Power Mode or the keyboard off screen: no moving widths (a steady medium core).
     var animate = true
-    /// False with Reduce Motion: listening is one static red, not driven by the level.
+    /// False with Reduce Motion: listening is one static brightness, not driven by the level.
     var followLevel = true
+    /// The stage the real events put the dictation in (BarStages.swift). While it is `.rest` the bar follows `state`:
+    /// listening is the lit bar, working the held core.
+    var beat = BarBeat.rest
+    /// Renders one instant (offscreen tests); nil follows the clock.
+    var frozenAt: Date?
+
+    @State private var settledBeat: BarBeat?
+
+    private var reduced: Bool { !animate || !followLevel }
+
+    /// The beat that draws: the model's, or the one `state` implies when no event set one (previews, tests).
+    private var drawn: BarBeat {
+        if beat.stage != .rest { return beat }
+        switch state {
+        case .listening: return BarBeat(stage: .listening, since: .distantPast)
+        case .working: return BarBeat(stage: .processing, since: .distantPast)
+        case .idle, .noAccess: return .rest
+        }
+    }
+
+    private var active: Bool { drawn.stage != .rest }
 
     var body: some View {
-        ZStack {
+        let drawn = drawn
+        // The clock runs only while a stage is still moving: the first 0.18 s of listening, the 1.2 s gather, the
+        // burst or fade. A held core and the voice level need no frames of their own.
+        let moving = drawn.settleSeconds(reduceMotion: reduced).map { Date().timeIntervalSince(drawn.since) < $0 } ?? false
+        let running = frozenAt == nil && moving && settledBeat != drawn
+        return ZStack {
             IdleFluid(animate: animate && !active, dim: state == .noAccess)
                 .opacity(active ? 0 : 1)
             if active {
-                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: state != .working || !animate)) { context in
-                    Self.ember(energy: energy(at: context.date))
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !running)) { context in
+                    // a stopped clock hands over a stale date; the settled look is the stage's end, so ask the time
+                    Self.light(look(at: frozenAt ?? (running ? context.date : Date())))
                 }
                 .transition(.opacity)
             }
+        }
+        .task(id: drawn) {
+            guard let settle = drawn.settleSeconds(reduceMotion: reduced) else { return }
+            let left = settle - Date().timeIntervalSince(drawn.since)
+            if left > 0 { try? await Task.sleep(nanoseconds: UInt64((left + 0.05) * 1e9)) }
+            settledBeat = drawn
         }
         .clipShape(Capsule(style: .continuous))
         .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(active ? 0.06 : 0), lineWidth: 0.5))
         .animation(followLevel ? .easeOut(duration: 0.18) : nil, value: active)
     }
 
-    private var active: Bool { state == .listening || state == .working }
-
-    /// 0...1: how bright the red is.
-    func energy(at date: Date) -> Double {
-        switch state {
-        case .idle, .noAccess: return 0
-        case .listening: return followLevel ? min(1, max(0.08, level)) : 0.55
-        case .working:
-            guard animate else { return 0.27 }
-            let breath = (sin(date.timeIntervalSinceReferenceDate * .pi * 2 / 1.6) + 1) / 2
-            return 0.18 + breath * 0.18
-        }
+    /// The light at `date`.
+    func look(at date: Date) -> BarLook {
+        drawn.look(at: date, level: followLevel ? level : 0.55, reduceMotion: reduced)
     }
 
-    /// Black at the ends, a warm centre that strengthens with energy, the same as the Mac capsule.
+    /// Black at both ends, one warm light at the centre (the Mac capsule's colours): the look's stops, over black.
     /// Colours only: both layers fill the given rectangle.
-    static func ember(energy e: Double) -> some View {
-        // The Mac capsule's colours exactly (bar/Sources/PhononBar.swift): black at both ends, one warm centre
-        // whose strength follows the energy. No extra glow layer, so the ends stay dark at any level.
-        let mid = Color(red: 0.42, green: 0.12, blue: 0.035).opacity(0.50 + e * 0.38)
+    static func light(_ look: BarLook) -> some View {
+        let stops = look.stops.map {
+            Gradient.Stop(color: Color(red: $0.r, green: $0.g, blue: $0.b).opacity($0.a), location: $0.location)
+        }
         return ZStack {
             Rectangle().fill(.black)
-            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: mid, location: 0.5),
-                                   .init(color: .black, location: 1)],
-                           startPoint: .leading, endPoint: .trailing)
+            LinearGradient(stops: stops, startPoint: .leading, endPoint: .trailing)
         }
     }
 }
