@@ -64,8 +64,9 @@ website.
 
 ## The native refiner engine
 
-`engine/` holds its source (`pe.mm`, `gguf.cpp`, and the Metal shaders it
-compiles at startup). It links llama.cpp, MIT, at upstream commit
+`engine/` holds its source (`pe.mm`, `gguf.cpp`); the Metal shaders it
+compiles at startup are in `kernels/metal/refiner/` (`mk.metal`, `df.metal`), and
+the Parakeet helper's in `kernels/metal/asr/`. It links llama.cpp, MIT, at upstream commit
 `39febd2adb947b70da35e95f9351b3bf58ad170a` with
 `third_party/llama.cpp/phonon-engine.patch` applied. `scripts/build-engine.sh`
 fetches that commit, applies the patch and builds `target/engine/pe` for the

@@ -5,6 +5,15 @@
 # target/engine/{pe,mk.metal,df.metal,pa,asr/pa.metal,asr/melfb.npy}, which
 # package-bar.sh bundles. Needs git, cmake and ninja.
 #
+# Source layout: host code stays in engine/ (pe.mm, gguf.cpp) and engine/asr/
+# (pa.mm); every GPU kernel lives under kernels/, one folder per backend:
+#   kernels/metal/refiner/  mk.metal (the refiner megakernel), df.metal (the DFlash2 drafter)
+#   kernels/metal/asr/      pa.metal (Parakeet encoder + TDT decode), melfb.npy (its GPU log-mel filterbank)
+#   kernels/cuda/<arch>/    llama.cpp b12132 patches for the tuned Windows/Linux CUDA builds
+#   kernels/roofline/       measured roofline tables per platform
+# The built and installed layout above does not follow it: pe and pa still find their
+# shaders next to themselves (PE_DIR, PA_DIR), as before.
+#
 # On a Mac whose Xcode linker is older than its Command Line Tools SDK, run it
 # with DEVELOPER_DIR=/Library/Developer/CommandLineTools.
 set -euo pipefail
@@ -65,12 +74,12 @@ clang++ -std=c++17 -O2 -mcpu=apple-m1 -fobjc-arc $prefix_map \
 	"$build/ggml/src/ggml-blas/libggml-blas.a" "$build/ggml/src/libggml-cpu.a" "$build/ggml/src/libggml-base.a" \
 	-framework Metal -framework Foundation -framework Accelerate -framework MetalKit
 mv "$out_dir/pe.new" "$out_dir/pe"
-cp "$project_dir/engine/mk.metal" "$project_dir/engine/df.metal" "$out_dir/"
+cp "$project_dir/kernels/metal/refiner/mk.metal" "$project_dir/kernels/metal/refiner/df.metal" "$out_dir/"
 printf '%s (minimum macOS %s)\n' "$out_dir/pe" \
 	"$(otool -l "$out_dir/pe" | awk '/LC_BUILD_VERSION/ {found = 1} found && $1 == "minos" {print $2; exit}')"
 
-# Metal Parakeet `pa` (engine/asr): the ASR sidecar's encoder + TDT decode on the GPU. Like pe it compiles its
-# shader source (pa.metal) at startup; melfb.npy is get_logmel's slaney filterbank (128 x 257) for its GPU log-mel.
+# Metal Parakeet `pa` (engine/asr, shaders in kernels/metal/asr): the ASR sidecar's encoder + TDT decode on the
+# GPU. Like pe it compiles its shader source (pa.metal) at startup; melfb.npy is get_logmel's slaney filterbank (128 x 257) for its GPU log-mel.
 # It reads the pinned Parakeet snapshot's model.safetensors directly (no converted weights). Metal and Foundation
 # only, no llama.cpp. Output: target/engine/pa and target/engine/asr/{pa.metal,melfb.npy}.
 mkdir -p "$out_dir/asr"
@@ -78,6 +87,6 @@ mkdir -p "$out_dir/asr"
 clang++ -std=c++17 -O2 -mcpu=apple-m1 -fobjc-arc $prefix_map "$project_dir/engine/asr/pa.mm" -o "$out_dir/pa.new" \
 	-framework Metal -framework Foundation
 mv "$out_dir/pa.new" "$out_dir/pa"
-cp "$project_dir/engine/asr/pa.metal" "$project_dir/engine/asr/melfb.npy" "$out_dir/asr/"
+cp "$project_dir/kernels/metal/asr/pa.metal" "$project_dir/kernels/metal/asr/melfb.npy" "$out_dir/asr/"
 printf '%s (minimum macOS %s)\n' "$out_dir/pa" \
 	"$(otool -l "$out_dir/pa" | awk '/LC_BUILD_VERSION/ {found = 1} found && $1 == "minos" {print $2; exit}')"
