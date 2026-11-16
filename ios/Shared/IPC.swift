@@ -23,6 +23,7 @@ enum IPC {
     static let stopAt = "stop_at"
     static let modeKey = "mode"  // the writing mode, set from the keyboard chip or the app
     static let levelValue = "level"
+    static let startWish = "start_wish"  // keyboard: when the bar was tapped with Phonon not running; dictate on return
     static let keyboardSeen = "keyboard_seen"  // written by the keyboard with Full Access: setup step 2 is done
 
     /// Values live as small files in the App Group container. (They used to live in named pasteboards, but iOS blocks

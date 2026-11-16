@@ -11,6 +11,8 @@ protocol KeyboardHost: AnyObject {
     func cancelDictation()
     func undoDictation()
     func openApp()
+    /// The bar was tapped with the Phonon app not holding the mic: open it, then dictate once it is back.
+    func startViaApp()
 }
 
 enum KeyboardPhase: Equatable {
@@ -143,7 +145,7 @@ struct KeyboardView: View {
                     guard micPressedAt == nil else { return }
                     micPressedAt = Date()
                     if off {
-                        model.host?.openApp()
+                        model.host?.startViaApp()
                     } else if model.phase == .listening {
                         press = .stopping  // locked on: this tap finishes it
                     } else if model.phase == .ready {
@@ -212,10 +214,7 @@ struct KeyboardView: View {
     }
 
     /// The live input level the capsule lights with: the mean of the newest three meter samples.
-    private var voiceLevel: Double {
-        let tail = model.levels.suffix(3)
-        return tail.isEmpty ? 0 : Double(tail.reduce(0, +)) / Double(tail.count)
-    }
+    private var voiceLevel: Double { VoiceLevel.smooth(model.levels) }
 
     private var hint: String {
         switch model.phase {
@@ -474,6 +473,23 @@ struct TalkBarStrip<Bar: View>: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: Self.barHeight)
         }
+    }
+}
+
+/// The brightness the bar shows for the meter's recent samples (about 15 a second). The raw mean of the last three
+/// stepped the colour 15 times a second, which reads as flicker; this follows a rise quickly and a fall slowly, so
+/// the colour glides with the voice. Colour only: nothing here touches layout.
+enum VoiceLevel {
+    static let attack = 0.55
+    static let release = 0.12
+
+    static func smooth(_ levels: [CGFloat]) -> Double {
+        var v = 0.0
+        for l in levels {
+            let x = Double(max(0, min(1, l)))
+            v += (x - v) * (x > v ? attack : release)
+        }
+        return v
     }
 }
 

@@ -3,6 +3,7 @@ import UIKit
 
 @main
 struct PhononApp: App {
+    @UIApplicationDelegateAdaptor(SourceAppDelegate.self) private var appDelegate
     @StateObject private var session = Session()
     private let args = ProcessInfo.processInfo.arguments
 
@@ -22,6 +23,17 @@ struct PhononApp: App {
             .tint(Ember.ember)
             .task {
                 if args.contains("--selftest") { session.selftest() }
+                if args.contains("--probe-return") {
+                    BackToCaller.probe()
+                    if args.contains("--probe-open") {  // open Settings by bundle id, as the return does for a host
+                        try? await Task.sleep(for: .seconds(2))
+                        let r = BackToCaller.openBundleForProbe("com.apple.Preferences")
+                        BackToCaller.logProbe(["event": "probe_open", "ok": r,
+                                               "state": UIApplication.shared.applicationState.rawValue])
+                        try? await Task.sleep(for: .seconds(1.5))
+                        BackToCaller.logProbe(["event": "probe_open_after", "state": UIApplication.shared.applicationState.rawValue])
+                    }
+                }
             }
             .onOpenURL { url in
                 // the keyboard opens phonon://start when the session is not running: start the mic, then go straight
@@ -29,16 +41,43 @@ struct PhononApp: App {
                 guard url.host == "start" else { return }
                 // capture the breadcrumb's action now: it belongs to this activation and can be gone after the
                 // async mic start
-                let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-                let host = items.first(where: { $0.name == "host" })?.value
-                let via = items.first(where: { $0.name == "via" })?.value
-                let target = BackToCaller.capture(host: host, via: via)
+                let hint = HostLookup.parse(url)
+                let target = BackToCaller.capture(hint: hint)
                 Task {
                     await session.start()
                     guard session.live else { return }  // still down (a call holds the mic): stay here
+                    IPC.post(IPC.pong)  // tell a keyboard that is already running: the mic is up, dictate now
                     session.backHint = !(await BackToCaller.go(target))
                 }
             }
+        }
+    }
+}
+
+/// Scene callbacks that carry the opener of a URL (UIOpenURLContext.options.sourceApplication), which SwiftUI's
+/// onOpenURL does not show. When the keyboard's open is attributed to the host app (not to the keyboard), that id is
+/// the app to return to. Logged to return.jsonl as `source` either way, so a device run says whether it answers.
+final class SourceAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        config.delegateClass = SourceSceneDelegate.self
+        return config
+    }
+}
+
+final class SourceSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        Self.note(options.urlContexts, from: "connect")
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        Self.note(URLContexts, from: "open")
+    }
+
+    private static func note(_ contexts: Set<UIOpenURLContext>, from: String) {
+        for c in contexts where c.url.host == "start" {
+            BackToCaller.recordSource(c.options.sourceApplication, from: from)
         }
     }
 }
@@ -74,6 +113,14 @@ enum BackToCaller {
         return app.perform(key)?.takeUnretainedValue() as? NSObject
     }
 
+    /// The sourceApplication of the newest phonon://start, with when it arrived.
+    nonisolated(unsafe) private static var source: (id: String?, at: Double)?
+
+    static func recordSource(_ id: String?, from: String) {
+        source = (id, Date().timeIntervalSince1970)
+        log(["event": "source", "from": from, "source": id ?? "nil"])
+    }
+
     /// Call once at launch.
     @MainActor static func observe() {
         NotificationCenter.default.addObserver(
@@ -89,6 +136,23 @@ enum BackToCaller {
 
     /// Call as soon as the URL arrives. `host` is the keyboard's guess at the app it was typing in, if it had one;
     /// `via` is which keyboard lookup produced it.
+    @MainActor static func capture(hint: HostLookup.Hint) -> Target {
+        var t = capture(host: hint.host, via: hint.via)
+        if t.bundle == nil, let src = source, Date().timeIntervalSince1970 - src.at < 5, let id = valid(src.id) {
+            t.bundle = id
+            log(["event": "source_used", "bundle": id])
+        }
+        guard t.bundle == nil, let pid = hint.pid else { return t }
+        // the keyboard could not name the host (iOS 26.7 hides it): resolve its pid here, then its process name
+        let (rbs, why) = HostLookup.bundleForPid(pid)
+        let pname = hint.processName ?? HostLookup.processName(pid: pid)
+        let known = HostLookup.bundle(forProcessName: pname)
+        t.bundle = valid(rbs) ?? valid(known)
+        log(["event": "resolve", "pid": Int(pid), "rbs": rbs ?? "", "why": why, "pname": pname ?? "",
+             "pname_from_keyboard": hint.processName != nil, "table": known ?? "", "bundle": t.bundle ?? ""])
+        return t
+    }
+
     @MainActor static func capture(host: String?, via: String? = nil) -> Target {
         var t = Target(bundle: valid(host))
         let app = UIApplication.shared
@@ -157,6 +221,32 @@ enum BackToCaller {
         log(["event": left ? "left" : "stayed", "state": app.applicationState.rawValue])
         return left
     }
+
+    /// Launched with --probe-return: what this iOS lets the app do toward returning to another app, written to
+    /// Documents/return.jsonl. Side-effect free: the bundle-id open is aimed at Phonon itself.
+    @MainActor static func probe() {
+        let pid = getpid()
+        let (own, ownWhy) = HostLookup.bundleForPid(pid)
+        let (init1, init1Why) = HostLookup.bundleForPid(1)
+        let ws = NSClassFromString("LSApplicationWorkspace") as AnyObject?
+        log(["event": "probe", "ios": UIDevice.current.systemVersion,
+             "workspace_class": ws != nil,
+             "workspace_open_sel": ws?.responds(to: NSSelectorFromString("defaultWorkspace")) ?? false,
+             "state": UIApplication.shared.applicationState.rawValue,
+             "own_name": HostLookup.processName(pid: pid) ?? "nil", "pid1_name": HostLookup.processName(pid: 1) ?? "nil",
+             "own_rbs": own ?? "nil", "own_rbs_why": ownWhy, "pid1_rbs": init1 ?? "nil", "pid1_rbs_why": init1Why,
+             "nav_action": current() != nil])
+        // --probe-pid N: can the app name another process by its pid (what the start link carries)?
+        let a = ProcessInfo.processInfo.arguments
+        if let i = a.firstIndex(of: "--probe-pid"), i + 1 < a.count, let other = Int32(a[i + 1]) {
+            let (id, why) = HostLookup.bundleForPid(other)
+            log(["event": "probe_pid", "pid": Int(other), "name": HostLookup.processName(pid: other) ?? "nil",
+                 "rbs": id ?? "nil", "why": why])
+        }
+    }
+
+    @MainActor static func openBundleForProbe(_ id: String) -> Bool { openBundle(id) }
+    static func logProbe(_ row: [String: Any]) { log(row) }
 
     private static func openBundle(_ bundle: String) -> Bool {
         guard let cls = NSClassFromString("LSApplicationWorkspace") as AnyObject?,
@@ -496,6 +586,7 @@ private final class PreviewHost: KeyboardHost {
     func cancelDictation() {}
     func undoDictation() {}
     func openApp() {}
+    func startViaApp() {}
 }
 
 struct KeyboardPreview: View {

@@ -12,6 +12,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
     private var pongTimer: Timer?
     private var lastInsert: String?
     private var heightConstraint: NSLayoutConstraint?
+    private var hostPid: Int32 = 0  // the app being typed in, from its audit token (bundle id is hidden on iOS 26.7)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -97,6 +98,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
             model.phase = .ready
             model.status = ""
         }
+        resumeWishedStart()
     }
 
     // MARK: KeyboardHost
@@ -106,18 +108,41 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
     func nextKeyboard() { advanceToNextInputMode() }
     var contextBefore: String { textDocumentProxy.documentContextBeforeInput ?? "" }
 
+    /// The bar was tapped while Phonon was not holding the mic: open Phonon, and dictate as soon as the keyboard is
+    /// back with a live session (the finger is long gone by then, so it runs latched, like a quick tap).
+    func startViaApp() {
+        guard hasFullAccess else { return openApp() }
+        IPC.set(IPC.now(), IPC.startWish)
+        openApp()
+    }
+
+    /// Acts on a start wish left by `startViaApp` when the session is alive and the wish is fresh.
+    private func resumeWishedStart() {
+        let wanted = IPC.double(IPC.startWish)
+        guard wanted > 0 else { return }
+        let now = IPC.now()
+        if PendingStart.isStale(wantedAt: wanted, now: now) {
+            IPC.set(0, IPC.startWish)
+        } else if PendingStart.shouldResume(wantedAt: wanted, now: now, alive: IPC.sessionAlive), !waiting {
+            IPC.set(0, IPC.startWish)
+            model.latched = true
+            beginListening()
+        }
+    }
+
     /// Keyboards cannot open URLs directly; the responder chain reaches the host's UIApplication.
     func openApp() {
         if !hasFullAccess {
             model.status = "Turn on Allow Full Access first"
             return
         }
-        var parts = URLComponents(string: "phonon://start")
+        hostPid = 0
         let (host, via) = hostBundleID()
-        // `via` says which lookup answered, so the app's Documents/return.jsonl shows it from a device run
-        parts?.queryItems = [URLQueryItem(name: "via", value: via)]
-        if let host { parts?.queryItems?.append(URLQueryItem(name: "host", value: host)) }
-        guard let url = parts?.url else { return }
+        // `via` says which lookup answered, so the app's Documents/return.jsonl shows it from a device run; the pid
+        // (and its process name, if the keyboard sandbox allows it) lets the app resolve the host when `host` is nil
+        let name = hostPid > 0 ? HostLookup.processName(pid: hostPid) : nil
+        guard let url = HostLookup.startURL(host: host, via: via + (name == nil ? "|noname" : ""), pid: hostPid,
+                                            processName: name) else { return }
         var r: UIResponder? = self
         while let next = r {
             if let app = next as? UIApplication {
@@ -153,6 +178,26 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
                 c = vc.parent
             }
         }
+        // other private spellings that exist in the 26.7.1 UIKitCore / UIKitServices strings, tried on every object
+        // that could carry them; only selectors that answer a string with a dot count, and the trail lists who answered
+        var holders: [(String, NSObject)] = [("self", self)]
+        var p: UIViewController? = parent
+        for d in 1..<4 { guard let vc = p else { break }; holders.append(("p\(d)", vc)); p = vc.parent }
+        if let ctx = extensionContext { holders.append(("ctx", ctx)) }
+        if let scene = view.window?.windowScene { holders.append(("scene", scene)) }
+        for (label, obj) in holders {
+            for name in ["_hostBundleIdentifier", "hostBundleIdentifier", "_hostBundleId", "hostBundleId",
+                         "_sourceBundleIdentifier"] {
+                let sel = NSSelectorFromString(name)
+                guard obj.responds(to: sel) else { continue }
+                let raw = obj.perform(sel)?.takeUnretainedValue()
+                if let id = raw as? String, id.contains("."), id != Bundle.main.bundleIdentifier,
+                   !id.hasPrefix((Bundle.main.bundleIdentifier ?? "-") + ".") {
+                    return (id, "\(name)@\(label)")
+                }
+                trail.append("\(name)@\(label)=\(raw.map { String(String(describing: $0).prefix(24)) } ?? "nil")")
+            }
+        }
         let tokSel = NSSelectorFromString("_hostAuditToken")
         var c: UIViewController? = self
         for depth in 0..<4 {
@@ -161,6 +206,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
                 typealias F = @convention(c) (AnyObject, Selector) -> audit_token_t
                 let tok = unsafeBitCast(vc.method(for: tokSel), to: F.self)(vc, tokSel)
                 let pid = tok.val.5
+                hostPid = Int32(bitPattern: pid)
                 let (id, why) = Self.signingIdentifier(tok)
                 if let id, id.contains("."), id != Bundle.main.bundleIdentifier {
                     return (id, "_hostAuditToken@\(depth)")
@@ -183,32 +229,12 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         return (nil, "none|" + trail.joined(separator: "|"))
     }
 
-    /// pid -> bundle id: RunningBoard's RBSProcessHandle (private), then proc_pidpath's ".app" folder name as a last
-    /// hint (that is the app's name, not its id, so it is only logged). Each step reports why it failed.
+    /// pid -> bundle id (RunningBoard), then proc_pidpath's ".app" folder name as a last hint (that is the app's name,
+    /// not its id, so it is only logged). Each step reports why it failed.
     private static func bundleForPid(_ pid: pid_t) -> (String?, String) {
-        var why: [String] = []
-        if let idCls = NSClassFromString("RBSProcessIdentifier") as AnyObject?,
-           let hCls = NSClassFromString("RBSProcessHandle") as AnyObject? {
-            let mk = NSSelectorFromString("identifierWithPid:")
-            let get = NSSelectorFromString("handleForIdentifier:error:")
-            if idCls.responds(to: mk), hCls.responds(to: get) {
-                typealias Mk = @convention(c) (AnyObject, Selector, Int32) -> AnyObject?
-                // NSError ** is autoreleasing: a plain UnsafeMutablePointer makes Swift release the error it does not
-                // own, and the keyboard dies at the next autorelease pool pop (the Start tap, 2026-11-07, 08, 11)
-                typealias Get = @convention(c) (AnyObject, Selector, AnyObject, AutoreleasingUnsafeMutablePointer<NSError?>?) -> AnyObject?
-                if let ident = unsafeBitCast(idCls.method(for: mk), to: Mk.self)(idCls, mk, pid) {
-                    var err: NSError?
-                    if let handle = unsafeBitCast(hCls.method(for: get), to: Get.self)(hCls, get, ident, &err) as? NSObject {
-                        for path in ["bundle.identifier", "identity.embeddedApplicationIdentifier"] {
-                            if let id = handle.value(forKeyPath: path) as? String, id.contains(".") { return (id, "rbs:\(path)") }
-                        }
-                        why.append("rbs:noid")
-                    } else {
-                        why.append("rbs:err\(err?.code ?? 0)")
-                    }
-                } else { why.append("rbs:noident") }
-            } else { why.append("rbs:nosel") }
-        } else { why.append("rbs:nocls") }
+        let (id, rbs) = HostLookup.bundleForPid(pid)
+        if let id { return (id, rbs) }
+        var why = [rbs]
         if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "proc_pidpath") {
             typealias P = @convention(c) (Int32, UnsafeMutableRawPointer, UInt32) -> Int32
             var buf = [UInt8](repeating: 0, count: 4096)
@@ -255,7 +281,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
             guard let self, self.pendingMic else { return }
             self.pendingMic = false
             self.model.phase = .needsSession
-            self.openApp()
+            self.startViaApp()
         }
     }
 

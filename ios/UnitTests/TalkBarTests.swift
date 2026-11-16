@@ -21,6 +21,7 @@ final class TalkBarTests: XCTestCase {
         func cancelDictation() { calls.append("cancel") }
         func undoDictation() {}
         func openApp() { calls.append("open") }
+        func startViaApp() { calls.append("start") }
     }
 
     private func strip(_ phase: KeyboardPhase, level: Double) -> some View {
@@ -120,7 +121,7 @@ final class TalkBarTests: XCTestCase {
         let host = Host()
         TalkBarSideControl.stop.perform(on: host)
         TalkBarSideControl.settings.perform(on: host)
-        XCTAssertEqual(host.calls, ["cancel", "open"])
+        XCTAssertEqual(host.calls, ["cancel", "open"], "the settings circle only opens Phonon; it never arms a dictation")
     }
 
     func testFillBrightensWithLevel() {
@@ -130,6 +131,26 @@ final class TalkBarTests: XCTestCase {
         // Reduce Motion: one static red whatever the level
         XCTAssertEqual(TalkBarFill(state: .listening, level: 0, followLevel: false).energy(at: .now),
                        TalkBarFill(state: .listening, level: 1, followLevel: false).energy(at: .now))
+    }
+
+    func testVoiceLevelGlidesInsteadOfFlickering() {
+        XCTAssertEqual(VoiceLevel.smooth([]), 0)
+        XCTAssertEqual(VoiceLevel.smooth(Array(repeating: 0, count: 28)), 0, accuracy: 1e-9)
+        // steady speech converges to its level
+        XCTAssertEqual(VoiceLevel.smooth(Array(repeating: 0.6, count: 28)), 0.6, accuracy: 0.01)
+        // alternating loud and quiet samples (15 per second) move the output far less than the input swings
+        let jittery: [CGFloat] = (0..<28).map { $0 % 2 == 0 ? 0.9 : 0.1 }
+        let a = VoiceLevel.smooth(jittery)
+        let b = VoiceLevel.smooth(Array(jittery.dropFirst()) + [0.9])
+        XCTAssertLessThan(abs(a - b), 0.25)
+        XCTAssertLessThan(abs(a - b), 0.8 * 0.5)
+        // a rise shows at once, a fall fades
+        let rise = VoiceLevel.smooth(Array(repeating: 0, count: 27) + [1])
+        XCTAssertGreaterThan(rise, 0.5)
+        let fall = VoiceLevel.smooth(Array(repeating: 1, count: 27) + [0])
+        XCTAssertGreaterThan(fall, 0.8)
+        // out-of-range samples are clamped
+        XCTAssertLessThanOrEqual(VoiceLevel.smooth(Array(repeating: 5, count: 28)), 1)
     }
 
     /// Dark-mode renders on the keyboard's background for a person to look at.
