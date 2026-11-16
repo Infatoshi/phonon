@@ -309,7 +309,10 @@ fn show_frame(rgba: Option<&[u8]>, size: u32) {
     let frame = rgba.map(|rgba| ksni::Icon {
         width: size as i32,
         height: size as i32,
-        data: rgba.chunks_exact(4).flat_map(|p| [p[3], p[0], p[1], p[2]]).collect(),
+        data: rgba
+            .chunks_exact(4)
+            .flat_map(|p| [p[3], p[0], p[1], p[2]])
+            .collect(),
     });
     if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
         if let Some(handle) = guard.as_ref() {

@@ -50,7 +50,11 @@ pub enum Stage {
     /// The text went in. Elapsed counts from that moment; `from_width` is the gather's width then.
     Pasted { from_width: f32 },
     /// Ended with nothing pasted (empty, error, cancelled).
-    Dropped { from_width: f32, from_strength: f32, from_heat: f32 },
+    Dropped {
+        from_width: f32,
+        from_strength: f32,
+        from_heat: f32,
+    },
 }
 
 /// What one frame looks like. The centre colour is `lerp(BASE, BRIGHT, heat) * strength` over black,
@@ -80,11 +84,19 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
             let ignite = (1.0 - elapsed / IGNITE_SECONDS).clamp(0.0, 1.0);
             // 1.0 at the press, the live level 0.18 s later, linearly between
             let energy = lerp(level, 1.0, ignite);
-            Look { half_width: WIDE_WIDTH, strength: 0.50 + 0.38 * energy, heat: 0.0, burst: 0.0 }
+            Look {
+                half_width: WIDE_WIDTH,
+                strength: 0.50 + 0.38 * energy,
+                heat: 0.0,
+                burst: 0.0,
+            }
         }
-        Stage::Processing if reduced => {
-            Look { half_width: REDUCED_WIDTH, strength: 0.80, heat: 0.5, burst: 0.0 }
-        }
+        Stage::Processing if reduced => Look {
+            half_width: REDUCED_WIDTH,
+            strength: 0.80,
+            heat: 0.5,
+            burst: 0.0,
+        },
         Stage::Processing => {
             let k = (elapsed / GATHER_SECONDS).clamp(0.0, 1.0);
             Look {
@@ -109,7 +121,11 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
                 burst: 1.0 - p,
             }
         }
-        Stage::Dropped { from_width, from_strength, from_heat } => Look {
+        Stage::Dropped {
+            from_width,
+            from_strength,
+            from_heat,
+        } => Look {
             half_width: from_width,
             strength: from_strength * (1.0 - (elapsed / DROP_SECONDS).clamp(0.0, 1.0)),
             heat: from_heat,
@@ -149,7 +165,11 @@ impl Smoother {
 
     pub fn step(&mut self, target: f32, dt: f32) -> f32 {
         let target = target.clamp(LEVEL_FLOOR, 1.0);
-        let tau = if target > self.shown { Self::ATTACK_SECONDS } else { Self::RELEASE_SECONDS };
+        let tau = if target > self.shown {
+            Self::ATTACK_SECONDS
+        } else {
+            Self::RELEASE_SECONDS
+        };
         self.shown += (target - self.shown) * (1.0 - (-dt.max(0.0) / tau).exp());
         self.shown = self.shown.clamp(LEVEL_FLOOR, 1.0);
         self.shown
@@ -258,9 +278,9 @@ pub fn render_rgba(look: Look, size: u32) -> Vec<u8> {
             let u = px / size_f;
             let g = (1.0 - (u - 0.5).abs() / look.half_width.max(0.001)).max(0.0);
             let i = (y * n + x) * 4;
-            for c in 0..3 {
-                let v = (core[c] + ORANGE[c] * look.burst) * g;
-                out[i + c] = v.clamp(0.0, 255.0).round() as u8;
+            for (slot, (light, burst)) in out[i..i + 3].iter_mut().zip(core.iter().zip(ORANGE)) {
+                let v = (light + burst * look.burst) * g;
+                *slot = v.clamp(0.0, 255.0).round() as u8;
             }
             out[i + 3] = (coverage * 255.0).round() as u8;
         }
@@ -350,14 +370,20 @@ pub fn abandon() {
 
 /// The microphone's RMS for the latest buffer (0..1 of full scale).
 pub fn push_level(rms: f32) {
-    shared().level.store(level_from_rms(rms).to_bits(), Ordering::Relaxed);
+    shared()
+        .level
+        .store(level_from_rms(rms).to_bits(), Ordering::Relaxed);
 }
 
 /// Start the animation thread. It sleeps until the first press and sleeps again at rest, so an idle
 /// Phonon repaints nothing.
 pub fn start(sink: Sink) {
-    shared().reduced.store((sink.reduced_motion)(), Ordering::Relaxed);
-    let _ = std::thread::Builder::new().name("indicator".into()).spawn(move || run(sink));
+    shared()
+        .reduced
+        .store((sink.reduced_motion)(), Ordering::Relaxed);
+    let _ = std::thread::Builder::new()
+        .name("indicator".into())
+        .spawn(move || run(sink));
 }
 
 fn run(sink: Sink) {
@@ -437,7 +463,11 @@ mod tests {
         assert!((end.strength - 1.0).abs() < EPS);
         assert!((end.heat - 1.0).abs() < EPS);
         for t in [1.3, 5.0, 60.0] {
-            assert_eq!(look(Stage::Processing, t, 0.9, false), end, "no loop, no breathing at {t}");
+            assert_eq!(
+                look(Stage::Processing, t, 0.9, false),
+                end,
+                "no loop, no breathing at {t}"
+            );
         }
     }
 
@@ -461,7 +491,9 @@ mod tests {
         m.press(0.0);
         m.release(1.0);
         m.pasted(1.6, false); // half way through the gather: w = 0.29
-        let Some(Stage::Pasted { from_width }) = m.stage() else { panic!("{:?}", m.stage()) };
+        let Some(Stage::Pasted { from_width }) = m.stage() else {
+            panic!("{:?}", m.stage())
+        };
         assert!((from_width - 0.29).abs() < EPS);
         let first = m.frame(1.6, 0.5, false).unwrap();
         assert!((first.half_width - 0.29).abs() < EPS);
@@ -481,7 +513,10 @@ mod tests {
         for t in [3.05, 3.1, 3.19] {
             let f = m.frame(t, 0.5, false).unwrap();
             assert_eq!(f.burst, 0.0);
-            assert!((f.half_width - 0.08).abs() < EPS, "the core only fades, it does not open");
+            assert!(
+                (f.half_width - 0.08).abs() < EPS,
+                "the core only fades, it does not open"
+            );
         }
         let mid = look(m.stage().unwrap(), 0.1, 0.5, false);
         assert!((mid.strength - 0.5).abs() < EPS);
@@ -503,7 +538,10 @@ mod tests {
             .into_iter()
             .map(|t| look(Stage::Processing, t, 0.5, true).half_width)
             .collect();
-        assert!(widths.iter().all(|w| (*w - REDUCED_WIDTH).abs() < EPS), "{widths:?}");
+        assert!(
+            widths.iter().all(|w| (*w - REDUCED_WIDTH).abs() < EPS),
+            "{widths:?}"
+        );
         let mut m = Machine::default();
         m.press(0.0);
         m.release(1.0);
@@ -539,7 +577,10 @@ mod tests {
         let up = s.step(1.0, 0.04);
         assert!(up > 0.6, "{up}");
         let down = s.step(0.0, 0.04);
-        assert!(down > 0.55 && down < up, "release is slow: {down} after {up}");
+        assert!(
+            down > 0.55 && down < up,
+            "release is slow: {down} after {up}"
+        );
         for _ in 0..200 {
             s.step(0.0, 0.05);
         }
@@ -548,7 +589,15 @@ mod tests {
 
     #[test]
     fn the_frame_is_black_at_the_ends_and_lit_in_the_middle() {
-        let wide = render_rgba(Look { half_width: 0.5, strength: 0.88, heat: 0.0, burst: 0.0 }, 32);
+        let wide = render_rgba(
+            Look {
+                half_width: 0.5,
+                strength: 0.88,
+                heat: 0.0,
+                burst: 0.0,
+            },
+            32,
+        );
         let px = |buf: &[u8], x: usize, y: usize| {
             let i = (y * 32 + x) * 4;
             [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
@@ -560,7 +609,15 @@ mod tests {
         // outside the capsule is transparent: the icon keeps its square slot
         assert_eq!(px(&wide, 16, 0)[3], 0);
         // the tight core lights less of the width
-        let tight = render_rgba(Look { half_width: 0.08, strength: 1.0, heat: 1.0, burst: 0.0 }, 32);
+        let tight = render_rgba(
+            Look {
+                half_width: 0.08,
+                strength: 1.0,
+                heat: 1.0,
+                burst: 0.0,
+            },
+            32,
+        );
         assert_eq!(px(&tight, 6, 16)[0], 0);
         assert!(px(&tight, 16, 16)[0] > 150);
     }

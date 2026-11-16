@@ -29,14 +29,14 @@ use windows_sys::Win32::UI::Shell::{
     NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    CreateIconIndirect, DestroyIcon, GetCursorPos, GetForegroundWindow, GetMessageW,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW,
     GetSystemMetrics, GetWindowThreadProcessId, LoadIconW, LoadImageW, PostQuitMessage,
     RegisterClassW, SetForegroundWindow, SystemParametersInfoW, TrackPopupMenu, TranslateMessage,
     EVENT_SYSTEM_FOREGROUND, HICON, HMENU, ICONINFO, IDI_APPLICATION, IMAGE_ICON, MF_CHECKED,
     MF_DISABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON,
-    SPI_GETCLIENTAREAANIMATION, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_DESTROY,
-    WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    SPI_GETCLIENTAREAANIMATION, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT, WM_APP,
+    WM_COMMAND, WM_DESTROY, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
 };
 
 /// Sent to the message-only window when the icon is clicked.
@@ -281,7 +281,13 @@ fn icon_from_rgba(rgba: &[u8], size: u32) -> HICON {
     unsafe {
         let color = CreateBitmap(size as i32, size as i32, 1, 32, bgra.as_ptr().cast());
         let mask = CreateBitmap(size as i32, size as i32, 1, 1, mask_bits.as_ptr().cast());
-        let info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+        let info = ICONINFO {
+            fIcon: 1,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: color,
+        };
         let icon = CreateIconIndirect(&info);
         DeleteObject(color);
         DeleteObject(mask);
