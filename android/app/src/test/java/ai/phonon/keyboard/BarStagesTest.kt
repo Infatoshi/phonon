@@ -3,6 +3,7 @@ package ai.phonon.keyboard
 import ai.phonon.keyboard.BarStages.Stage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -61,7 +62,8 @@ class BarStagesTest {
         val s = m.current as Stage.Dropped
         assertEquals(0.29, s.fromWidth, eps)
         assertEquals(0.29, m.frame(1.6, 0.5, false)!!.halfWidth, eps)
-        assertNull(m.frame(1.8, 0.5, false))
+        assertNotNull(m.frame(1.79, 0.5, false))
+        assertNull(m.frame(1.81, 0.5, false)) // 1.8 - 1.6 is just under 0.2 in doubles
         assertTrue(m.isRest)
     }
 
