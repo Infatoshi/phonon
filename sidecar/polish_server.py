@@ -527,6 +527,27 @@ def engine_probe_passed(output: str) -> bool:
     return len(spoken) - 1 <= len(words) <= len(spoken) + 2 and 2 * kept >= len(spoken)
 
 
+def _is_mlx_weight_file(name: str) -> bool:
+    return name == "model.safetensors.index.json" or name.endswith(".safetensors")
+
+
+def engine_only_files(
+    model: str, revision: str, pins: dict | None = None
+) -> list[str] | None:
+    """Pinned files needed to run the native engine and its tokenizer, omitting MLX
+    safetensors weights when the repository carries a native engine config. Returns
+    None when the full snapshot must be fetched up front."""
+    try:
+        from model_pins import expected_files
+    except ImportError:
+        from sidecar.model_pins import expected_files
+
+    expected = expected_files(model, revision, pins)
+    if REFINER_ENGINE_FILE not in expected:
+        return None
+    return [name for name in sorted(expected) if not _is_mlx_weight_file(name)]
+
+
 def has_mlx_weights(model_dir: str) -> bool:
     """config.json plus every safetensors shard the index names (or one file)."""
     if not os.path.isfile(os.path.join(model_dir, "config.json")):
@@ -547,7 +568,7 @@ def has_mlx_weights(model_dir: str) -> bool:
     )
 
 
-def snapshot_is_complete(model_dir: str) -> bool:
+def snapshot_is_complete(model_dir: str, only: list[str] | None = None) -> bool:
     """Every file this directory needs is on disk. An interrupted first download
     leaves a snapshot with some files missing; that one is downloaded again."""
     config = None
@@ -561,6 +582,8 @@ def snapshot_is_complete(model_dir: str) -> bool:
                 os.path.join(model_dir, config[key])
             ):
                 return False
+    if only is not None:
+        return all(os.path.isfile(os.path.join(model_dir, name)) for name in only)
     return has_mlx_weights(model_dir)
 
 
@@ -579,10 +602,17 @@ def _gigabytes(size: int) -> str:
     return f"{size / 1e9:.1f} GB"
 
 
-def resolve_model_dir(model: str, revision: str) -> str:
+def resolve_model_dir(
+    model: str, revision: str, *, engine_only: bool = False
+) -> str:
     """A local directory as it is; otherwise the pinned snapshot (model_pins.json),
     from the cache when it is complete (no network at all), else downloaded with
-    progress, and sha256-checked before it is used."""
+    progress, and sha256-checked before it is used.
+
+    With `engine_only`, repositories carrying `phonon_engine.json` fetch only the
+    native engine and tokenizer files (omitting MLX safetensors weights) so first
+    launch skips ~1.13 GB; a failing engine calls this again with `engine_only=False`
+    to fetch and hash-check the MLX weights lazily."""
     if os.path.isdir(model):
         return model
     try:
@@ -590,27 +620,35 @@ def resolve_model_dir(model: str, revision: str) -> str:
     except ImportError:
         from sidecar.model_pins import verified_snapshot
 
+    only = engine_only_files(model, revision) if engine_only else None
+    local_kwargs = {"allow_patterns": only} if only is not None else {}
+
     def cached_or_download() -> str:
         from huggingface_hub import snapshot_download
 
         try:
-            cached = snapshot_download(model, revision=revision, local_files_only=True)
-            if snapshot_is_complete(cached):
+            cached = snapshot_download(
+                model, revision=revision, local_files_only=True, **local_kwargs
+            )
+            if snapshot_is_complete(cached, only=only):
                 return cached
         except Exception:  # noqa: BLE001, S110 - not cached yet
             pass
-        return download_with_progress(model, revision)
+        return download_with_progress(model, revision, allow_patterns=only)
 
     return verified_snapshot(
         model,
         revision,
         cached_or_download,
         label="correction model",
-        refetch=lambda: download_with_progress(model, revision),
+        refetch=lambda: download_with_progress(model, revision, allow_patterns=only),
+        only=only,
     )
 
 
-def download_with_progress(model: str, revision: str) -> str:
+def download_with_progress(
+    model: str, revision: str, allow_patterns: list[str] | None = None
+) -> str:
     """snapshot_download, reporting bytes on disk once a second. Progress is the
     growth of the repository's blob directory in the Hugging Face cache, so it
     counts only bytes that actually arrived."""
@@ -623,10 +661,22 @@ def download_with_progress(model: str, revision: str) -> str:
     # HTTPS writes the blob as bytes arrive (and was faster in a 135 MB test).
     os.environ["HF_HUB_DISABLE_XET"] = "1"
     constants.HF_HUB_DISABLE_XET = True
+    snap_dir = os.path.join(
+        constants.HF_HUB_CACHE,
+        "models--" + model.replace("/", "--"),
+        "snapshots",
+        revision,
+    )
+    allowed = set(allow_patterns) if allow_patterns is not None else None
     total = 0
     try:
         info = HfApi().model_info(model, revision=revision, files_metadata=True)
-        total = sum(sibling.size or 0 for sibling in info.siblings or [])
+        total = sum(
+            sibling.size or 0
+            for sibling in info.siblings or []
+            if (allowed is None or sibling.rfilename in allowed)
+            and not os.path.isfile(os.path.join(snap_dir, sibling.rfilename))
+        )
     except Exception:  # noqa: BLE001, S110 - progress without a total is still progress
         pass
     blobs = os.path.join(
@@ -655,7 +705,10 @@ def download_with_progress(model: str, revision: str) -> str:
     reporter = threading.Thread(target=report, daemon=True)
     reporter.start()
     try:
-        return snapshot_download(model, revision=revision)
+        kwargs = (
+            {"allow_patterns": allow_patterns} if allow_patterns is not None else {}
+        )
+        return snapshot_download(model, revision=revision, **kwargs)
     finally:
         stop.set()
         reporter.join(timeout=2)
@@ -969,7 +1022,9 @@ def main() -> None:
     try:
         # A local directory (developer model comparisons, the user's own
         # refiner) is used as it is.
-        local_dir = resolve_model_dir(args.model, args.revision)
+        local_dir = resolve_model_dir(
+            args.model, args.revision, engine_only=bool(args.engine_binary)
+        )
     except Exception as error:  # noqa: BLE001
         emit({"ok": False, "error": f"correction model download failed: {error}"})
         return
@@ -1032,10 +1087,44 @@ def main() -> None:
             if engine is not None:
                 engine.close()
                 engine = None
-            if not has_mlx_weights(local_dir):
+            if not has_mlx_weights(local_dir) and os.path.isdir(args.model):
                 emit({"ok": False, "error": f"refiner engine start failed: {error}"})
                 return
             engine_fallback = str(error)
+    if engine_config is not None and engine_spec is None and engine_fallback is None:
+        engine_fallback = "no engine binary"
+    if engine is None:
+        if not has_mlx_weights(local_dir) and not os.path.isdir(args.model):
+            emit(
+                {
+                    "ok": True,
+                    "status": {
+                        "state": "loading",
+                        "message": (
+                            "The native engine is unavailable on this Mac; "
+                            "downloading the MLX correction model"
+                        ),
+                    },
+                }
+            )
+            try:
+                local_dir = resolve_model_dir(
+                    args.model, args.revision, engine_only=False
+                )
+            except Exception as download_error:  # noqa: BLE001
+                reason = (
+                    f"refiner engine start failed ({engine_fallback}); "
+                    if engine_fallback
+                    else ""
+                )
+                emit(
+                    {
+                        "ok": False,
+                        "error": f"{reason}MLX fallback download failed: {download_error}",
+                    }
+                )
+                return
+        if engine_fallback is not None:
             emit(
                 {
                     "ok": True,
@@ -1048,9 +1137,6 @@ def main() -> None:
                     },
                 }
             )
-    if engine_config is not None and engine_spec is None:
-        engine_fallback = "no engine binary"
-    if engine is None:
         emit(
             {
                 "ok": True,

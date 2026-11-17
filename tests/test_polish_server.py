@@ -15,6 +15,7 @@ from sidecar.polish_server import (
     draft_fields,
     draft_request,
     engine_command,
+    engine_only_files,
     engine_probe_passed,
     guard_output,
     has_mlx_weights,
@@ -526,3 +527,296 @@ def test_split_point_prefers_the_sentence_end_nearest_the_middle():
     assert (
         split_point(["a", "b", "c", "d."]) == 2
     )  # the final word's period is not a split
+
+
+def test_engine_only_files_skips_mlx_safetensors_for_native_refiner():
+    from sidecar.model_pins import load_pins
+
+    pins = load_pins()
+    refiner = "Infatoshi/phonon-refiner-1.7b"
+    rev = pins[refiner]["revision"]
+    only = engine_only_files(refiner, rev, pins)
+    assert only is not None
+    assert "model.safetensors" not in only
+    assert "model.safetensors.index.json" not in only
+    assert "phonon-refiner-1.7b-Q4_K_S-e4.gguf" in only
+    assert "phonon-refiner-1.7b-dflash2-drafter.gguf" in only
+    assert "tokenizer.json" in only
+    assert sum(pins[refiner]["files"][f]["size"] for f in only) == 1_221_230_710
+
+    gemma = "mlx-community/gemma-4-e2b-it-4bit"
+    assert engine_only_files(gemma, pins[gemma]["revision"], pins) is None
+
+    with pytest.raises(ValueError):
+        engine_only_files(refiner, "main", pins)
+
+
+def test_snapshot_completeness_for_engine_allowlist(tmp_path):
+    engine = {"target": "t.gguf", "draft": "d.gguf"}
+    (tmp_path / REFINER_ENGINE_FILE).write_text(json.dumps(engine))
+    (tmp_path / "t.gguf").write_text("")
+    (tmp_path / "d.gguf").write_text("")
+    (tmp_path / "tokenizer.json").write_text("{}")
+    only = [REFINER_ENGINE_FILE, "t.gguf", "d.gguf", "tokenizer.json"]
+    assert snapshot_is_complete(str(tmp_path), only=only)
+    assert not snapshot_is_complete(str(tmp_path))  # MLX mode still requires safetensors
+    assert not snapshot_is_complete(str(tmp_path), only=[*only, "config.json"])
+
+
+def _fake_refiner_repo(tmp_path):
+    import hashlib
+
+    repo = "Org/refiner"
+    rev = "c" * 40
+    files = {
+        REFINER_ENGINE_FILE: json.dumps({"target": "target.gguf", "draft": "draft.gguf"}).encode(),
+        REFINER_MARKER_FILE: json.dumps({"writing_modes": {"minimal": "m"}}).encode(),
+        "config.json": b'{"model_type": "lfm2"}',
+        "tokenizer.json": b"{}",
+        "tokenizer_config.json": b"{}",
+        "chat_template.jinja": b"{{ messages }}",
+        "target.gguf": b"gguf-target",
+        "draft.gguf": b"gguf-draft",
+        "model.safetensors": b"mlx-weights" * 50,
+        "model.safetensors.index.json": json.dumps(
+            {"weight_map": {"w": "model.safetensors"}}
+        ).encode(),
+    }
+    pins = {
+        repo: {
+            "revision": rev,
+            "files": {
+                name: {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                for name, data in files.items()
+            },
+        }
+    }
+    hub = tmp_path / "hub"
+    repo_dir = hub / f"models--{repo.replace('/', '--')}"
+    snap = repo_dir / "snapshots" / rev
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents=True)
+    return repo, rev, files, pins, hub, snap, blobs
+
+
+def test_engine_only_download_offline_reuse_and_lazy_mlx_fallback(tmp_path, monkeypatch):
+    import hashlib
+    import os
+    import types
+
+    from sidecar import model_pins, polish_server
+
+    repo, rev, files, pins, hub, snap, blobs = _fake_refiner_repo(tmp_path)
+    marker_dir = tmp_path / "markers"
+    monkeypatch.setattr(model_pins, "load_pins", lambda: pins)
+    monkeypatch.setattr(model_pins, "default_marker_dir", lambda: str(marker_dir))
+
+    downloads = []
+    local_checks = []
+    emitted = []
+    monkeypatch.setattr(polish_server, "emit", emitted.append)
+
+    def materialize(names):
+        snap.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            data = files[name]
+            digest = hashlib.sha256(data).hexdigest()
+            blob = blobs / digest
+            blob.write_bytes(data)
+            dst = snap / name
+            if not os.path.lexists(dst):
+                os.symlink(os.path.relpath(blob, snap), dst)
+
+    def fake_snapshot_download(model, revision=None, local_files_only=False, allow_patterns=None):
+        assert model == repo and revision == rev
+        if local_files_only:
+            local_checks.append(sorted(allow_patterns) if allow_patterns else None)
+            if not snap.is_dir():
+                raise FileNotFoundError("not cached")
+            return str(snap)
+        chosen = list(allow_patterns) if allow_patterns is not None else sorted(files)
+        downloads.append(sorted(chosen))
+        materialize(chosen)
+        return str(snap)
+
+    class FakeHfApi:
+        def model_info(self, model, revision=None, files_metadata=True):
+            return types.SimpleNamespace(
+                siblings=[
+                    types.SimpleNamespace(rfilename=name, size=len(data))
+                    for name, data in files.items()
+                ]
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(
+            snapshot_download=fake_snapshot_download,
+            HfApi=FakeHfApi,
+            constants=types.SimpleNamespace(HF_HUB_CACHE=str(hub), HF_HUB_DISABLE_XET=False),
+        ),
+    )
+
+    hashed = []
+    real_sha = model_pins.sha256_of
+    monkeypatch.setattr(
+        model_pins,
+        "sha256_of",
+        lambda p: hashed.append(os.path.basename(p)) or real_sha(p),
+    )
+
+    # 1. First launch with --engine-binary: fetches only engine + tokenizer files (never model.safetensors)
+    out = resolve_model_dir(repo, rev, engine_only=True)
+    assert out == str(snap)
+    assert len(downloads) == 1
+    assert "model.safetensors" not in downloads[0]
+    assert "model.safetensors.index.json" not in downloads[0]
+    assert not (snap / "model.safetensors").exists()
+    assert not has_mlx_weights(str(snap))
+    expected_engine_count = len(files) - 2
+    assert len(hashed) == expected_engine_count
+
+    # 2. Offline second launch: cache + marker hit with 0 downloads and 0 re-hashing
+    hashed.clear()
+    out2 = resolve_model_dir(repo, rev, engine_only=True)
+    assert out2 == str(snap)
+    assert len(downloads) == 1
+    assert hashed == []
+
+    # 3. Lazy MLX fallback: fetches and sha256-verifies the remaining MLX weights, keeping engine marker hits
+    out3 = resolve_model_dir(repo, rev, engine_only=False)
+    assert out3 == str(snap)
+    assert len(downloads) == 2
+    assert has_mlx_weights(str(snap))
+    assert sorted(hashed) == ["model.safetensors", "model.safetensors.index.json"]
+    marker = json.loads((marker_dir / "Org--refiner.json").read_text())
+    assert set(marker["files"]) == set(files)
+
+
+def test_main_engine_only_and_lazy_mlx_fallback(tmp_path, monkeypatch):
+    import os
+    import types
+
+    from sidecar import polish_server
+
+    def pipe_in(payload: bytes):
+        r, w = os.pipe()
+        os.write(w, payload)
+        os.close(w)
+        return os.fdopen(r, "r", encoding="utf-8")
+
+    repo, rev, _files, _pins, _hub, snap, _blobs = _fake_refiner_repo(tmp_path)
+    snap.mkdir(parents=True)
+    (snap / REFINER_ENGINE_FILE).write_text(json.dumps({"target": "target.gguf"}))
+    (snap / REFINER_MARKER_FILE).write_text(json.dumps({"writing_modes": {"minimal": "m"}}))
+    (snap / "config.json").write_text("{}")
+    (snap / "target.gguf").write_text("gguf")
+    pe = tmp_path / "pe"
+    pe.write_text("")
+
+    calls = []
+
+    def fake_resolve(model, revision, *, engine_only=False):
+        calls.append(engine_only)
+        if not engine_only:
+            (snap / "model.safetensors").write_text("mlx")
+        return str(snap)
+
+    monkeypatch.setattr(polish_server, "resolve_model_dir", fake_resolve)
+    monkeypatch.setattr(polish_server, "isolate_protocol", lambda: None)
+    p1 = pipe_in(b'{"command":"status"}\n{"command":"shutdown"}\n')
+    monkeypatch.setattr(polish_server, "PROTOCOL_IN", p1)
+    emitted = []
+    monkeypatch.setattr(polish_server, "emit", emitted.append)
+    monkeypatch.setattr(polish_server, "register_vendored_models", lambda: None)
+
+    class FailingEngine:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("metal unavailable")
+
+    monkeypatch.setattr(polish_server, "RefinerEngine", FailingEngine)
+
+    class FakeArray:
+        def __getitem__(self, _idx):
+            return self
+
+    class FakeModel:
+        def __call__(self, *_a, **_k):
+            return None
+
+    class FakeTokenizer:
+        chat_template = ""
+        bos_token = "<s>"
+        eos_token_id = 0
+        detokenizer = types.SimpleNamespace(reset=lambda: None)
+
+        def encode(self, text, add_special_tokens=False):
+            return [1, 2]
+
+        def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=False, **kw):
+            return f"{messages[0]['content']}|PHONON_USER_TURN|{messages[1]['content']}"
+
+    fake_mx = types.SimpleNamespace(
+        set_cache_limit=lambda _n: None,
+        array=lambda _x: FakeArray(),
+        eval=lambda _x: None,
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "mlx", types.SimpleNamespace(core=fake_mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_lm",
+        types.SimpleNamespace(load=lambda _d: (FakeModel(), FakeTokenizer())),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_lm.generate",
+        types.SimpleNamespace(stream_generate=lambda *a, **k: iter([])),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_lm.models",
+        types.SimpleNamespace(cache=types.SimpleNamespace(make_prompt_cache=lambda _m: [])),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_lm.models.cache",
+        types.SimpleNamespace(make_prompt_cache=lambda _m: []),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_lm.sample_utils",
+        types.SimpleNamespace(make_sampler=lambda **_k: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_lm.utils",
+        types.SimpleNamespace(load_tokenizer=lambda _d: FakeTokenizer()),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["polish_server.py", "--model", repo, "--revision", rev, "--engine-binary", str(pe)],
+    )
+    polish_server.main()
+    p1.close()
+    assert calls == [True, False]
+    assert any(
+        m.get("status", {}).get("message", "").endswith("downloading the MLX correction model")
+        for m in emitted
+    )
+    assert any(m.get("status", {}).get("state") == "ready" for m in emitted)
+
+    # Non-engine runs fetch everything up front (engine_only=False once)
+    calls.clear()
+    emitted.clear()
+    p2 = pipe_in(b'{"command":"status"}\n{"command":"shutdown"}\n')
+    monkeypatch.setattr(polish_server, "PROTOCOL_IN", p2)
+    monkeypatch.setattr(sys, "argv", ["polish_server.py", "--model", repo, "--revision", rev])
+    polish_server.main()
+    p2.close()
+    assert calls == [False]
+    assert any(m.get("status", {}).get("state") == "ready" for m in emitted)
