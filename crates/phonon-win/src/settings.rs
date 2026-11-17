@@ -25,6 +25,7 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
 use crate::paths;
+#[cfg(test)]
 use crate::polish::DEFAULT_MODE;
 
 pub const FILE: &str = "settings.json";
@@ -32,6 +33,7 @@ pub const FILE: &str = "settings.json";
 pub const CORRUPT_FILE: &str = "settings.json.corrupt";
 
 pub const SHORTCUT_MODE: &str = "shortcut_mode";
+#[cfg(test)]
 pub const WRITING_STYLE: &str = "writing_style";
 pub const LOCAL_HISTORY: &str = "local_history";
 pub const HISTORY_RETENTION_DAYS: &str = "history_retention_days";
@@ -185,8 +187,8 @@ impl Settings {
             .or_else(|| self.legacy_shortcut.clone())
     }
 
-    /// The refiner mode for the next dictation. The Mac's "app" (follow the
-    /// focused app) cannot be honoured here yet and means minimal.
+    /// Legacy setting reader (writing mode now follows the focused app).
+    #[cfg(test)]
     pub fn writing_style(&self) -> &'static str {
         match self.string(WRITING_STYLE) {
             Some(text) => crate::mode::parse(text).unwrap_or(DEFAULT_MODE),
