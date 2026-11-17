@@ -73,7 +73,17 @@ final class ModelStoreTests: XCTestCase {
     func testRetriesADroppedConnectionFromWhereItStopped() async throws {
         let data = blob(400_000)
         let f = pinned("model.mil", data)
-        server.cut(after: [100_000, 100_000])
+        let partPath = partURL(f).path
+        let targets: [Int64] = [100_000, 200_000]
+        server.cut(after: [100_000, 100_000]) { cutIndex in
+            let target = targets[cutIndex]
+            let deadline = Date().addingTimeInterval(2)
+            while Date() < deadline {
+                let size = ((try? FileManager.default.attributesOfItem(atPath: partPath))?[.size] as? NSNumber)?.int64Value ?? 0
+                if size >= target { break }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
         try await store().ensure([f])
         XCTAssertEqual(try Data(contentsOf: store().file(f)), data)
         XCTAssertEqual(server.requests.map(\.range), [nil, "bytes=100000-", "bytes=200000-"])

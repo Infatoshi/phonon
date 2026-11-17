@@ -10,7 +10,7 @@ final class TestServer: @unchecked Sendable {
     private let lock = NSLock()
     private var _files: [String: Data] = [:]
     private var _requests: [(path: String, range: String?)] = []
-    private var _cutAfter: [Int] = []
+    private var _cutAfter: [(bytes: Int, beforeClose: (@Sendable () -> Void)?)] = []
     private var _ignoreRange = false
     private(set) var port: UInt16 = 0
 
@@ -36,7 +36,14 @@ final class TestServer: @unchecked Sendable {
     func set(_ path: String, _ data: Data) { lock.withLock { _files[path] = data } }
     var requests: [(path: String, range: String?)] { lock.withLock { _requests } }
     /// The next responses send only this many body bytes each, then close the connection.
-    func cut(after bytes: [Int]) { lock.withLock { _cutAfter = bytes } }
+    /// When `beforeClose` is given, it runs after the bytes are sent and before the server closes the connection.
+    func cut(after bytes: [Int], beforeClose: (@Sendable (Int) -> Void)? = nil) {
+        lock.withLock {
+            _cutAfter = bytes.enumerated().map { idx, n in
+                (n, beforeClose.map { cb in { cb(idx) } })
+            }
+        }
+    }
     var ignoreRange: Bool {
         get { lock.withLock { _ignoreRange } }
         set { lock.withLock { _ignoreRange = newValue } }
@@ -71,7 +78,7 @@ final class TestServer: @unchecked Sendable {
             let kv = line.split(separator: ":", maxSplits: 1)
             if kv.count == 2, kv[0].lowercased() == "range" { range = kv[1].trimmingCharacters(in: .whitespaces) }
         }
-        let (body, cut, ignore): (Data?, Int?, Bool) = lock.withLock {
+        let (body, cut, ignore): (Data?, (bytes: Int, beforeClose: (@Sendable () -> Void)?)?, Bool) = lock.withLock {
             _requests.append((path, range))
             let cut = _cutAfter.isEmpty || path.hasPrefix("redirect/") ? nil : _cutAfter.removeFirst()
             return (_files[path], cut, _ignoreRange)
@@ -99,11 +106,29 @@ final class TestServer: @unchecked Sendable {
             ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes \(start)-\(body.count - 1)/\(body.count)\r\n"
             : "HTTP/1.1 200 OK\r\n"
         header += "Content-Length: \(slice.count)\r\nConnection: close\r\n\r\n"
-        let sent = cut.map { Data(slice.prefix($0)) } ?? Data(slice)
-        send(c, header, sent)
+        let sent = cut.map { Data(slice.prefix($0.bytes)) } ?? Data(slice)
+        send(c, header, sent, beforeClose: cut?.beforeClose)
     }
 
-    private func send(_ c: NWConnection, _ header: String, _ body: Data) {
-        c.send(content: Data(header.utf8) + body, completion: .contentProcessed { _ in c.cancel() })
+    private func send(_ c: NWConnection, _ header: String, _ body: Data, beforeClose: (@Sendable () -> Void)? = nil) {
+        let payload = Data(header.utf8) + body
+        if let beforeClose {
+            // Keep the connection open until the client has processed the response headers and written the cut bytes;
+            // closing immediately can make URLSession abort the task before delivering buffered body bytes to its delegate.
+            c.send(content: payload, isComplete: false, completion: .contentProcessed { _ in
+                DispatchQueue.global().async {
+                    beforeClose()
+                    c.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in
+                        c.cancel()
+                    })
+                }
+            })
+        } else {
+            c.send(content: payload, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in
+                c.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, _, _ in
+                    c.cancel()
+                }
+            })
+        }
     }
 }
