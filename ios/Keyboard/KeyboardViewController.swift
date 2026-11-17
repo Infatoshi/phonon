@@ -72,7 +72,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        // stops the idle fluid's redraw; a dictation still under way keeps its light, so the gather or fade
+        // a dictation still under way keeps its light, so the gather or fade
         // still run when its result comes
         model.offScreen(dictating: waiting || pendingMic)
     }

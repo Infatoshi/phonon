@@ -118,6 +118,30 @@ final class TalkBarTests: XCTestCase {
         XCTAssertEqual(Double(reference.barRight + 1) / scale, Double(width), accuracy: 1)
     }
 
+    /// At rest the bar is one flat colour: no drifting soft light, no text.
+    func testRestingBarIsOneFlatColour() throws {
+        for state in [TalkBarFill.Mode.idle, .noAccess] {
+            let image = try render(TalkBarFill(state: state, level: 0.5).frame(width: width, height: 42))
+            var rgba = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            rgba.withUnsafeMutableBytes { raw in
+                let ctx = CGContext(data: raw.baseAddress, width: image.width, height: image.height,
+                                    bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            }
+            // inside the capsule, clear of its round ends and hairline edge
+            var colours = Set<[UInt8]>()
+            for y in stride(from: image.height / 4, to: image.height * 3 / 4, by: 3) {
+                for x in stride(from: image.height, to: image.width - image.height, by: 7) {
+                    let i = (y * image.width + x) * 4
+                    colours.insert(Array(rgba[i..<i + 4]))
+                }
+            }
+            XCTAssertEqual(colours.count, 1, "\(state): \(colours.count) colours at rest")
+        }
+    }
+
     func testSideControlIsStopWhileDictatingAndSettingsOtherwise() {
         XCTAssertEqual(TalkBarSideControl(phase: .listening), .stop)
         XCTAssertEqual(TalkBarSideControl(phase: .working), .stop)

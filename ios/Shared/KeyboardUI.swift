@@ -25,9 +25,8 @@ enum KeyboardPhase: Equatable {
 
 final class KeyboardModel: ObservableObject {
     @Published var phase: KeyboardPhase = .needsSession
-    @Published var status = "" { didSet { statusSeq += 1 } }
-    /// Bumped on every `status` assignment, so the bar shows a status again even when its text repeats.
-    @Published var statusSeq = 0
+    /// The last status ("Didn't catch that", "Cancelled"...): never drawn on the bar, read by VoiceOver in its hint.
+    @Published var status = ""
     @Published var levels: [CGFloat] = Array(repeating: 0, count: 28)
     @Published var mode: WritingMode = .minimal
     @Published var canUndo = false
@@ -35,9 +34,9 @@ final class KeyboardModel: ObservableObject {
     @Published var latched = false
     /// Bumped by the host when the text around the cursor changes (re-evaluates auto-capitalisation).
     @Published var contextVersion = 0
-    /// False while the keyboard is off screen; the idle fluid stops redrawing.
+    /// False while the keyboard is off screen; the light's widths hold still.
     @Published var visible = true
-    /// Low Power Mode: the idle fluid holds still.
+    /// Low Power Mode: the light's widths hold still.
     @Published var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     /// The dictation's stage for the talk bar's light (BarStages.swift), replaced at each real event.
     @Published var beat = BarBeat.rest
@@ -75,7 +74,7 @@ final class KeyboardModel: ObservableObject {
         beat = beat.processing(at: Date())
     }
 
-    /// The keyboard went off screen. The idle fluid stops; the light returns to rest only when no dictation is under
+    /// The keyboard went off screen. The light returns to rest only when no dictation is under
     /// way, so one still running keeps its beat and its gather or fade still happen.
     func offScreen(dictating: Bool) {
         visible = false
@@ -168,21 +167,12 @@ struct KeyboardView: View {
 
     private var off: Bool { model.phase == .needsSession || model.phase == .needsAccess }
 
-    /// The states whose bar is the plain idle fluid, where a status can flash: app not running looks like ready.
-    private var resting: Bool { model.phase == .ready || model.phase == .needsSession }
-
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// A status shown over the resting bar for about 2 s ("Didn't catch that", "Cancelled"), then faded out;
-    /// `flashID` tells a stale timer from the current one.
-    @State private var flash: String?
-    @State private var flashID = 0
-
-    /// One capsule of fixed size in every state; only the fill changes. At rest it is a grey, softly blurred fluid
-    /// that drifts inside the capsule (no label). Dictating, it turns red, brighter with your voice, then breathes
-    /// while the text is written. With the app not running it looks the same (a tap opens Phonon). Only no Full
-    /// Access keeps a short label over a dimmed fluid, since it needs an instruction; at rest a new status shows the
-    /// same way for about 2 s.
+    /// One capsule of fixed size in every state; only the fill changes, and it shows colours only: a plain dark
+    /// capsule at rest, the ember light while dictating. No status text is drawn on it (VoiceOver still reads the
+    /// status in the hint). With the app not running it looks the same (a tap opens Phonon). Only no Full Access
+    /// keeps a short label, since it needs an instruction to recover.
     private var talkBar: some View {
         let animate = model.visible && !model.lowPower && !reduceMotion
         return TalkBarFill(state: TalkBarFill.Mode(phase: model.phase), level: voiceLevel, animate: animate,
@@ -191,15 +181,7 @@ struct KeyboardView: View {
             .onChange(of: reduceMotion) { _, _ in model.reducedMotion = reduceMotion || model.lowPower }
             .onChange(of: model.lowPower) { _, _ in model.reducedMotion = reduceMotion || model.lowPower }
             .overlay {
-                if model.phase == .needsAccess {
-                    barText(barLabel)
-                } else if let flash, resting {
-                    barText(flash).transition(.opacity)
-                }
-            }
-            .onChange(of: model.statusSeq) { _, _ in showStatus() }
-            .onChange(of: model.phase) { _, _ in
-                if !resting { clearFlash() }
+                if model.phase == .needsAccess { barText(barLabel) }
             }
             .contentShape(Capsule())
         .gesture(
@@ -212,7 +194,6 @@ struct KeyboardView: View {
                     } else if model.phase == .listening {
                         press = .stopping  // locked on: this tap finishes it
                     } else if model.phase == .ready {
-                        clearFlash()
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         press = .starting
                         model.latched = false
@@ -253,28 +234,6 @@ struct KeyboardView: View {
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .padding(.horizontal, 16)
-    }
-
-    /// Show the new status over the ready bar for about 2 s; a newer one replaces it and restarts the timer.
-    private func showStatus() {
-        guard resting, !model.status.isEmpty else {
-            clearFlash()
-            return
-        }
-        flashID += 1
-        let id = flashID
-        withAnimation(.easeOut(duration: 0.18)) { flash = model.status }
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
-            guard flashID == id else { return }
-            withAnimation(.easeOut(duration: 0.4)) { flash = nil }
-        }
-    }
-
-    /// Hide the status at once (a recording is starting) and void any pending fade.
-    private func clearFlash() {
-        flashID += 1
-        flash = nil
     }
 
     /// The live input level the capsule lights with: the mean of the newest three meter samples.
@@ -581,7 +540,7 @@ enum TalkBarSideControl: Equatable {
 }
 
 /// The talk bar's fill. It takes exactly the frame it is given in every state and audio level; voice and state show
-/// only in colour and brightness. Idle: the grey fluid. Then the stages of BarStages.swift: ignite on the press,
+/// only in colour and brightness. Idle: a plain dark capsule. Then the stages of BarStages.swift: ignite on the press,
 /// listening (brightness follows the smoothed level), the gather into a tight core while the text is written, the
 /// fade back to rest when it is inserted. No scale, size or layout ever depends on the stage or the level.
 struct TalkBarFill: View {
@@ -633,7 +592,7 @@ struct TalkBarFill: View {
         let moving = drawn.settleSeconds(reduceMotion: reduced).map { Date().timeIntervalSince(drawn.since) < $0 } ?? false
         let running = frozenAt == nil && moving && settledBeat != drawn
         return ZStack {
-            IdleFluid(animate: animate && !active, dim: state == .noAccess)
+            RestingBar()
                 .opacity(active ? 0 : 1)
             if active {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !running)) { context in
@@ -674,47 +633,13 @@ struct TalkBarFill: View {
     }
 }
 
-/// The talk bar at rest: grey light drifting slowly inside a dark capsule, like smoke under frosted glass. Each blob
-/// is a radial gradient (soft by construction, so no blur pass or offscreen texture), redrawn at most 20 times a
-/// second and only while `animate` (keyboard on screen, no Reduce Motion, no Low Power Mode); otherwise it holds
-/// one still frame.
-struct IdleFluid: View {
-    let animate: Bool
-    var dim = false
-
-    /// x centre (fraction of width), drift amplitudes, angular speeds (rad/s, periods 7 to 15 s), phase, radius
-    /// (fraction of height), brightness.
-    private struct Blob { let x, ax, ay, sx, sy, phase, r, white: Double }
-    private static let blobs: [Blob] = [
-        Blob(x: 0.22, ax: 0.14, ay: 0.30, sx: 0.47, sy: 0.71, phase: 0.0, r: 1.25, white: 0.20),
-        Blob(x: 0.55, ax: 0.18, ay: 0.35, sx: 0.41, sy: 0.53, phase: 2.1, r: 1.45, white: 0.15),
-        Blob(x: 0.82, ax: 0.12, ay: 0.28, sx: 0.67, sy: 0.43, phase: 4.2, r: 1.10, white: 0.18),
-        Blob(x: 0.40, ax: 0.22, ay: 0.40, sx: 0.83, sy: 0.61, phase: 1.3, r: 0.80, white: 0.10),
-    ]
-
+/// The talk bar at rest: a plain dark capsule with a hairline edge. One flat colour, nothing soft or moving, so it
+/// draws once and never redraws.
+struct RestingBar: View {
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !animate)) { context in
-            let t = animate ? context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600) : 0
-            Canvas { g, size in
-                g.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(hex: 0x1D1D1F)))
-                let scale = dim ? 0.6 : 1
-                for b in Self.blobs {
-                    let c = CGPoint(x: size.width * (b.x + b.ax * sin(t * b.sx + b.phase)),
-                                    y: size.height * (0.5 + b.ay * cos(t * b.sy + b.phase)))
-                    let r = size.height * b.r
-                    // stretched sideways so the blobs read as a flowing band, not spots
-                    var blob = g
-                    blob.translateBy(x: c.x, y: c.y)
-                    blob.scaleBy(x: 2.2, y: 1)
-                    blob.fill(Path(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r)),
-                              with: .radialGradient(Gradient(colors: [Color.white.opacity(b.white * scale),
-                                                                      Color.white.opacity(0)]),
-                                                    center: .zero, startRadius: 0, endRadius: r))
-                }
-            }
-        }
-        .clipShape(Capsule(style: .continuous))
-        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        Capsule(style: .continuous)
+            .fill(Color(hex: 0x1D1D1F))
+            .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
     }
 }
 
