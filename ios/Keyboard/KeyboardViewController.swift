@@ -66,7 +66,10 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         wishedThisAppearance = false  // a wish from the last appearance (sent to Phonon) may now start
         model.visible = true
         model.showGlobe = needsInputModeSwitchKey
-        model.mode = WritingMode(rawValue: IPC.string(IPC.modeKey) ?? "") ?? model.mode
+        let (host, _) = hostBundleID()
+        let resolved = WritingMode.forHostBundleID(host)
+        model.mode = resolved
+        IPC.set(resolved.rawValue, IPC.modeKey)
         checkSession()
     }
 
@@ -310,6 +313,9 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         if model.beat.stage != .listening { model.ignite() }  // a start that did not come from a press (resumed from the app)
         model.levels = Array(repeating: 0, count: model.levels.count)
         model.phase = .listening
+        if let host = hostBundleID().0 {
+            model.mode = WritingMode.forHostBundleID(host)
+        }
         IPC.set(model.mode.rawValue, IPC.modeKey)
         IPC.set(contextBefore, IPC.beforeCursor)  // before start: the app reads it when the utterance begins
         let t = DictationToken.make()

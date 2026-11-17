@@ -20,26 +20,49 @@ fun android.app.Activity.lightSystemBars() {
 }
 
 /** The writing modes the refiner was trained with, as the iPhone's WritingMode (ios/Shared/Theme.swift): same keys,
- *  titles and descriptions. The choice is stored under the key "mode" (the iPhone's IPC.modeKey); default minimal. */
+ *  resolved automatically from the focused app's package name. */
 object WritingModes {
-    data class Mode(val key: String, val title: String, val blurb: String)
+    fun forPackage(packageName: String?): String {
+        val pkg = packageName?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return "minimal"
+        return when {
+            pkg in PROMPT_PACKAGES -> "prompt"
+            pkg in FORMAL_PACKAGES -> "formal"
+            pkg in CASUAL_PACKAGES -> "casual"
+            else -> "minimal"
+        }
+    }
 
-    val ALL = listOf(
-        Mode("minimal", "Minimal", "Notes and documents. Your words, cleaned up."),
-        Mode("casual", "Casual", "Chat messages. Relaxed, lowercase is fine."),
-        Mode("formal", "Formal", "Email and documents. Full sentences."),
-        Mode("prompt", "Prompt", "Instructions to an AI. Clear and direct."),
+    private val CASUAL_PACKAGES = setOf(
+        "com.google.android.apps.messaging",
+        "com.samsung.android.messaging",
+        "com.whatsapp",
+        "com.whatsapp.w4b",
+        "com.slack",
+        "com.discord",
+        "org.telegram.messenger",
+        "org.thoughtcrime.securesms",
+        "com.facebook.orca",
+        "com.microsoft.teams",
+        "com.instagram.android",
+        "com.beeper.android",
+        "jp.naver.line.android",
     )
 
-    private const val PREFS = "phonon"
-    const val KEY = "mode"
+    private val FORMAL_PACKAGES = setOf(
+        "com.google.android.gm",
+        "com.microsoft.office.outlook",
+        "com.readdle.spark",
+        "ch.protonmail.android",
+        "com.superhuman.mail",
+        "com.yahoo.mobile.client.android.mail",
+    )
 
-    fun get(c: Context): String {
-        val m = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null)
-        return if (ALL.any { it.key == m }) m!! else "minimal"
-    }
-
-    fun set(c: Context, key: String) {
-        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, key).apply()
-    }
+    private val PROMPT_PACKAGES = setOf(
+        "com.openai.chatgpt",
+        "com.anthropic.claude",
+        "ai.perplexity.app.android",
+        "com.google.android.apps.bard",
+        "com.microsoft.copilot",
+        "com.termux",
+    )
 }

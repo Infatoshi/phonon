@@ -26,9 +26,6 @@ pub enum Command {
 struct PhononTray {
     status: String,
     recording: bool,
-    /// The writing mode the menu shows checked; the file in the data folder is
-    /// what dictations read.
-    mode: &'static str,
     commands: Sender<Command>,
     /// Local history as the menu shows it; the worker owns the files (`set_history`).
     history: bool,
@@ -127,20 +124,6 @@ impl PhononTray {
     }
 }
 
-impl PhononTray {
-    /// Save a pick from the "Writing mode" submenu. A small file write, so it
-    /// happens right here in the menu callback and the next dictation sees it.
-    fn pick_mode(&mut self, index: usize) {
-        let Some(mode) = crate::mode::names().nth(index) else {
-            return;
-        };
-        match crate::mode::choose(mode) {
-            Ok(()) => self.mode = mode,
-            Err(error) => eprintln!("phonon: could not change the writing mode: {error:#}"),
-        }
-    }
-}
-
 impl ksni::Tray for PhononTray {
     fn id(&self) -> String {
         "phonon".into()
@@ -173,7 +156,7 @@ impl ksni::Tray for PhononTray {
         let _ = self.commands.send(Command::Toggle);
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
+        use ksni::menu::StandardItem;
         let item = |label: &str, command: Command| {
             StandardItem {
                 label: label.into(),
@@ -202,24 +185,6 @@ impl ksni::Tray for PhononTray {
                 Command::Toggle,
             ),
             self.copy_last_item(),
-            SubMenu {
-                label: format!("Writing mode: {}", crate::mode::label(self.mode)),
-                submenu: vec![RadioGroup {
-                    selected: crate::mode::names()
-                        .position(|name| name == self.mode)
-                        .unwrap_or(0),
-                    select: Box::new(|t: &mut Self, index| t.pick_mode(index)),
-                    options: crate::mode::names()
-                        .map(|name| RadioItem {
-                            label: crate::mode::menu_label(name),
-                            ..Default::default()
-                        })
-                        .collect(),
-                }
-                .into()],
-                ..Default::default()
-            }
-            .into(),
             StandardItem {
                 label: "Settings\u{2026}".into(),
                 activate: Box::new(|_: &mut Self| crate::window::open()),
@@ -278,7 +243,6 @@ pub fn create(commands: Sender<Command>) {
     let tray = PhononTray {
         status: "starting".into(),
         recording: false,
-        mode: crate::mode::current(),
         commands,
         history: false,
         recent: Vec::new(),
@@ -377,15 +341,6 @@ pub fn refresh() {
     if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
         if let Some(handle) = guard.as_ref() {
             handle.update(|_| {});
-        }
-    }
-}
-
-/// Show this writing mode checked (it may have changed in the settings window).
-pub fn set_mode(mode: &'static str) {
-    if let Some(Ok(guard)) = HANDLE.get().map(|h| h.lock()) {
-        if let Some(handle) = guard.as_ref() {
-            handle.update(move |t| t.mode = mode);
         }
     }
 }

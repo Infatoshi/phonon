@@ -302,12 +302,12 @@ struct SuggestionCard: View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.confirmation ?? model.title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.white)
                     .lineLimit(2)
                 if model.confirmation == nil {
                     Text(model.detail)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12.5))
                         .foregroundColor(.white.opacity(0.6))
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -339,7 +339,7 @@ struct SuggestionCard: View {
     {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(prominent ? .black : .white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)

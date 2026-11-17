@@ -2521,6 +2521,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
 
+        if appStore.settings.writingStyle != .app {
+            appStore.updateSettings { $0.writingStyle = .app }
+        }
         promptPermissions()
         showMainWindow()
         startEngine()

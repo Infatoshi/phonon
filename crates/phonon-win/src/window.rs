@@ -15,7 +15,7 @@ use eframe::egui;
 
 use crate::history::{self, Entry};
 use crate::settings::{self, ClipboardAfterPaste, Settings};
-use crate::{autostart, dictionary, manifest, mode, paths, single};
+use crate::{autostart, dictionary, manifest, paths, single};
 
 pub const TITLE: &str = "Phonon settings";
 
@@ -140,8 +140,8 @@ struct Fit {
 }
 
 impl Fit {
-    const INNER: egui::Vec2 = egui::vec2(720.0, 620.0);
-    const MIN: egui::Vec2 = egui::vec2(560.0, 420.0);
+    const INNER: egui::Vec2 = egui::vec2(780.0, 660.0);
+    const MIN: egui::Vec2 = egui::vec2(580.0, 440.0);
     /// The title bar and frame around the inner size (Windows 11: a 31-point
     /// title bar and an 8-point resize border below), with room to spare.
     const FRAME: egui::Vec2 = egui::vec2(16.0, 44.0);
@@ -215,11 +215,11 @@ fn work_area() -> Option<egui::Rect> {
 fn text_sizes(ctx: &egui::Context) {
     use egui::{FontFamily, FontId, TextStyle};
     let sizes = [
-        (TextStyle::Heading, 20.0, FontFamily::Proportional),
-        (TextStyle::Body, 14.5, FontFamily::Proportional),
-        (TextStyle::Button, 14.5, FontFamily::Proportional),
-        (TextStyle::Small, 12.0, FontFamily::Proportional),
-        (TextStyle::Monospace, 13.5, FontFamily::Monospace),
+        (TextStyle::Heading, 24.0, FontFamily::Proportional),
+        (TextStyle::Body, 17.0, FontFamily::Proportional),
+        (TextStyle::Button, 17.0, FontFamily::Proportional),
+        (TextStyle::Small, 14.5, FontFamily::Proportional),
+        (TextStyle::Monospace, 15.5, FontFamily::Monospace),
     ];
     ctx.all_styles_mut(|style| {
         for (text_style, size, family) in sizes.clone() {
@@ -227,8 +227,8 @@ fn text_sizes(ctx: &egui::Context) {
                 .text_styles
                 .insert(text_style, FontId::new(size, family));
         }
-        style.spacing.interact_size.y = 24.0;
-        style.spacing.item_spacing.y = 6.0;
+        style.spacing.interact_size.y = 28.0;
+        style.spacing.item_spacing.y = 8.0;
     });
 }
 
@@ -634,7 +634,6 @@ struct App {
     root: PathBuf,
     page: Page,
     shortcut: String,
-    style: &'static str,
     clipboard: ClipboardAfterPaste,
     history_on: bool,
     retention: u32,
@@ -690,7 +689,6 @@ impl App {
             root,
             page,
             shortcut: settings::DEFAULT_SHORTCUT.into(),
-            style: crate::polish::DEFAULT_MODE,
             clipboard: ClipboardAfterPaste::Restore,
             history_on: false,
             retention: 0,
@@ -818,7 +816,7 @@ impl App {
             let field = ui.add(
                 egui::TextEdit::singleline(&mut self.new_entry)
                     .hint_text("Kubernetes   or   kates => k8s")
-                    .desired_width((ui.available_width() - 70.0).max(160.0)),
+                    .desired_width((ui.available_width() - 84.0).max(160.0)),
             );
             let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if ui.button("Add").clicked() || enter {
@@ -874,7 +872,6 @@ impl App {
             .shortcut()
             .filter(|name| settings::SHORTCUTS.iter().any(|(n, _)| n == name))
             .unwrap_or_else(|| settings::DEFAULT_SHORTCUT.into());
-        self.style = s.writing_style();
         self.clipboard = s.clipboard_after_paste();
         self.history_on = s.local_history();
         self.retention = s.history_retention_days();
@@ -939,27 +936,6 @@ impl App {
                 if picked != app.shortcut {
                     app.shortcut = picked.clone();
                     app.save(settings::SHORTCUT_MODE, picked.into());
-                }
-            },
-            self,
-        );
-        row(
-            ui,
-            "Writing style",
-            "How the correction model rewrites what you said.",
-            |ui, app: &mut Self| {
-                let mut picked = app.style;
-                egui::ComboBox::from_id_salt("style")
-                    .selected_text(mode::label(app.style))
-                    .width(200.0)
-                    .show_ui(ui, |ui| {
-                        for name in mode::names() {
-                            ui.selectable_value(&mut picked, name, mode::label(name));
-                        }
-                    });
-                if picked != app.style {
-                    app.style = picked;
-                    app.save(settings::WRITING_STYLE, picked.into());
                 }
             },
             self,
@@ -1215,7 +1191,7 @@ fn copy(_ctx: &egui::Context, text: String) -> Result<()> {
 
 fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(10.0);
-    ui.label(egui::RichText::new(text).strong().size(15.0));
+    ui.label(egui::RichText::new(text).strong().size(18.0));
     ui.separator();
 }
 
@@ -1250,7 +1226,7 @@ impl eframe::App for App {
         let palette = theme::of(ui.visuals().dark_mode);
         egui::Panel::left("pages")
             .resizable(false)
-            .exact_size(150.0)
+            .exact_size(176.0)
             .frame(
                 egui::Frame::side_top_panel(ui.style())
                     .fill(palette.side)
@@ -1278,7 +1254,7 @@ impl eframe::App for App {
                     // the whole row is the target, text on the left, as the Mac's sidebar
                     let item =
                         egui::Button::selectable(self.page == page, (label, egui::Atom::grow()))
-                            .min_size(egui::vec2(ui.available_width(), 30.0));
+                            .min_size(egui::vec2(ui.available_width(), 36.0));
                     if ui.add(item).clicked() {
                         self.page = page;
                         self.confirm_clear = false;
@@ -1374,7 +1350,6 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut app = App::blank(root.clone(), Page::General);
         app.save(settings::SHORTCUT_MODE, "f13".into());
-        app.save(settings::WRITING_STYLE, "prompt".into());
         app.save(
             settings::CLIPBOARD_AFTER_PASTE,
             ClipboardAfterPaste::Dictation.name().into(),
@@ -1385,9 +1360,6 @@ mod tests {
         let s = Settings::load_in(&root);
         // the key the hook installs
         assert_eq!(s.shortcut().as_deref(), Some("f13"));
-        // the mode in the prompt
-        let prompt = crate::polish::prompt("hello", s.writing_style());
-        assert!(prompt.contains(crate::polish::mode_line("prompt")));
         // history on, and the retention the next append applies
         assert!(history::enabled_in(&root));
         assert_eq!(s.history_retention_days(), 7);
@@ -1398,7 +1370,6 @@ mod tests {
         );
         app.reload_settings();
         assert_eq!(app.shortcut, "f13");
-        assert_eq!(app.style, "prompt");
         assert!(app.history_on);
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -193,12 +193,14 @@ struct InsightsView: View {
                                         AppIcons.name($0.bundleID, fallback: $0.name)
                                     } ?? "None yet"
                                 )
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.system(size: 19, weight: .semibold))
                                 .lineLimit(1)
                             }
-                            .frame(height: 28)
+                            .frame(height: 34)
                             Text("where you dictate most")
-                                .font(.system(size: 12)).foregroundStyle(EmberTheme.mute)
+                                .font(.system(size: 13.5)).foregroundStyle(EmberTheme.mute)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
                         }
                     }
                     tile(value: data.wordsFixed.formatted(), label: "words Phonon fixed")
@@ -246,10 +248,12 @@ struct InsightsView: View {
     private func tile(value: String, label: String) -> some View {
         Panel {
             VStack(alignment: .leading, spacing: 3) {
-                Text(value).font(.mono(26, .semibold)).tracking(-0.5).lineLimit(1)
+                Text(value).font(.mono(30, .semibold)).tracking(-0.5).lineLimit(1)
                     .minimumScaleFactor(0.6)
-                    .frame(height: 28, alignment: .leading)
-                Text(label).font(.system(size: 12)).foregroundStyle(EmberTheme.mute)
+                    .frame(height: 34, alignment: .leading)
+                Text(label).font(.system(size: 13.5)).foregroundStyle(EmberTheme.mute)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
         }
     }
@@ -267,8 +271,8 @@ struct ChartPanel<Content: View>: View {
     var body: some View {
         Panel(padding: 16) {
             VStack(alignment: .leading, spacing: 0) {
-                Text(title).font(.system(size: 14, weight: .semibold))
-                Text(caption).font(.system(size: 12)).foregroundStyle(EmberTheme.mute)
+                Text(title).font(.system(size: 16.5, weight: .semibold))
+                Text(caption).font(.system(size: 14)).foregroundStyle(EmberTheme.mute)
                     .padding(.top, 2).padding(.bottom, 12)
                 content
             }
@@ -287,7 +291,7 @@ struct RampLegend: View {
             }
             Text("more")
         }
-        .font(.system(size: 11))
+        .font(.system(size: 12.5))
         .foregroundStyle(EmberTheme.mute)
         .padding(.top, 8)
     }
@@ -300,9 +304,9 @@ struct ChartTip: View {
     var body: some View {
         HStack(spacing: 4) {
             Text(label)
-            Text(value).font(.mono(12, .semibold))
+            Text(value).font(.mono(14, .semibold))
         }
-        .font(.system(size: 12))
+        .font(.system(size: 14))
         .foregroundStyle(EmberTheme.ink)
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
@@ -315,7 +319,7 @@ struct ChartTip: View {
     }
 }
 
-private let axisFont = Font.mono(10.5)
+private let axisFont = Font.mono(12)
 
 private func dayLabel(_ date: Date, weekday: Bool = false) -> String {
     let formatter = DateFormatter()
@@ -490,13 +494,13 @@ struct AppShareChart: View {
                 ForEach(apps) { app in
                     HStack(spacing: 8) {
                         AppIconView(bundleID: app.bundleID, size: 20)
-                        Text(name(app)).font(.system(size: 12)).foregroundStyle(EmberTheme.soft)
+                        Text(name(app)).font(.system(size: 14)).foregroundStyle(EmberTheme.soft)
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 }
             }
-            .frame(width: 92)
+            .frame(width: 104)
             chart
         }
     }
@@ -653,7 +657,7 @@ struct SpeedChart: View {
                     .foregroundStyle(EmberTheme.ember2)
                     .symbolSize(50)
                     .annotation(position: .topLeading, spacing: 4) {
-                        Text("\(last.wpm) wpm").font(.mono(12)).foregroundStyle(EmberTheme.ink)
+                        Text("\(last.wpm) wpm").font(.mono(14)).foregroundStyle(EmberTheme.ink)
                     }
             }
             if let hovered, let week = weeks.first(where: { $0.start == hovered }) {

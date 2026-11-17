@@ -24,7 +24,7 @@ import android.widget.TextView
  * The app's home, the iPhone app's wording and structure (ios/App/PhononApp.swift ContentView): the Phonon header;
  * "Set up the keyboard" until the keyboard is on and chosen, the mic allowed and the speech model in place; a field to
  * try the keyboard in (the iPhone's session card has no Android counterpart: this keyboard records the mic itself);
- * the writing mode; the dictionary; the models' status. In the Mac's ember palette when the phone is in dark mode, a
+ * the dictionary; the models' status. In the Mac's ember palette when the phone is in dark mode, a
  * light version of it otherwise. It asks for the mic once (a keyboard cannot prompt) and starts the model download.
  */
 class TestActivity : Activity() {
@@ -33,7 +33,6 @@ class TestActivity : Activity() {
     private var cellular: Button? = null
     private lateinit var setupCard: View
     private lateinit var setupRows: LinearLayout
-    private lateinit var modeRows: LinearLayout
     private lateinit var dictTitle: TextView
     private val dp get() = resources.displayMetrics.density
 
@@ -95,10 +94,6 @@ class TestActivity : Activity() {
             setOnClickListener { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker() }
         })
         root.addView(card("Try it", tryRows), gap())
-
-        modeRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; id = R.id.modes }
-        root.addView(card("Writing mode", modeRows), gap())
-        renderModes()
 
         root.addView(card("Dictionary", dictionaryRow()), gap())
 
@@ -242,37 +237,6 @@ class TestActivity : Activity() {
                 setOnClickListener { action.second() }
             })
         }
-
-    // ---------- writing mode ----------
-
-    private fun renderModes() {
-        modeRows.removeAllViews()
-        val current = WritingModes.get(this)
-        for ((i, m) in WritingModes.ALL.withIndex()) {
-            val on = m.key == current
-            modeRows.addView(LinearLayout(this).apply {
-                id = 1000 + i
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, px(6), 0, px(6))
-                isSelected = on
-                contentDescription = "${m.title}. ${m.blurb}${if (on) " Selected." else ""}"
-                addView(LinearLayout(this@TestActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    addView(text(m.title, 15f, c.ink, bold = true))
-                    addView(text(m.blurb, 12f, c.mute))
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                addView(TextView(this@TestActivity).apply {
-                    text = if (on) "✓" else ""; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(c.ember)
-                    gravity = Gravity.CENTER
-                }, LinearLayout.LayoutParams(px(24), ViewGroup.LayoutParams.WRAP_CONTENT))
-                setOnClickListener {
-                    WritingModes.set(this@TestActivity, m.key)
-                    renderModes()
-                }
-            })
-        }
-    }
 
     // ---------- dictionary ----------
 

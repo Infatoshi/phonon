@@ -37,4 +37,15 @@ final class RefinerSupportTests: XCTestCase {
         XCTAssertNotNil(RefinerSupport.sysctl("hw.ncpu"))
         XCTAssertNil(RefinerSupport.sysctl("hw.optional.arm.FEAT_NoSuchThing"))
     }
+
+    func testWritingModeFollowsFocusedHostApp() {
+        XCTAssertEqual(WritingMode.forHostBundleID("com.apple.MobileSMS"), .casual)
+        XCTAssertEqual(WritingMode.forHostBundleID("net.whatsapp.WhatsApp"), .casual)
+        XCTAssertEqual(WritingMode.forHostBundleID("com.apple.mobilemail"), .formal)
+        XCTAssertEqual(WritingMode.forHostBundleID("com.google.Gmail"), .formal)
+        XCTAssertEqual(WritingMode.forHostBundleID("com.openai.chat"), .prompt)
+        XCTAssertEqual(WritingMode.forHostBundleID("com.anthropic.claude"), .prompt)
+        XCTAssertEqual(WritingMode.forHostBundleID("com.apple.mobilenotes"), .minimal)
+        XCTAssertEqual(WritingMode.forHostBundleID(nil), .minimal)
+    }
 }

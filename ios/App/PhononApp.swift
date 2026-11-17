@@ -288,10 +288,9 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 sessionCard
-                if !(keyboardAdded && fullAccess && session.parakeetReady) { setupCard }
-                modeCard
-                dictionaryCard
                 historyCard
+                if !(keyboardAdded && fullAccess && session.parakeetReady) { setupCard }
+                dictionaryCard
                 modelsFooter
             }
             .padding(.horizontal, 18)
@@ -434,44 +433,6 @@ struct HomeView: View {
 
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-    }
-
-    // MARK: writing mode
-
-    private var modeCard: some View {
-        Card(title: "Writing mode") {
-            ForEach(WritingMode.allCases) { m in
-                Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
-                    session.mode = m.rawValue
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: m.symbol).frame(width: 22)
-                            .foregroundStyle(session.mode == m.rawValue ? Ember.ember : Ember.mute)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(m.title).font(.system(size: 15, weight: .medium))
-                            Text(m.blurb).font(.system(size: 12)).foregroundStyle(Ember.mute)
-                        }
-                        Spacer()
-                        if session.mode == m.rawValue {
-                            Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(Ember.ember)
-                        }
-                    }
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            Toggle(isOn: $session.useRefiner) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Clean up with the Phonon model").font(.system(size: 15, weight: .medium))
-                    Text(RefinerSupport.onThisDevice ? "Off: you get the raw transcript." : RefinerSupport.offNote)
-                        .font(.system(size: 12)).foregroundStyle(Ember.mute)
-                }
-            }
-            .disabled(!RefinerSupport.onThisDevice)
-            .padding(.top, 4)
-        }
     }
 
     // MARK: history

@@ -162,7 +162,7 @@ struct PhononMainView: View {
     var body: some View {
         HStack(spacing: 0) {
             Sidebar(store: store, page: $page)
-                .frame(width: 196)
+                .frame(width: 212)
                 .background(EmberTheme.side)
                 .overlay(alignment: .trailing) {
                     Rectangle().fill(EmberTheme.panelBorder).frame(width: 1)
@@ -182,7 +182,7 @@ struct PhononMainView: View {
             .background(EmberTheme.window)
         }
         .frame(width: 980, height: 680)
-        .font(.system(size: 13.5))
+        .font(.system(size: 16))
         .foregroundStyle(EmberTheme.ink)
         .background(EmberTheme.window)
         .tint(EmberTheme.ember)
@@ -269,7 +269,7 @@ struct Sidebar: View {
                             center: .center, startRadius: 0, endRadius: 11)
                     )
                     .frame(width: 22, height: 22)
-                Text("Phonon").font(.system(size: 15, weight: .semibold)).tracking(-0.3)
+                Text("Phonon").font(.system(size: 18, weight: .semibold)).tracking(-0.3)
             }
             .padding(.horizontal, 8)
             .padding(.top, 6)
@@ -312,15 +312,15 @@ private struct SidebarItem: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: page.symbol)
-                    .font(.system(size: 14))
-                    .frame(width: 16)
+                    .font(.system(size: 16))
+                    .frame(width: 18)
                     .foregroundStyle(selected ? EmberTheme.ember2 : Color(hex: 0xBFB3A6))
                 Text(page.rawValue)
                     .foregroundStyle(selected ? EmberTheme.selectedInk : Color(hex: 0xBFB3A6))
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             .background(
                 selected ? EmberTheme.selected : (hovering ? Color(hex: 0x18130F) : .clear),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -339,7 +339,7 @@ struct PageTitle: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text)
-            .font(.system(size: 22, weight: .semibold))
+            .font(.system(size: 26, weight: .semibold))
             .tracking(-0.44)
             .padding(.bottom, 16)
     }
@@ -360,8 +360,8 @@ struct IconButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: 30, height: 30)
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: 34, height: 34)
                 .foregroundStyle(
                     hovering && isEnabled ? EmberTheme.selectedInk : Color(hex: 0xA6988A))
                 .background(
@@ -383,7 +383,7 @@ struct PillButtonStyle: ButtonStyle {
     var primary = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13))
+            .font(.system(size: 15))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .foregroundStyle(primary ? EmberTheme.selectedInk : Color(hex: 0xCFC3B6))
@@ -433,7 +433,7 @@ struct CopyIconButton: View {
                     .opacity(done ? 0 : 1)
                     .scaleEffect(done ? 0.4 : 1)
                 Image(systemName: "checkmark")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(EmberTheme.done)
                     .opacity(done ? 1 : 0)
                     .scaleEffect(done ? 1 : 0.4)
@@ -564,7 +564,7 @@ struct HomeView: View {
                 PageTitle("Home")
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text("\(store.usage.wordsPerMinute)")
-                        .font(.mono(40, .semibold))
+                        .font(.mono(46, .semibold))
                         .tracking(-1.2)
                     Text("words per minute, on average").foregroundStyle(EmberTheme.mute)
                 }
@@ -594,7 +594,7 @@ struct HomeView: View {
                             withAnimation(Motion.open) { showMore.toggle() }
                         } label: {
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(.system(size: 17, weight: .semibold))
                                 .rotationEffect(.degrees(showMore ? 180 : 0))
                                 .frame(width: 34, height: 26)
                         }
@@ -640,7 +640,7 @@ struct HomeDictationRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: open)
                 Text(FeedTime.label(item.date))
-                    .font(.mono(12))
+                    .font(.mono(13.5))
                     .foregroundStyle(Color(hex: 0x7D7166))
                     .lineLimit(1)
                     .fixedSize()
@@ -688,11 +688,11 @@ struct HeardAndWrote: View {
     private func layer(label: String, text: String, top: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(.system(size: 10.5, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .tracking(0.6)
                 .foregroundStyle(top ? Color(hex: 0xB07A55) : EmberTheme.dim)
             Text(text)
-                .font(.system(size: top ? 13.5 : 13))
+                .font(.system(size: top ? 16 : 15))
                 .foregroundStyle(top ? EmberTheme.ink : Color(hex: 0x8A7D70))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -746,7 +746,7 @@ struct DictionaryView: View {
                     "Merge someone else's dictionary: a Phonon dictionary.json, or a text "
                         + "file with one term or \"misheard → right\" per line.")
                 if let importNote {
-                    Text(importNote).font(.system(size: 12)).foregroundStyle(EmberTheme.mute)
+                    Text(importNote).font(.system(size: 14)).foregroundStyle(EmberTheme.mute)
                         .transition(.opacity)
                 }
             }
@@ -829,14 +829,14 @@ struct DictionaryChip: View {
     var body: some View {
         HStack(spacing: 6) {
             if let heard {
-                Text(heard).font(.system(size: 12)).foregroundStyle(Color(hex: 0x8A7D70))
+                Text(heard).font(.system(size: 14)).foregroundStyle(Color(hex: 0x8A7D70))
                     .lineLimit(1)
                 Text("→").foregroundStyle(EmberTheme.dim)
             }
             Text(entry.replacement ?? entry.phrase).lineLimit(1)
             Button(action: onRemove) {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                    .frame(width: 20, height: 20)
+                Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                    .frame(width: 22, height: 22)
             }
             .buttonStyle(ChipRemoveStyle())
             .help("Remove")
@@ -1157,7 +1157,7 @@ struct SettingsView: View {
                                 .buttonStyle(PillButtonStyle(primary: true))
                         } else {
                             HStack(spacing: 10) {
-                                Text("up to date").font(.system(size: 12.5))
+                                Text("up to date").font(.system(size: 14.5))
                                     .foregroundStyle(EmberTheme.mute)
                                 Button("Check now") { store.onCheckForUpdates?() }
                                     .buttonStyle(PillButtonStyle())
@@ -1172,10 +1172,10 @@ struct SettingsView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 10, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                                 .rotationEffect(.degrees(advancedOpen ? 90 : 0))
                             Text("ADVANCED")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.system(size: 13.5, weight: .semibold))
                                 .tracking(0.84)
                         }
                         .foregroundStyle(EmberTheme.mute)
@@ -1212,20 +1212,6 @@ struct SettingsView: View {
 
     @ViewBuilder private var advanced: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SettingRow(
-                "Writing style",
-                help: "Follow the app: Discord, Messages, Slack and Teams casual, email formal, "
-                    + "terminals and AI tools as prompts, minimal everywhere else. Pick one to use "
-                    + "it everywhere."
-            ) {
-                ChoiceChips(
-                    options: WritingStyle.allCases.map { ($0, $0.title) },
-                    selection: store.settings.writingStyle
-                ) { value in
-                    store.updateSettings { $0.writingStyle = value }
-                    onSettingsChanged()
-                }
-            }
             AdvancedBlock("Writing mode per app") {
                 AppWritingModesEditor(store: store, onChanged: onSettingsChanged)
                     .help(
@@ -1320,7 +1306,7 @@ struct SettingsView: View {
             }
             SettingRow("Backup", help: backupHelp) {
                 HStack(spacing: 8) {
-                    Text(backupStatus).font(.mono(12)).foregroundStyle(EmberTheme.mute)
+                    Text(backupStatus).font(.mono(13.5)).foregroundStyle(EmberTheme.mute)
                     Button("Show") { store.revealBackupInFinder() }
                         .buttonStyle(PillButtonStyle())
                         .disabled(store.mirrorManifest == nil)
@@ -1405,9 +1391,9 @@ struct ExportCard: View {
     var body: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Export everything").font(.system(size: 14.5, weight: .semibold))
+                Text("Export everything").font(.system(size: 16.5, weight: .semibold))
                 Text("Dictations, notes with audio, dictionary and macros, as one folder you own.")
-                    .font(.system(size: 12.5))
+                    .font(.system(size: 14))
                     .foregroundStyle(Color(hex: 0xA39A90))
             }
             Spacer()
@@ -1440,7 +1426,7 @@ struct SettingsGroup<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title.uppercased())
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 13.5, weight: .semibold))
                 .tracking(0.84)
                 .foregroundStyle(EmberTheme.mute)
                 .padding(.bottom, 8)
@@ -1506,7 +1492,7 @@ struct ChoiceChips<Value: Hashable>: View {
                 let on = value == selection
                 Button { onSelect(value) } label: {
                     Text(title)
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 14.5))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
                         .foregroundStyle(on ? EmberTheme.selectedInk : Color(hex: 0xCFC3B6))
@@ -1636,13 +1622,13 @@ struct MeetingRulesEditor: View {
                 help: "The question for a call in a new app or site (Always, Just this once, "
                     + "Not now, Never) adds its rule here."
             ) {
-                Text("none yet").font(.system(size: 12.5)).foregroundStyle(EmberTheme.mute)
+                Text("none yet").font(.system(size: 14.5)).foregroundStyle(EmberTheme.mute)
             }
         } else {
             AdvancedBlock("Per-app rules") {
                 if store.settings.meetingMode != .perApp {
                     Text("Used only while When a call starts is Remember per app.")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 14))
                         .foregroundStyle(EmberTheme.mute)
                 }
                 ForEach(rows, id: \.key) { row in
@@ -1768,7 +1754,7 @@ struct OwnEndpointEditor: View {
                     + "recognition stays on this Mac, and the local model still runs: its text "
                     + "is used whenever the endpoint fails or takes longer than 6 seconds."
             )
-            .font(.system(size: 12))
+            .font(.system(size: 14))
             .foregroundStyle(EmberTheme.mute)
             .fixedSize(horizontal: false, vertical: true)
             if store.settings.byokEnabled {
@@ -1795,7 +1781,7 @@ struct OwnEndpointEditor: View {
                 }
                 if !baseURL.isEmpty && !OwnEndpoint.validBaseURL(baseURL) {
                     Text("The base URL must start with https:// or http://.")
-                        .font(.system(size: 12))
+                        .font(.system(size: 14))
                         .foregroundStyle(EmberTheme.warm)
                 }
             }
@@ -1936,13 +1922,13 @@ struct PermissionBannerRow: View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: item.blocksDictation
                 ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(item.blocksDictation ? EmberTheme.ember2 : EmberTheme.warm)
-                .frame(width: 22)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title).font(.system(size: 14, weight: .semibold))
+                Text(item.title).font(.system(size: 16, weight: .semibold))
                 Text(item.detail)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: 14.5))
                     .foregroundStyle(EmberTheme.soft)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -2368,7 +2354,7 @@ struct PermissionRow: View {
             Text(name)
             Spacer()
             Text(statusText ?? (granted ? "Granted" : "Needs access"))
-                .font(.system(size: 12))
+                .font(.system(size: 14))
                 .foregroundStyle(EmberTheme.mute)
             Button(actionTitle ?? "Settings", action: action)
                 .buttonStyle(PillButtonStyle())

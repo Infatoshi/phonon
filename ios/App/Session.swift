@@ -365,16 +365,8 @@ final class Session: ObservableObject {
 
     // MARK: refiner
 
-    @Published var mode = UserDefaults.standard.string(forKey: "mode") ?? "minimal" {
-        didSet {
-            UserDefaults.standard.set(mode, forKey: "mode")
-            if IPC.string(IPC.modeKey) != mode { IPC.set(mode, IPC.modeKey) }
-        }
-    }
+    @Published var mode = WritingMode.minimal.rawValue
     @Published var refinerStatus = "Refiner: not loaded"
-    @Published var useRefiner = UserDefaults.standard.object(forKey: "use_refiner") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(useRefiner, forKey: "use_refiner") }
-    }
     private var refiner: Refiner?
     private let refineQueue = DispatchQueue(label: "sh.phonon.ios.refine", qos: .userInitiated)
     private var asrDoneAt = 0.0
@@ -508,13 +500,17 @@ final class Session: ObservableObject {
         // refiner, its vocabulary line in the refiner's prompt; an empty dictionary leaves raw and the prompt as they are
         let dict = dictionary
         let prepared = raw.isEmpty ? UserDictionary.Prepared(text: raw, vocab: []) : dict.prepare(raw)
-        guard useRefiner, let r = refiner, !raw.isEmpty else {
+        guard let r = refiner, !raw.isEmpty else {
             deliver(dict.isEmpty ? raw : dict.applyExact(prepared.text), raw: raw, refined: nil, gen: gen)
             return
         }
         setStatus("Refining")
-        // the keyboard's mode chip wins: it is what the user picked for this text field
-        if let m = IPC.string(IPC.modeKey), WritingMode(rawValue: m) != nil, m != self.mode { self.mode = m }
+        // writing mode follows the focused host app sent by the keyboard
+        if let m = IPC.string(IPC.modeKey), WritingMode(rawValue: m) != nil {
+            self.mode = m
+        } else {
+            self.mode = WritingMode.minimal.rawValue
+        }
         let mode = self.mode
         let before = utteranceBefore
         refineQueue.async {

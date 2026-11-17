@@ -301,7 +301,7 @@ struct NotesView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Notes")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 26, weight: .semibold))
                         .tracking(-0.44)
                         .padding(.horizontal, 10)
                         .padding(.bottom, 8)
@@ -325,7 +325,7 @@ struct NotesView: View {
                 .padding(.horizontal, 14)
                 .padding(.top, 24)
             }
-            .frame(width: 280)
+            .frame(width: 300)
             .overlay(alignment: .trailing) {
                 Rectangle().fill(EmberTheme.line).frame(width: 1)
             }
@@ -387,9 +387,9 @@ struct NoteListRow: View {
         HStack(alignment: .top, spacing: 10) {
             AppIconView(bundleID: note.metadata.appBundleID).padding(.top, 1)
             VStack(alignment: .leading, spacing: 1) {
-                Text(note.title).font(.system(size: 13.5, weight: .medium)).lineLimit(1)
+                Text(note.title).font(.system(size: 15.5, weight: .medium)).lineLimit(1)
                 Text(NoteDetail.subtitle(note))
-                    .font(.mono(12))
+                    .font(.mono(13.5))
                     .foregroundStyle(EmberTheme.mute)
                     .lineLimit(1)
             }
@@ -437,9 +437,9 @@ struct NoteDetail: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(note.title).font(.system(size: 19, weight: .semibold))
+                        Text(note.title).font(.system(size: 22, weight: .semibold))
                         Text(Self.subtitle(note) + " · " + note.appName)
-                            .font(.mono(12.5))
+                            .font(.mono(14))
                             .foregroundStyle(EmberTheme.mute)
                     }
                     Spacer()
@@ -476,7 +476,7 @@ struct NoteDetail: View {
                     Text(
                         "\(FeedTime.clock(player.position)) / \(FeedTime.clock(note.durationSeconds))"
                     )
-                    .font(.mono(12))
+                    .font(.mono(13.5))
                     .foregroundStyle(EmberTheme.mute)
                     .fixedSize()
                 }
@@ -560,7 +560,7 @@ struct NoteDetail: View {
                 }
                 if case .failed(let message) = transcript {
                     Text("The last try stopped: \(message)")
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 14.5))
                         .foregroundStyle(EmberTheme.warm)
                         .textSelection(.enabled)
                 }
@@ -583,7 +583,7 @@ struct NoteDetail: View {
                 .fixedSize()
                 .help("Cleaned: fillers and false starts removed on this Mac. Raw: the speech model's words.")
                 Text(Self.cleanupSummary(cleaned))
-                    .font(.system(size: 12.5))
+                    .font(.system(size: 14.5))
                     .foregroundStyle(EmberTheme.mute)
             }
         case .cleaning(let progress, let paused):
@@ -601,7 +601,7 @@ struct NoteDetail: View {
                         .help("Clean this transcript on this Mac")
                 }
                 Text(message)
-                    .font(.system(size: 12.5))
+                    .font(.system(size: 14.5))
                     .foregroundStyle(EmberTheme.warm)
                     .textSelection(.enabled)
             }
@@ -633,18 +633,19 @@ struct NoteDetail: View {
                 player.seek(note, to: turn.startSeconds / duration)
             } label: {
                 Text(FeedTime.clock(turn.startSeconds))
-                    .font(.mono(12))
+                    .font(.mono(13.5))
                     .foregroundStyle(EmberTheme.dim)
-                    .frame(width: 46, alignment: .leading)
+                    .frame(width: 52, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Play from here")
             Text(turn.speaker.label)
-                .font(.system(size: 12.5, weight: .semibold))
+                .font(.system(size: 14.5, weight: .semibold))
                 .foregroundStyle(turn.speaker == .me ? Self.meColor : Self.callColor)
-                .frame(width: 70, alignment: .leading)
+                .frame(width: 78, alignment: .leading)
             Text(turn.text)
+                .font(.system(size: 16))
                 .foregroundStyle(EmberTheme.soft)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -660,13 +661,13 @@ struct NoteDetail: View {
             Rectangle().fill(Color(hex: 0x191512)).frame(height: 1)
             HStack(spacing: 10) {
                 Text(chunks.isEmpty ? "--:--" : FeedTime.clock(note.trackSeconds(track)))
-                    .font(.mono(12))
+                    .font(.mono(13.5))
                     .foregroundStyle(EmberTheme.dim)
-                    .frame(width: 46, alignment: .leading)
+                    .frame(width: 52, alignment: .leading)
                 Text(label)
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 14.5, weight: .semibold))
                     .foregroundStyle(color)
-                    .frame(width: 70, alignment: .leading)
+                    .frame(width: 78, alignment: .leading)
                 Text(
                     chunks.isEmpty
                         ? "not recorded"

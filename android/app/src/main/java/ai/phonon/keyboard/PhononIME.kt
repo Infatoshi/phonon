@@ -47,8 +47,8 @@ class PhononIME : InputMethodService() {
     private lateinit var worker: Handler
     @Volatile private var refiner: Refiner? = null
     @Volatile private var asr: Asr? = null
-    /** The writing mode chosen in the app (WritingModes, default minimal), read for every dictation. */
-    private val mode: String get() = WritingModes.get(this)
+    /** The writing mode follows the app currently in focus, defaulting to minimal when unknown. */
+    private val mode: String get() = WritingModes.forPackage(currentInputEditorInfo?.packageName)
     private var bar: TalkBar? = null
     private var cancel: View? = null
     private var keys: KeyPanel? = null

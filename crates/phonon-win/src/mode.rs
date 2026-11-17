@@ -1,19 +1,15 @@
-//! The writing mode the user picked from the tray menu.
+//! Focused-app writing mode for transcript refinement.
 //!
-//! The refiner rewrites a transcript in one of its four modes (`polish::MODES`).
-//! The Mac follows the focused app; Windows and Linux do not know the focused app
-//! yet, so the user picks one mode from the tray's "Writing mode" submenu, and
-//! every dictation uses it. The pick is `writing_style` in `settings.json` (see
-//! settings.rs; `writing_mode.txt`, the file before it, is the fallback). It is read
-//! at each dictation, so a pick from the tray or the settings window applies from
-//! the next one without a restart.
+//! The refiner rewrites a transcript in one of its four modes (`polish::MODES`):
+//! `casual` for chat apps, `formal` for email, `prompt` for AI tools and
+//! terminals/editors, and `minimal` for documents and everything else. Windows
+//! and Linux infer the mode from the focused foreground window and title,
+//! falling back to `minimal` when unknown.
 //!
 //! The startup check and the warm-up stay on `polish::DEFAULT_MODE`: they prove
 //! the model against a fixed expected answer.
 
 use std::path::Path;
-
-use anyhow::{anyhow, Result};
 
 use crate::polish::{DEFAULT_MODE, MODES};
 
@@ -21,26 +17,7 @@ use crate::polish::{DEFAULT_MODE, MODES};
 #[cfg(test)]
 const FILE: &str = crate::settings::LEGACY_MODE;
 
-/// The tray menu's names, in `MODES` order (the Mac's titles, macos/Sources/AppData.swift).
-pub fn label(mode: &str) -> &'static str {
-    match mode {
-        "casual" => "Casual",
-        "formal" => "Formal",
-        "prompt" => "Prompt",
-        _ => "Minimal",
-    }
-}
-
-/// A submenu item's text: the title, and "(default)" on minimal.
-pub fn menu_label(mode: &str) -> String {
-    if mode == DEFAULT_MODE {
-        format!("{} (default)", label(mode))
-    } else {
-        label(mode).to_string()
-    }
-}
-
-/// The mode names the menu offers, in `MODES` order.
+/// The mode names in `MODES` order.
 pub fn names() -> impl Iterator<Item = &'static str> {
     MODES.iter().map(|(name, _)| *name)
 }
@@ -53,7 +30,7 @@ pub fn parse(text: &str) -> Option<&'static str> {
 }
 
 /// The mode saved at `path`: minimal when the file is missing, unreadable or
-/// names no mode.
+/// names no mode. Kept for legacy `settings.rs` fallback decoding.
 pub fn load_from(path: &Path) -> &'static str {
     let Ok(text) = std::fs::read_to_string(path) else {
         return DEFAULT_MODE;
@@ -67,28 +44,270 @@ pub fn load_from(path: &Path) -> &'static str {
     })
 }
 
-/// Save `mode` at `path` in the legacy format, creating the folder.
-#[cfg(test)]
-pub fn save_to(path: &Path, mode: &str) -> Result<()> {
-    let mode = parse(mode).ok_or_else(|| anyhow!("not a writing mode: {mode:?}"))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+/// The writing mode for a focused window's executable/class name and optional title.
+pub fn for_app(app_name: Option<&str>, window_title: Option<&str>) -> &'static str {
+    let app = app_name
+        .map(|s| {
+            let trimmed = s.trim().to_ascii_lowercase();
+            trimmed.strip_suffix(".exe").unwrap_or(&trimmed).to_string()
+        })
+        .unwrap_or_default();
+    let title = window_title
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    const BROWSERS: &[&str] = &[
+        "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc", "chromium", "zen",
+        "iexplore",
+    ];
+    if BROWSERS.iter().any(|b| app == *b) {
+        return for_browser_title(&title);
     }
-    std::fs::write(path, mode)?;
-    Ok(())
+
+    const CASUAL_APPS: &[&str] = &[
+        "slack",
+        "discord",
+        "teams",
+        "ms-teams",
+        "whatsapp",
+        "whatsapp.root",
+        "telegram",
+        "signal",
+        "messenger",
+        "beeper",
+        "element",
+        "mattermost",
+        "zulip",
+        "line",
+        "wechat",
+    ];
+    if CASUAL_APPS.iter().any(|a| app == *a) {
+        return "casual";
+    }
+
+    const FORMAL_APPS: &[&str] = &[
+        "outlook",
+        "olk",
+        "thunderbird",
+        "mailspring",
+        "bluemail",
+        "protonmail",
+    ];
+    if FORMAL_APPS.iter().any(|a| app == *a) {
+        return "formal";
+    }
+
+    const PROMPT_APPS: &[&str] = &[
+        "claude",
+        "chatgpt",
+        "perplexity",
+        "windowsterminal",
+        "wt",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "alacritty",
+        "wezterm",
+        "wezterm-gui",
+        "kitty",
+        "ghostty",
+        "foot",
+        "konsole",
+        "gnome-terminal",
+        "gnome-terminal-server",
+        "xterm",
+        "terminator",
+        "tilix",
+        "hyper",
+        "tabby",
+        "code",
+        "cursor",
+        "windsurf",
+        "zed",
+        "idea64",
+        "pycharm64",
+        "clion64",
+        "goland64",
+        "webstorm64",
+        "rustrover64",
+        "lapis",
+    ];
+    if PROMPT_APPS.iter().any(|a| app == *a) {
+        return "prompt";
+    }
+
+    DEFAULT_MODE
 }
 
-/// The mode the next dictation uses.
+fn for_browser_title(title: &str) -> &'static str {
+    if title.is_empty() {
+        return DEFAULT_MODE;
+    }
+    for kw in [
+        "slack",
+        "discord",
+        "whatsapp",
+        "telegram",
+        "signal",
+        "messenger",
+        "microsoft teams",
+        "google messages",
+    ] {
+        if title.contains(kw) {
+            return "casual";
+        }
+    }
+    for kw in [
+        "gmail",
+        "outlook",
+        "proton mail",
+        "superhuman",
+        "fastmail",
+        "yahoo mail",
+        "roundcube",
+    ] {
+        if title.contains(kw) {
+            return "formal";
+        }
+    }
+    for kw in [
+        "chatgpt",
+        "claude",
+        "perplexity",
+        "gemini",
+        "copilot",
+        "grok",
+        "github",
+        "gitlab",
+        "bitbucket",
+        "stackoverflow",
+        "replit",
+        "codesandbox",
+    ] {
+        if title.contains(kw) {
+            return "prompt";
+        }
+    }
+    DEFAULT_MODE
+}
+
+/// The writing mode for the currently focused application.
 pub fn current() -> &'static str {
-    crate::settings::Settings::load().writing_style()
+    let (app, title) = focused_app();
+    for_app(app.as_deref(), title.as_deref())
 }
 
-/// Use `mode` from the next dictation on, and remember it across restarts.
-pub fn choose(mode: &str) -> Result<()> {
-    let mode = parse(mode).ok_or_else(|| anyhow!("not a writing mode: {mode:?}"))?;
-    crate::settings::set(crate::settings::WRITING_STYLE, mode.into())?;
-    eprintln!("phonon: writing mode set to {mode}");
-    Ok(())
+#[cfg(windows)]
+fn focused_app() -> (Option<String>, Option<String>) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return (None, None);
+        }
+        let mut title_buf = [0u16; 512];
+        let title_len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), title_buf.len() as i32);
+        let title = if title_len > 0 {
+            Some(String::from_utf16_lossy(&title_buf[..title_len as usize]))
+        } else {
+            None
+        };
+
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return (None, title);
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return (None, title);
+        }
+        let mut path_buf = [0u16; 512];
+        let mut path_len = path_buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, path_buf.as_mut_ptr(), &mut path_len);
+        CloseHandle(process);
+        let app = if ok != 0 && path_len > 0 {
+            let full = String::from_utf16_lossy(&path_buf[..path_len as usize]);
+            std::path::Path::new(&full)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        (app, title)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn focused_app() -> (Option<String>, Option<String>) {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        if let Ok(out) = std::process::Command::new("hyprctl")
+            .args(["activewindow", "-j"])
+            .output()
+        {
+            if out.status.success() {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                    let app = v
+                        .get("class")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    let title = v
+                        .get("title")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    if app.is_some() || title.is_some() {
+                        return (app, title);
+                    }
+                }
+            }
+        }
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        if let Ok(root) = std::process::Command::new("xprop")
+            .args(["-root", "_NET_ACTIVE_WINDOW"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&root.stdout);
+            if let Some(id) = text
+                .split_whitespace()
+                .last()
+                .filter(|s| s.starts_with("0x"))
+            {
+                if let Ok(info) = std::process::Command::new("xprop")
+                    .args(["-id", id, "WM_CLASS", "_NET_WM_NAME"])
+                    .output()
+                {
+                    let info_text = String::from_utf8_lossy(&info.stdout);
+                    let mut app = None;
+                    let mut title = None;
+                    for line in info_text.lines() {
+                        if line.starts_with("WM_CLASS") {
+                            app = line.rsplit('"').nth(1).map(|s| s.to_string());
+                        } else if line.starts_with("_NET_WM_NAME") {
+                            title = line.split('"').nth(1).map(|s| s.to_string());
+                        }
+                    }
+                    if app.is_some() || title.is_some() {
+                        return (app, title);
+                    }
+                }
+            }
+        }
+    }
+    (None, None)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn focused_app() -> (Option<String>, Option<String>) {
+    (None, None)
 }
 
 #[cfg(test)]
@@ -112,18 +331,28 @@ mod tests {
         assert_eq!(parse("  Casual\n"), Some("casual"));
         assert_eq!(parse("FORMAL"), Some("formal"));
         assert_eq!(parse("prompt\r\n"), Some("prompt"));
-        // the Mac's "follow the app" is not offered here yet
         assert_eq!(parse("app"), None);
         assert_eq!(parse(""), None);
         assert_eq!(parse("shouting"), None);
     }
 
     #[test]
-    fn the_menu_lists_every_mode_in_order_with_the_macs_titles() {
-        let labels: Vec<_> = names().map(label).collect();
-        assert_eq!(labels, ["Minimal", "Casual", "Formal", "Prompt"]);
-        assert_eq!(menu_label("minimal"), "Minimal (default)");
-        assert_eq!(menu_label("prompt"), "Prompt");
+    fn infers_writing_mode_from_focused_app() {
+        assert_eq!(for_app(Some("Slack.exe"), None), "casual");
+        assert_eq!(for_app(Some("Discord"), None), "casual");
+        assert_eq!(for_app(Some("OUTLOOK.EXE"), None), "formal");
+        assert_eq!(for_app(Some("WindowsTerminal.exe"), None), "prompt");
+        assert_eq!(for_app(Some("code"), None), "prompt");
+        assert_eq!(for_app(Some("claude.exe"), None), "prompt");
+        assert_eq!(for_app(Some("Obsidian.exe"), None), "minimal");
+        assert_eq!(for_app(Some("chrome.exe"), Some("Gmail - Inbox")), "formal");
+        assert_eq!(
+            for_app(Some("chrome"), Some("Slack | engineering")),
+            "casual"
+        );
+        assert_eq!(for_app(Some("msedge.exe"), Some("Claude")), "prompt");
+        assert_eq!(for_app(Some("chrome.exe"), Some("Example Page")), "minimal");
+        assert_eq!(for_app(None, None), "minimal");
     }
 
     #[test]
@@ -138,28 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_pick_survives_a_reload_and_replaces_the_last() {
-        let dir = scratch("saved");
-        let path = dir.join("nested").join(FILE);
-        save_to(&path, "Formal").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "formal");
-        assert_eq!(load_from(&path), "formal");
-        save_to(&path, "casual").unwrap();
-        assert_eq!(load_from(&path), "casual");
-        assert!(save_to(&path, "app").is_err());
-        assert_eq!(load_from(&path), "casual");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_picked_mode_reaches_the_prompt_byte_for_byte() {
-        let dir = scratch("prompt");
-        let path = dir.join(FILE);
+    fn all_inferred_modes_reach_the_prompt_byte_for_byte() {
         for (name, line) in MODES {
-            save_to(&path, name).unwrap();
-            let mode = load_from(&path);
-            assert_eq!(mode_line(mode), line);
-            let p = prompt("hello there", mode);
+            assert_eq!(mode_line(name), line);
+            let p = prompt("hello there", name);
             assert!(
                 p.contains(&format!("do not add or drop content.\n{line}<|im_end|>")),
                 "{name}: {p}"
@@ -170,6 +381,5 @@ mod tests {
                 }
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

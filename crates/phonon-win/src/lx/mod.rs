@@ -269,7 +269,6 @@ fn app() -> Result<()> {
                             idle = format!("ready. Hold {label} to dictate");
                             tray::set_status(&idle);
                         }
-                        tray::set_mode(crate::mode::current());
                     }
                     if history_watch.changed_in(&root) || settings_changed {
                         refresh_history();

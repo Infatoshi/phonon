@@ -45,4 +45,60 @@ enum WritingMode: String, CaseIterable, Identifiable {
         case .prompt: return "sparkles"
         }
     }
+
+    /// Infer writing mode from the host app the keyboard is focused in.
+    static func forHostBundleID(_ bundleID: String?) -> WritingMode {
+        guard let id = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else {
+            return .minimal
+        }
+        let lower = id.lowercased()
+        if promptBundles.contains(lower) { return .prompt }
+        if formalBundles.contains(lower) { return .formal }
+        if casualBundles.contains(lower) { return .casual }
+        return .minimal
+    }
+
+    private static let casualBundles: Set<String> = [
+        "com.apple.mobilesms",
+        "net.whatsapp.whatsapp",
+        "net.whatsapp.whatsappsmb",
+        "com.tinyspeck.chatlyio",
+        "com.tinyspeck.slackmacgap",
+        "com.microsoft.skype.teams",
+        "com.hammerandchisel.discord",
+        "ph.telegra.telegraph",
+        "org.whispersystems.signal",
+        "com.facebook.messenger",
+        "com.burbn.instagram",
+        "com.beeper.beeper",
+        "com.tencent.xin",
+        "jp.naver.line",
+        "com.viber",
+    ]
+
+    private static let formalBundles: Set<String> = [
+        "com.apple.mobilemail",
+        "com.google.gmail",
+        "com.microsoft.office.outlook",
+        "com.readdle.smartemail",
+        "com.superhuman.mail",
+        "com.basecamp.hey",
+        "ch.protonmail.protonmail",
+        "com.fastmail.fastmail",
+    ]
+
+    private static let promptBundles: Set<String> = [
+        "com.openai.chat",
+        "com.anthropic.claude",
+        "ai.perplexity.app",
+        "com.google.gemini",
+        "com.microsoft.copilot",
+        "ai.x.grok",
+        "com.termius.mac",
+        "com.termius.ios",
+        "com.crystalnix.serverauditor",
+        "sh.blink.blink",
+        "com.panic.prompt",
+        "com.palantir.workingcopy",
+    ]
 }
