@@ -30,6 +30,10 @@ final class MeetingController {
     var onRecordingChanged: ((String?) -> Void)?
     /// Tells the capsule: recording light, stop button, pointer.
     var onFlowChanged: ((MeetingFlow) -> Void)?
+    /// Tells the live transcriber when recording starts or new chunks/metadata are written.
+    var onLiveMetadata: ((URL, MeetingMetadata) -> Void)?
+    /// Tells the live transcriber when a just-started recording was undone/discarded.
+    var onLiveDiscarded: ((URL) -> Void)?
 
     init(store: NativeAppStore) {
         self.store = store
@@ -358,12 +362,15 @@ final class MeetingController {
         meeting: String, bundleID: String?, directory: URL, metadata: MeetingMetadata
     ) {
         do {
-            let recorder = try MeetingRecorder(directory: directory, metadata: metadata)
+            let recorder = try MeetingRecorder(directory: directory, metadata: metadata) { [weak self] updated in
+                Task { @MainActor in self?.metadataUpdated(directory: directory, metadata: updated) }
+            }
             recorder.onWriteFailed = { [weak self] error in
                 Task { @MainActor in self?.writeFailed(recorder, meeting: meeting, bundleID: bundleID, error: error) }
             }
             self.recorder = recorder
             recordingDirectory = directory
+            onLiveMetadata?(directory, metadata)
             store.recordingMeetingID = metadata.id
             recordingApp = meeting
             recordingBundleID = bundleID
@@ -391,6 +398,11 @@ final class MeetingController {
             NSLog("phonon meeting: \(error.localizedDescription)")
             holdOff(meeting: meeting, bundleID: bundleID)
         }
+    }
+
+    private func metadataUpdated(directory: URL, metadata: MeetingMetadata) {
+        guard recordingDirectory == directory else { return }
+        onLiveMetadata?(directory, metadata)
     }
 
     /// A write failed (a full disk): stop cleanly, keep what was written (it is transcribed like
@@ -434,7 +446,13 @@ final class MeetingController {
         recordingDirectory = nil
         // Before any async work: a quit while the files close still leaves the meeting marked
         // for transcription at the next launch (the marker goes when transcript.json is written).
-        if let directory, !discard { MeetingTranscriber.markPending(directory: directory) }
+        if let directory {
+            if discard {
+                onLiveDiscarded?(directory)
+            } else {
+                MeetingTranscriber.markPending(directory: directory)
+            }
+        }
         // `store.recordingMeetingID` stays set until the files are closed (no Transcribe button
         // against metadata still missing its last chunks).
         endPolicy = nil

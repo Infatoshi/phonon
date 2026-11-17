@@ -41,6 +41,10 @@ struct MeetingNote: Identifiable, Equatable {
     }
 
     var title: String {
+        Self.title(for: metadata)
+    }
+
+    static func title(for metadata: MeetingMetadata) -> String {
         if let title = metadata.windowTitle?.trimmingCharacters(in: .whitespaces), !title.isEmpty {
             return title
         }
@@ -105,10 +109,10 @@ struct MeetingNote: Identifiable, Equatable {
     static func loadAll(from root: URL, fileManager: FileManager = .default) -> [MeetingNote] {
         let folders =
             (try? fileManager.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         let decoder = JSONDecoder()
         return folders.compactMap { folder in
-            guard
+            guard Self.isMeetingDirectory(folder, fileManager: fileManager),
                 let data = try? Data(contentsOf: folder.appendingPathComponent("metadata.json")),
                 let metadata = try? decoder.decode(MeetingMetadata.self, from: data),
                 !(metadata.micChunks.isEmpty && metadata.systemChunks.isEmpty)
@@ -121,6 +125,12 @@ struct MeetingNote: Identifiable, Equatable {
                 cleanupError: MeetingCleanupProgress.load(from: folder)?.error)
         }
         .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
+    }
+
+    static func isMeetingDirectory(_ url: URL, fileManager: FileManager = .default) -> Bool {
+        guard url.lastPathComponent != MeetingTranscript.latestFileName else { return false }
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 }
 

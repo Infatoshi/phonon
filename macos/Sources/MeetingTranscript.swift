@@ -1,12 +1,15 @@
+import Darwin
 import Foundation
 
-// Meeting transcripts (SPEC "Meeting notes"). After a recording stops, each track is fed to the
-// one resident speech model in spans of about a minute, one at a time and only while no
-// dictation is under way (the engine's meeting queue holds them back). The sentences of the two
-// tracks are merged by time on the shared timeline into turns: "me" from the mic track, "call"
-// from the system track (no diarization of the call side yet). Progress is kept in
-// transcript.partial.json after every span, so a quit or crash resumes where it stopped; the
-// finished transcript is transcript.json and the partial file goes away.
+// Meeting transcripts (SPEC "Meeting notes"). While recording runs, closed chunks are fed in
+// rolling spans (`liveMinSpanSeconds`) to stream `transcript.txt` and keep `Meetings/latest.txt`
+// up to date; after recording stops, any remaining tail is finished in spans of about a minute
+// through the one resident speech model, one at a time and only while no dictation is under way
+// (the engine's meeting queue holds them back). The sentences of the two tracks are merged by
+// time on the shared timeline into turns: "me" from the mic track, "call" from the system track
+// (no diarization of the call side yet). Progress is kept in transcript.partial.json after every
+// span, so a quit or crash resumes where it stopped; the finished transcript is transcript.json
+// plus finalized transcript.txt, and the partial file goes away.
 
 enum TranscriptSpeaker: String, Codable, Equatable {
     case me, call
@@ -17,7 +20,15 @@ enum TranscriptSpeaker: String, Codable, Equatable {
 /// Meetings/<id>/transcript.json.
 struct MeetingTranscript: Codable, Equatable {
     static let fileName = "transcript.json"
+    static let textFileName = "transcript.txt"
+    static let latestFileName = "latest.txt"
     static let currentSchema = 1
+
+    enum LiveStatus: String {
+        case recording
+        case transcribing
+        case complete
+    }
 
     var schemaVersion = MeetingTranscript.currentSchema
     var model: String
@@ -64,6 +75,48 @@ struct MeetingTranscript: Codable, Equatable {
     func save(to directory: URL) throws {
         try MeetingTranscriptFiles.write(self, to: directory.appendingPathComponent(Self.fileName))
     }
+
+    func textDocument(
+        metadata: MeetingMetadata?, status: LiveStatus, updatedAt: Date = Date()
+    ) -> String {
+        let iso = ISO8601DateFormatter()
+        var header: [String] = []
+        if let metadata {
+            header.append("Meeting: \(MeetingNote.title(for: metadata))")
+            let app = AppIcons.nameNonisolated(metadata.appBundleID, fallback: metadata.appName)
+            if !app.isEmpty { header.append("App: \(app)") }
+            if !metadata.startedAt.isEmpty { header.append("Started: \(metadata.startedAt)") }
+            if let ended = metadata.endedAt, !ended.isEmpty { header.append("Ended: \(ended)") }
+            if let url = metadata.conferenceURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !url.isEmpty
+            {
+                header.append("URL: \(url)")
+            }
+        }
+        header.append("Status: \(status.rawValue)")
+        header.append("Updated: \(iso.string(from: updatedAt))")
+        if !model.isEmpty, model != "unknown" { header.append("Model: \(model)") }
+
+        let body: String
+        if turns.isEmpty {
+            switch status {
+            case .recording: body = "(waiting for first transcribed span)"
+            case .transcribing: body = "(transcribing)"
+            case .complete: body = "(no speech)"
+            }
+        } else {
+            body = plainText
+        }
+        return header.joined(separator: "\n") + "\n\n---\n\n" + body + "\n"
+    }
+
+    func saveText(
+        to directory: URL, metadata: MeetingMetadata?, status: LiveStatus, updatedAt: Date = Date()
+    ) throws {
+        let rendered = textDocument(metadata: metadata, status: status, updatedAt: updatedAt)
+        try Data(rendered.utf8).write(
+            to: directory.appendingPathComponent(Self.textFileName), options: .atomic)
+    }
 }
 
 enum MeetingTranscriptFiles {
@@ -71,6 +124,113 @@ enum MeetingTranscriptFiles {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(value).write(to: url, options: .atomic)
+    }
+
+    /// Point `root/latest.txt` at `<id>/transcript.txt` atomically when `<id>` is newer than (or
+    /// already) the current target, or when no valid target exists yet.
+    static func updateLatestText(
+        for outputDirectory: URL, id: String, metadata: MeetingMetadata?,
+        fileManager: FileManager = .default
+    ) {
+        guard outputDirectory.lastPathComponent == id else { return }
+        let root = outputDirectory.deletingLastPathComponent()
+        let latestURL = root.appendingPathComponent(MeetingTranscript.latestFileName)
+        let targetRel = "\(id)/\(MeetingTranscript.textFileName)"
+        if let existing = try? fileManager.destinationOfSymbolicLink(atPath: latestURL.path) {
+            if existing == targetRel { return }
+            let existingID = URL(fileURLWithPath: existing).deletingLastPathComponent().lastPathComponent
+            let existingFolder = root.appendingPathComponent(existingID, isDirectory: true)
+            let existingText = existingFolder.appendingPathComponent(MeetingTranscript.textFileName)
+            if !existingID.isEmpty, fileManager.fileExists(atPath: existingText.path),
+                !isNewer(candidateID: id, candidateMetadata: metadata, than: existingID, in: root)
+            {
+                return
+            }
+        }
+        replaceSymlink(at: latestURL, target: targetRel, fileManager: fileManager)
+    }
+
+    /// Re-point `root/latest.txt` after a discarded live recording is deleted.
+    static func refreshLatestTextAfterRemoval(
+        of id: String, root: URL, fileManager: FileManager = .default
+    ) {
+        let latestURL = root.appendingPathComponent(MeetingTranscript.latestFileName)
+        guard let existing = try? fileManager.destinationOfSymbolicLink(atPath: latestURL.path),
+            URL(fileURLWithPath: existing).deletingLastPathComponent().lastPathComponent == id
+        else { return }
+        try? fileManager.removeItem(at: latestURL)
+        let folders =
+            (try? fileManager.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        var best: (id: String, metadata: MeetingMetadata?)?
+        for folder in folders where MeetingNote.isMeetingDirectory(folder, fileManager: fileManager) {
+            let folderID = folder.lastPathComponent
+            guard folderID != id,
+                fileManager.fileExists(
+                    atPath: folder.appendingPathComponent(MeetingTranscript.textFileName).path)
+            else { continue }
+            let meta = loadMetadata(from: folder)
+            if let currentBest = best {
+                if isNewer(
+                    candidateID: folderID, candidateMetadata: meta,
+                    than: currentBest.id, candidateExisting: currentBest.metadata)
+                {
+                    best = (folderID, meta)
+                }
+            } else {
+                best = (folderID, meta)
+            }
+        }
+        if let best {
+            replaceSymlink(
+                at: latestURL, target: "\(best.id)/\(MeetingTranscript.textFileName)",
+                fileManager: fileManager)
+        }
+    }
+
+    private static func isNewer(
+        candidateID: String, candidateMetadata: MeetingMetadata?, than existingID: String, in root: URL
+    ) -> Bool {
+        let existingMeta = loadMetadata(from: root.appendingPathComponent(existingID, isDirectory: true))
+        return isNewer(
+            candidateID: candidateID, candidateMetadata: candidateMetadata,
+            than: existingID, candidateExisting: existingMeta)
+    }
+
+    private static func isNewer(
+        candidateID: String, candidateMetadata: MeetingMetadata?,
+        than existingID: String, candidateExisting: MeetingMetadata?
+    ) -> Bool {
+        let iso = ISO8601DateFormatter()
+        if let lhs = candidateMetadata?.startedAt, let rhs = candidateExisting?.startedAt,
+            let lDate = iso.date(from: lhs), let rDate = iso.date(from: rhs), lDate != rDate
+        {
+            return lDate > rDate
+        }
+        return candidateID >= existingID
+    }
+
+    private static func loadMetadata(from folder: URL) -> MeetingMetadata? {
+        guard let data = try? Data(contentsOf: folder.appendingPathComponent("metadata.json")) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(MeetingMetadata.self, from: data)
+    }
+
+    private static func replaceSymlink(
+        at destination: URL, target: String, fileManager: FileManager
+    ) {
+        let root = destination.deletingLastPathComponent()
+        try? fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        let temp = root.appendingPathComponent(".latest.\(UUID().uuidString).txt")
+        do {
+            try fileManager.createSymbolicLink(atPath: temp.path, withDestinationPath: target)
+        } catch {
+            return
+        }
+        if Darwin.rename(temp.path, destination.path) != 0 {
+            try? fileManager.removeItem(at: temp)
+        }
     }
 }
 
@@ -224,12 +384,16 @@ enum MeetingSpanPlanner {
     static let cutTouchSeconds = 1.0
     /// Each span moves the cursor at least this far (a span that is all one sentence keeps it).
     static let minAdvanceSeconds = 5.0
+    /// Minimum buffered audio per track before emitting a span while recording is still live.
+    static let liveMinSpanSeconds = 20.0
     /// The next span starts this much before the sentence it re-transcribes.
     static let restartPadSeconds = 0.15
 
-    /// The next span of `track` at or after `cursor`, or nil when the track is done.
+    /// The next span of `track` at or after `cursor`, or nil when the track is done (or waiting
+    /// for enough buffered audio while `live` is true).
     static func next(
-        track: MeetingTrack, chunks: [MeetingChunk], cursor: Int64, rate: Int
+        track: MeetingTrack, chunks: [MeetingChunk], cursor: Int64, rate: Int,
+        live: Bool = false, minLiveSeconds: Double = liveMinSpanSeconds
     ) -> MeetingSpan? {
         let sorted = chunks.filter { $0.sampleCount > 0 }.sorted { $0.startSample < $1.startSample }
         guard
@@ -247,8 +411,13 @@ enum MeetingSpanPlanner {
             last += 1
             runEnd = sorted[last].startSample + sorted[last].sampleCount
         }
-        let reachesRunEnd = runEnd - start <= maxSamples
-        let end = reachesRunEnd ? runEnd : start + Int64((targetSeconds * rate).rounded())
+        let runFinished = !live || (last + 1 < sorted.count && sorted[last + 1].startSample != runEnd)
+        if !runFinished {
+            let minSamples = Int64((minLiveSeconds * rate).rounded())
+            guard runEnd - start >= minSamples else { return nil }
+        }
+        let reachesRunEnd = runFinished && (runEnd - start <= maxSamples)
+        let end = (runEnd - start > maxSamples) ? start + Int64((targetSeconds * rate).rounded()) : runEnd
         let covering = sorted[first...last].filter {
             $0.startSample < end && $0.startSample + $0.sampleCount > start
         }

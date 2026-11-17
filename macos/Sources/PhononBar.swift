@@ -2537,6 +2537,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) { _ = BrowserCatalog.httpsHandlers() }
         meetings.onRecordingChanged = { [weak self] app in self?.meetingRecordingChanged(app) }
         meetings.onFlowChanged = { [weak self] flow in self?.meetingFlowChanged(flow) }
+        meetings.onLiveMetadata = { [weak self] directory, metadata in
+            self?.meetingTranscriber.updateLive(directory: directory, metadata: metadata)
+        }
+        meetings.onLiveDiscarded = { [weak self] directory in
+            self?.meetingTranscriber.cancel(directory: directory)
+        }
         meetings.onSettingsChanged = { [weak self] in self?.applySettings() }
         meetings.onRecordingFailed = { [weak self] title, detail in
             self?.notPasted.showMessage(title: title, detail: detail)

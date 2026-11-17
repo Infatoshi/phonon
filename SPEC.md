@@ -381,17 +381,23 @@ plays; Phonon left out), the frontmost app and, for a browser that is not privat
 Transcripts (macos/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; engine `meeting.rs`; sidecar
 `transcribe_span`), all on the Mac:
 
-- When a recording stops, an empty transcript.partial.json is written at once (so a quit from then on still
-  transcribes it at the next launch; it goes only when transcript.json is written). Once the recorder has closed
-  its last chunks and metadata.json is final, the meeting stops counting as recording, is queued, and the Notes list
-  reloads so an open page shows it transcribing. Until then Notes shows it as recording, with no Transcribe button.
-  Notes has a Transcribe button for a meeting
+- While recording is running, `MeetingIndex` notifies `MeetingTranscriber` as 5 s chunks close; once at
+  least 20 s of buffered closed chunks accumulate on a track, spans roll through the engine and update
+  `transcript.partial.json`, `transcript.txt` (`Status: recording`, plain text turns), and the atomic symlink
+  `Meetings/latest.txt -> <id>/transcript.txt` (removed/re-pointed if discarded via Undo). Dictation still holds
+  higher priority inside the engine. When a recording stops, an empty `transcript.partial.json` is written at once
+  if none exists yet (so a quit from then on still transcribes it at the next launch; it goes only when
+  `transcript.json` is written). Once the recorder has closed its last chunks and `metadata.json` is final, the
+  remaining tail runs with `reachesRunEnd = true`, `transcript.txt` updates to `Status: complete`, the meeting stops
+  counting as recording, and the Notes list reloads so an open page shows it transcribing or finished. Notes has a
+  Transcribe button for a meeting
   without a transcript (one recorded before transcripts existed, or one whose last try failed, with the error shown).
   Meetings are transcribed one at a time.
-- Each track is cut into spans of about 60 s (never over 75 s: Metal Parakeet answers windows up to 82 s, and a
-  longer one would load the MLX copy of the model). A remainder up to 75 s stays one span; a gap in the chunks ends
-  a span. A span that is not the last of its run gives back its last sentence when that sentence ends within 1 s
-  of the cut (and starts 5 s or more in): the next span starts 0.15 s before it, so a sentence is never split.
+- Finished spans are up to 60 s (never over 75 s: Metal Parakeet answers windows up to 82 s, and a
+  longer one would load the MLX copy of the model), or 20 s+ while live recording runs. A remainder up to 75 s once
+  stopped stays one span; a gap in the chunks ends a span. A span that is not the last of its run gives back its
+  last sentence when that sentence ends within 1 s of the cut (and starts 5 s or more in): the next span starts
+  0.15 s before it, so a sentence is never split.
 - The bar sends one span at a time, `{"cmd":"meeting_span","id","chunks":[{"path","start_sample"}],
   "start_sample","end_sample"}`, and waits for `{"type":"meeting_span","id","sentences":[{"start","end","text"}],
   "quiet","audio_seconds","seconds","model"}` (or `"error"`). Its own event type: never read as a dictation's.
@@ -411,9 +417,11 @@ Transcripts (macos/Sources/MeetingTranscript.swift, MeetingTranscriber.swift; en
   the kept sentences in track seconds; `error` after a failure). A quit or crash resumes from it at the next
   launch; a quit while recording leaves an empty one so that meeting is transcribed at the next launch. A failed
   meeting waits for the button, which resumes from the saved cursor. An engine restart re-sends the span in flight.
-- Output: transcript.json `{"schema_version":1,"model","created_at","turns":[{"start_seconds","end_seconds",
-  "speaker":"me"|"call","text"}]}`. Sentences of both tracks go onto the shared timeline by their offsets, in time
-  order; consecutive sentences of one speaker make one turn. Raw Parakeet text (the dictionary's in-decode boosting
+- Output: `transcript.txt` (human/agent plain text header + `HH:MM You/Call:` turns, written live during calls and
+  updated on finish, linked from `Meetings/latest.txt`) and `transcript.json`
+  `{"schema_version":1,"model","created_at","turns":[{"start_seconds","end_seconds","speaker":"me"|"call","text"}]}`
+  when finished. Sentences of both tracks go onto the shared timeline by their offsets, in time order; consecutive
+  sentences of one speaker make one turn. Raw Parakeet text (the dictionary's in-decode boosting
   applies on Metal), no correction model (the cleaned copy is a separate file, below). Everyone on the call is "call": no diarization yet. On speakers
   the call can leak into "me".
 - Dictations during the call (GOAL N9) are left out of "me": the bar records each dictation's capture, from the mic

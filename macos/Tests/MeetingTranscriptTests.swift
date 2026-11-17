@@ -447,6 +447,178 @@ final class MeetingTranscriptTests: XCTestCase {
         XCTAssertNil(MeetingTranscriptProgress.load(from: folder))
     }
 
+    // MARK: Live rolling transcription and transcript.txt
+
+    func testLiveSpanPlanningBuffersBeforeEmittingAndRewindsCutEdges() throws {
+        // Under 20 s of buffered audio waits while live.
+        let threeChunks = chunks(3)  // 15 s
+        XCTAssertNil(
+            MeetingSpanPlanner.next(track: .mic, chunks: threeChunks, cursor: 0, rate: 1_000, live: true))
+
+        // At 20 s, emits a span with reachesRunEnd == false so trailing edges can re-transcribe.
+        let fourChunks = chunks(4)  // 20 s
+        let span = try XCTUnwrap(
+            MeetingSpanPlanner.next(track: .mic, chunks: fourChunks, cursor: 0, rate: 1_000, live: true))
+        XCTAssertEqual(span.startSample, 0)
+        XCTAssertEqual(span.endSample, 20_000)
+        XCTAssertFalse(span.reachesRunEnd)
+
+        // Once stopped (live == false), a < 20 s remainder emits with reachesRunEnd == true.
+        let stopped = try XCTUnwrap(
+            MeetingSpanPlanner.next(track: .mic, chunks: fourChunks, cursor: 15_000, rate: 1_000, live: false))
+        XCTAssertEqual(stopped.startSample, 15_000)
+        XCTAssertEqual(stopped.endSample, 20_000)
+        XCTAssertTrue(stopped.reachesRunEnd)
+
+        // A closed run before a gap is finished even while live is true.
+        let gapped = chunks(2) + chunks(2, from: 20_000, firstIndex: 2)
+        let preGap = try XCTUnwrap(
+            MeetingSpanPlanner.next(track: .mic, chunks: gapped, cursor: 0, rate: 1_000, live: true))
+        XCTAssertEqual(preGap.endSample, 10_000)
+        XCTAssertTrue(preGap.reachesRunEnd)
+    }
+
+    @MainActor
+    func testLiveRecordingStreamsTranscriptTxtAndUpdatesLatestSymlink() throws {
+        let meetingsRoot = directory.appendingPathComponent("Meetings", isDirectory: true)
+        let folder = meetingsRoot.appendingPathComponent("meeting_live", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        var metadata = MeetingMetadata(
+            id: "meeting_live", startedAt: "2026-11-17T16:00:00Z", startedHostNs: 0,
+            appBundleID: "us.zoom.xos", appName: "Zoom")
+        metadata.sampleRate = 1_000
+        metadata.windowTitle = "Weekly Sync"
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+
+        var sent: [[String: Any]] = []
+        let transcriber = MeetingTranscriber()
+        transcriber.send = { sent.append($0) }
+        transcriber.setEngineReady(true)
+
+        // Initial start (no chunks yet): transcript.txt exists with recording status & latest.txt points to it.
+        transcriber.updateLive(directory: folder, metadata: metadata)
+        XCTAssertTrue(sent.isEmpty)
+        let textURL = folder.appendingPathComponent(MeetingTranscript.textFileName)
+        let latestURL = meetingsRoot.appendingPathComponent(MeetingTranscript.latestFileName)
+        let initialText = try String(contentsOf: textURL)
+        XCTAssertTrue(initialText.contains("Meeting: Weekly Sync"))
+        XCTAssertTrue(initialText.contains("Status: recording"))
+        XCTAssertTrue(initialText.contains("(waiting for first transcribed span)"))
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: latestURL.path),
+            "meeting_live/transcript.txt")
+
+        // 10 s closed: still under 20 s live minimum -> waits without sending.
+        metadata.micChunks = chunks(2)
+        metadata.systemChunks = chunks(2)
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+        transcriber.updateLive(directory: folder, metadata: metadata)
+        XCTAssertTrue(sent.isEmpty)
+
+        // 25 s closed on mic & call -> first live span dispatches cleanly.
+        metadata.micChunks = chunks(5)
+        metadata.systemChunks = chunks(5)
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+        transcriber.updateLive(directory: folder, metadata: metadata)
+        XCTAssertEqual(sent.count, 1)
+
+        // Answer live spans until buffered audio is caught up.
+        var answered = 0
+        while answered < sent.count, answered < 10 {
+            transcriber.handle(answer(sent[answered]))
+            answered += 1
+        }
+        let streamedText = try String(contentsOf: latestURL)
+        XCTAssertTrue(streamedText.contains("Status: recording"))
+        XCTAssertTrue(streamedText.contains("You: Words at 0."))
+        XCTAssertTrue(streamedText.contains("Call: Words at 0."))
+        XCTAssertNil(MeetingTranscript.load(from: folder), "transcript.json waits until stop")
+
+        // Notes listing and resumePending ignore latest.txt without treating it as a broken folder.
+        let notes = MeetingNote.loadAll(from: meetingsRoot)
+        XCTAssertEqual(notes.map(\.id), ["meeting_live"])
+        let other = MeetingTranscriber()
+        other.resumePending(in: meetingsRoot)
+        XCTAssertNil(other.jobs[MeetingTranscript.latestFileName])
+
+        // Recording stops with 10 s of final audio (35 s total): finalizes transcript.json & transcript.txt.
+        metadata.micChunks = chunks(7)
+        metadata.systemChunks = chunks(7)
+        metadata.endedAt = "2026-11-17T16:00:35Z"
+        try JSONEncoder().encode(metadata).write(to: folder.appendingPathComponent("metadata.json"))
+        var finished: [String] = []
+        transcriber.onFinished = { finished.append($0) }
+        transcriber.enqueue(directory: folder)
+        while answered < sent.count, answered < 20 {
+            transcriber.handle(answer(sent[answered]))
+            answered += 1
+        }
+        XCTAssertEqual(finished, ["meeting_live"])
+        XCTAssertNotNil(MeetingTranscript.load(from: folder))
+        let finalText = try String(contentsOf: latestURL)
+        XCTAssertTrue(finalText.contains("Status: complete"))
+        XCTAssertTrue(finalText.contains("Ended: 2026-11-17T16:00:35Z"))
+        XCTAssertTrue(finalText.contains("Words at 25."))
+    }
+
+    @MainActor
+    func testDiscardingALiveRecordingRestoresLatestAndOlderRetranscribeDoesNotStealIt() throws {
+        let meetingsRoot = directory.appendingPathComponent("Meetings", isDirectory: true)
+        let oldFolder = meetingsRoot.appendingPathComponent("meeting_old", isDirectory: true)
+        let midFolder = meetingsRoot.appendingPathComponent("meeting_mid", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: midFolder, withIntermediateDirectories: true)
+
+        var oldMeta = MeetingMetadata(id: "meeting_old", startedAt: "2026-11-17T10:00:00Z", startedHostNs: 0)
+        oldMeta.sampleRate = 1_000
+        oldMeta.micChunks = chunks(2)
+        try JSONEncoder().encode(oldMeta).write(to: oldFolder.appendingPathComponent("metadata.json"))
+
+        var midMeta = MeetingMetadata(id: "meeting_mid", startedAt: "2026-11-17T12:00:00Z", startedHostNs: 0)
+        midMeta.sampleRate = 1_000
+        midMeta.micChunks = chunks(2)
+        try JSONEncoder().encode(midMeta).write(to: midFolder.appendingPathComponent("metadata.json"))
+
+        var sent: [[String: Any]] = []
+        let transcriber = MeetingTranscriber()
+        transcriber.send = { sent.append($0) }
+        transcriber.setEngineReady(true)
+
+        // Finish meeting_mid first so latest.txt points to it.
+        transcriber.enqueue(directory: midFolder)
+        while let cmd = sent.last, transcriber.jobs["meeting_mid"] != nil {
+            transcriber.handle(answer(cmd))
+        }
+        let latestURL = meetingsRoot.appendingPathComponent(MeetingTranscript.latestFileName)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: latestURL.path),
+            "meeting_mid/transcript.txt")
+
+        // Re-transcribing older meeting_old never overrides latest.txt away from newer meeting_mid.
+        transcriber.enqueue(directory: oldFolder)
+        while let cmd = sent.last, transcriber.jobs["meeting_old"] != nil {
+            transcriber.handle(answer(cmd))
+        }
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: latestURL.path),
+            "meeting_mid/transcript.txt")
+
+        // A new live meeting moves latest.txt to itself; discarding it restores meeting_mid.
+        let newFolder = meetingsRoot.appendingPathComponent("meeting_new", isDirectory: true)
+        let newMeta = MeetingMetadata(id: "meeting_new", startedAt: "2026-11-17T15:00:00Z", startedHostNs: 0)
+        transcriber.updateLive(directory: newFolder, metadata: newMeta)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: latestURL.path),
+            "meeting_new/transcript.txt")
+
+        transcriber.cancel(directory: newFolder)
+        try? FileManager.default.removeItem(at: newFolder)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: latestURL.path),
+            "meeting_mid/transcript.txt")
+    }
+
     // MARK: Dictations during the call (GOAL N9)
 
     private func word(_ start: Double, _ text: String) -> TimedWord {

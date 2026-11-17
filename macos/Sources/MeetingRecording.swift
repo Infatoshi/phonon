@@ -493,11 +493,16 @@ final class ChunkedWavWriter {
 final class MeetingIndex {
     let directory: URL
     private(set) var metadata: MeetingMetadata
+    private let onSaved: (@Sendable (MeetingMetadata) -> Void)?
     private let lock = OSAllocatedUnfairLock()
 
-    init(directory: URL, metadata: MeetingMetadata) throws {
+    init(
+        directory: URL, metadata: MeetingMetadata,
+        onSaved: (@Sendable (MeetingMetadata) -> Void)? = nil
+    ) throws {
         self.directory = directory
         self.metadata = metadata
+        self.onSaved = onSaved
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try save()
     }
@@ -571,13 +576,17 @@ final class MeetingIndex {
     private let saving = NSLock()
 
     func save() throws {
-        saving.lock()
-        defer { saving.unlock() }
-        let snapshot = lock.withLock { metadata }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(snapshot).write(
-            to: directory.appendingPathComponent("metadata.json"), options: .atomic)
+        let snapshot: MeetingMetadata = try {
+            saving.lock()
+            defer { saving.unlock() }
+            let snapshot = lock.withLock { metadata }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            try encoder.encode(snapshot).write(
+                to: directory.appendingPathComponent("metadata.json"), options: .atomic)
+            return snapshot
+        }()
+        onSaved?(snapshot)
     }
 }
 
@@ -724,8 +733,12 @@ final class MeetingRecorder: NSObject, SCStreamOutput, @unchecked Sendable {
         commonFormat: .pcmFormatFloat32, sampleRate: Double(MeetingFormat.sampleRate),
         channels: 1, interleaved: false)!
 
-    init(directory: URL, metadata: MeetingMetadata) throws {
-        let index = try MeetingIndex(directory: directory, metadata: metadata)
+    init(
+        directory: URL, metadata: MeetingMetadata,
+        onMetadataUpdated: (@Sendable (MeetingMetadata) -> Void)? = nil
+    ) throws {
+        let index = try MeetingIndex(
+            directory: directory, metadata: metadata, onSaved: onMetadataUpdated)
         self.index = index
         mic = try ChunkedWavWriter(
             directory: directory.appendingPathComponent("mic", isDirectory: true),

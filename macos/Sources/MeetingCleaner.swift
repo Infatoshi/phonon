@@ -66,8 +66,9 @@ final class MeetingCleaner {
     func resumePending(in root: URL, fileManager: FileManager = .default) {
         let folders =
             (try? fileManager.contentsOfDirectory(
-                at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
         for folder in folders.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard MeetingNote.isMeetingDirectory(folder, fileManager: fileManager) else { continue }
             let output = outputDirectory(folder)
             guard let progress = MeetingCleanupProgress.load(from: output), progress.error == nil else { continue }
             enqueue(directory: folder)
