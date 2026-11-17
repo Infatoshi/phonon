@@ -423,8 +423,8 @@ enum ClipboardAfterPaste: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// settings.json `writing_style`. `app` lets each app pick its mode (Slack and
-/// email formal, Discord casual, terminals and AI tools as prompts); the others
+/// settings.json `writing_style`. `app` lets each app pick its mode (Discord,
+/// Slack and Teams casual, email formal, terminals and AI tools as prompts); the others
 /// use that one refiner mode everywhere.
 enum WritingStyle: String, Codable, CaseIterable, Identifiable {
     case app, minimal, casual, formal

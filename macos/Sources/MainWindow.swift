@@ -1214,9 +1214,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingRow(
                 "Writing style",
-                help: "Follow the app: Discord and Messages casual, Slack, Teams and email "
-                    + "formal, terminals and AI tools as prompts, minimal everywhere else. "
-                    + "Pick one to use it everywhere."
+                help: "Follow the app: Discord, Messages, Slack and Teams casual, email formal, "
+                    + "terminals and AI tools as prompts, minimal everywhere else. Pick one to use "
+                    + "it everywhere."
             ) {
                 ChoiceChips(
                     options: WritingStyle.allCases.map { ($0, $0.title) },
@@ -2030,7 +2030,7 @@ struct PrivacyChoiceView: View {
                 ToggleRow(
                     title: "Read the screen",
                     detail:
-                        "Read the visible windows with on-device OCR to spell technical terms correctly. Screenshots are never saved, and nothing leaves the Mac.",
+                        "Read the visible windows with on-device OCR to spell technical terms correctly. Screenshots are never saved; screen-matched dictionary terms are sent only if you enable your own endpoint.",
                     isOn: $screenContext,
                     showsDetail: true
                 )

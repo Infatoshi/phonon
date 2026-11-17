@@ -1127,3 +1127,124 @@ covers (plus up to one 0.4 s chunk); none hit the output budget. Key-up to text 
 ms off/on in the clean run (p90 68.9/71.6); the other run had ASR-side outliers in both arms
 (off 1 of 10, on 4 of 10, up to 2 s) not reproduced. Final text identical on 10 of 10 in all
 four arm-runs.
+
+## Screen context reader (cross-platform design)
+
+Today (survey of `32f88e2`; `macos/Sources/`, `crates/phonon-core/src/app_context.rs`),
+macOS reads only the frontmost bundle id, focused browser host (`BrowserPage`),
+optional focused field text (`TextboxAccess`, off by default), and visible-window
+Vision OCR up to 8 captures / 24,000 chars (`ScreenContextScope`), passing the
+first 350 collapsed words to the context refiner (`On screen:` in
+`phonon_llm::refiner_prompt`) and intersecting OCR against the dictionary
+(`screen_context_terms`). Windows, Linux, iOS, and Android read no screen
+context yet (iOS and Android read only text before the cursor).
+
+Target architecture (owner decision 2026-11-16: reading the active app is its
+own feature, aligned with `AGENTS.md` "Screen context contract"): an
+accessibility-first reader paired with targeted OCR fallback only where AX
+cannot see the content. Reading never uses AppleScript (Automation permission)
+and never requires a browser extension.
+
+### Active app, window, tab, pane, and session identification
+
+Every capture resolves a structured `ScreenContextSnapshot` (`bundle_id` /
+app id, `url_host`, focused `surface_kind`, active `session_or_tab_label`,
+`nearest_texts`, `before_cursor`, and optional `ocr_text`) strictly scoped to
+the active focus, never mixing background tabs or unfocused panes:
+
+| Target | Identification and primary read path | Caveats and fallback |
+|---|---|---|
+| `lapis` (`dev.lapis.desktop`, `Code`) | Identify the focused pane/session (repo/project name, active agent thread title) and read visible lines around the focused terminal/agent output via AX (`AXTextArea` / `AXStaticText` siblings in the active split). | Keep only the active pane when multiple splits are open; fall back to active-pane cropped OCR if the terminal buffer is canvas-rendered. |
+| `iTerm` / `Terminal` (`com.googlecode.iterm2`, `com.apple.Terminal`, `Code`) | Resolve the front window's selected tab (`AXTabGroup` selected tab) and focused split (`AXSplitGroup` -> focused `AXTextArea` / `AXScrollArea`), never background tabs or hidden splits. Detect an active coding CLI (Claude Code, Codex) vs a plain shell from the focused tab title, foreground process/TTY command, or recent prompt markers, reading only the visible viewport tail (no full scrollback dump). | Plain shell buffers can be huge; cap AX value/line reads to the last ~100 visible lines and fall back to active-pane OCR when a terminal hides lines from AX. |
+| `Slack` (`com.tinyspeck.slackmacgap`, `com.slack.Slack`, `slack.com`, `WorkChat`) | Resolve workspace + active channel, DM, or thread pane from the focused composer (`AXTextArea`) upward to its pane header and recent visible message nodes, separating the thread sidebar from the main channel stream. Keep a bounded in-memory proper-noun cache (e.g. 50 recent channel/sender names) while in the channel. | Electron trap: send `AXManualAccessibility` at most once per PID, never mutate attributes that wake a composition buffer, and expect ~2 s empty trees on first activation (targeted OCR covers cold starts). |
+| `Discord` (`com.hnc.Discord`, `com.discordapp.Discord`, `discord.com`, `Chat`) | Denied by default (`screen_context_denylist`). When the user explicitly removes Discord from `screen_context_denylist`, resolve server + active channel/DM and nearest visible messages around the focused composer using the same Electron-safe walk. | While denylisted (default), read zero AX, OCR, title, or host; call detection may still offer meeting notes without saving window title or channel. |
+| `Chrome` (`com.google.Chrome*` and Chromium browsers) | Walk up from the focused element to the outermost `AXWebArea` (`BrowserPage.placement`) to get the active tab's top-level `http`/`https` host (never an inner iframe). Background browser windows are never read. Optional recent-tabs context uses only an in-memory ring of *already-permitted* previously active tabs (never by scanning background tabs). | Chromium AX focus can go stale across tab/window switches: re-verify focus + window id + top-level `AXURL` before and after every read, and drop the capture on mismatch. **Google Docs (`docs.google.com`) caveat**: the document body is canvas-painted, so AX returns UI chrome only; use targeted OCR on the active window viewport when `docs.google.com` is permitted. |
+| `Apple Notes` (`com.apple.Notes`, `Docs`) | Read the active note title and focused note body (`AXTextArea` / `AXWebArea`) in the front window, skipping the folder/note sidebar list when focus is in the editor. | Locked notes (`AXSecureTextField` or locked-note prompt/placeholder without unlocked body) fail closed and read nothing. |
+| `VS Code` (`com.microsoft.VSCode*`, Cursor, Windsurf, Zed, `Code`) | Identify the active editor tab filename/path, language/symbol context, and whether focus is in the editor vs integrated terminal pane; read nearest visible lines/symbols around the cursor from the focused pane only. | Electron (`VS Code`, Cursor, Windsurf) shares the `AXManualAccessibility` cold-tree (~2 s) and composition-buffer traps; bound element count and fall back to active-window OCR until AX populates. |
+
+### Privacy denylist and fail-closed contract
+
+1. **Denylist (`screen_context_denylist`) and `alwaysPrivate`**: Signal
+   (`org.whispersystems.signal-desktop`), Discord (`com.hnc.Discord`,
+   `discord.com`), and any user-added app or host are blocked across desktop and
+   browser tabs together (`ContextPolicy.siteApps`). OS auth prompts, keychains,
+   and password managers (`ContextPolicy.alwaysPrivate`) are always blocked and
+   cannot be removed.
+2. **Password and secure fields**: Any element with a password/secure role or
+   subrole (`AXSecureTextField`, `kAXSecureTextFieldSubrole` on macOS;
+   `IsPassword` in Windows UIA; `ROLE_PASSWORD_TEXT` in Linux AT-SPI2;
+   `isSecureTextEntry` on iOS; `TYPE_TEXT_VARIATION_PASSWORD` / web/numeric
+   password variations on Android) suppresses textbox context, edit learning,
+   screen OCR, and dictionary boosting for that field.
+3. **Fail-closed browser and window checks**: An app with no bundle/process id,
+   a browser whose active top-level `AXWebArea` / document URL is missing,
+   non-`http(s)` (`chrome://`, `devtools://`, `file://`, `about:`, extensions),
+   or unreachable within the walk budget (`maxDepth = 80`), an incognito/private
+   window, and all background browser windows count as private and yield zero
+   context.
+4. **Discord and Signal calls**: Meeting detection may still offer call notes
+   for a call inside a denylisted app (`AGENTS.md` "Screen context contract"),
+   recording no window title, channel name, or page host and reading zero
+   screen/AX text.
+5. **Storage and egress boundary**: Screenshots and raw OCR / AX nearest-text
+   captures stay strictly transient in memory (`<= 8` captures, `<= 24,000`
+   chars; `On screen:` prompt line capped at 350 collapsed words, `Before cursor:`
+   at 40 words). When `local_history` is on, corpus `metadata.json` persists
+   only `screen_context_terms` (confirmed canonical dictionary entries) and
+   `app_context` (bundle id and host only, never URL paths or queries). When
+   BYOK (`byok_enabled`) is on, only `screen_context_terms` join the remote
+   endpoint's vocabulary list; raw OCR text, AX buffers, and screenshots never
+   leave the machine.
+
+### Latency budget
+
+- **Non-blocking key-down start**: `AXObserver` (or platform focus watcher)
+  maintains lightweight active-target metadata while idle, and at key-down the
+  reader snapshots focus and runs AX/OCR capture off the main and audio threads.
+  Dictation start, audio capture, and final text insertion never block on AX or
+  OCR setup.
+- **Hard `<= 300 ms` cap at key-up**: After the final transcript lands, polish
+  waits at most `300 ms` (`ScreenContextWait.afterFinalTranscript = 0.3 s`) for
+  any in-flight initial or window-switch read; once the cap expires, correction
+  submits immediately with whatever context already arrived, and late reads are
+  dropped via generation ledger (`ScreenReadLedger`).
+- **Bounded calls and warm OCR**: Every cross-process AX/UIA/D-Bus call uses a
+  short timeout (`0.25 s` on macOS) and a strict node/time budget (`maxDepth`,
+  max siblings/nearest-text nodes) so hung Electron or browser renderers cannot
+  stall the worker. Vision OCR (`VNRecognizeTextRequest`, accurate mode,
+  language correction off) is warmed at launch so cold model compilation never
+  consumes the 300 ms key-up budget.
+
+### Cross-platform adapter architecture
+
+All platforms emit the same normalized context struct into
+`crates/phonon-core/src/app_context.rs` and `crates/phonon-llm/src/refiner_prompt.rs`:
+
+- **macOS (`macos/Sources/`)**: `AXObserver` focus/selection stream + bounded
+  `AXorcist`-style nearest-text walk from the focused element (with
+  `AXManualAccessibility` set once per Electron/Chromium PID) + `BrowserPage`
+  top-level `AXWebArea` host gate + targeted `ScreenCaptureKit` / Vision OCR
+  fallback for canvas-painted surfaces (`docs.google.com`), cold Electron trees,
+  and visible multi-window context (`ScreenWindowSelector`).
+- **Windows (`crates/phonon-win`)**: Dedicated worker/STA UI Automation thread
+  using `uiautomation-rs` (Apache-2.0), isolated from the `WH_KEYBOARD_LL` hook
+  thread. Reads `IUIAutomation` focused element (`IsPassword`, `ControlType`,
+  process executable -> normalized app id, Chromium/Edge/Firefox address bar or
+  document URL pattern, and bounded nearest-text walk), with optional DXGI /
+  `Windows.Media.Ocr` fallback for canvas/cold Electron windows under the same
+  denylist and 300 ms cap.
+- **Linux (`crates/phonon-win/src/lx/`)**: AT-SPI2 client (`atspi` over D-Bus)
+  for focused accessible node, password role (`ROLE_PASSWORD_TEXT`), active app
+  desktop id, and bounded nearest-text walk. Window identity uses EWMH on X11
+  and compositor/portal metadata on Wayland; Wayland window capture/OCR is
+  omitted unless an explicit user-consented ScreenCast portal session is active
+  so dictation never triggers unexpected portal prompts.
+- **iOS (`ios/`) and Android (`android/`)**: Subject to mobile keyboard/host-app
+  sandbox limits (no cross-app screen capture or external window inspection).
+  Context is restricted to the cursor neighbor text exposed by the host text
+  input (`UITextDocumentProxy.documentContextBeforeInput` on iOS;
+  `InputConnection.getTextBeforeCursor` on Android) plus host app identity where
+  the OS provides it (`EditorInfo.packageName` on Android), honoring
+  `isSecureTextEntry` / `TYPE_TEXT_VARIATION_PASSWORD` and
+  `IME_FLAG_NO_PERSONALIZED_LEARNING` to disable refiner/dictionary context in
+  private fields.
