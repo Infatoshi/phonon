@@ -442,7 +442,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, lit: u64, idle
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
                         Ok(path) => {
-                            crate::indicator::pasted(lit);
+                            crate::indicator::dropped(lit);
                             eprintln!(
                                 "phonon: {path} {} chars, key-up to insert {} ms",
                                 text.len(),
@@ -532,7 +532,6 @@ fn clear_history(active: Option<&std::path::Path>) {
 /// A dictation that could not be pasted stays on the clipboard and in the
 /// tray's "Copy last dictation", and the notification says where it is.
 fn keep_unpasted(text: &str, lit: u64) {
-    // nothing went into an app: no burst
     crate::indicator::dropped(lit);
     match inject::copy(text) {
         Ok(()) => tray::notify_private(

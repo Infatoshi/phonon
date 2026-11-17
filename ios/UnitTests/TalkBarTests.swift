@@ -31,7 +31,7 @@ final class TalkBarTests: XCTestCase {
         switch beat.stage {
         case .listening: phase = .listening
         case .processing: phase = .working
-        case .rest, .burst, .fadeOut: phase = .ready
+        case .rest, .fadeOut: phase = .ready
         }
         return TalkBarSideControl(phase: phase, beat: beat.stage)
     }
@@ -152,11 +152,10 @@ final class TalkBarTests: XCTestCase {
         let lit = BarBeat.ignite(at: t0)
         let up = t0.addingTimeInterval(2)
         let gather = lit.processing(at: up)
-        let burst = gather.burst(at: up.addingTimeInterval(1), level: 0, reduceMotion: true)
         let faded = gather.fadeOut(at: up.addingTimeInterval(1), level: 0, reduceMotion: true)
         var widths: Set<Double> = []
         for (beat, after) in [(lit, 0.0), (lit, 0.1), (lit, 1.0), (gather, 0.0), (gather, 0.6), (gather, 3.0),
-                              (burst, 0.0), (burst, 0.15), (faded, 0.1)] {
+                              (faded, 0.0), (faded, 0.1)] {
             for fill in [TalkBarFill(state: .idle, level: 0.6, animate: false, beat: beat),
                          TalkBarFill(state: .idle, level: 0.6, followLevel: false, beat: beat)] {
                 widths.insert(fill.look(at: beat.since.addingTimeInterval(after)).width)
@@ -173,7 +172,6 @@ final class TalkBarTests: XCTestCase {
         let gather = lit.processing(at: t0)
         let cases: [(BarBeat, Double)] = [
             (lit, 0), (gather, 0.6), (gather, 3),
-            (gather.burst(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false), 0.3),
             (gather.fadeOut(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false), 0.1),
         ]
         for (beat, after) in cases {
@@ -191,16 +189,16 @@ final class TalkBarTests: XCTestCase {
         }
     }
 
-    /// Stage stills for a person to look at: ignite at t = 0, listening, the gather at 0.6 s, the held core, the burst
-    /// at 0.3 s. Written to PHONON_SHOTS_DIR as stage-*.png when it is set.
+    /// Stage stills for a person to look at: ignite at t = 0, listening, the gather at 0.6 s, the held core, the fade
+    /// at 0.1 s. Written to PHONON_SHOTS_DIR as stage-*.png when it is set.
     func testWritesStageShots() throws {
         let t0 = Date(timeIntervalSinceReferenceDate: 5000)
         let lit = BarBeat.ignite(at: t0)
         let gather = lit.processing(at: t0)
-        let burst = gather.burst(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false)
+        let fade = gather.fadeOut(at: t0.addingTimeInterval(3), level: 0, reduceMotion: false)
         let shots: [(String, BarBeat, Double, Double)] = [
             ("1-ignite-t0", lit, 0, 0), ("2-listening-mid", lit, 1, 0.5), ("3-gather-0.6s", gather, 0.6, 0),
-            ("4-gather-held", gather, 3, 0), ("5-burst-0.3s", burst, 0.3, 0),
+            ("4-gather-held", gather, 3, 0), ("5-fade-0.1s", fade, 0.1, 0),
         ]
         for (name, beat, after, level) in shots {
             let view = TalkBarStrip(control: control(for: beat), onSide: {}) {

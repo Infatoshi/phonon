@@ -109,13 +109,8 @@ final class PillState: ObservableObject {
         beat = beat.processing(at: now)
     }
 
-    /// The text was inserted: the burst.
-    func delivered(now: Date = Date()) {
-        beat = beat.burst(at: now, level: level, reduceMotion: reduceMotion)
-    }
-
-    /// Nothing was inserted (empty result, error, nowhere to paste): no burst, the core fades out.
-    func undelivered(now: Date = Date()) {
+    /// The dictation ended (text inserted, empty result, error, nowhere to paste): the core fades out, no pulse.
+    func fadeOut(now: Date = Date()) {
         beat = beat.fadeOut(at: now, level: level, reduceMotion: reduceMotion)
     }
 
@@ -1065,7 +1060,7 @@ struct PillView: View {
     var body: some View {
         // Idle and hidden draw nothing that changes over time, so the clock stops there: an unpaused timeline redrew
         // the still capsule 30 times a second forever (about 5% of a core on an M4 Air, 2026-11-05). It also stops
-        // while the gathered core is held (processing, gather done) and after the burst, where the capsule goes idle.
+        // while the gathered core is held (processing, gather done) and after the fade-out, where the capsule goes idle.
         let drawn = state.drawnBeat
         let heldCore = state.mode == .working && !state.meetingRecording && settledBeat == drawn
         return TimelineView(
@@ -1129,7 +1124,7 @@ struct PillView: View {
     private func lightLook(at date: Date, energy: Double) -> BarLook {
         let drawn = state.drawnBeat
         guard drawn.stage != .rest else {
-            return BarLook(width: BarStages.wideWidth, heat: 0, opacity: warmth(energy), burst: 0)
+            return BarLook(width: BarStages.wideWidth, heat: 0, opacity: warmth(energy))
         }
         return drawn.look(at: date, level: state.level, reduceMotion: state.reduceMotion)
     }
@@ -3112,7 +3107,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                         hideLiveText()
                         notPasted.show(.notHeard(mic: recorder.selectedDeviceName))
                     }
-                    state.undelivered()  // nothing heard: the core fades, no burst
+                    state.fadeOut()  // nothing heard: the core fades
                     hideAfter(BarStages.fadeOutSeconds)
                     return
                 }
@@ -3206,19 +3201,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                     }
                     e2eTrace = nil
                     finishRecordingRetention()
-                    if insertionSucceeded {
-                        // the text is in the field: the burst, then the capsule goes idle
-                        state.delivered()
-                        hideAfter(BarStages.burstSeconds + 0.05)
-                    } else {
-                        // shown for copying instead (nowhere to paste, or no accessibility access): no burst
-                        state.undelivered()
-                        hideAfter(
-                            state.streamingPreviewEnabled
-                                ? max(0.55, BarStages.fadeOutSeconds) : BarStages.fadeOutSeconds)
-                    }
+                    // pasted or not, the core fades back to rest; shown for copying (nowhere to paste, or no
+                    // accessibility access) keeps the preview up a little longer
+                    state.fadeOut()
+                    hideAfter(
+                        !insertionSucceeded && state.streamingPreviewEnabled
+                            ? max(0.55, BarStages.fadeOutSeconds) : BarStages.fadeOutSeconds)
                 } else {
-                    state.undelivered()  // an empty result: the core fades, no burst
+                    state.fadeOut()  // an empty result: the core fades
                     hideAfter(BarStages.fadeOutSeconds)
                 }
             } else if kind == "draft" {
@@ -3254,7 +3244,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             if pendingTranscribe != nil { return }
             processing = false
             finishRecordingRetention()
-            state.undelivered()  // an engine error: the core fades, no burst
+            state.fadeOut()  // an engine error: the core fades
             hideAfter(BarStages.fadeOutSeconds)
         default:
             break
@@ -3605,7 +3595,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 engine.send(["cmd": "dictation_end", "id": activeId ?? "p\(pass)"])
             }
             ducker.stop()
-            state.undelivered()  // nothing was recorded: the lit light fades, no snap
+            state.fadeOut()  // nothing was recorded: the lit light fades, no snap
             hideAfter(BarStages.fadeOutSeconds)
             NSLog("mic: \(error.localizedDescription)")
         }
@@ -3687,7 +3677,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     self.engine.send(["cmd": "dictation_end", "id": id])
                     // Stay visible briefly so it doesn't feel broken, then hide.
                     self.processing = false
-                    self.state.undelivered()  // nothing captured: the core fades, no burst
+                    self.state.fadeOut()  // nothing captured: the core fades
                     self.hideAfter(max(0.25, BarStages.fadeOutSeconds))
                     return
                 }
@@ -3764,7 +3754,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.dictationEnded()
         _ = recorder.takeSamples()
         e2eTrace = nil
-        state.undelivered()  // nothing pasted: the light fades, no snap
+        state.fadeOut()  // nothing pasted: the light fades, no snap
         hideAfter(BarStages.fadeOutSeconds)
         if competitors.hasPendingPrompt {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in

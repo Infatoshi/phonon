@@ -4,13 +4,13 @@ import XCTest
 
 @testable import PhononBar
 
-/// The stage maths of the dictation light (BarStages.swift): ignite, listening, gather and hold, burst, fade-out, and
+/// The stage maths of the dictation light (BarStages.swift): ignite, listening, gather and hold, fade-out, and
 /// the Reduce Motion path. The same cases run in the iPhone app's tests (ios/UnitTests/BarStagesTests.swift).
 /// Also the capsule's events (PillState) and offscreen stills; set PHONON_RENDER_DIR to keep them.
 @MainActor
 final class BarStagesTests: XCTestCase {
     private func look(_ stage: BarStage, _ t: Double, level: Double = 0.4, reduced: Bool = false,
-                      from: BarLook = BarLook(width: 0.08, heat: 1, opacity: 1, burst: 0)) -> BarLook {
+                      from: BarLook = BarLook(width: 0.08, heat: 1, opacity: 1)) -> BarLook {
         BarStages.look(stage: stage, elapsed: t, level: level, reduceMotion: reduced, from: from)
     }
 
@@ -21,7 +21,6 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(BarStages.halfGatherWidth, 0.29, accuracy: 1e-9)
         XCTAssertEqual(BarStages.igniteSeconds, 0.18)
         XCTAssertEqual(BarStages.gatherSeconds, 1.2)
-        XCTAssertEqual(BarStages.burstSeconds, 0.6)
         XCTAssertEqual(BarStages.fadeOutSeconds, 0.2)
         XCTAssertEqual(BarStages.wideWidth, 0.5)
         XCTAssertEqual(BarStages.coreWidth, 0.08)
@@ -68,53 +67,29 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(c.b * 255, 29, accuracy: 1e-6)
     }
 
-    func testBurstGrowsWithSquareRootAndEndsAtZero() {
-        let held = look(.processing, 3)
-        XCTAssertEqual(look(.burst, 0, from: held).width, 0.08, accuracy: 1e-9)
-        XCTAssertEqual(look(.burst, 0, from: held).burst, 1, accuracy: 1e-9)
-        for p in [0.1, 0.25, 0.5, 0.81] {
-            let b = look(.burst, 0.6 * p, from: held)
-            XCTAssertEqual(b.width, 0.08 + 0.42 * p.squareRoot(), accuracy: 1e-9, "sqrt at \(p)")
-            XCTAssertEqual(b.burst, 1 - p, accuracy: 1e-9, "linear fade at \(p)")
-        }
-        // sqrt is front-loaded: past the half-way width by a quarter of the time
-        XCTAssertGreaterThan(look(.burst, 0.15, from: held).width, BarStages.halfGatherWidth)
-        let end = look(.burst, 0.6, from: held)
-        XCTAssertEqual(end.width, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(end.burst, 0, accuracy: 1e-9)
-        XCTAssertEqual(end.rgba.a, 0, accuracy: 1e-9, "nothing is drawn at the end")
-        XCTAssertEqual(look(.burst, 2, from: held).rgba.a, 0, accuracy: 1e-9)
-        let c = look(.burst, 0.01, from: held).rgba
-        XCTAssertEqual(c.r * 255, 255, accuracy: 1e-6)
-        XCTAssertEqual(c.g * 255, 170, accuracy: 1e-6)
-        XCTAssertEqual(c.b * 255, 100, accuracy: 1e-6)
-    }
-
-    func testBurstStartsFromWhereverTheGatherWas() {
+    func testFadeOutStartsFromWhereverTheGatherWas() {
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let processing = BarBeat.ignite(at: t0).processing(at: t0)
-        let early = processing.burst(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false)
-        XCTAssertEqual(early.stage, .burst)
+        let early = processing.fadeOut(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false)
+        XCTAssertEqual(early.stage, .fadeOut)
         XCTAssertEqual(early.from.width, BarStages.halfGatherWidth, accuracy: 1e-9,
                        "finished half way through the gather")
         XCTAssertEqual(early.look(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false).width,
                        BarStages.halfGatherWidth, accuracy: 1e-9, "continuous: no jump at the moment of the paste")
-        XCTAssertEqual(early.look(at: t0.addingTimeInterval(1.2), level: 0.4, reduceMotion: false).width, 0.5,
-                       accuracy: 1e-9)
     }
 
-    func testNothingPastedSkipsTheBurstAndFadesTheCoreOverTwoTenths() {
+    func testTheEndFadesTheCoreOverTwoTenthsWithNoPulse() {
         let held = look(.processing, 3)
         for t in stride(from: 0.0, through: 0.5, by: 0.05) {
             let f = look(.fadeOut, t, from: held)
-            XCTAssertEqual(f.burst, 0, "no burst colour at \(t)")
             XCTAssertEqual(f.width, 0.08, accuracy: 1e-9, "the core does not spread at \(t)")
+            XCTAssertEqual(f.heat, held.heat, "no colour change at \(t)")
+            XCTAssertLessThanOrEqual(f.opacity, held.opacity, "never brighter at \(t)")
         }
         XCTAssertEqual(look(.fadeOut, 0, from: held).opacity, 1, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, 0.1, from: held).opacity, 0.5, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, 0.2, from: held).opacity, 0, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, 1, from: held).rgba.a, 0, accuracy: 1e-9)
-        // through the beat: a result with no text never reaches the burst stage
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let ended = BarBeat.ignite(at: t0).processing(at: t0).fadeOut(at: t0.addingTimeInterval(2), level: 0, reduceMotion: false)
         XCTAssertEqual(ended.stage, .fadeOut)
@@ -126,7 +101,7 @@ final class BarStagesTests: XCTestCase {
             [0.0, 0.4, 1.2, 5].map { look(.processing, $0, reduced: true).width }
                 + [0.0, 0.1, 0.3, 1].map { look(.listening, $0, reduced: true).width }
                 + [0.0, 0.1, 0.3, 1].map {
-                    look(.burst, $0, reduced: true, from: look(.processing, 1, reduced: true)).width
+                    look(.fadeOut, $0, reduced: true, from: look(.processing, 1, reduced: true)).width
                 })
         XCTAssertEqual(widths, [BarStages.reducedWidth],
                        "one steady medium width from key down to the end, key up changes nothing: \(widths)")
@@ -140,22 +115,15 @@ final class BarStagesTests: XCTestCase {
         let up = t0.addingTimeInterval(2)
         XCTAssertEqual(lit.look(at: up, level: 0.7, reduceMotion: true).width,
                        lit.processing(at: up).look(at: up, level: 0.7, reduceMotion: true).width)
-        // nothing pasted: the fade keeps that width too
+        // the end: the fade keeps that width too
         let faded = lit.fadeOut(at: up, level: 0.7, reduceMotion: true)
         XCTAssertEqual(faded.look(at: up.addingTimeInterval(0.1), level: 0, reduceMotion: true).width,
                        BarStages.reducedWidth)
-        // pasted: a plain 0.3 s fade, no burst colour
-        let fade = { (t: Double) in self.look(.burst, t, reduced: true, from: core) }
-        XCTAssertEqual(fade(0).opacity, core.opacity, accuracy: 1e-9)
-        XCTAssertEqual(fade(0.15).opacity, core.opacity / 2, accuracy: 1e-9)
-        XCTAssertEqual(fade(0.3).opacity, 0, accuracy: 1e-9)
-        XCTAssertEqual(fade(0.1).burst, 0)
-        XCTAssertEqual(BarStages.duration(of: .burst, reduceMotion: true), 0.3)
     }
 
     func testRestDrawsNothingAndTheGradientIsBlackAtBothEnds() {
         XCTAssertEqual(look(.rest, 1).rgba.a, 0)
-        for l in [look(.listening, 0), look(.processing, 0.7), look(.burst, 0.2)] {
+        for l in [look(.listening, 0), look(.processing, 0.7), look(.fadeOut, 0.1)] {
             let s = l.stops
             XCTAssertEqual(s.first?.location, 0)
             XCTAssertEqual(s.last?.location, 1)
@@ -175,8 +143,7 @@ final class BarStagesTests: XCTestCase {
                        accuracy: 1e-9)
         let p = lit.processing(at: t0.addingTimeInterval(3))
         XCTAssertEqual(p.processing(at: t0.addingTimeInterval(4)), p, "a second stop keeps the gather where it is")
-        XCTAssertEqual(BarBeat.rest.burst(at: t0, level: 0, reduceMotion: false), .rest, "no burst from nothing")
-        XCTAssertEqual(BarBeat.rest.fadeOut(at: t0, level: 0, reduceMotion: false), .rest)
+        XCTAssertEqual(BarBeat.rest.fadeOut(at: t0, level: 0, reduceMotion: false), .rest, "no fade from nothing")
     }
 
     // MARK: the capsule's events
@@ -195,16 +162,9 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(pill.beat.stage, .processing)
         pill.startProcessing(now: t0.addingTimeInterval(3))  // a queued first pass calls it again
         XCTAssertEqual(pill.beat.since, t0.addingTimeInterval(2))
-        pill.delivered(now: t0.addingTimeInterval(4))
-        XCTAssertEqual(pill.beat.stage, .burst)
+        pill.fadeOut(now: t0.addingTimeInterval(4))
+        XCTAssertEqual(pill.beat.stage, .fadeOut, "the text went in: a plain fade back to rest, no pulse")
         XCTAssertEqual(pill.beat.from.width, 0.08, accuracy: 1e-9)
-
-        let failed = PillState()
-        failed.mode = .working
-        failed.ignite(now: t0)
-        failed.startProcessing(now: t0)
-        failed.undelivered(now: t0.addingTimeInterval(0.5))
-        XCTAssertEqual(failed.beat.stage, .fadeOut, "no burst when nothing was pasted")
         // without any event the mode still draws: listening lit, working the held core
         let bare = PillState()
         bare.mode = .working
@@ -236,15 +196,12 @@ final class BarStagesTests: XCTestCase {
             widths.insert(pill.drawnBeat.look(at: t0.addingTimeInterval(t), level: 0,
                                               reduceMotion: pill.reduceMotion).width)
         }
-        pill.delivered(now: t0.addingTimeInterval(9))
+        pill.fadeOut(now: t0.addingTimeInterval(9))
         for t in [9.0, 9.1, 9.3] {
             widths.insert(pill.drawnBeat.look(at: t0.addingTimeInterval(t), level: 0,
                                               reduceMotion: pill.reduceMotion).width)
         }
         XCTAssertEqual(widths, [BarStages.reducedWidth], "Low Power: one width from key down to the end")
-        XCTAssertEqual(pill.beat.from.burst, 0)
-        XCTAssertEqual(pill.drawnBeat.look(at: t0.addingTimeInterval(9.1), level: 0, reduceMotion: true).burst, 0,
-                       "no burst colour either: a plain fade")
     }
 
     /// Engine errors end only the dictation they name. One without an id (prewarm, dictionary reload, an unknown
@@ -265,7 +222,7 @@ final class BarStagesTests: XCTestCase {
         let shots: [(String, PillState.Mode, Double, Double)] = [
             ("1-ignite-t0", .listening, 0, 0), ("2-listening-mid", .listening, 1, 0.5),
             ("3-gather-0.6s", .working, 0.6, 0), ("4-gather-held", .working, 3, 0),
-            ("5-burst-0.3s", .working, 3.3, 0),
+            ("5-fade-0.1s", .working, 3.1, 0),
         ]
         for (name, mode, at, level) in shots {
             let pill = PillState()
@@ -275,7 +232,7 @@ final class BarStagesTests: XCTestCase {
             pill.reduceMotion = false
             if mode == .working {
                 pill.startProcessing(now: t0)
-                if name.hasPrefix("5") { pill.delivered(now: t0.addingTimeInterval(3)) }
+                if name.hasPrefix("5") { pill.fadeOut(now: t0.addingTimeInterval(3)) }
             }
             let view = PillView(state: pill, fixedTime: t0.addingTimeInterval(at))
                 .frame(width: 120, height: 40)

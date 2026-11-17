@@ -524,7 +524,7 @@ fn finish(engine: &Engine, recording: Option<capture::Recording>, lit: u64) {
                     let after = crate::settings::Settings::load().clipboard_after_paste();
                     match inject::insert(&text, after) {
                         Ok(path) => {
-                            crate::indicator::pasted(lit);
+                            crate::indicator::dropped(lit);
                             tray::set_status(&format!("inserted ({path})"))
                         }
                         Err(error) => {
@@ -616,7 +616,6 @@ fn clear_history() {
 /// the clipboard answers, and always in the tray's "Copy last dictation"; the
 /// balloon says why and where it is (`pipeline::kept_notice`).
 fn keep_unpasted(text: &str, why: crate::pipeline::KeptBecause, lit: u64) {
-    // nothing went into an app: no burst
     crate::indicator::dropped(lit);
     let on_clipboard = match inject::copy(text) {
         Ok(()) => true,

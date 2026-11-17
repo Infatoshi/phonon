@@ -59,12 +59,12 @@ final class DictationFlowTests: XCTestCase {
         model.startProcessing()
         XCTAssertEqual(model.beat.stage, .processing, "the release still gathers")
         model.phase = .working
-        model.delivered()
-        XCTAssertEqual(model.beat.stage, .burst, "and the paste still bursts")
+        model.fadeOut()
+        XCTAssertEqual(model.beat.stage, .fadeOut, "and the paste still fades back to rest")
 
         let idle = KeyboardModel()
         idle.ignite()
-        idle.undelivered()
+        idle.fadeOut()
         idle.offScreen(dictating: false)
         XCTAssertEqual(idle.beat, .rest, "with nothing under way it rests")
     }
@@ -82,7 +82,7 @@ final class DictationFlowTests: XCTestCase {
 
         let fading = KeyboardModel()
         fading.ignite()
-        fading.undelivered()
+        fading.fadeOut()
         fading.startProcessing()
         XCTAssertEqual(fading.beat.stage, .fadeOut, "a late stop does not relight an ended dictation")
     }
@@ -104,8 +104,7 @@ final class DictationFlowTests: XCTestCase {
         XCTAssertEqual(TalkBarSideControl(phase: .ready, beat: .rest, pending: true), .stop)
         XCTAssertEqual(TalkBarSideControl(phase: .ready, beat: .processing), .stop)
         XCTAssertEqual(TalkBarSideControl(phase: .needsSession, beat: .listening, pending: true), .stop)
-        // over: the burst or the fade show the settings circle
-        XCTAssertEqual(TalkBarSideControl(phase: .ready, beat: .burst), .settings)
+        // over: the fade shows the settings circle
         XCTAssertEqual(TalkBarSideControl(phase: .ready, beat: .fadeOut), .settings)
         XCTAssertEqual(TalkBarSideControl(phase: .ready), .settings)
 
@@ -115,7 +114,7 @@ final class DictationFlowTests: XCTestCase {
         model.ignite()  // the press, before micDown has asked the app anything
         XCTAssertEqual(model.sideControl, .stop)
         model.pendingMic = true
-        model.undelivered()
+        model.fadeOut()
         XCTAssertEqual(model.sideControl, .stop, "still waiting for the app")
         model.pendingMic = false
         XCTAssertEqual(model.sideControl, .settings)

@@ -72,7 +72,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        // stops the idle fluid's redraw; a dictation still under way keeps its light, so the gather, burst or fade
+        // stops the idle fluid's redraw; a dictation still under way keeps its light, so the gather or fade
         // still run when its result comes
         model.offScreen(dictating: waiting || pendingMic)
     }
@@ -299,7 +299,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         pongTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self, self.pendingMic else { return }
             self.pendingMic = false
-            self.model.undelivered()  // the app never answered: the lit bar fades out
+            self.model.fadeOut()  // the app never answered: the lit bar fades out
             self.model.phase = .needsSession
             self.startViaApp()
         }
@@ -322,7 +322,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         if pendingMic && !model.latched {  // a hold released before the app answered: nothing was recorded
             pendingMic = false
             pongTimer?.invalidate()
-            model.undelivered()
+            model.fadeOut()
             model.phase = .ready
             return
         }
@@ -346,7 +346,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         }
         token = nil  // a late result for it is not taken
         model.latched = false
-        model.undelivered()
+        model.fadeOut()
         model.phase = .ready
         model.status = "Cancelled"
     }
@@ -384,7 +384,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
             text = text.replacingOccurrences(of: "\n", with: " ")
         }
         guard !text.isEmpty else {
-            model.undelivered()  // nothing to paste: the core fades, no burst
+            model.fadeOut()  // nothing to paste: the core fades
             model.status = "Didn't catch that"
             return
         }
@@ -392,7 +392,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         let lead = before.isEmpty || before.hasSuffix(" ") || before.hasSuffix("\n") ? "" : " "
         let insert = lead + text + " "
         textDocumentProxy.insertText(insert)
-        model.delivered()  // the text is in the field: the burst
+        model.fadeOut()  // the text is in the field: the core fades back to rest, no pulse
         model.contextVersion += 1
         lastInsert = insert
         model.canUndo = true

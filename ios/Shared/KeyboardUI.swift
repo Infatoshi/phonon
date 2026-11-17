@@ -76,7 +76,7 @@ final class KeyboardModel: ObservableObject {
     }
 
     /// The keyboard went off screen. The idle fluid stops; the light returns to rest only when no dictation is under
-    /// way, so one still running keeps its beat and its gather, burst or fade still happen.
+    /// way, so one still running keeps its beat and its gather or fade still happen.
     func offScreen(dictating: Bool) {
         visible = false
         guard !dictating else { return }
@@ -84,13 +84,9 @@ final class KeyboardModel: ObservableObject {
         beat = .rest
     }
 
-    /// The text was inserted: the burst, then the resting bar.
-    func delivered() {
-        end(beat.burst(at: Date(), level: currentLevel, reduceMotion: reducedMotion))
-    }
-
-    /// Nothing was inserted (empty result, error, cancelled, released before the app answered): no burst.
-    func undelivered() {
+    /// The dictation ended (text inserted, empty result, error, cancelled, released before the app answered): the
+    /// core fades out, no pulse, then the resting bar.
+    func fadeOut() {
         end(beat.fadeOut(at: Date(), level: currentLevel, reduceMotion: reducedMotion))
     }
 
@@ -587,7 +583,7 @@ enum TalkBarSideControl: Equatable {
 /// The talk bar's fill. It takes exactly the frame it is given in every state and audio level; voice and state show
 /// only in colour and brightness. Idle: the grey fluid. Then the stages of BarStages.swift: ignite on the press,
 /// listening (brightness follows the smoothed level), the gather into a tight core while the text is written, the
-/// burst when it is inserted. No scale, size or layout ever depends on the stage or the level.
+/// fade back to rest when it is inserted. No scale, size or layout ever depends on the stage or the level.
 struct TalkBarFill: View {
     enum Mode: Equatable {
         case idle, noAccess, listening, working
@@ -633,7 +629,7 @@ struct TalkBarFill: View {
     var body: some View {
         let drawn = drawn
         // The clock runs only while a stage is still moving: the first 0.18 s of listening, the 1.2 s gather, the
-        // burst or fade. A held core and the voice level need no frames of their own.
+        // fade. A held core and the voice level need no frames of their own.
         let moving = drawn.settleSeconds(reduceMotion: reduced).map { Date().timeIntervalSince(drawn.since) < $0 } ?? false
         let running = frozenAt == nil && moving && settledBeat != drawn
         return ZStack {

@@ -55,36 +55,18 @@ class BarStagesTest {
     }
 
     @Test
-    fun burstFollowsSqrtAndEndsAtZero() {
-        val s = Stage.Pasted(0.08)
-        val start = BarStages.look(s, 0.0, 0.5, false)
-        assertEquals(0.08, start.halfWidth, eps)
-        assertEquals(1.0, start.burst, eps)
-        val quarter = BarStages.look(s, 0.15, 0.5, false) // p = 0.25
-        assertEquals(0.08 + 0.42 * 0.5, quarter.halfWidth, eps)
-        assertEquals(0.75, quarter.burst, eps)
-        val end = BarStages.look(s, 0.6, 0.5, false)
-        assertEquals(0.5, end.halfWidth, eps)
-        assertEquals(0.0, end.burst, eps)
-        assertTrue(BarStages.finished(s, 0.6, false))
-        assertFalse(BarStages.finished(s, 0.59, false))
-    }
-
-    @Test
-    fun aPasteBeforeTheGatherEndsBurstsFromWhereItIs() {
+    fun anEndBeforeTheGatherFinishesFadesFromWhereItIs() {
         val m = BarStages.Machine()
-        m.press(0.0); m.release(1.0); m.pasted(1.6, false) // half way: w = 0.29
-        val s = m.current as Stage.Pasted
+        m.press(0.0); m.release(1.0); m.dropped(1.6, 0.5, false) // half way: w = 0.29
+        val s = m.current as Stage.Dropped
         assertEquals(0.29, s.fromWidth, eps)
         assertEquals(0.29, m.frame(1.6, 0.5, false)!!.halfWidth, eps)
-        val last = m.frame(2.19, 0.5, false)!!
-        assertTrue(last.halfWidth > 0.49 && last.burst < 0.02)
-        assertNull(m.frame(2.2, 0.5, false))
+        assertNull(m.frame(1.8, 0.5, false))
         assertTrue(m.isRest)
     }
 
     @Test
-    fun endingWithNothingPastedSkipsTheBurst() {
+    fun theEndFadesTheCoreWithNoPulse() {
         val m = BarStages.Machine()
         m.press(0.0); m.release(1.0); m.dropped(3.0, 0.5, false)
         val first = m.frame(3.0, 0.5, false)!!
@@ -92,7 +74,8 @@ class BarStagesTest {
         assertEquals(BarStages.GATHER_END_STRENGTH, first.strength, eps)
         for (t in listOf(3.05, 3.1, 3.19)) {
             val f = m.frame(t, 0.5, false)!!
-            assertEquals(0.0, f.burst, 0.0)
+            assertEquals("no colour change", first.heat, f.heat, 0.0)
+            assertTrue("never brighter", f.strength <= first.strength)
             assertEquals("the core only fades, it does not open", BarStages.TIGHT_WIDTH, f.halfWidth, eps)
         }
         assertEquals(BarStages.GATHER_END_STRENGTH / 2,
@@ -114,12 +97,11 @@ class BarStagesTest {
         for (t in listOf(0.0, 0.3, 1.2, 4.0))
             assertEquals(BarStages.REDUCED_WIDTH, BarStages.look(Stage.Processing, t, 0.5, true).halfWidth, eps)
         val m = BarStages.Machine()
-        m.press(0.0); m.release(1.0); m.pasted(2.0, true)
+        m.press(0.0); m.release(1.0); m.dropped(2.0, 0.5, true)
         val s = m.current!!
-        for (t in listOf(0.0, 0.1, 0.29)) assertEquals(BarStages.REDUCED_WIDTH, BarStages.look(s, t, 0.5, true).halfWidth, eps)
-        assertEquals(0.5, BarStages.look(s, 0.15, 0.5, true).burst, eps)
-        assertTrue(BarStages.finished(s, 0.3, true))
-        assertFalse(BarStages.finished(s, 0.29, true))
+        for (t in listOf(0.0, 0.1, 0.19)) assertEquals(BarStages.REDUCED_WIDTH, BarStages.look(s, t, 0.5, true).halfWidth, eps)
+        assertTrue(BarStages.finished(s, 0.2))
+        assertFalse(BarStages.finished(s, 0.19))
         // reduced motion's steady core needs no redraw once it is lit
         val held = BarStages.Machine()
         held.press(0.0); held.release(1.0)
@@ -129,14 +111,10 @@ class BarStagesTest {
     @Test
     fun eventsOutOfOrderDoNothing() {
         val m = BarStages.Machine()
-        m.pasted(0.0, false); m.release(0.0); m.dropped(0.0, 0.5, false)
+        m.release(0.0); m.dropped(0.0, 0.5, false)
         assertTrue(m.isRest)
-        m.press(1.0); m.pasted(1.1, false) // not processing yet
-        assertEquals(Stage.Listening, m.current)
-        m.release(2.0)
+        m.press(1.0); m.release(2.0)
         m.press(2.5) // a new dictation while the last still processes
-        assertEquals(Stage.Listening, m.current)
-        m.pasted(3.0, false) // the old one's late paste must not light the new one
         assertEquals(Stage.Listening, m.current)
     }
 
@@ -149,20 +127,6 @@ class BarStagesTest {
         val f = m.frame(5.0, 0.5, false)!!
         assertEquals(BarStages.WIDE_WIDTH, f.halfWidth, eps)
         assertEquals(BarStages.GATHER_START_STRENGTH, f.strength, eps)
-    }
-
-    /** TalkBar.markPasted bursts at once; the let-go to rest after it changes nothing, and a paste outside the
-     *  writing stage leaves no trace for the next dictation. */
-    @Test
-    fun aPasteBurstsAtOnceAndCarriesNothingOver() {
-        val m = BarStages.Machine()
-        m.press(0.0); m.release(1.0); m.pasted(3.0, false)
-        m.dropped(3.0, 0.5, false) // the return to rest
-        assertTrue(m.current is Stage.Pasted)
-        assertNull(m.frame(3.0 + BarStages.BURST_SECONDS, 0.5, false))
-        m.pasted(4.0, false) // a stray paste at rest
-        m.press(5.0); m.release(6.0); m.dropped(7.0, 0.5, false) // the next dictation pastes nothing
-        assertTrue(m.current is Stage.Dropped)
     }
 
     @Test
@@ -188,12 +152,10 @@ class BarStagesTest {
     }
 
     @Test
-    fun theCentreColourIsTheEmberAtRestAndOrangeInTheBurst() {
-        val ember = BarStages.centre(BarStages.Look(0.5, 1.0, 0.0, 0.0))
+    fun theCentreColourIsTheEmberAtRestAndTheBrightCoreWhenGathered() {
+        val ember = BarStages.centre(BarStages.Look(0.5, 1.0, 0.0))
         assertEquals(listOf(107, 31, 9), ember.toList())
-        val core = BarStages.centre(BarStages.Look(0.08, 1.0, 1.0, 0.0))
+        val core = BarStages.centre(BarStages.Look(0.08, 1.0, 1.0))
         assertEquals(listOf(227, 101, 29), core.toList())
-        val burst = BarStages.centre(BarStages.Look(0.3, 0.0, 0.0, 1.0))
-        assertEquals(listOf(255, 170, 100), burst.toList())
     }
 }

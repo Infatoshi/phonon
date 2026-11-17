@@ -1,4 +1,5 @@
-//! The dictation indicator's four stages (ignite, listening, processing, pasted), drawn into the tray icon.
+//! The dictation indicator's stages (ignite, listening, processing, then a fade back to rest), drawn into
+//! the tray icon.
 //!
 //! Windows and Linux have no floating bar: the tray icon is the whole interface. The icon keeps its
 //! square slot; while a dictation is under way it shows the Mac bar's gradient in a capsule (black at
@@ -10,14 +11,12 @@
 //!  2. Listening: w = 0.5, strength follows the smoothed voice level.
 //!  3. Processing, from key-up until the text is delivered: over 1.2 s w narrows from 0.5 to 0.08 and the
 //!     light warms and brightens; then the tight core holds, still.
-//!  4. Pasted: over 0.6 s w opens from where it was back to 0.5 (sqrt of progress) while a light orange
-//!     fades to nothing.
-//!  5. Ended with nothing pasted: no burst, the core fades out in 0.2 s.
-//!  6. Reduced motion: the width never moves; processing is a steady medium core, pasted a 0.3 s fade.
+//!  4. Ended (text pasted or not): no pulse, the core fades out in 0.2 s.
+//!  5. Reduced motion: the width never moves; processing is a steady medium core.
 //!
 //! Every press starts a new dictation with its own number (`press` returns it). The events that move a
-//! dictation on (`release`, `pasted`, `dropped`) carry that number and do nothing when the indicator
-//! has moved on to a newer dictation, so a slow dictation's late paste never bursts the next one.
+//! dictation on (`release`, `dropped`) carry that number and do nothing when the indicator has moved on
+//! to a newer dictation, so a slow dictation's late end never fades the next one.
 //!
 //! `look` is the pure stage maths; `Machine` is the state the hooks drive; `start` runs the one thread
 //! that turns frames into icons for the platform's tray (the sink).
@@ -31,14 +30,10 @@ use std::time::{Duration, Instant};
 pub const BASE: [f32; 3] = [107.0, 31.0, 9.0];
 /// What the light warms to while gathering.
 pub const BRIGHT: [f32; 3] = [227.0, 101.0, 29.0];
-/// The burst's light orange.
-pub const ORANGE: [f32; 3] = [255.0, 170.0, 100.0];
 
 pub const IGNITE_SECONDS: f32 = 0.18;
 pub const GATHER_SECONDS: f32 = 1.2;
-pub const BURST_SECONDS: f32 = 0.6;
 pub const DROP_SECONDS: f32 = 0.2;
-pub const REDUCED_FADE_SECONDS: f32 = 0.3;
 pub const TIGHT_WIDTH: f32 = 0.08;
 pub const WIDE_WIDTH: f32 = 0.5;
 /// Reduced motion's processing core: steady, between wide and tight.
@@ -90,9 +85,7 @@ pub enum Stage {
     Listening,
     /// Key up until the text is delivered or the dictation ends. Elapsed counts from the release.
     Processing,
-    /// The text went in. Elapsed counts from that moment; `from_width` is the gather's width then.
-    Pasted { from_width: f32 },
-    /// Ended with nothing pasted (empty, error, cancelled).
+    /// Ended, text pasted or not (empty, error, cancelled).
     Dropped {
         from_width: f32,
         from_strength: f32,
@@ -100,8 +93,7 @@ pub enum Stage {
     },
 }
 
-/// What one frame looks like. The centre colour is `lerp(BASE, BRIGHT, heat) * strength` over black,
-/// plus `ORANGE * burst`.
+/// What one frame looks like. The centre colour is `lerp(BASE, BRIGHT, heat) * strength` over black.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     /// Half the width of the lit part, as a fraction of the whole (0.5 = the full width).
@@ -110,8 +102,6 @@ pub struct Look {
     pub strength: f32,
     /// 0 = the base ember, 1 = the bright processing colour.
     pub heat: f32,
-    /// Opacity of the burst's orange light.
-    pub burst: f32,
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -131,14 +121,12 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
                 half_width: WIDE_WIDTH,
                 strength: lerp(live, FULL_STRENGTH, ignite),
                 heat: 0.0,
-                burst: 0.0,
             }
         }
         Stage::Processing if reduced => Look {
             half_width: REDUCED_WIDTH,
             strength: REDUCED_STRENGTH,
             heat: REDUCED_HEAT,
-            burst: 0.0,
         },
         Stage::Processing => {
             let k = (elapsed / GATHER_SECONDS).clamp(0.0, 1.0);
@@ -146,22 +134,6 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
                 half_width: lerp(WIDE_WIDTH, TIGHT_WIDTH, k),
                 strength: lerp(GATHER_START_STRENGTH, GATHER_END_STRENGTH, k),
                 heat: k,
-                burst: 0.0,
-            }
-        }
-        Stage::Pasted { from_width } if reduced => Look {
-            half_width: from_width,
-            strength: 0.0,
-            heat: 0.0,
-            burst: 1.0 - (elapsed / REDUCED_FADE_SECONDS).clamp(0.0, 1.0),
-        },
-        Stage::Pasted { from_width } => {
-            let p = (elapsed / BURST_SECONDS).clamp(0.0, 1.0);
-            Look {
-                half_width: lerp(from_width, WIDE_WIDTH, p.sqrt()),
-                strength: 0.0,
-                heat: 0.0,
-                burst: 1.0 - p,
             }
         }
         Stage::Dropped {
@@ -172,16 +144,13 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
             half_width: from_width,
             strength: from_strength * (1.0 - (elapsed / DROP_SECONDS).clamp(0.0, 1.0)),
             heat: from_heat,
-            burst: 0.0,
         },
     }
 }
 
-/// Whether a stage that ends (pasted, dropped) has finished and the icon is at rest again.
-pub fn finished(stage: Stage, elapsed: f32, reduced: bool) -> bool {
+/// Whether the ending stage has finished and the icon is at rest again.
+pub fn finished(stage: Stage, elapsed: f32) -> bool {
     match stage {
-        Stage::Pasted { .. } if reduced => elapsed >= REDUCED_FADE_SECONDS,
-        Stage::Pasted { .. } => elapsed >= BURST_SECONDS,
         Stage::Dropped { .. } => elapsed >= DROP_SECONDS,
         Stage::Listening | Stage::Processing => false,
     }
@@ -291,19 +260,7 @@ impl Machine {
         }
     }
 
-    /// Dictation `dictation`'s text was inserted: burst from wherever the gather is.
-    pub fn pasted(&mut self, dictation: u64, now: f64, reduced: bool) {
-        if !self.owns(dictation) {
-            return;
-        }
-        if let Some((Stage::Processing, since)) = self.active {
-            let elapsed = (now - since) as f32;
-            let from_width = look(Stage::Processing, elapsed, LEVEL_FLOOR, reduced).half_width;
-            self.active = Some((Stage::Pasted { from_width }, now));
-        }
-    }
-
-    /// Dictation `dictation` ended with nothing pasted: no burst, the light fades out from where it is
+    /// Dictation `dictation` ended (text pasted or not): no pulse, the light fades out from where it is
     /// (`level` is the smoothed voice level it was showing).
     pub fn dropped(&mut self, dictation: u64, now: f64, level: f32, reduced: bool) {
         if self.owns(dictation) {
@@ -350,7 +307,7 @@ impl Machine {
     pub fn frame(&mut self, now: f64, level: f32, reduced: bool) -> Option<Look> {
         let (stage, since) = self.active?;
         let elapsed = (now - since) as f32;
-        if finished(stage, elapsed, reduced) {
+        if finished(stage, elapsed) {
             self.active = None;
             return None;
         }
@@ -364,7 +321,7 @@ impl Machine {
             None => false,
             Some((Stage::Listening, since)) => now - since < f64::from(IGNITE_SECONDS),
             Some((Stage::Processing, since)) => !reduced && now - since < f64::from(GATHER_SECONDS),
-            Some((Stage::Pasted { .. } | Stage::Dropped { .. }, _)) => true,
+            Some((Stage::Dropped { .. }, _)) => true,
         }
     }
 }
@@ -395,9 +352,8 @@ pub fn render_rgba(look: Look, size: u32) -> Vec<u8> {
             let u = px / size_f;
             let g = (1.0 - (u - 0.5).abs() / look.half_width.max(0.001)).max(0.0);
             let i = (y * n + x) * 4;
-            for (slot, (light, burst)) in out[i..i + 3].iter_mut().zip(core.iter().zip(ORANGE)) {
-                let v = (light + burst * look.burst) * g;
-                *slot = v.clamp(0.0, 255.0).round() as u8;
+            for (slot, light) in out[i..i + 3].iter_mut().zip(core) {
+                *slot = (light * g).clamp(0.0, 255.0).round() as u8;
             }
             out[i + 3] = (coverage * 255.0).round() as u8;
         }
@@ -476,7 +432,7 @@ fn shown_level() -> f32 {
 }
 
 /// The dictation key went down (or the menu started a dictation): a new dictation, lit within a frame.
-/// Returns its number for `release`, `pasted` and `dropped`. Returns at once; the animation thread draws
+/// Returns its number for `release` and `dropped`. Returns at once; the animation thread draws
 /// without waiting for the microphone or the models. The last dictation's voice level is forgotten, so
 /// the ignite falls to this one's voice, not to that one's last word.
 pub fn press() -> u64 {
@@ -491,14 +447,8 @@ pub fn release(dictation: u64) {
     with_machine(|m, t| m.release(dictation, t));
 }
 
-/// Dictation `dictation`'s text was inserted. Nothing for an older dictation.
-pub fn pasted(dictation: u64) {
-    let reduced = reduced();
-    with_machine(|m, t| m.pasted(dictation, t, reduced));
-}
-
-/// Dictation `dictation` ended with nothing pasted (empty, error, cancelled, kept on the clipboard): the
-/// light fades. Nothing once it was pasted or dropped, or for an older dictation.
+/// Dictation `dictation` ended (pasted, empty, error, cancelled, kept on the clipboard): the light fades.
+/// Nothing once it was dropped, or for an older dictation.
 pub fn dropped(dictation: u64) {
     let reduced = reduced();
     let level = shown_level();
@@ -506,7 +456,7 @@ pub fn dropped(dictation: u64) {
 }
 
 /// Drops its dictation when it goes out of scope, so no path out of a dictation's processing, a panic
-/// included, leaves the light on. A no-op once the dictation was pasted or dropped.
+/// included, leaves the light on. A no-op once the dictation was dropped.
 pub struct Lit(pub u64);
 
 impl Drop for Lit {
@@ -702,38 +652,22 @@ mod tests {
     }
 
     #[test]
-    fn burst_follows_sqrt_and_ends_at_zero() {
-        let s = Stage::Pasted { from_width: 0.08 };
-        let start = look(s, 0.0, 0.5, false);
-        assert!((start.half_width - 0.08).abs() < EPS && (start.burst - 1.0).abs() < EPS);
-        let quarter = look(s, 0.15, 0.5, false); // p = 0.25
-        assert!((quarter.half_width - (0.08 + 0.42 * 0.5)).abs() < EPS);
-        assert!((quarter.burst - 0.75).abs() < EPS);
-        let end = look(s, 0.6, 0.5, false);
-        assert!((end.half_width - 0.5).abs() < EPS);
-        assert!(end.burst.abs() < EPS && end.strength == 0.0);
-        assert!(finished(s, 0.6, false) && !finished(s, 0.59, false));
-    }
-
-    #[test]
-    fn a_paste_before_the_gather_ends_bursts_from_where_it_is() {
+    fn an_end_before_the_gather_finishes_fades_from_where_it_is() {
         let mut m = Machine::default();
         let a = m.press(0.0);
         m.release(a, 1.0);
-        m.pasted(a, 1.6, false); // half way through the gather: w = 0.29
-        let Some(Stage::Pasted { from_width }) = m.stage() else {
+        m.dropped(a, 1.6, 0.5, false); // half way through the gather: w = 0.29
+        let Some(Stage::Dropped { from_width, .. }) = m.stage() else {
             panic!("{:?}", m.stage())
         };
         assert!((from_width - 0.29).abs() < EPS);
         let first = m.frame(1.6, 0.5, false).unwrap();
         assert!((first.half_width - 0.29).abs() < EPS);
-        let last = m.frame(2.19, 0.5, false).unwrap();
-        assert!(last.half_width > 0.49 && last.burst < 0.02);
-        assert!(m.frame(2.2, 0.5, false).is_none() && m.is_rest());
+        assert!(m.frame(1.6 + f64::from(DROP_SECONDS), 0.5, false).is_none() && m.is_rest());
     }
 
     #[test]
-    fn ending_with_nothing_pasted_skips_the_burst() {
+    fn the_end_fades_the_core_with_no_pulse() {
         let mut m = Machine::default();
         let a = m.press(0.0);
         m.release(a, 1.0);
@@ -745,7 +679,8 @@ mod tests {
         );
         for t in [3.05, 3.1, 3.19] {
             let f = m.frame(t, 0.5, false).unwrap();
-            assert_eq!(f.burst, 0.0);
+            assert_eq!(f.heat, first.heat, "no colour change");
+            assert!(f.strength <= first.strength, "never brighter");
             assert!(
                 (f.half_width - TIGHT_WIDTH).abs() < EPS,
                 "the core only fades, it does not open"
@@ -782,43 +717,37 @@ mod tests {
         let a = m.press(0.0);
         m.release(a, 1.0);
         assert!(!m.moving(1.0, true), "the steady core does not repaint");
-        m.pasted(a, 2.0, true);
+        m.dropped(a, 2.0, 0.5, true);
         let s = m.stage().unwrap();
-        for t in [0.0, 0.1, 0.29] {
+        for t in [0.0, 0.1, 0.19] {
             assert!((look(s, t, 0.5, true).half_width - REDUCED_WIDTH).abs() < EPS);
         }
-        assert!((look(s, 0.15, 0.5, true).burst - 0.5).abs() < EPS);
-        assert!(finished(s, 0.3, true) && !finished(s, 0.29, true));
+        assert!(finished(s, 0.2) && !finished(s, 0.19));
     }
 
     #[test]
     fn events_out_of_order_do_nothing() {
         let mut m = Machine::default();
-        m.pasted(0, 0.0, false);
         m.release(0, 0.0);
         m.dropped(0, 0.0, 0.5, false);
         assert!(m.is_rest());
         let a = m.press(1.0);
-        m.pasted(a, 1.1, false); // not processing yet
-        assert_eq!(m.stage(), Some(Stage::Listening));
         m.release(a, 2.0);
         m.release(a, 2.2); // a second stop restarts nothing: the gather still ends 1.2 s after the first
         assert!(!m.moving(2.0 + f64::from(GATHER_SECONDS) + 0.1, false));
     }
 
     #[test]
-    fn a_late_paste_of_a_does_not_burst_b_while_b_processes() {
+    fn a_late_end_of_a_does_not_fade_b_while_b_processes() {
         let mut m = Machine::default();
         let a = m.press(0.0);
         m.release(a, 1.0);
         let b = m.press(2.0); // B's key while A is still processing
         m.release(b, 3.0);
-        m.pasted(a, 3.5, false);
-        assert_eq!(m.stage(), Some(Stage::Processing), "A's paste is not B's");
         m.dropped(a, 3.6, 0.5, false);
-        assert_eq!(m.stage(), Some(Stage::Processing), "nor is A's drop");
-        m.pasted(b, 4.0, false);
-        assert!(matches!(m.stage(), Some(Stage::Pasted { .. })));
+        assert_eq!(m.stage(), Some(Stage::Processing), "A's end is not B's");
+        m.dropped(b, 4.0, 0.5, false);
+        assert!(matches!(m.stage(), Some(Stage::Dropped { .. })));
     }
 
     #[test]
@@ -898,8 +827,8 @@ mod tests {
             !m.moving(1.0 + f64::from(GATHER_SECONDS) + 0.01, false),
             "the held core"
         );
-        m.pasted(a, 5.0, false);
-        assert!(m.moving(5.1, false), "the burst");
+        m.dropped(a, 5.0, 0.5, false);
+        assert!(m.moving(5.1, false), "the fade");
     }
 
     #[test]
@@ -937,7 +866,6 @@ mod tests {
                 half_width: WIDE_WIDTH,
                 strength: FULL_STRENGTH,
                 heat: 0.0,
-                burst: 0.0,
             },
             32,
         );
@@ -957,7 +885,6 @@ mod tests {
                 half_width: TIGHT_WIDTH,
                 strength: GATHER_END_STRENGTH,
                 heat: 1.0,
-                burst: 0.0,
             },
             32,
         );

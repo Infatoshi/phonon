@@ -353,8 +353,6 @@ class PhononIME : InputMethodService() {
                 "landed=${back?.endsWith(text) == true}")
         }
         val words = text.split(Regex("\\s+")).count { it.isNotEmpty() }
-        // the bar bursts only for text that went into a field; an empty result or no field fades out
-        if (ok && words > 0) bar?.markPasted()
         setPhase(Phase.READY)
         flash(when {
             words == 0 -> "Didn't catch that"

@@ -24,7 +24,7 @@ import kotlin.math.sin
  *  - listening: the Mac app's dictation capsule (macos/Sources/PhononBar.swift PillView) at 2.6x, its ember centre
  *    lit and widened by the voice level; it flashes to full strength the moment the finger lands (BarStages);
  *  - working: the same capsule, smaller; its light gathers to a tight bright core over 1.2 s and holds still, then
- *    bursts outward when the text is in (markPasted) or fades out when nothing was pasted (BarStages);
+ *    fades out when the dictation ends, text pasted or not, no pulse (BarStages);
  *  - [label] (not ready yet, or a status for about 2 s) is drawn over a dimmed resting fluid.
  * Touch handling (hold to talk, tap to latch) is the IME's; this view only draws.
  */
@@ -66,15 +66,10 @@ class TalkBar(context: Context) : View(context) {
     /** The bar left listening (not writing) for rest, so the fade-out keeps the listening shape. */
     private var tailFromListening = false
 
-    /** The text was inserted: the gather bursts now. Nothing is remembered for later, so a paste can never carry
-     *  into the next dictation; outside the writing stage this does nothing. */
-    fun markPasted() { machine.pasted(nowSeconds(), !animationsOn()) }
-
     private fun nowSeconds() = SystemClock.uptimeMillis() / 1000.0
 
-    /** Option B's stages ride on the mode changes: finger down lights the bar at once, let-go starts the gather,
-     *  and leaving for rest after markPasted is the burst, otherwise a fade (nothing pasted). BarStages has the
-     *  maths. */
+    /** The stages ride on the mode changes: finger down lights the bar at once, let-go starts the gather, and
+     *  leaving for rest fades the light out. BarStages has the maths. */
     private fun stageChange(from: Mode, to: Mode) {
         val now = nowSeconds()
         val reduced = !animationsOn()
@@ -95,7 +90,6 @@ class TalkBar(context: Context) : View(context) {
             }
             Mode.REST -> {
                 tailFromListening = from == Mode.LISTENING
-                // a no-op after markPasted: the burst is already under way
                 machine.dropped(now, smoother.value, reduced)
             }
         }
@@ -124,7 +118,7 @@ class TalkBar(context: Context) : View(context) {
         lastFrame = now
         val look = machine.frame(now, smoother.value, reduced)
         if (look == null) {
-            // at rest (a finished burst or fade hands back here)
+            // at rest (a finished fade hands back here)
             drawFluid(c, w, h, t)
             label?.let { c.drawText(ellipsize(it, w - 32 * dp), w / 2, h / 2 - (text.ascent() + text.descent()) / 2, text) }
             if (animate && animationsOn()) postInvalidateDelayed(50)
@@ -157,7 +151,7 @@ class TalkBar(context: Context) : View(context) {
         if (mode == Mode.REST) {
             label?.let { c.drawText(ellipsize(it, w - 32 * dp), w / 2, h / 2 - (text.ascent() + text.descent()) / 2, text) }
         }
-        // Repaint only while the picture changes: the ignite, the gather, a burst or fade, the voice level.
+        // Repaint only while the picture changes: the ignite, the gather, a fade, the voice level.
         // The held core and a steady reduced-motion core draw once.
         val again = when (mode) {
             Mode.LISTENING -> now - listeningSince < BarStages.IGNITE_SECONDS + 0.05 ||

@@ -1,10 +1,10 @@
 import Foundation
 
-/// The capsule's feedback for each stage of a dictation ("option B": ignite, gather, burst). The bar is a horizontal
-/// gradient, black at both ends, with one warm light at the centre and a half-width `width` (a fraction of the bar):
-/// black at 0.5 - width, colour at 0.5, black at 0.5 + width. Everything here is pure (stage, elapsed seconds, voice
-/// level in, look out), so the maths is unit-tested without drawing. The iPhone keyboard has its own copy
-/// (ios/Shared/BarStages.swift); keep the two identical.
+/// The capsule's feedback for each stage of a dictation: ignite, gather, then a fade back to rest. The bar is a
+/// horizontal gradient, black at both ends, with one warm light at the centre and a half-width `width` (a fraction of
+/// the bar): black at 0.5 - width, colour at 0.5, black at 0.5 + width. Everything here is pure (stage, elapsed
+/// seconds, voice level in, look out), so the maths is unit-tested without drawing. The iPhone keyboard has its own
+/// copy (ios/Shared/BarStages.swift); keep the two identical.
 enum BarStage: Equatable {
     /// Nothing is happening: the resting look draws, not this light.
     case rest
@@ -12,9 +12,7 @@ enum BarStage: Equatable {
     case listening
     /// Key up until the text is delivered: the light gathers into a tight bright core and holds.
     case processing
-    /// The text was pasted: the core bursts out to the edges and is gone.
-    case burst
-    /// Dictation ended with nothing pasted: the core fades out.
+    /// Dictation ended (text pasted or not): the core fades out, no pulse.
     case fadeOut
 }
 
@@ -25,17 +23,11 @@ struct BarLook: Equatable {
     var heat: Double
     /// Alpha of the warm light at its centre.
     var opacity: Double
-    /// Alpha of the light-orange burst colour; 0 outside the burst.
-    var burst: Double
 
-    static let none = BarLook(width: BarStages.wideWidth, heat: 0, opacity: 0, burst: 0)
+    static let none = BarLook(width: BarStages.wideWidth, heat: 0, opacity: 0)
 
     /// The centre colour as (red, green, blue, alpha), each 0...1.
     var rgba: (r: Double, g: Double, b: Double, a: Double) {
-        if burst > 0 {
-            let c = BarStages.burstColor
-            return (c.r, c.g, c.b, burst)
-        }
         let a = BarStages.baseColor, b = BarStages.coreColor
         return (a.r + (b.r - a.r) * heat, a.g + (b.g - a.g) * heat, a.b + (b.b - a.b) * heat, opacity)
     }
@@ -51,12 +43,10 @@ struct BarLook: Equatable {
 enum BarStages {
     static let igniteSeconds = 0.18
     static let gatherSeconds = 1.2
-    static let burstSeconds = 0.6
     static let fadeOutSeconds = 0.2
-    static let reducedFadeSeconds = 0.3
     static let wideWidth = 0.5
     static let coreWidth = 0.08
-    /// Half-way through the gather: where a paste at 0.6 s bursts from (0.29).
+    /// Half-way through the gather (0.29).
     static let halfGatherWidth = (wideWidth + coreWidth) / 2
     /// Reduce Motion (and Low Power Mode): the width never moves; every stage is this steady medium core.
     static let reducedWidth = 0.25
@@ -71,10 +61,9 @@ enum BarStages {
     static let gatherStartHeat = 0.3
     static let gatherStartOpacity = 0.5 + 0.5 * gatherStartHeat
 
-    /// The Mac capsule's warm colour, the bright orange the gathered core reaches, and the burst's light orange.
+    /// The Mac capsule's warm colour and the bright orange the gathered core reaches.
     static let baseColor = (r: 0.42, g: 0.12, b: 0.035)
     static let coreColor = (r: 227.0 / 255, g: 101.0 / 255, b: 29.0 / 255)
-    static let burstColor = (r: 1.0, g: 170.0 / 255, b: 100.0 / 255)
 
     /// How long a stage draws before it settles (the clock can stop after this); nil means it never changes by itself.
     static func duration(of stage: BarStage, reduceMotion: Bool) -> Double? {
@@ -82,15 +71,14 @@ enum BarStages {
         case .rest: return nil
         case .listening: return igniteSeconds
         case .processing: return reduceMotion ? 0 : gatherSeconds
-        case .burst: return reduceMotion ? reducedFadeSeconds : burstSeconds
         case .fadeOut: return fadeOutSeconds
         }
     }
 
     /// The look `elapsed` seconds into `stage`. `level` is the smoothed voice level (0...1). `from` is the look at the
-    /// moment a burst or fade-out began, so the burst starts from wherever the gather had got to.
+    /// moment the fade-out began, so it fades from wherever the gather had got to.
     static func look(stage: BarStage, elapsed: Double, level: Double, reduceMotion: Bool = false,
-                     from: BarLook = BarLook(width: coreWidth, heat: 1, opacity: 1, burst: 0)) -> BarLook {
+                     from: BarLook = BarLook(width: coreWidth, heat: 1, opacity: 1)) -> BarLook {
         let t = max(0, elapsed)
         switch stage {
         case .rest:
@@ -102,37 +90,27 @@ enum BarStages {
             let energy = live + (1 - live) * ignite
             // Reduce Motion: the same medium width as the processing core, so key up changes no width
             return BarLook(width: reduceMotion ? reducedWidth : wideWidth, heat: 0,
-                           opacity: dimOpacity + energy * energyOpacity, burst: 0)
+                           opacity: dimOpacity + energy * energyOpacity)
         case .processing:
             if reduceMotion {
-                return BarLook(width: reducedWidth, heat: reducedHeat, opacity: 0.5 + 0.5 * reducedHeat, burst: 0)
+                return BarLook(width: reducedWidth, heat: reducedHeat, opacity: 0.5 + 0.5 * reducedHeat)
             }
             let k = min(1, t / gatherSeconds)
             let heat = gatherStartHeat + (1 - gatherStartHeat) * k
-            return BarLook(width: wideWidth - (wideWidth - coreWidth) * k, heat: heat, opacity: 0.5 + 0.5 * heat,
-                           burst: 0)
-        case .burst:
-            if reduceMotion {
-                // a plain fade of the steady core
-                let p = min(1, t / reducedFadeSeconds)
-                return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * (1 - p), burst: 0)
-            }
-            let p = min(1, t / burstSeconds)
-            return BarLook(width: from.width + (wideWidth - from.width) * p.squareRoot(), heat: 1, opacity: 0,
-                           burst: 1 - p)
+            return BarLook(width: wideWidth - (wideWidth - coreWidth) * k, heat: heat, opacity: 0.5 + 0.5 * heat)
         case .fadeOut:
             let p = min(1, t / fadeOutSeconds)
-            return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * (1 - p), burst: 0)
+            return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * (1 - p))
         }
     }
 }
 
 /// The stage a dictation is in, when it began, and the look it began from. A value the owner of the bar replaces at
-/// each real event (key down, key up, text delivered, nothing delivered).
+/// each real event (key down, key up, dictation ended).
 struct BarBeat: Equatable {
     var stage: BarStage = .rest
     var since: Date = .distantPast
-    var from: BarLook = BarLook(width: BarStages.coreWidth, heat: 1, opacity: 1, burst: 0)
+    var from: BarLook = BarLook(width: BarStages.coreWidth, heat: 1, opacity: 1)
 
     static let rest = BarBeat()
 
@@ -149,13 +127,7 @@ struct BarBeat: Equatable {
         stage == .processing ? self : BarBeat(stage: .processing, since: now)
     }
 
-    /// The text was inserted: burst from the current look.
-    func burst(at now: Date, level: Double, reduceMotion: Bool) -> BarBeat {
-        guard stage != .rest else { return self }
-        return BarBeat(stage: .burst, since: now, from: look(at: now, level: level, reduceMotion: reduceMotion))
-    }
-
-    /// Dictation ended with nothing inserted (empty, error, cancelled): no burst.
+    /// Dictation ended (text inserted, empty, error, cancelled): the core fades out from the current look.
     func fadeOut(at now: Date, level: Double, reduceMotion: Bool) -> BarBeat {
         guard stage != .rest else { return self }
         return BarBeat(stage: .fadeOut, since: now, from: look(at: now, level: level, reduceMotion: reduceMotion))
