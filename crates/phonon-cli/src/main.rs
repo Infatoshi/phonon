@@ -10,6 +10,7 @@
 mod bench;
 mod data_cmd;
 mod doctor;
+mod transcript_cmd;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -96,6 +97,18 @@ enum Commands {
     Data {
         #[command(subcommand)]
         command: DataCommands,
+    },
+    /// Show or transcribe the latest or a named meeting transcript.
+    Transcript {
+        /// Only include the last N minutes of the meeting.
+        #[arg(long)]
+        minutes: Option<f64>,
+        /// Read this meeting id instead of the newest meeting.
+        #[arg(long)]
+        meeting: Option<String>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -321,6 +334,15 @@ fn main() -> Result<()> {
         Commands::Corpus { command } => run_corpus(command),
         Commands::Stats { json } => data_cmd::print_stats(json),
         Commands::Data { command } => run_data(command),
+        Commands::Transcript {
+            minutes,
+            meeting,
+            json,
+        } => transcript_cmd::run_transcript(transcript_cmd::TranscriptArgs {
+            minutes,
+            meeting,
+            json,
+        }),
     }
 }
 
