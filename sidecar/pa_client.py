@@ -83,37 +83,45 @@ class MetalParakeet:
         rewrite="boosted",
         pa_dir=None,
         timeout_s=10.0,
+        max_restarts=2,
     ):
         """weights: the Parakeet snapshot's model.safetensors (pa converts it at startup) or an exported .bin;
         pa_dir: pa.metal and melfb.npy (default: the dev layout, the directory above bin/pa); rewrite: boosted
         (default, the ASR lane's cb446: only committed walks a bonus pushed take the dictionary spelling,
         tdt_decode.detok --rewrite boosted), all, none. Dictionary boosting starts off; set_terms turns it on.
-        A window over capacity is answered on the MLX model (loaded on first use). Any failure of the helper (a
-        window it could not decode, no answer within timeout_s, it exits) answers that window on MLX and keeps
-        the helper off for the rest of the session (sticky: the next window does not pay the failure again)."""
+        A window over capacity is answered on the MLX model (loaded on first use). Transient failures (timeout
+        under GPU contention, helper exit) answer that window on MLX and respawn the helper up to max_restarts
+        consecutive times (re-sending any active dictionary); exceeding max_restarts latches Metal ASR off for
+        the rest of the session."""
         self.model = model  # LightModel (or a parakeet-mlx model): vocabulary, durations, time_ratio, fallback
         self.max_mel = max_mel  # 8192 mel frames = 81.9 s (encoder 1024 frames)
         self.gpu_mel = gpu_mel  # send the samples: pa computes get_logmel's log-mel on the GPU (melfb.npy)
         # per window: an answer later than this means a stuck GPU path
         self.timeout_s = timeout_s
         self.pa_bin = pa
+        self._weights = weights
+        self._max_restarts = max(0, int(max_restarts))
+        self._consecutive_failures = 0
         # per call JSON lines: samples, frames, path, GPU / wall ms; open for the session
         self.log = open(log, "a") if log else None  # noqa: SIM115
         self.dead = False
-        e = dict(
+        self._pa_env = dict(
             os.environ,
             PA_DIR=pa_dir or os.path.dirname(os.path.abspath(pa)) + "/..",
             **(env or {}),
         )
         self.terms, self.rewrite = None, rewrite
-        self.p = subprocess.Popen(
-            [pa, weights, "serve", str(max_mel)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            env=e,
-        )
+        self.p = self._spawn()
         self.last_ms = (0.0, 0.0, 0.0)
         self.last_spans, self.last_boost = [], (0, 0)
+
+    def _spawn(self):
+        return subprocess.Popen(
+            [self.pa_bin, self._weights, "serve", str(self.max_mel)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=self._pa_env,
+        )
 
     def __getattr__(self, name):
         # preprocessor_config, transcribe, transcribe_stream, ...: the model's
@@ -131,6 +139,10 @@ class MetalParakeet:
             "dead",
             "timeout_s",
             "pa_bin",
+            "_weights",
+            "_pa_env",
+            "_max_restarts",
+            "_consecutive_failures",
         ):
             raise AttributeError(name)
         return getattr(self.model, name)
@@ -146,6 +158,8 @@ class MetalParakeet:
         terms = [t for t in dict.fromkeys(t.strip() for t in terms) if t]
         if self.dead:
             return "dictionary not applied: Metal ASR is off"
+        if self.p is None:
+            self.p = self._spawn()
         flat = asr_terms.flat_trie(self.model.vocabulary, terms) if terms else None
         words = flat if flat is not None else np.zeros(0, dtype=np.uint32)
         try:
@@ -217,7 +231,7 @@ class MetalParakeet:
         return b
 
     def close(self):
-        if self.p.poll() is None:
+        if self.p is not None and self.p.poll() is None:
             try:
                 self.p.stdin.write(struct.pack("<I", 0))
                 self.p.stdin.flush()
@@ -225,6 +239,18 @@ class MetalParakeet:
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 self.p.kill()
                 self.p.wait()
+
+    def _stop_proc(self, stuck=False):
+        if self.p is None:
+            return
+        try:
+            if stuck:
+                self.p.kill()
+                self.p.wait()
+            else:
+                self.close()
+        except Exception as ex:  # noqa: BLE001  (already gone)
+            print(f"pa_client: stopping the helper: {ex!r}", file=sys.stderr)
 
     def _off(self, why, stuck=False):
         """Sticky fallback: the helper stays off for the rest of the session (logged once) and is stopped (killed
@@ -236,33 +262,48 @@ class MetalParakeet:
             f"pa_client: Metal ASR off for this session ({why}); transcribing on MLX",
             file=sys.stderr,
         )
-        try:
-            if stuck:
-                self.p.kill()
-                self.p.wait()
-            else:
-                self.close()
-        except Exception as ex:  # noqa: BLE001  (already gone)
-            print(f"pa_client: stopping the helper: {ex!r}", file=sys.stderr)
+        self._stop_proc(stuck=stuck)
 
-    def _read(self, n, first=False):
+    def _recover_or_off(self, why, stuck=False):
+        """Fall back to MLX for this window and either schedule a helper respawn or latch off once
+        consecutive failures exceed max_restarts."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures > self._max_restarts:
+            self._off(why, stuck=stuck)
+            return
+        self._stop_proc(stuck=stuck)
+        self.p = None
+        print(
+            f"pa_client: Metal ASR window fell back to MLX ({why}); will restart helper "
+            f"({self._consecutive_failures}/{self._max_restarts})",
+            file=sys.stderr,
+        )
+
+    def _timeout_for(self, frames):
+        """Scale timeout for long meeting spans (>20 s) so GPU contention does not falsely kill pa."""
+        if frames > 2000:
+            return max(self.timeout_s, 30.0)
+        return self.timeout_s
+
+    def _read(self, n, first=False, timeout_s=None):
         """n bytes of the helper's answer. first (an answer's first bytes; the pipe's buffer is empty then):
         raises TimeoutError when nothing arrives within timeout_s (a stuck GPU path)."""
-        if first and not select.select([self.p.stdout], [], [], self.timeout_s)[0]:
-            raise TimeoutError(f"no answer from pa in {self.timeout_s:g} s")
+        wait_s = self.timeout_s if timeout_s is None else timeout_s
+        if first and not select.select([self.p.stdout], [], [], wait_s)[0]:
+            raise TimeoutError(f"no answer from pa in {wait_s:g} s")
         b = self.p.stdout.read(n)
         if len(b) != n:
             raise EOFError("pa exited")
         return b
 
-    def tokens(self, mel: np.ndarray, samples: bool = False):
+    def tokens(self, mel: np.ndarray, samples: bool = False, timeout_s=None):
         """mel [n, 128] float32 (or samples [n] float32 with samples=True) -> [(token, duration index, frame,
         confidence)], or None when pa could not answer the window (over its capacity, or a failed decode)"""
         n = mel.shape[0]
         head = struct.pack("<I", (n | 0x80000000) if samples else n)
         self.p.stdin.write(head + np.ascontiguousarray(mel, dtype=np.float32).tobytes())
         self.p.stdin.flush()
-        (cnt,) = struct.unpack("<I", self._read(4, first=True))
+        (cnt,) = struct.unpack("<I", self._read(4, first=True, timeout_s=timeout_s))
         rows = []
         if cnt != 0xFFFFFFFF:
             raw = np.frombuffer(self._read(16 * cnt), dtype="<u4").reshape(cnt, 4)
@@ -283,22 +324,34 @@ class MetalParakeet:
         return None if cnt == 0xFFFFFFFF else rows
 
     def metal_rows(self, samples, frames, mel_rows=None):
-        """The helper's rows for one window, or None for the MLX path: over capacity, or the helper is off. A
-        failure (no rows for a window within capacity, an exception, no answer in timeout_s) turns it off for the
-        session. mel_rows: the log-mel [n, 128] when the helper takes mel instead of samples (gpu_mel False)."""
+        """The helper's rows for one window, or None for the MLX path: over capacity, or the helper is off.
+        Transient timeouts or helper exits respawn pa up to max_restarts consecutive times (re-sending any
+        active dictionary); repeated failures latch Metal ASR off for the session."""
         if frames > self.max_mel or self.dead:
             return None
         try:
+            if self.p is None:
+                self.p = self._spawn()
+                if self.terms:
+                    saved_terms = list(self.terms)
+                    self.set_terms(saved_terms)
+                    if self.dead:
+                        return None
+            wait_s = self._timeout_for(frames)
             rows = (
-                self.tokens(samples, samples=True)
+                self.tokens(samples, samples=True, timeout_s=wait_s)
                 if self.gpu_mel
-                else self.tokens(mel_rows())
+                else self.tokens(mel_rows(), timeout_s=wait_s)
             )
         except Exception as ex:  # noqa: BLE001  (the helper exited, its pipe broke or it did not answer)
-            self._off(f"helper failed: {ex!r}", stuck=isinstance(ex, TimeoutError))
+            self._recover_or_off(
+                f"helper failed: {ex!r}", stuck=isinstance(ex, TimeoutError)
+            )
             return None
         if rows is None:  # a window within capacity that pa could not decode
-            self._off("pa could not decode a window")
+            self._recover_or_off("pa could not decode a window")
+            return None
+        self._consecutive_failures = 0
         return rows
 
     def transcribe_samples(self, samples):

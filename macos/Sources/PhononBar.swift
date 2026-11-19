@@ -847,7 +847,13 @@ enum ScreenContextCapture {
                 let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary)
             else { return nil }
             if bundles[pid] == nil {
-                bundles[pid] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+                let running = NSRunningApplication(processIdentifier: pid)
+                let execName =
+                    running?.executableURL?.lastPathComponent
+                    ?? running?.localizedName
+                    ?? (entry[kCGWindowOwnerName as String] as? String)
+                bundles[pid] = ContextPolicy.appIdentifier(
+                    bundleID: running?.bundleIdentifier, executableName: execName)
             }
             return ScreenWindow(
                 id: number, pid: pid, bundleID: bundles[pid] ?? nil, frame: frame,
@@ -3517,8 +3523,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             appStore.settings.liveText && engineStreamRefine && state.streamingPreviewEnabled
         if liveTextPass { liveTrace.begin() }
         let denylist = appStore.settings.screenContextDenylist
+        let initialBundleID = ContextPolicy.appIdentifier(
+            bundleID: insertionTarget?.bundleIdentifier,
+            executableName: insertionTarget?.executableURL?.lastPathComponent
+                ?? insertionTarget?.localizedName)
         let target = DictationTarget.resolve(
-            bundleID: insertionTarget?.bundleIdentifier, name: insertionTarget?.localizedName,
+            bundleID: initialBundleID, name: insertionTarget?.localizedName,
             url: nil, denylist: denylist, urlLookedUp: false)
         dictationTarget = target
         resolveDictationTarget(
@@ -3897,7 +3907,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         dictationTargetTask?.cancel()
         dictationTextbox = nil
         let pass = activeId
-        let bundleID = app?.bundleIdentifier
+        let bundleID = ContextPolicy.appIdentifier(
+            bundleID: app?.bundleIdentifier,
+            executableName: app?.executableURL?.lastPathComponent ?? app?.localizedName)
         let name = app?.localizedName
         let pid = app?.processIdentifier
         let watchEdits = appStore.settings.editLearning
@@ -4009,7 +4021,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         screenCollection.markSeen([window.captureKey])
         let token = screenReads.begin()
         screenContextReady = false
-        let bundleID = app.bundleIdentifier
+        let bundleID = ContextPolicy.appIdentifier(
+            bundleID: app.bundleIdentifier,
+            executableName: app.executableURL?.lastPathComponent ?? app.localizedName)
         let name = app.localizedName
         let pid = app.processIdentifier
         let isBrowser = ContextPolicy.isBrowser(bundleID)

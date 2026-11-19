@@ -255,8 +255,10 @@ const CODE_BUNDLES: &[&str] = &[
     "com.sublimetext.*",
     "com.panic.Nova",
     "com.barebones.bbedit",
-    // Lapis, the desktop host for terminal coding agents
+    // Lapis, the desktop host for terminal coding agents (plus Lapis Studio)
     "dev.lapis.desktop",
+    "dev.lapis.studio",
+    "local.bin.lapis_studio",
 ];
 const DOCS_BUNDLES: &[&str] = &[
     "notion.id",

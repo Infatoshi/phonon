@@ -45,6 +45,11 @@ while True:
     kind = mode.rsplit("/", 1)[-1]
     if kind == "hang":
         time.sleep(30)
+    if kind == "hang_once":
+        marker = mode + ".hung"
+        if not os.path.exists(marker):
+            open(marker, "w").write("1")
+            time.sleep(30)
     if kind == "exit":
         sys.exit(1)
     if kind == "fail":
@@ -100,7 +105,7 @@ def test_answers_while_the_helper_works(fake_pa):
 
 
 def test_a_failed_window_turns_the_helper_off_for_the_session(fake_pa, capsys):
-    m, log = fake_pa("fail")
+    m, log = fake_pa("fail", max_restarts=0)
     assert m.metal_rows(SAMPLES, FRAMES) is None
     assert m.dead
     for _ in range(3):  # later windows go straight to MLX: they never reach the helper
@@ -111,7 +116,7 @@ def test_a_failed_window_turns_the_helper_off_for_the_session(fake_pa, capsys):
 
 
 def test_a_helper_that_does_not_answer_times_out_once(fake_pa):
-    m, log = fake_pa("hang", timeout_s=0.5)
+    m, log = fake_pa("hang", timeout_s=0.5, max_restarts=0)
     t = time.monotonic()
     assert m.metal_rows(SAMPLES, FRAMES) is None
     assert time.monotonic() - t < 5
@@ -121,9 +126,43 @@ def test_a_helper_that_does_not_answer_times_out_once(fake_pa):
 
 
 def test_a_helper_that_exits_is_off(fake_pa):
-    m, _ = fake_pa("exit")
+    m, _ = fake_pa("exit", max_restarts=0)
     assert m.metal_rows(SAMPLES, FRAMES) is None
     assert m.dead
+
+
+def test_transient_timeout_recovers_on_next_window_and_reapplies_terms(tmp_path, fake_pa):
+    path = tmp_path / "pa"
+    m = MetalParakeet(
+        toy_model(),
+        weights=str(tmp_path / "hang_once"),
+        pa=str(path),
+        timeout_s=0.4,
+        max_restarts=2,
+    )
+    m.set_terms(["vLLM", "cuBLAS"])
+    # First window stalls -> falls back to MLX without latching Metal ASR off
+    assert m.metal_rows(SAMPLES, FRAMES) is None
+    assert not m.dead
+    # Next window respawns pa, re-sends dictionary trie, and succeeds on Metal
+    assert m.metal_rows(SAMPLES, FRAMES) == [(7, 1, 0, 0.5)]
+    assert not m.dead
+    assert len(trie_sizes(tmp_path / "hang_once.log")) == 2
+    m.close()
+
+
+def test_repeated_failures_exhaust_restarts_and_latch_off(fake_pa, capsys):
+    m, log = fake_pa("exit", max_restarts=2)
+    assert m.metal_rows(SAMPLES, FRAMES) is None
+    assert not m.dead
+    assert m.metal_rows(SAMPLES, FRAMES) is None
+    assert not m.dead
+    assert m.metal_rows(SAMPLES, FRAMES) is None
+    assert m.dead
+    # Fourth call never spawns again
+    assert m.metal_rows(SAMPLES, FRAMES) is None
+    assert len(requests(log)) == 3
+    assert capsys.readouterr().err.count("Metal ASR off for this session") == 1
 
 
 def test_over_capacity_is_mlx_but_keeps_the_helper(fake_pa):
@@ -200,7 +239,7 @@ def test_a_refused_dictionary_keeps_the_old_one(tmp_path, fake_pa):
 
 
 def test_set_terms_on_a_dead_helper_does_nothing(fake_pa, tmp_path):
-    m, _log = fake_pa("exit")
+    m, _log = fake_pa("exit", max_restarts=0)
     m.metal_rows(SAMPLES, FRAMES)
     assert m.dead
     assert "Metal ASR is off" in m.set_terms(["vLLM"])

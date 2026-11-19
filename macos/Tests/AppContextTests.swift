@@ -162,6 +162,21 @@ final class ContextPolicyTests: XCTestCase {
             DictationTarget.resolve(
                 bundleID: "com.apple.Notes", name: "Notes", url: nil, denylist: []
             ).denied)
+        // Unbundled local executables (such as a dev build of Lapis Studio) get a synthetic
+        // identifier so screen context and app-category mode keep working, while blank names
+        // and password/auth helpers still fail closed.
+        let studioID = ContextPolicy.appIdentifier(bundleID: nil, executableName: "lapis_studio")
+        XCTAssertEqual(studioID, "local.bin.lapis_studio")
+        XCTAssertFalse(
+            DictationTarget.resolve(
+                bundleID: studioID, name: "lapis_studio", url: nil, denylist: []
+            ).denied)
+        XCTAssertNil(ContextPolicy.appIdentifier(bundleID: nil, executableName: nil))
+        XCTAssertNil(ContextPolicy.appIdentifier(bundleID: nil, executableName: "SecurityAgent"))
+        XCTAssertNil(ContextPolicy.appIdentifier(bundleID: nil, executableName: "1PasswordHelper"))
+        XCTAssertEqual(
+            ContextPolicy.appIdentifier(bundleID: "dev.lapis.desktop", executableName: "lapis"),
+            "dev.lapis.desktop")
     }
 
     /// Review item 10: title matching was a substring of the host's first

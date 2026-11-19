@@ -258,6 +258,39 @@ enum ContextPolicy {
         BrowserCatalog.isBrowser(bundleID, httpsHandlers: BrowserCatalog.httpsHandlers())
     }
 
+    /// Stable identifier for an application: its bundle identifier when bundled,
+    /// or `local.bin.<name>` for an unbundled local executable (such as a dev binary
+    /// launched outside an `.app` bundle). Returns `nil` when neither is known or
+    /// when the name looks like a password/auth/chat-private helper so unidentified
+    /// and security processes still fail closed.
+    static func appIdentifier(bundleID: String?, executableName: String?) -> String? {
+        if let bundleID = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !bundleID.isEmpty
+        {
+            return bundleID
+        }
+        guard let rawName = executableName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !rawName.isEmpty
+        else {
+            return nil
+        }
+        let lowered = rawName.lowercased()
+        let privateNameHints = [
+            "securityagent", "localauthentication", "keychain", "password",
+            "1password", "bitwarden", "lastpass", "dashlane", "keepass",
+            "protonpass", "keeper", "signal", "discord",
+        ]
+        if privateNameHints.contains(where: { lowered.contains($0) }) {
+            return nil
+        }
+        let sanitized = lowered.map { ch -> Character in
+            (ch.isASCII && (ch.isLetter || ch.isNumber || ch == "_" || ch == "-")) ? ch : "_"
+        }
+        let slug = String(sanitized).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        guard !slug.isEmpty else { return nil }
+        return "local.bin.\(slug)"
+    }
+
     /// The app-level check: Phonon's own window, an app that cannot be
     /// identified, or a private app.
     static func isPrivateApp(_ window: ScreenWindow, denylist: [String], ownPID: pid_t) -> Bool {
