@@ -542,7 +542,7 @@ def test_engine_only_files_skips_mlx_safetensors_for_native_refiner():
     assert "phonon-refiner-1.7b-Q4_K_S-e4.gguf" in only
     assert "phonon-refiner-1.7b-dflash2-drafter.gguf" in only
     assert "tokenizer.json" in only
-    assert sum(pins[refiner]["files"][f]["size"] for f in only) == 1_221_230_710
+    assert sum(pins[refiner]["files"][f]["size"] for f in only) == 1_221_230_487
 
     gemma = "mlx-community/gemma-4-e2b-it-4bit"
     assert engine_only_files(gemma, pins[gemma]["revision"], pins) is None

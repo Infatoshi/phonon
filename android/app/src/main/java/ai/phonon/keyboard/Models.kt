@@ -22,7 +22,7 @@ object Models {
     private const val ASR_BASE =
         "https://huggingface.co/Infatoshi/phonon-asr-parakeet-tdt-0.6b-v2-onnx/resolve/76fbda42bfcf7be26cca2488f8fe38ea4328f755/"
     private const val REFINER_URL =
-        "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/f5e269abf1fd05de59cb43947515d3c3194b79cf/" +
+        "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/2a2f6ef99da599e7db244905faf7da77ce3755d1/" +
             "phonon-refiner-1.7b-Q4_K_S-e4.gguf"
 
     val ASR = listOf(
@@ -38,7 +38,7 @@ object Models {
             "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d", 9_384L),
     )
     val REFINER = ModelFile("refiner.gguf", REFINER_URL,
-        "8222be26ec129471331af4e13eefed9c5852cbb489f4e7043ceb6c4496f56856", 988_453_504L)
+        "045581797a659425708fce1c100d1db313597064278537e85b6cd46e3a110e68", 988_453_504L)
 
     /** The refiner loads only on phones with MemTotal >= 4000 MB (refiner_jni.cpp's RAM gate); below that the
      *  988 MB download would never be used. The gate's MemAvailable half is checked at load, not here. */

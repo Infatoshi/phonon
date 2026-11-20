@@ -67,7 +67,7 @@
    }
   },
   "Infatoshi/phonon-refiner-1.7b": {
-   "revision": "f5e269abf1fd05de59cb43947515d3c3194b79cf",
+   "revision": "2a2f6ef99da599e7db244905faf7da77ce3755d1",
    "files": {
     ".gitattributes": {
      "size": 1784,
@@ -82,8 +82,8 @@
      "sha256": "42b5591959e9b43d6735a82fbc4b7777d53a4d7e0b3102caf87ed1fd408185a6"
     },
     "README.md": {
-     "size": 5530,
-     "sha256": "e42d9a2dbfb8441aed179511e8321219ffc70f02b406f6e7b8c393344855fc56"
+     "size": 5352,
+     "sha256": "bf5cab24d08b428b74b850746dde4966dbade4e27dde3b46a6532759e3a4c0d9"
     },
     "chat_template.jinja": {
      "size": 12129,
@@ -99,7 +99,7 @@
     },
     "model.safetensors": {
      "size": 1133072561,
-     "sha256": "a10067916f950da4829981230e62542b9894dfeac150ea0ed59efb4c959c6b0b"
+     "sha256": "afbff56430bb6646a8b44d489204dba4a8cf644fee1ff61edbac593ca0574c9e"
     },
     "model.safetensors.index.json": {
      "size": 41831,
@@ -107,7 +107,7 @@
     },
     "phonon-refiner-1.7b-Q4_K_S-e4.gguf": {
      "size": 988453504,
-     "sha256": "8222be26ec129471331af4e13eefed9c5852cbb489f4e7043ceb6c4496f56856"
+     "sha256": "045581797a659425708fce1c100d1db313597064278537e85b6cd46e3a110e68"
     },
     "phonon-refiner-1.7b-dflash2-drafter.gguf": {
      "size": 214803168,
@@ -118,8 +118,8 @@
      "sha256": "5aff5a55a6734846c61e4ce3966b2078c549419b01a6f395d08dca670058067e"
     },
     "phonon_refiner.json": {
-     "size": 2974,
-     "sha256": "4a4e6b6a6500d679072be96b221ba84653d3fd5523594363a221af3ff6dd1765"
+     "size": 2929,
+     "sha256": "470875445486f5ec1aec1a5c31dd83012c33d07024c3c0c4114fad28c1a954d4"
     },
     "tokenizer.json": {
      "size": 17908634,

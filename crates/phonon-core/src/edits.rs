@@ -7,23 +7,19 @@
 //! style preference (lowercase starts, no trailing period). It never writes
 //! the dictionary; SPEC requires the user to approve every term.
 //!
-//! The alignment is a port of Wispr Flow 1.6's `text-diff-ops` (webpack
-//! module 14517, `parseAlignmentSteps(pasted, edited, 4)`): tokens are split
-//! on whitespace (CJK characters one per token), the common token prefix and
-//! suffix are taken as matches, and the middle is aligned by a weighted edit
-//! distance whose substitution cost is the normalized grapheme Levenshtein of
-//! the two words times 4, so dissimilar words become a delete plus an insert
-//! and similar ones a substitution. Each aligned word gets two labels, word
-//! and punctuation, from `M` match, `Z` absent on both sides, `C` casing only,
-//! `S` substitution, `I` insert, `D` delete and `E` edit-capture error (the
-//! observation ended while the first or last word was half typed). Wispr then
-//! mines contiguous `S/I/D` runs of at most four edited words
-//! (`dictionary-learn-candidates`, module 23109), drops stopwords, words
-//! already in the dictionary and contractions, and asks a server classifier
-//! which candidates are real terms before auto-adding them with an undo
-//! notification. Phonon has no server: the classifier is replaced by local
-//! rules (the term must look like a term, and must sound like what was heard),
-//! and nothing is added without the user's yes.
+//! The alignment uses a weighted token edit distance: tokens are split on
+//! whitespace (CJK characters one per token), the common token prefix and
+//! suffix are taken as matches, and the middle is aligned with a substitution
+//! cost equal to normalized grapheme Levenshtein distance times 4, so
+//! dissimilar words become a delete plus an insert and similar ones a
+//! substitution. Each aligned word gets two labels, word and punctuation, from
+//! `M` match, `Z` absent on both sides, `C` casing only, `S` substitution, `I`
+//! insert, `D` delete and `E` edit-capture error (the observation ended while
+//! the first or last word was half typed). Contiguous `S/I/D` runs of at most
+//! four edited words are mined as candidate terms, dropping stopwords, words
+//! already in the dictionary and contractions. Local rules decide which
+//! candidates are real terms (the term must look like a term and sound like
+//! what was heard), and nothing is added without the user's approval.
 
 use crate::data::{self, DictionaryEntry, DictionaryFile};
 use anyhow::Result;
@@ -31,11 +27,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// Substitution weight Wispr passes to `parseAlignmentSteps`.
+/// Substitution weight for normalized grapheme Levenshtein alignment.
 const SUBSTITUTION_WEIGHT: f64 = 4.0;
-/// Wispr's phrase learner keeps at most four edited words per candidate.
+/// Maximum edited words per learned phrase candidate.
 pub const MAX_TERM_WORDS: usize = 4;
-/// Wispr sends at most four candidates per edit to its classifier.
+/// Maximum suggestions surfaced per post-paste edit.
 pub const MAX_SUGGESTIONS: usize = 4;
 /// An edit that changes more than half of the words is a rewrite, not a fix.
 pub const REWRITE_RATIO: f64 = 0.5;

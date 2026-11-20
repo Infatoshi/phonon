@@ -11,9 +11,9 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** The pinned public refiner (Infatoshi/phonon-refiner-1.7b @f5e269a, Q4_K_S-e4), as on the desktop builds. */
+/** The pinned public refiner (Infatoshi/phonon-refiner-1.7b @2a2f6ef, Q4_K_S-e4), as on the desktop builds. */
 const val REFINER_URL = "https://huggingface.co/Infatoshi/phonon-refiner-1.7b/resolve/" +
-    "f5e269abf1fd05de59cb43947515d3c3194b79cf/phonon-refiner-1.7b-Q4_K_S-e4.gguf"
+    "2a2f6ef99da599e7db244905faf7da77ce3755d1/phonon-refiner-1.7b-Q4_K_S-e4.gguf"
 const val REFINER_BYTES = 988_453_504L
 
 /**

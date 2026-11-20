@@ -689,7 +689,7 @@ components, in this order:
 | sherpa-onnx tools and ONNX Runtime | release `v1.13.6` | 18 MB |
 | llama.cpp Vulkan build (CPU backends included) | release `b12132` | 38 MB |
 | Parakeet TDT 0.6b v2 (N8avg), int8 ONNX | commit `76fbda4` | 661 MB |
-| Phonon refiner 1.7B (context refiner), Q4_K_S GGUF | commit `f5e269a` | 988 MB |
+| Phonon refiner 1.7B (context refiner), Q4_K_S GGUF | commit `2a2f6ef` | 988 MB |
 
 Every file has its SHA-256 in `crates/phonon-win/src/manifest.rs`. A file that
 does not match is deleted, not used. A component is built in a staging

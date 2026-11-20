@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 /// LiquidAI/LFM3-1.7B on public and synthetic data only, with writing
 /// modes (`phonon_refiner.json` `writing_modes`) and the On-screen and
 /// Before-cursor context lines (`context_lines`; SPEC "Refiner prompt"); the
-/// context refiner s3d_ctx6_s1 since 2026-11-16. One repository holds the
+/// Phonon 1.1 refiner en_v6_avg since 2026-11-20. One repository holds the
 /// native engine's GGUF target and drafter (`phonon_engine.json`) and the MLX
 /// weights the sidecar falls back to. The revision is exact so an upstream
 /// re-upload cannot change what shipped users run.
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// after the upload and before tagging, together with the file hashes in
 /// sidecar/model_pins.json (a test checks the two agree).
 pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
-pub const POLISH_MODEL_REVISION: &str = "f5e269abf1fd05de59cb43947515d3c3194b79cf";
+pub const POLISH_MODEL_REVISION: &str = "2a2f6ef99da599e7db244905faf7da77ce3755d1";
 /// Pinned runtime, for the same reason: the inline dependency of
 /// sidecar/polish_server.py, installed from its hashed lock
 /// (`phonon_asr::sidecar_run_args`); this copy is for display, and a test keeps
