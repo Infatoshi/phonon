@@ -540,8 +540,8 @@ enum TalkBarSideControl: Equatable {
 }
 
 /// The talk bar's fill. It takes exactly the frame it is given in every state and audio level; voice and state show
-/// only in colour and brightness. Idle: a plain dark capsule. Then the stages of BarStages.swift: ignite on the press,
-/// listening (brightness follows the smoothed level), the gather into a tight core while the text is written, the
+/// only in brightness. Idle: a plain dark capsule. Then the stages of BarStages.swift: ignite on the press,
+/// listening (brightness follows the smoothed level), steady warm ember while the text is written, and a crisp
 /// fade back to rest when it is inserted. No scale, size or layout ever depends on the stage or the level.
 struct TalkBarFill: View {
     enum Mode: Equatable {
@@ -587,8 +587,8 @@ struct TalkBarFill: View {
 
     var body: some View {
         let drawn = drawn
-        // The clock runs only while a stage is still moving: the first 0.18 s of listening, the 1.2 s gather, the
-        // fade. A held core and the voice level need no frames of their own.
+        // The clock runs only while a stage is still moving: the 0.10 s ignite and the 0.10 s fade.
+        // Steady processing and the resting bar need no frames of their own.
         let moving = drawn.settleSeconds(reduceMotion: reduced).map { Date().timeIntervalSince(drawn.since) < $0 } ?? false
         let running = frozenAt == nil && moving && settledBeat != drawn
         return ZStack {

@@ -3,46 +3,36 @@ package ai.phonon.keyboard
 import kotlin.math.exp
 
 /**
- * The talk bar's stages (ignite, listening, processing, then a fade back to rest), as pure maths so JVM tests can
- * check them. The same numbers as the Mac and iPhone bars and the Windows and Linux tray icon
+ * The talk bar's stages (ignite, listening, steady warm processing, then a crisp fade back to rest), as pure maths
+ * so JVM tests can check them. The same numbers as the Mac and iPhone bars and the Windows and Linux tray icon
  * (crates/phonon-win/src/indicator.rs).
  *
- * The bar is a horizontal gradient, black at 0.5-w and 0.5+w, one warm light at 0.5:
- *  1. ignite, the instant the finger goes down: full strength, falling to the live voice level in 0.18 s;
+ * The bar is a full-width horizontal gradient, black at both ends, one warm ember light at 0.5 (`halfWidth` is always
+ * 0.5, with no sliding-together core):
+ *  1. ignite, the instant the finger goes down: full strength, falling to the live voice level in 0.10 s;
  *  2. listening: w = 0.5, strength follows the smoothed voice level;
- *  3. processing, from let-go until the text is delivered: over 1.2 s w narrows from 0.5 to 0.08 and the light
- *     warms and brightens, then the tight core holds, still;
- *  4. ended (text pasted or not): no pulse, the core fades out in 0.2 s;
- *  5. reduced motion (animator duration scale 0): the width never moves; processing is a steady medium core.
+ *  3. processing, from let-go until the text is delivered: steady warm ember at full width (0.65 strength, 0% redraw);
+ *  4. ended (text pasted or not): no pulse, fades straight out at full width in 0.10 s with quadratic ease-out.
  */
 object BarStages {
-    /** The Mac capsule's ember (0.42, 0.12, 0.035). */
+    /** The capsule's warm ember (0.42, 0.12, 0.035). */
     val BASE = doubleArrayOf(107.0, 31.0, 9.0)
-    /** What the light warms to while gathering. */
-    val BRIGHT = doubleArrayOf(227.0, 101.0, 29.0)
 
-    const val IGNITE_SECONDS = 0.18
-    const val GATHER_SECONDS = 1.2
-    const val DROP_SECONDS = 0.2
-    const val TIGHT_WIDTH = 0.08
+    const val IGNITE_SECONDS = 0.10
+    const val DROP_SECONDS = 0.10
     const val WIDE_WIDTH = 0.5
-    /** Reduced motion's processing core: steady, between wide and tight. */
-    const val REDUCED_WIDTH = 0.25
+    /** Width never moves in either normal or reduced-motion mode. */
+    const val REDUCED_WIDTH = WIDE_WIDTH
     const val LEVEL_FLOOR = 0.08
 
     /** Listening's light is this opaque over black in silence, plus [LISTEN_STRENGTH_RANGE] times the voice
      *  energy (0..1): the Mac capsule's 0.50 + energy * 0.38 (macos/Sources/PhononBar.swift warmth). */
     const val LISTEN_STRENGTH = 0.50
     const val LISTEN_STRENGTH_RANGE = 0.38
-    /** Full strength, energy 1 (the ignite flash and the loudest voice): 0.50 + 0.38 = 0.88 opacity over black.
-     *  It stays under 1.0 so the gather, which ends brighter at [GATHER_END_STRENGTH], still reads as a change. */
+    /** Full strength, energy 1 (the ignite flash and the loudest voice): 0.50 + 0.38 = 0.88 opacity over black. */
     const val FULL_STRENGTH = LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE
-    /** The gather's strength at let-go (the Mac's 0.5 + 0.5 * heat 0.3) and once the core is tight. */
-    const val GATHER_START_STRENGTH = 0.65
-    const val GATHER_END_STRENGTH = 1.0
-    /** Reduced motion's steady processing core. */
-    const val REDUCED_STRENGTH = 0.80
-    const val REDUCED_HEAT = 0.5
+    /** Steady warm ember strength while processing (let-go until text arrives). */
+    const val PROCESSING_STRENGTH = 0.65
 
     /** Where in a dictation the bar is. The ending stages carry what they fade from. */
     sealed class Stage {
@@ -54,13 +44,13 @@ object BarStages {
         data class Dropped(val fromWidth: Double, val fromStrength: Double, val fromHeat: Double) : Stage()
     }
 
-    /** One frame. The centre colour is lerp(BASE, BRIGHT, heat) * strength over black. */
+    /** One frame. The centre colour is BASE * strength over black. */
     data class Look(
-        /** Half the width of the lit part, as a fraction of the whole (0.5 = the full width). */
+        /** Half the width of the lit part, as a fraction of the whole (always 0.5 = full width). */
         val halfWidth: Double,
         /** Opacity of the warm light over black. */
         val strength: Double,
-        /** 0 = the base ember, 1 = the bright processing colour. */
+        /** Kept at 0.0: single warm ember colour. */
         val heat: Double,
     )
 
@@ -74,17 +64,16 @@ object BarStages {
         return when (stage) {
             Stage.Listening -> {
                 val ignite = unit(1.0 - e / IGNITE_SECONDS)
-                // full strength at the press, the live level 0.18 s later, linearly between
+                // full strength at the press, the live level 0.10 s later, linearly between
                 Look(WIDE_WIDTH, lerp(LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE * lv, FULL_STRENGTH, ignite), 0.0)
             }
             Stage.Processing ->
-                if (reduced) Look(REDUCED_WIDTH, REDUCED_STRENGTH, REDUCED_HEAT)
-                else {
-                    val k = unit(e / GATHER_SECONDS)
-                    Look(lerp(WIDE_WIDTH, TIGHT_WIDTH, k), lerp(GATHER_START_STRENGTH, GATHER_END_STRENGTH, k), k)
-                }
-            is Stage.Dropped ->
-                Look(stage.fromWidth, stage.fromStrength * (1.0 - unit(e / DROP_SECONDS)), stage.fromHeat)
+                Look(WIDE_WIDTH, PROCESSING_STRENGTH, 0.0)
+            is Stage.Dropped -> {
+                val p = unit(e / DROP_SECONDS)
+                val remain = (1.0 - p) * (1.0 - p)
+                Look(stage.fromWidth, stage.fromStrength * remain, stage.fromHeat)
+            }
         }
     }
 
@@ -130,7 +119,7 @@ object BarStages {
             if (stage == Stage.Listening) { stage = Stage.Processing; since = now }
         }
 
-        /** The dictation ended (text pasted or not): no pulse, the core fades out from where it is. */
+        /** The dictation ended (text pasted or not): no pulse, fades straight out from where it is. */
         fun dropped(now: Double, level: Double, reduced: Boolean) {
             val s = stage
             if (s != null && (s == Stage.Listening || s == Stage.Processing)) {
@@ -148,16 +137,15 @@ object BarStages {
             return look(s, elapsed, level, reduced)
         }
 
-        /** Whether the next frame can differ from this one (false once the gather has finished and holds). */
+        /** Whether the next frame can differ from this one (false while processing holds steady). */
         fun moving(now: Double, reduced: Boolean): Boolean = when (stage) {
-            null -> false
-            Stage.Processing -> !reduced && now - since < GATHER_SECONDS
+            null, Stage.Processing -> false
             else -> true
         }
     }
 
     /** The gradient's centre colour as 0..255 RGB. */
     fun centre(look: Look): IntArray = IntArray(3) {
-        (lerp(BASE[it], BRIGHT[it], look.heat) * look.strength).coerceIn(0.0, 255.0).toInt()
+        (BASE[it] * look.strength).coerceIn(0.0, 255.0).toInt()
     }
 }

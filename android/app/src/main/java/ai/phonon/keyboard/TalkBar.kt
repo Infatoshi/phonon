@@ -23,8 +23,8 @@ import kotlin.math.sin
  *    keyboard is on screen and animations are on;
  *  - listening: the Mac app's dictation capsule (macos/Sources/PhononBar.swift PillView) at 2.6x, its ember centre
  *    lit and widened by the voice level; it flashes to full strength the moment the finger lands (BarStages);
- *  - working: the same capsule, smaller; its light gathers to a tight bright core over 1.2 s and holds still, then
- *    fades out when the dictation ends, text pasted or not, no pulse (BarStages);
+ *  - working: the same capsule, smaller, with a steady full-width warm ember that fades straight out when the
+ *    dictation ends, text pasted or not, no pulse (BarStages);
  *  - [label] (not ready yet, or a status for about 2 s) is drawn over a dimmed resting fluid.
  * Touch handling (hold to talk, tap to latch) is the IME's; this view only draws.
  */
@@ -68,8 +68,8 @@ class TalkBar(context: Context) : View(context) {
 
     private fun nowSeconds() = SystemClock.uptimeMillis() / 1000.0
 
-    /** The stages ride on the mode changes: finger down lights the bar at once, let-go starts the gather, and
-     *  leaving for rest fades the light out. BarStages has the maths. */
+    /** The stages ride on the mode changes: finger down lights the bar at once, let-go holds steady warm processing,
+     *  and leaving for rest fades the light out. BarStages has the maths. */
     private fun stageChange(from: Mode, to: Mode) {
         val now = nowSeconds()
         val reduced = !animationsOn()
@@ -83,7 +83,7 @@ class TalkBar(context: Context) : View(context) {
             }
             Mode.WORKING -> {
                 // A bar created mid-dictation (the keyboard view rebuilt while writing), or one still fading the
-                // last dictation, has nothing listening to release: it starts the gather from the wide light.
+                // last dictation, has nothing listening to release: it enters steady processing directly.
                 val s = machine.current
                 if (s != BarStages.Stage.Listening && s != BarStages.Stage.Processing) machine.press(now)
                 machine.release(now)

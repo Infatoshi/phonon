@@ -6,13 +6,13 @@
 //! both ends, one warm light in the middle), and between dictations it is the normal Phonon icon and
 //! nothing repaints.
 //!
-//! The gradient is the Mac capsule's and the iPhone's: black at 0.5-w and 0.5+w, colour at 0.5.
-//!  1. Ignite, the instant the key goes down: full strength, falling to the live voice level in 0.18 s.
+//! The gradient is the Mac capsule's and the iPhone's: black at both ends, one warm ember light at 0.5
+//! (`half_width` stays at 0.5 in every stage; there is no sliding-together core):
+//!  1. Ignite, the instant the key goes down: full strength, falling to the live voice level in 0.10 s.
 //!  2. Listening: w = 0.5, strength follows the smoothed voice level.
-//!  3. Processing, from key-up until the text is delivered: over 1.2 s w narrows from 0.5 to 0.08 and the
-//!     light warms and brightens; then the tight core holds, still.
-//!  4. Ended (text pasted or not): no pulse, the core fades out in 0.2 s.
-//!  5. Reduced motion: the width never moves; processing is a steady medium core.
+//!  3. Processing, from key-up until the text is delivered: steady warm ember at full width (0.65 strength,
+//!     no repaint while waiting).
+//!  4. Ended (text pasted or not): no pulse, fades straight out at full width in 0.10 s with quadratic ease-out.
 //!
 //! Every press starts a new dictation with its own number (`press` returns it). The events that move a
 //! dictation on (`release`, `dropped`) carry that number and do nothing when the indicator has moved on
@@ -26,18 +26,14 @@ use std::sync::mpsc;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// The Mac capsule's ember (0.42, 0.12, 0.035).
+/// The Mac capsule's warm ember (0.42, 0.12, 0.035).
 pub const BASE: [f32; 3] = [107.0, 31.0, 9.0];
-/// What the light warms to while gathering.
-pub const BRIGHT: [f32; 3] = [227.0, 101.0, 29.0];
 
-pub const IGNITE_SECONDS: f32 = 0.18;
-pub const GATHER_SECONDS: f32 = 1.2;
-pub const DROP_SECONDS: f32 = 0.2;
-pub const TIGHT_WIDTH: f32 = 0.08;
+pub const IGNITE_SECONDS: f32 = 0.10;
+pub const DROP_SECONDS: f32 = 0.10;
 pub const WIDE_WIDTH: f32 = 0.5;
-/// Reduced motion's processing core: steady, between wide and tight.
-pub const REDUCED_WIDTH: f32 = 0.25;
+/// Width never moves in either normal or reduced-motion mode.
+pub const REDUCED_WIDTH: f32 = WIDE_WIDTH;
 pub const LEVEL_FLOOR: f32 = 0.08;
 
 /// Listening's light is this opaque over black in silence...
@@ -46,15 +42,10 @@ pub const LISTEN_STRENGTH: f32 = 0.50;
 /// `warmth`: 0.50 + energy * 0.38).
 pub const LISTEN_STRENGTH_RANGE: f32 = 0.38;
 /// Full strength: energy 1, the ignite flash and the loudest voice, 0.50 + 0.38 = 0.88 opacity of the ember
-/// over black. It stays under 1.0 so the gather, which ends brighter at `GATHER_END_STRENGTH`, still reads
-/// as a change when the key comes up.
+/// over black.
 pub const FULL_STRENGTH: f32 = LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE;
-/// The gather's strength at key-up (the Mac's 0.5 + 0.5 * heat 0.3) and once the core is tight.
-pub const GATHER_START_STRENGTH: f32 = 0.65;
-pub const GATHER_END_STRENGTH: f32 = 1.0;
-/// Reduced motion's steady processing core.
-pub const REDUCED_STRENGTH: f32 = 0.80;
-pub const REDUCED_HEAT: f32 = 0.5;
+/// Steady warm ember strength while processing (key-up until text arrives).
+pub const PROCESSING_STRENGTH: f32 = 0.65;
 
 /// A dictation still listening with no audio arriving for this long is dropped: the worker died, the
 /// microphone never opened, or a key-up was lost. A latched dictation that keeps receiving audio is never
@@ -93,14 +84,14 @@ pub enum Stage {
     },
 }
 
-/// What one frame looks like. The centre colour is `lerp(BASE, BRIGHT, heat) * strength` over black.
+/// What one frame looks like. The centre colour is `BASE * strength` over black.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
-    /// Half the width of the lit part, as a fraction of the whole (0.5 = the full width).
+    /// Half the width of the lit part, as a fraction of the whole (always 0.5 = full width).
     pub half_width: f32,
     /// Opacity of the warm light over black.
     pub strength: f32,
-    /// 0 = the base ember, 1 = the bright processing colour.
+    /// Kept at 0.0: single warm ember colour.
     pub heat: f32,
 }
 
@@ -109,13 +100,13 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// The stage maths: stage, seconds since it began, smoothed voice level (0..1), reduced motion.
-pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
+pub fn look(stage: Stage, elapsed: f32, level: f32, _reduced: bool) -> Look {
     let elapsed = elapsed.max(0.0);
     let level = level.clamp(LEVEL_FLOOR, 1.0);
     match stage {
         Stage::Listening => {
             let ignite = (1.0 - elapsed / IGNITE_SECONDS).clamp(0.0, 1.0);
-            // full strength at the press, the live level 0.18 s later, linearly between
+            // full strength at the press, the live level 0.10 s later, linearly between
             let live = LISTEN_STRENGTH + LISTEN_STRENGTH_RANGE * level;
             Look {
                 half_width: WIDE_WIDTH,
@@ -123,28 +114,24 @@ pub fn look(stage: Stage, elapsed: f32, level: f32, reduced: bool) -> Look {
                 heat: 0.0,
             }
         }
-        Stage::Processing if reduced => Look {
-            half_width: REDUCED_WIDTH,
-            strength: REDUCED_STRENGTH,
-            heat: REDUCED_HEAT,
+        Stage::Processing => Look {
+            half_width: WIDE_WIDTH,
+            strength: PROCESSING_STRENGTH,
+            heat: 0.0,
         },
-        Stage::Processing => {
-            let k = (elapsed / GATHER_SECONDS).clamp(0.0, 1.0);
-            Look {
-                half_width: lerp(WIDE_WIDTH, TIGHT_WIDTH, k),
-                strength: lerp(GATHER_START_STRENGTH, GATHER_END_STRENGTH, k),
-                heat: k,
-            }
-        }
         Stage::Dropped {
             from_width,
             from_strength,
             from_heat,
-        } => Look {
-            half_width: from_width,
-            strength: from_strength * (1.0 - (elapsed / DROP_SECONDS).clamp(0.0, 1.0)),
-            heat: from_heat,
-        },
+        } => {
+            let p = (elapsed / DROP_SECONDS).clamp(0.0, 1.0);
+            let remain = (1.0 - p) * (1.0 - p);
+            Look {
+                half_width: from_width,
+                strength: from_strength * remain,
+                heat: from_heat,
+            }
+        }
     }
 }
 
@@ -315,12 +302,11 @@ impl Machine {
     }
 
     /// Whether the next frame can differ from this one for any reason but the voice level: false at rest,
-    /// once the gather holds, for reduced motion's steady core, and for listening after the ignite.
-    pub fn moving(&self, now: f64, reduced: bool) -> bool {
+    /// while processing holds steady, and for listening after the ignite.
+    pub fn moving(&self, now: f64, _reduced: bool) -> bool {
         match self.active {
-            None => false,
+            None | Some((Stage::Processing, _)) => false,
             Some((Stage::Listening, since)) => now - since < f64::from(IGNITE_SECONDS),
-            Some((Stage::Processing, since)) => !reduced && now - since < f64::from(GATHER_SECONDS),
             Some((Stage::Dropped { .. }, _)) => true,
         }
     }
@@ -335,9 +321,9 @@ pub fn render_rgba(look: Look, size: u32) -> Vec<u8> {
     let half_h = size_f * 0.25;
     let (cx, cy) = (size_f / 2.0, size_f / 2.0);
     let core = [
-        lerp(BASE[0], BRIGHT[0], look.heat) * look.strength,
-        lerp(BASE[1], BRIGHT[1], look.heat) * look.strength,
-        lerp(BASE[2], BRIGHT[2], look.heat) * look.strength,
+        BASE[0] * look.strength,
+        BASE[1] * look.strength,
+        BASE[2] * look.strength,
     ];
     for y in 0..n {
         for x in 0..n {
@@ -598,9 +584,8 @@ mod tests {
         // 0.50 + 0.38 opacity over black, the loudest voice and the ignite alike
         let loudest = look(Stage::Listening, 5.0, 1.0, false).strength;
         assert!((loudest - 0.88).abs() < EPS && (loudest - FULL_STRENGTH).abs() < EPS);
-        // and the held core is brighter still, so the key-up reads as a change
-        let held = look(Stage::Processing, GATHER_SECONDS, 0.5, false).strength;
-        assert!(held > loudest, "{held} after {loudest}");
+        let processing = look(Stage::Processing, 0.0, 0.5, false).strength;
+        assert!((processing - PROCESSING_STRENGTH).abs() < EPS);
     }
 
     #[test]
@@ -616,13 +601,13 @@ mod tests {
     }
 
     #[test]
-    fn ignite_decays_linearly_to_the_live_level_in_0_18_seconds() {
+    fn ignite_decays_linearly_to_the_live_level_in_0_10_seconds() {
         let level = 0.4;
-        let mid = look(Stage::Listening, 0.09, level, false).strength;
+        let mid = look(Stage::Listening, 0.05, level, false).strength;
         // half way through the ignite: half full energy, half the live level
         assert!((mid - listening(0.5 + 0.5 * level)).abs() < EPS);
         assert!(
-            (look(Stage::Listening, 0.18, level, false).strength - listening(level)).abs() < EPS
+            (look(Stage::Listening, 0.10, level, false).strength - listening(level)).abs() < EPS
         );
         assert!(
             (look(Stage::Listening, 2.0, level, false).strength - listening(level)).abs() < EPS
@@ -633,61 +618,68 @@ mod tests {
     }
 
     #[test]
-    fn gather_reaches_0_08_at_1_2_seconds_and_holds() {
-        let start = look(Stage::Processing, 0.0, 0.5, false);
-        assert!((start.half_width - 0.5).abs() < EPS);
-        assert!((start.strength - GATHER_START_STRENGTH).abs() < EPS);
-        assert!((look(Stage::Processing, 0.6, 0.5, false).half_width - 0.29).abs() < EPS);
-        let end = look(Stage::Processing, 1.2, 0.5, false);
-        assert!((end.half_width - 0.08).abs() < EPS);
-        assert!((end.strength - GATHER_END_STRENGTH).abs() < EPS);
-        assert!((end.heat - 1.0).abs() < EPS);
-        for t in [1.3, 5.0, 60.0] {
+    fn processing_is_steady_full_width_warm_ember() {
+        let steady = look(Stage::Processing, 0.0, 0.5, false);
+        assert!((steady.half_width - WIDE_WIDTH).abs() < EPS);
+        assert!((steady.strength - PROCESSING_STRENGTH).abs() < EPS);
+        assert!((steady.heat - 0.0).abs() < EPS);
+        for t in [0.02, 0.1, 0.6, 1.2, 5.0, 60.0] {
             assert_eq!(
                 look(Stage::Processing, t, 0.9, false),
-                end,
-                "no loop, no breathing at {t}"
+                steady,
+                "no sliding or breathing at {t}"
+            );
+            assert_eq!(
+                look(Stage::Processing, t, 0.9, true),
+                steady,
+                "identical under reduced motion at {t}"
             );
         }
     }
 
     #[test]
-    fn an_end_before_the_gather_finishes_fades_from_where_it_is() {
+    fn fast_dictation_ends_and_fades_cleanly_at_full_width() {
         let mut m = Machine::default();
         let a = m.press(0.0);
         m.release(a, 1.0);
-        m.dropped(a, 1.6, 0.5, false); // half way through the gather: w = 0.29
-        let Some(Stage::Dropped { from_width, .. }) = m.stage() else {
+        m.dropped(a, 1.02, 0.5, false);
+        let Some(Stage::Dropped {
+            from_width,
+            from_strength,
+            ..
+        }) = m.stage()
+        else {
             panic!("{:?}", m.stage())
         };
-        assert!((from_width - 0.29).abs() < EPS);
-        let first = m.frame(1.6, 0.5, false).unwrap();
-        assert!((first.half_width - 0.29).abs() < EPS);
-        assert!(m.frame(1.6 + f64::from(DROP_SECONDS), 0.5, false).is_none() && m.is_rest());
+        assert!((from_width - WIDE_WIDTH).abs() < EPS);
+        assert!((from_strength - PROCESSING_STRENGTH).abs() < EPS);
+        let first = m.frame(1.02, 0.5, false).unwrap();
+        assert!((first.half_width - WIDE_WIDTH).abs() < EPS);
+        assert!(m.frame(1.02 + f64::from(DROP_SECONDS), 0.5, false).is_none() && m.is_rest());
     }
 
     #[test]
-    fn the_end_fades_the_core_with_no_pulse() {
+    fn the_end_fades_with_no_pulse_or_width_change() {
         let mut m = Machine::default();
         let a = m.press(0.0);
         m.release(a, 1.0);
-        m.dropped(a, 3.0, 0.5, false); // gather done: the tight bright core
+        m.dropped(a, 3.0, 0.5, false);
         let first = m.frame(3.0, 0.5, false).unwrap();
         assert!(
-            (first.half_width - TIGHT_WIDTH).abs() < EPS
-                && (first.strength - GATHER_END_STRENGTH).abs() < EPS
+            (first.half_width - WIDE_WIDTH).abs() < EPS
+                && (first.strength - PROCESSING_STRENGTH).abs() < EPS
         );
-        for t in [3.05, 3.1, 3.19] {
+        for t in [3.02, 3.05, 3.09] {
             let f = m.frame(t, 0.5, false).unwrap();
-            assert_eq!(f.heat, first.heat, "no colour change");
+            assert_eq!(f.heat, 0.0, "no colour change");
             assert!(f.strength <= first.strength, "never brighter");
             assert!(
-                (f.half_width - TIGHT_WIDTH).abs() < EPS,
-                "the core only fades, it does not open"
+                (f.half_width - WIDE_WIDTH).abs() < EPS,
+                "width stays full"
             );
         }
         let mid = look(m.stage().unwrap(), DROP_SECONDS / 2.0, 0.5, false);
-        assert!((mid.strength - GATHER_END_STRENGTH / 2.0).abs() < EPS);
+        assert!((mid.strength - PROCESSING_STRENGTH * 0.25).abs() < EPS);
         assert!(m.frame(3.0 + f64::from(DROP_SECONDS), 0.5, false).is_none() && m.is_rest());
     }
 
@@ -704,25 +696,27 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_keeps_the_width_constant() {
-        let widths: Vec<f32> = [0.0, 0.3, 1.2, 4.0]
-            .into_iter()
-            .map(|t| look(Stage::Processing, t, 0.5, true).half_width)
-            .collect();
-        assert!(
-            widths.iter().all(|w| (*w - REDUCED_WIDTH).abs() < EPS),
-            "{widths:?}"
-        );
-        let mut m = Machine::default();
-        let a = m.press(0.0);
-        m.release(a, 1.0);
-        assert!(!m.moving(1.0, true), "the steady core does not repaint");
-        m.dropped(a, 2.0, 0.5, true);
-        let s = m.stage().unwrap();
-        for t in [0.0, 0.1, 0.19] {
-            assert!((look(s, t, 0.5, true).half_width - REDUCED_WIDTH).abs() < EPS);
+    fn width_never_moves_normal_or_reduced_motion() {
+        for reduced in [false, true] {
+            let widths: Vec<f32> = [0.0, 0.05, 0.3, 1.2, 4.0]
+                .into_iter()
+                .map(|t| look(Stage::Processing, t, 0.5, reduced).half_width)
+                .collect();
+            assert!(
+                widths.iter().all(|w| (*w - WIDE_WIDTH).abs() < EPS),
+                "{widths:?}"
+            );
+            let mut m = Machine::default();
+            let a = m.press(0.0);
+            m.release(a, 1.0);
+            assert!(!m.moving(1.0, reduced), "steady processing does not repaint");
+            m.dropped(a, 2.0, 0.5, reduced);
+            let s = m.stage().unwrap();
+            for t in [0.0, 0.05, 0.09] {
+                assert!((look(s, t, 0.5, reduced).half_width - WIDE_WIDTH).abs() < EPS);
+            }
+            assert!(finished(s, DROP_SECONDS) && !finished(s, DROP_SECONDS - 0.01));
         }
-        assert!(finished(s, 0.2) && !finished(s, 0.19));
     }
 
     #[test]
@@ -733,8 +727,9 @@ mod tests {
         assert!(m.is_rest());
         let a = m.press(1.0);
         m.release(a, 2.0);
-        m.release(a, 2.2); // a second stop restarts nothing: the gather still ends 1.2 s after the first
-        assert!(!m.moving(2.0 + f64::from(GATHER_SECONDS) + 0.1, false));
+        m.release(a, 2.2); // a second stop restarts nothing
+        assert_eq!(m.stage(), Some(Stage::Processing));
+        assert!(!m.moving(2.2, false));
     }
 
     #[test]
@@ -815,20 +810,17 @@ mod tests {
     }
 
     #[test]
-    fn nothing_moves_once_the_gather_holds() {
+    fn steady_processing_never_repaints() {
         let mut m = Machine::default();
         assert!(!m.moving(0.0, false), "rest");
         let a = m.press(0.0);
         assert!(m.moving(0.0, false), "the ignite");
         assert!(!m.moving(f64::from(IGNITE_SECONDS) + 0.01, false));
         m.release(a, 1.0);
-        assert!(m.moving(1.5, false), "the gather");
-        assert!(
-            !m.moving(1.0 + f64::from(GATHER_SECONDS) + 0.01, false),
-            "the held core"
-        );
+        assert!(!m.moving(1.0, false), "steady processing");
+        assert!(!m.moving(1.5, false), "steady processing");
         m.dropped(a, 5.0, 0.5, false);
-        assert!(m.moving(5.1, false), "the fade");
+        assert!(m.moving(5.05, false), "the fade");
     }
 
     #[test]
@@ -837,7 +829,9 @@ mod tests {
         let start = 12.0 * 24.0 * 3600.0;
         let mut m = Machine::default();
         m.press(start);
-        let mid = m.frame(start + 0.09, 0.0, false).unwrap();
+        let mid = m
+            .frame(start + f64::from(IGNITE_SECONDS) / 2.0, 0.0, false)
+            .unwrap();
         assert!((mid.strength - listening(0.5 + 0.5 * LEVEL_FLOOR)).abs() < 1e-3);
     }
 
@@ -879,16 +873,16 @@ mod tests {
         assert!(end[0] < 20 && end[3] > 0, "{end:?}");
         // outside the capsule is transparent: the icon keeps its square slot
         assert_eq!(px(&wide, 16, 0)[3], 0);
-        // the tight core lights less of the width
-        let tight = render_rgba(
+        // steady processing uses the same full-width warm ember at lower strength
+        let steady = render_rgba(
             Look {
-                half_width: TIGHT_WIDTH,
-                strength: GATHER_END_STRENGTH,
-                heat: 1.0,
+                half_width: WIDE_WIDTH,
+                strength: PROCESSING_STRENGTH,
+                heat: 0.0,
             },
             32,
         );
-        assert_eq!(px(&tight, 6, 16)[0], 0);
-        assert!(px(&tight, 16, 16)[0] > 150);
+        assert!(px(&steady, 16, 16)[0] > 50 && px(&steady, 16, 16)[0] < middle[0]);
+        assert!(px(&steady, 6, 16)[0] > 0);
     }
 }

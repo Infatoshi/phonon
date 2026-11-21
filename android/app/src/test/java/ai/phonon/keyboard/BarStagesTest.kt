@@ -20,8 +20,7 @@ class BarStagesTest {
         val loudest = BarStages.look(Stage.Listening, 5.0, 1.0, false).strength
         assertEquals(0.88, loudest, eps)
         assertEquals(BarStages.FULL_STRENGTH, loudest, eps)
-        // the held core is brighter still, so the let-go reads as a change
-        assertTrue(BarStages.look(Stage.Processing, BarStages.GATHER_SECONDS, 0.5, false).strength > loudest)
+        assertEquals(BarStages.PROCESSING_STRENGTH, BarStages.look(Stage.Processing, 0.0, 0.5, false).strength, eps)
     }
 
     @Test
@@ -33,56 +32,56 @@ class BarStagesTest {
     }
 
     @Test
-    fun igniteDecaysLinearlyToTheLiveLevelIn018Seconds() {
+    fun igniteDecaysLinearlyToTheLiveLevelIn010Seconds() {
         val level = 0.4
         // half way through the ignite: half full energy, half the live level
-        assertEquals(listening(0.5 + 0.5 * level), BarStages.look(Stage.Listening, 0.09, level, false).strength, eps)
-        assertEquals(listening(level), BarStages.look(Stage.Listening, 0.18, level, false).strength, eps)
+        assertEquals(listening(0.5 + 0.5 * level), BarStages.look(Stage.Listening, 0.05, level, false).strength, eps)
+        assertEquals(listening(level), BarStages.look(Stage.Listening, 0.10, level, false).strength, eps)
         assertEquals(listening(level), BarStages.look(Stage.Listening, 2.0, level, false).strength, eps)
         assertEquals(listening(BarStages.LEVEL_FLOOR), BarStages.look(Stage.Listening, 5.0, 0.0, false).strength, eps)
     }
 
     @Test
-    fun gatherReaches008At12SecondsAndHolds() {
+    fun processingIsSteadyFullWidthWarmEmber() {
         val start = BarStages.look(Stage.Processing, 0.0, 0.5, false)
-        assertEquals(0.5, start.halfWidth, eps)
-        assertEquals(BarStages.GATHER_START_STRENGTH, start.strength, eps)
-        assertEquals(0.29, BarStages.look(Stage.Processing, 0.6, 0.5, false).halfWidth, eps)
-        val end = BarStages.look(Stage.Processing, 1.2, 0.5, false)
-        assertEquals(0.08, end.halfWidth, eps)
-        assertEquals(BarStages.GATHER_END_STRENGTH, end.strength, eps)
-        assertEquals(1.0, end.heat, eps)
-        for (t in listOf(1.3, 5.0, 60.0)) assertEquals("no loop, no breathing at $t", end, BarStages.look(Stage.Processing, t, 0.9, false))
+        assertEquals(BarStages.WIDE_WIDTH, start.halfWidth, eps)
+        assertEquals(BarStages.PROCESSING_STRENGTH, start.strength, eps)
+        assertEquals(0.0, start.heat, eps)
+        for (t in listOf(0.02, 0.1, 0.6, 1.2, 5.0, 60.0)) {
+            assertEquals("no sliding or breathing at $t", start, BarStages.look(Stage.Processing, t, 0.9, false))
+            assertEquals("identical under reduced motion at $t", start, BarStages.look(Stage.Processing, t, 0.9, true))
+        }
     }
 
     @Test
-    fun anEndBeforeTheGatherFinishesFadesFromWhereItIs() {
+    fun fastDictationEndsAndFadesCleanlyAtFullWidth() {
         val m = BarStages.Machine()
-        m.press(0.0); m.release(1.0); m.dropped(1.6, 0.5, false) // half way: w = 0.29
+        m.press(0.0); m.release(1.0); m.dropped(1.02, 0.5, false)
         val s = m.current as Stage.Dropped
-        assertEquals(0.29, s.fromWidth, eps)
-        assertEquals(0.29, m.frame(1.6, 0.5, false)!!.halfWidth, eps)
-        assertNotNull(m.frame(1.79, 0.5, false))
-        assertNull(m.frame(1.81, 0.5, false)) // 1.8 - 1.6 is just under 0.2 in doubles
+        assertEquals(BarStages.WIDE_WIDTH, s.fromWidth, eps)
+        assertEquals(BarStages.PROCESSING_STRENGTH, s.fromStrength, eps)
+        assertEquals(BarStages.WIDE_WIDTH, m.frame(1.02, 0.5, false)!!.halfWidth, eps)
+        assertNotNull(m.frame(1.11, 0.5, false))
+        assertNull(m.frame(1.13, 0.5, false))
         assertTrue(m.isRest)
     }
 
     @Test
-    fun theEndFadesTheCoreWithNoPulse() {
+    fun theEndFadesWithNoPulseOrWidthChange() {
         val m = BarStages.Machine()
         m.press(0.0); m.release(1.0); m.dropped(3.0, 0.5, false)
         val first = m.frame(3.0, 0.5, false)!!
-        assertEquals(BarStages.TIGHT_WIDTH, first.halfWidth, eps)
-        assertEquals(BarStages.GATHER_END_STRENGTH, first.strength, eps)
-        for (t in listOf(3.05, 3.1, 3.19)) {
+        assertEquals(BarStages.WIDE_WIDTH, first.halfWidth, eps)
+        assertEquals(BarStages.PROCESSING_STRENGTH, first.strength, eps)
+        for (t in listOf(3.02, 3.05, 3.09)) {
             val f = m.frame(t, 0.5, false)!!
-            assertEquals("no colour change", first.heat, f.heat, 0.0)
+            assertEquals("no colour change", 0.0, f.heat, 0.0)
             assertTrue("never brighter", f.strength <= first.strength)
-            assertEquals("the core only fades, it does not open", BarStages.TIGHT_WIDTH, f.halfWidth, eps)
+            assertEquals("width stays full", BarStages.WIDE_WIDTH, f.halfWidth, eps)
         }
-        assertEquals(BarStages.GATHER_END_STRENGTH / 2,
+        assertEquals(BarStages.PROCESSING_STRENGTH * 0.25,
             BarStages.look(m.current!!, BarStages.DROP_SECONDS / 2, 0.5, false).strength, eps)
-        assertNull(m.frame(3.2, 0.5, false))
+        assertNull(m.frame(3.11, 0.5, false))
         assertTrue(m.isRest)
     }
 
@@ -91,23 +90,23 @@ class BarStagesTest {
         val m = BarStages.Machine()
         m.press(0.0); m.dropped(0.05, 0.3, false)
         assertTrue(m.current is Stage.Dropped)
-        assertNull(m.frame(0.30, 0.3, false))
+        assertNull(m.frame(0.16, 0.3, false))
     }
 
     @Test
-    fun reducedMotionKeepsTheWidthConstant() {
-        for (t in listOf(0.0, 0.3, 1.2, 4.0))
-            assertEquals(BarStages.REDUCED_WIDTH, BarStages.look(Stage.Processing, t, 0.5, true).halfWidth, eps)
-        val m = BarStages.Machine()
-        m.press(0.0); m.release(1.0); m.dropped(2.0, 0.5, true)
-        val s = m.current!!
-        for (t in listOf(0.0, 0.1, 0.19)) assertEquals(BarStages.REDUCED_WIDTH, BarStages.look(s, t, 0.5, true).halfWidth, eps)
-        assertTrue(BarStages.finished(s, 0.2))
-        assertFalse(BarStages.finished(s, 0.19))
-        // reduced motion's steady core needs no redraw once it is lit
-        val held = BarStages.Machine()
-        held.press(0.0); held.release(1.0)
-        assertFalse(held.moving(1.1, true))
+    fun widthNeverMovesUnderNormalOrReducedMotion() {
+        for (reduced in listOf(false, true)) {
+            for (t in listOf(0.0, 0.05, 0.3, 1.2, 4.0)) {
+                assertEquals(BarStages.WIDE_WIDTH, BarStages.look(Stage.Processing, t, 0.5, reduced).halfWidth, eps)
+                assertEquals(BarStages.WIDE_WIDTH, BarStages.look(Stage.Listening, t, 0.5, reduced).halfWidth, eps)
+            }
+            val m = BarStages.Machine()
+            m.press(0.0); m.release(1.0); m.dropped(2.0, 0.5, reduced)
+            val s = m.current!!
+            for (t in listOf(0.0, 0.05, 0.09)) assertEquals(BarStages.WIDE_WIDTH, BarStages.look(s, t, 0.5, reduced).halfWidth, eps)
+            assertTrue(BarStages.finished(s, BarStages.DROP_SECONDS))
+            assertFalse(BarStages.finished(s, BarStages.DROP_SECONDS - 0.01))
+        }
     }
 
     @Test
@@ -122,24 +121,25 @@ class BarStagesTest {
 
     /** TalkBar's WORKING entry for a bar created mid-dictation: press then release on a resting machine. */
     @Test
-    fun aBarCreatedWhileWritingStartsTheGatherNotTheRestingFluid() {
+    fun aBarCreatedWhileWritingStartsSteadyProcessingNotTheRestingFluid() {
         val m = BarStages.Machine()
         m.press(5.0); m.release(5.0)
         assertEquals(Stage.Processing, m.current)
         val f = m.frame(5.0, 0.5, false)!!
         assertEquals(BarStages.WIDE_WIDTH, f.halfWidth, eps)
-        assertEquals(BarStages.GATHER_START_STRENGTH, f.strength, eps)
+        assertEquals(BarStages.PROCESSING_STRENGTH, f.strength, eps)
     }
 
     @Test
-    fun holdingTheGatheredCoreNeedsNoRedraw() {
+    fun steadyProcessingNeedsNoRedraw() {
         val m = BarStages.Machine()
         assertFalse(m.moving(0.0, false))
         m.press(0.0)
-        assertTrue(m.moving(0.1, false))
+        assertTrue(m.moving(0.05, false))
         m.release(1.0)
-        assertTrue(m.moving(1.5, false))
-        assertFalse(m.moving(2.3, false))
+        assertFalse(m.moving(1.0, false))
+        assertFalse(m.moving(1.5, false))
+        assertFalse(m.moving(1.0, true))
     }
 
     @Test
@@ -154,10 +154,8 @@ class BarStagesTest {
     }
 
     @Test
-    fun theCentreColourIsTheEmberAtRestAndTheBrightCoreWhenGathered() {
-        val ember = BarStages.centre(BarStages.Look(0.5, 1.0, 0.0))
+    fun theCentreColourIsTheWarmEmber() {
+        val ember = BarStages.centre(BarStages.Look(BarStages.WIDE_WIDTH, 1.0, 0.0))
         assertEquals(listOf(107, 31, 9), ember.toList())
-        val core = BarStages.centre(BarStages.Look(0.08, 1.0, 1.0))
-        assertEquals(listOf(227, 101, 29), core.toList())
     }
 }

@@ -99,14 +99,14 @@ final class PillState: ObservableObject {
         beat = .ignite(at: now)
     }
 
-    /// Key up: the light gathers into a tight core while the text is made. Called again while already gathering
-    /// (a queued first pass) it keeps the gather where it is.
+    /// Key up: steady warm processing glow while the text is made. Called again while already processing
+    /// (a queued first pass) it keeps the beat as-is.
     func startProcessing(now: Date = Date()) {
         guard beat.stage != .rest else { return }
         beat = beat.processing(at: now)
     }
 
-    /// The dictation ended (text inserted, empty result, error, nowhere to paste): the core fades out, no pulse.
+    /// The dictation ended (text inserted, empty result, error, nowhere to paste): fades straight out, no pulse.
     func fadeOut(now: Date = Date()) {
         beat = beat.fadeOut(at: now, level: level, reduceMotion: reduceMotion)
     }
@@ -1052,18 +1052,18 @@ struct PillView: View {
     @State private var settledBeat: BarBeat?
 
     var body: some View {
-        // Idle, hidden, and the settled processing core pause the clock (0% idle CPU). While actively
-        // animating (ignite, listening, gather, fade-out) use native display refresh so 30–160 ms
-        // completions render smoothly instead of dropping to 1–4 frames at 30 Hz.
+        // Idle, hidden, and steady processing pause the clock (0% CPU). While actively animating
+        // (ignite, listening, fade-out) use native display refresh so fast 15-30 ms dictations render cleanly.
         let drawn = state.drawnBeat
-        let heldCore = state.mode == .working && !state.meetingRecording && settledBeat == drawn
+        let settled = drawn.settleSeconds(reduceMotion: state.reduceMotion) == 0 || settledBeat == drawn
+        let heldProcessing = state.mode == .working && !state.meetingRecording && settled
         return TimelineView(
             .animation(
                 minimumInterval: nil,
-                paused: ((state.mode == .idle || state.mode == .hidden) && !state.meetingRecording) || heldCore)
+                paused: ((state.mode == .idle || state.mode == .hidden) && !state.meetingRecording) || heldProcessing)
         ) { context in
-            // a stopped clock hands over a stale date; a held stage is at its end, so ask the time
-            let date = fixedTime ?? (heldCore ? Date() : context.date)
+            // a stopped clock hands over a stale date; a steady stage is at its end, so ask the time
+            let date = fixedTime ?? (heldProcessing ? Date() : context.date)
             let energy = visualEnergy(at: date)
             let size = shellSize(energy: energy)
             Capsule(style: .continuous)
@@ -1174,7 +1174,7 @@ struct PillView: View {
         case .listening:
             return min(1, max(0.08, state.level))
         case .working:
-            // the capsule's size and glow hold at the middle of the old breath; the light does the gathering
+            // steady warm capsule while waiting for text
             return 0.27
         }
     }
