@@ -3,6 +3,8 @@
 // env: PA_DIR (where pa.metal is; default the binary's directory)
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#define ACCELERATE_NEW_LAPACK
+#include <Accelerate/Accelerate.h>
 
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -205,6 +207,231 @@ static bool load_safetensors(const char * path, id<MTLDevice> dev, __strong id<M
     munmap((void *) map, fsize);
     return true;
 }
+
+// Span rescoring (serve request 0xFFFFFFFE): the TDT transducer forward log-probability of a token sequence over a
+// frame span of the last window's joint encoder projection E [Tv][640], from the exact predictor state the greedy
+// decode had entering the span (the 2-layer LSTM run from its zero-input first step through the prefix tokens).
+// CPU float32 with the decoder weights as pa.metal's tdt_l0 / tdt_l1 / tdt_pred / tdt_joint read them (DEC_BF16 0:
+// layer 0's input projection bf16r(b0 + Wx0 embed[t]), as its xtab, everything else float32), widened from the fp16
+// weight buffer once on first use. The LSTM state depends on tokens only, so the states along the longest prefix seen
+// are cached across jobs and windows (the jobs of one window, prefixes of the same token list, cost one LSTM step per
+// token in total), and every job's sequences step in lockstep: one matrix product per layer per position for all.
+struct Rescorer {
+    static constexpr uint32_t HD = 640, G4 = 4 * 640, NOUT = 1030, NTOK = 1025, BLANK = 1024, SD = 4 * 640;  // SD: h0 c0 h1 c1
+    bool ready = false;
+    const _Float16 * emb = nullptr;
+    std::vector<float> wx0, wh0, b0, wx1, wh1, b1, pw, pb, jw, jb;
+    std::vector<float> xtab;      // [1024][G4] bf16r(b0 + Wx0 embed[t]), filled per token on first use
+    std::vector<uint8_t> xhave;
+    uint32_t n_steps = 0;         // PA_VERBOSE profile: LSTM positions, their ms, joint + DP ms
+    double t_steps = 0, t_joint = 0;
+    std::vector<uint32_t> ctoks;  // the cached path: state 0 after the first (no token) step, state i + 1 after ctoks[i]
+    std::vector<float> cst;
+
+    static float bf16r(float x) {
+        uint32_t u;
+        memcpy(&u, &x, 4);
+        u = (u + 0x7FFFu + ((u >> 16) & 1u)) & 0xFFFF0000u;
+        memcpy(&x, &u, 4);
+        return x;
+    }
+    static float sigm(float x) { return 1.f / (1.f + expf(-x)); }
+    static float tanh_c(float x) { return tanhf(std::min(10.f, std::max(-10.f, x))); }
+    static std::vector<float> widen(const _Float16 * w, size_t n) {
+        std::vector<float> v(n);
+        for (size_t i = 0; i < n; ++i) v[i] = (float) w[i];
+        return v;
+    }
+    template <class F> void init(const _Float16 * w, F off) {
+        if (ready) return;
+        const std::string dp = "decoder.prediction.dec_rnn.lstm.";
+        emb = w + off("decoder.prediction.embed.weight");
+        wx0 = widen(w + off(dp + "0.Wx"), (size_t) G4 * HD); wh0 = widen(w + off(dp + "0.Wh"), (size_t) G4 * HD);
+        b0 = widen(w + off(dp + "0.bias"), G4);
+        wx1 = widen(w + off(dp + "1.Wx"), (size_t) G4 * HD); wh1 = widen(w + off(dp + "1.Wh"), (size_t) G4 * HD);
+        b1 = widen(w + off(dp + "1.bias"), G4);
+        pw = widen(w + off("joint.pred.weight"), (size_t) HD * HD); pb = widen(w + off("joint.pred.bias"), HD);
+        jw = widen(w + off("joint.joint_net.2.weight"), (size_t) NOUT * HD); jb = widen(w + off("joint.joint_net.2.bias"), NOUT);
+        xtab.assign((size_t) BLANK * G4, 0.f);
+        xhave.assign(BLANK, 0);
+        ready = true;
+    }
+    const float * xrow(uint32_t tok) {
+        float * r = xtab.data() + (size_t) tok * G4;
+        if (!xhave[tok]) {
+            float x[HD];
+            for (uint32_t k = 0; k < HD; ++k) x[k] = (float) emb[(size_t) tok * HD + k];
+            cblas_sgemv(CblasRowMajor, CblasNoTrans, G4, HD, 1.f, wx0.data(), HD, x, 1, 0.f, r, 1);
+            for (uint32_t i = 0; i < G4; ++i) r[i] = bf16r(r[i] + b0[i]);
+            xhave[tok] = 1;
+        }
+        return r;
+    }
+    // Y [n][rows] (stride ldy) = X [n][cols] (stride ldx) W^T + beta Y, W [rows][cols]: n matrix-vector products for
+    // small n (measured on an M4: sgemm costs a flat ~0.1 ms for 2-8 rows of a 2560 x 640 product, sgemv 0.01 ms each)
+    static void mm(uint32_t n, const float * X, uint32_t ldx, const float * W, uint32_t rows, uint32_t cols, float * Y, uint32_t ldy, float beta) {
+        if (n > 8) {
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n, rows, cols, 1.f, X, ldx, W, cols, beta, Y, ldy);
+            return;
+        }
+        for (uint32_t i = 0; i < n; ++i)
+            cblas_sgemv(CblasRowMajor, CblasNoTrans, rows, cols, 1.f, W, cols, X + (size_t) i * ldx, 1, beta, Y + (size_t) i * ldy, 1);
+    }
+    static void cell(const float * gate, float * c, float * h, bool first) {  // gate rows [i | f | g | o]
+        for (uint32_t u = 0; u < HD; ++u) {
+            const float i = sigm(gate[u]), f = sigm(gate[HD + u]), g = tanh_c(gate[2 * HD + u]), o = sigm(gate[3 * HD + u]);
+            const float cn = first ? i * g : f * c[u] + i * g;
+            c[u] = cn;
+            h[u] = o * tanh_c(cn);
+        }
+    }
+    // the first prediction-net run (no token: zero input and state) -> o
+    void first_step(float * o) {
+        std::vector<float> gate(G4);
+        std::fill(o, o + SD, 0.f);
+        for (uint32_t r = 0; r < G4; ++r) gate[r] = b0[r];  // sx + b + sh with x = h = 0
+        cell(gate.data(), o + HD, o, true);
+        cblas_sgemv(CblasRowMajor, CblasNoTrans, G4, HD, 1.f, wx1.data(), HD, o, 1, 0.f, gate.data(), 1);
+        for (uint32_t r = 0; r < G4; ++r) gate[r] += b1[r];
+        cell(gate.data(), o + 3 * HD, o + 2 * HD, true);
+    }
+    // n prediction-net runs side by side: states S [n][SD] (h0 c0 h1 c1) on tokens tok -> O [n][SD]
+    void step_batch(uint32_t n, const float * S, const uint32_t * tok, float * O) {
+        const double t0 = now();
+        std::vector<float> gate((size_t) n * G4);
+        for (uint32_t i = 0; i < n; ++i) memcpy(gate.data() + (size_t) i * G4, xrow(tok[i]), G4 * 4);
+        // layer 0: bf16r(b0 + Wx0 x) + Wh0 h0
+        mm(n, S, SD, wh0.data(), G4, HD, gate.data(), G4, 1.f);
+        for (uint32_t i = 0; i < n; ++i) {
+            float * o = O + (size_t) i * SD;
+            memcpy(o + HD, S + (size_t) i * SD + HD, HD * 4);
+            cell(gate.data() + (size_t) i * G4, o + HD, o, false);
+        }
+        // layer 1: Wx1 h0' + b1 + Wh1 h1
+        mm(n, O, SD, wx1.data(), G4, HD, gate.data(), G4, 0.f);
+        mm(n, S + 2 * HD, SD, wh1.data(), G4, HD, gate.data(), G4, 1.f);
+        for (uint32_t i = 0; i < n; ++i) {
+            float * o = O + (size_t) i * SD, * g = gate.data() + (size_t) i * G4;
+            for (uint32_t r = 0; r < G4; ++r) g[r] += b1[r];
+            memcpy(o + 3 * HD, S + (size_t) i * SD + 3 * HD, HD * 4);
+            cell(g, o + 3 * HD, o + 2 * HD, false);
+        }
+        ++n_steps;
+        t_steps += now() - t0;
+    }
+    // g = pred(h1) + b for n states [n][SD] -> G [n][HD]
+    void pred_batch(uint32_t n, const float * S, float * G) {
+        mm(n, S + 2 * HD, SD, pw.data(), HD, HD, G, HD, 0.f);
+        for (uint32_t i = 0; i < n; ++i)
+            for (uint32_t k = 0; k < HD; ++k) G[(size_t) i * HD + k] += pb[k];
+    }
+    // the state entering a span after `prefix` (copied to out); extends the cached path from the common prefix and
+    // keeps it whole when the prefix lies along it
+    void prefix_state(const uint32_t * prefix, uint32_t n, float * out) {
+        if (cst.empty()) {
+            cst.assign(SD, 0.f);
+            first_step(cst.data());
+            ctoks.clear();
+        }
+        size_t common = 0;
+        while (common < n && common < ctoks.size() && ctoks[common] == prefix[common]) ++common;
+        if (common < n) {
+            ctoks.resize(common);
+            cst.resize((common + 1) * SD);
+            for (size_t i = common; i < n; ++i) {
+                cst.resize((i + 2) * SD);
+                step_batch(1, cst.data() + i * SD, prefix + i, cst.data() + (i + 1) * SD);
+                ctoks.push_back(prefix[i]);
+            }
+        }
+        memcpy(out, cst.data() + (size_t) n * SD, SD * 4);
+    }
+    static float lae(float a, float b) {
+        if (a == -INFINITY) return b;
+        if (b == -INFINITY) return a;
+        const float m = std::max(a, b);
+        return m + log1pf(expf(-fabsf(a - b)));
+    }
+    struct Seq { const float * E; uint32_t F; const float * s0; const uint32_t * tok; uint32_t U; float score; };
+    // every sequence's log P(tok | E[0 .. F)) from its state s0
+    void score_all(std::vector<Seq> & q) {
+        const uint32_t m = (uint32_t) q.size();
+        uint32_t maxU = 0;
+        std::vector<size_t> goff(m);  // each sequence's pred rows g[0 .. U] in G
+        size_t rows = 0;
+        for (uint32_t i = 0; i < m; ++i) { goff[i] = rows; rows += q[i].U + 1; maxU = std::max(maxU, q[i].U); }
+        std::vector<float> G(rows * HD), S((size_t) m * SD), A((size_t) m * SD), B((size_t) m * SD), P((size_t) m * HD);
+        std::vector<uint32_t> act, tk;
+        for (uint32_t i = 0; i < m; ++i) memcpy(S.data() + (size_t) i * SD, q[i].s0, SD * 4);
+        pred_batch(m, S.data(), P.data());
+        for (uint32_t i = 0; i < m; ++i) memcpy(G.data() + goff[i] * HD, P.data() + (size_t) i * HD, HD * 4);
+        for (uint32_t u = 0; u < maxU; ++u) {  // position u: every sequence still that long steps on its token u
+            act.clear(); tk.clear();
+            for (uint32_t i = 0; i < m; ++i)
+                if (q[i].U > u) { memcpy(A.data() + act.size() * SD, S.data() + (size_t) i * SD, SD * 4); act.push_back(i); tk.push_back(q[i].tok[u]); }
+            const uint32_t n = (uint32_t) act.size();
+            step_batch(n, A.data(), tk.data(), B.data());
+            pred_batch(n, B.data(), P.data());
+            for (uint32_t j = 0; j < n; ++j) {
+                memcpy(S.data() + (size_t) act[j] * SD, B.data() + (size_t) j * SD, SD * 4);
+                memcpy(G.data() + (goff[act[j]] + u + 1) * HD, P.data() + (size_t) j * HD, HD * 4);
+            }
+        }
+        const double tj = now();
+        for (uint32_t i = 0; i < m; ++i) q[i].score = forward(q[i].E, q[i].F, G.data() + goff[i] * HD, q[i].tok, q[i].U);
+        t_joint += now() - tj;
+    }
+    // the TDT forward over (t, u) given pred rows G [U + 1][HD]: blank advances max(d, 1) frames, a token d frames
+    float forward(const float * E, uint32_t F, const float * G, const uint32_t * seq, uint32_t U) const {
+        const uint32_t NU = U + 1, R = F * NU;
+        std::vector<float> Z((size_t) R * HD), L((size_t) R * NOUT);
+        for (uint32_t t = 0; t < F; ++t)
+            for (uint32_t u = 0; u < NU; ++u) {
+                float * z = Z.data() + ((size_t) t * NU + u) * HD;
+                const float * e = E + (size_t) t * HD, * g = G + (size_t) u * HD;
+                for (uint32_t k = 0; k < HD; ++k) z[k] = std::max(e[k] + g[k], 0.f);
+            }
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, R, NOUT, HD, 1.f, Z.data(), HD, jw.data(), HD, 0.f, L.data(), NOUT);
+        for (uint32_t r = 0; r < R; ++r) {  // log-softmax: tokens + blank [0, 1025), durations [1025, 1030)
+            float * l = L.data() + (size_t) r * NOUT;
+            float m = -INFINITY, dm = -INFINITY;
+            for (uint32_t k = 0; k < NOUT; ++k) {
+                l[k] += jb[k];
+                if (k < NTOK) m = std::max(m, l[k]);
+                else dm = std::max(dm, l[k]);
+            }
+            double z = 0, dz = 0;
+            for (uint32_t k = 0; k < NTOK; ++k) z += exp((double) (l[k] - m));
+            for (uint32_t k = NTOK; k < NOUT; ++k) dz += exp((double) (l[k] - dm));
+            const float lz = m + (float) log(z), ldz = dm + (float) log(dz);
+            for (uint32_t k = 0; k < NTOK; ++k) l[k] -= lz;
+            for (uint32_t k = NTOK; k < NOUT; ++k) l[k] -= ldz;
+        }
+        std::vector<float> al((size_t) R, -INFINITY);
+        al[0] = 0.f;
+        float fin = -INFINITY;
+        for (uint32_t t = 0; t < F; ++t)
+            for (uint32_t u = 0; u < NU; ++u) {  // u ascending: a 0-duration token lands on (t, u + 1), visited next
+                const float a = al[(size_t) t * NU + u];
+                if (a == -INFINITY) continue;
+                const float * l = L.data() + ((size_t) t * NU + u) * NOUT;
+                for (uint32_t d = 0; d < 5; ++d) {
+                    const float ld = l[NTOK + d];
+                    const uint32_t tb = t + std::max(d, 1u);
+                    const float wb = a + l[BLANK] + ld;
+                    if (tb >= F) { if (u == U) fin = lae(fin, wb); }
+                    else al[(size_t) tb * NU + u] = lae(al[(size_t) tb * NU + u], wb);
+                    if (u < U) {
+                        const uint32_t te = t + d;
+                        const float we = a + l[seq[u]] + ld;
+                        if (te >= F) { if (u + 1 == U) fin = lae(fin, we); }
+                        else al[(size_t) te * NU + u + 1] = lae(al[(size_t) te * NU + u + 1], we);
+                    }
+                }
+            }
+        return fin;
+    }
+};
 
 // `pa busy [TGS [SECS]]`: a GPU load in its own process for the sidecar's startup self-test, standing in for the
 // refiner's persistent kernel (its threadgroups spin on the GPU during a dictation): TGS (16, pe's grid on a base
@@ -856,9 +1083,70 @@ int main(int argc, char ** argv) {
             // instead of mel frames: the log-mel then runs on the GPU in the same command buffer
             // n = ~0: a dictionary for the windows after it: uint32 words m, m x uint32 (a flat trie as PA_TRIE's; m = 0:
             // boosting off) -> uint32 0 (in use), 1 (over capacity) or 2 (sizes do not add up); on 1 or 2 the old one stays
+            // n = 0xFFFFFFFE: rescore spans of the last decoded window (Rescorer above): uint32 jobs, per job uint32
+            // f_start, f_end, n_prefix, prefix tokens, n_heard, heard tokens, n_cand, candidate tokens -> per job float32
+            // log P(heard), log P(cand) (-inf for an invalid job, a job past the 64th, or no decoded window)
+            Rescorer rs;
+            uint32_t eTv = 0;  // encoder frames of the last window decoded (its E at A + aE); 0: none
             for (;;) {
                 uint32_t n = 0;
                 if (fread(&n, 4, 1, stdin) != 1 || n == 0) break;
+                if (n == 0xFFFFFFFEu) {
+                    const double tr = now();
+                    uint32_t nj = 0;
+                    if (fread(&nj, 4, 1, stdin) != 1 || nj > 4096) break;
+                    std::vector<float> res(2 * (size_t) nj, -INFINITY);
+                    bool io = true;
+                    auto rd_seq = [&](std::vector<uint32_t> & v) {
+                        uint32_t m = 0;
+                        if (fread(&m, 4, 1, stdin) != 1 || m > 65536) return false;
+                        v.resize(m);
+                        return !m || fread(v.data(), 4, m, stdin) == m;
+                    };
+                    std::vector<std::vector<uint32_t>> seqs;  // heard, cand per valid job
+                    std::vector<std::pair<uint32_t, uint32_t>> span;
+                    std::vector<std::vector<float>> s0s;
+                    std::vector<uint32_t> jidx;
+                    for (uint32_t j = 0; j < nj && io; ++j) {
+                        uint32_t fr[2];
+                        std::vector<uint32_t> pre, heard, cand;
+                        io = fread(fr, 4, 2, stdin) == 2 && rd_seq(pre) && rd_seq(heard) && rd_seq(cand);
+                        if (!io) break;
+                        bool ok = j < 64 && eTv > 0 && fr[0] < fr[1] && fr[1] <= eTv && fr[1] - fr[0] <= 256 && heard.size() <= 64 &&
+                                  cand.size() <= 64 && pre.size() <= 8192;
+                        for (const auto * v : { &pre, &heard, &cand })
+                            for (uint32_t t : *v) ok = ok && t < Rescorer::BLANK;
+                        if (!ok) continue;
+                        rs.init((const _Float16 *) wptr, W);
+                        s0s.emplace_back(Rescorer::SD);
+                        rs.prefix_state(pre.data(), (uint32_t) pre.size(), s0s.back().data());
+                        seqs.push_back(std::move(heard));
+                        seqs.push_back(std::move(cand));
+                        span.emplace_back(fr[0], fr[1]);
+                        jidx.push_back(j);
+                    }
+                    if (!io) break;
+                    std::vector<Rescorer::Seq> q;
+                    for (size_t k = 0; k < jidx.size(); ++k)
+                        for (int h = 0; h < 2; ++h) {
+                            const auto & v = seqs[2 * k + h];
+                            q.push_back({ A + aE + (size_t) span[k].first * HDd, span[k].second - span[k].first, s0s[k].data(), v.data(),
+                                          (uint32_t) v.size(), -INFINITY });
+                        }
+                    if (!q.empty()) rs.score_all(q);
+                    for (size_t k = 0; k < jidx.size(); ++k) {
+                        res[2 * jidx[k]] = q[2 * k].score;
+                        res[2 * jidx[k] + 1] = q[2 * k + 1].score;
+                    }
+                    if (getenv("PA_VERBOSE"))
+                        fprintf(stderr, "pa serve: rescored %u spans in %.2f ms (%u LSTM steps %.2f ms, joint + DP %.2f ms)\n", nj,
+                                (now() - tr) * 1e3, rs.n_steps, rs.t_steps * 1e3, rs.t_joint * 1e3);
+                    rs.n_steps = 0;
+                    rs.t_steps = rs.t_joint = 0;
+                    fwrite(res.data(), 4, res.size(), stdout);
+                    fflush(stdout);
+                    continue;
+                }
                 if (n == ~0u) {
                     uint32_t m = 0;
                     if (fread(&m, 4, 1, stdin) != 1) break;
@@ -884,6 +1172,7 @@ int main(int argc, char ** argv) {
                 double g1 = 0, g2 = 0, wall = 0, cpu = 0;
                 uint32_t cnt = ~0u;
                 if (ok && set_window(frames) && run_pass(g1, g2, wall, cpu)) cnt = std::min(U[aOut], maxout);
+                eTv = cnt != ~0u ? Tv : 0;
                 if (getenv("PA_VERBOSE")) fprintf(stderr, "pa serve: T %u, decode %u of %d slots in %d chunks, %.3f ms\n", Tv, CT->slots, last_slots, last_chunks, g2);
                 fwrite(&cnt, 4, 1, stdout);
                 if (cnt != ~0u) fwrite(U + aOut + 1, 4, (size_t) 4 * cnt, stdout);

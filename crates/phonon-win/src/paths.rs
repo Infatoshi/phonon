@@ -1,15 +1,28 @@
 //! Where Phonon keeps runtimes, weights, recordings, and logs.
 //!
 //! Everything lives under one directory so a user can delete it and start over.
-//! `PHONON_WIN_HOME` overrides it; continuous integration uses that to put the
-//! cache on the runner's fast disk.
+//! `PHONON_DATA_DIR` (set and not blank) overrides it, the same variable the Mac
+//! app and `phonon-core` honour for an isolated profile, tests and demos. Then
+//! `PHONON_WIN_HOME`; continuous integration uses that to put the cache on the
+//! runner's fast disk.
 //! Linux defaults to `$XDG_DATA_HOME/phonon` or `~/.local/share/phonon`.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// The Phonon data root.
 pub fn data_root() -> PathBuf {
-    if let Some(explicit) = std::env::var_os("PHONON_WIN_HOME") {
+    resolve_root(
+        std::env::var_os("PHONON_DATA_DIR"),
+        std::env::var_os("PHONON_WIN_HOME"),
+    )
+}
+
+/// `data_root` from the two overrides, without reading the environment.
+fn resolve_root(data_dir: Option<OsString>, win_home: Option<OsString>) -> PathBuf {
+    let data_dir =
+        data_dir.filter(|dir| !dir.is_empty() && dir.to_str().is_none_or(|s| !s.trim().is_empty()));
+    if let Some(explicit) = data_dir.or(win_home) {
         return absolute_root(PathBuf::from(explicit));
     }
     default_root()
@@ -64,9 +77,36 @@ pub fn recordings() -> PathBuf {
     data_root().join(RECORDINGS)
 }
 
+// `win` is compiled only for Windows, but the hook watchdog's decisions are plain
+// arithmetic: run their tests on the Mac and Linux too. On Windows they run as
+// `win::watchdog::tests`.
+#[cfg(all(test, not(windows)))]
+#[path = "win/watchdog.rs"]
+mod hook_watchdog;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phonon_data_dir_wins_when_set() {
+        let some = |s: &str| Some(OsString::from(s));
+        assert_eq!(
+            resolve_root(some("/tmp/phonon-data"), some("/tmp/phonon-win-home")),
+            PathBuf::from("/tmp/phonon-data")
+        );
+        // Empty or blank means unset: the next override, then the default.
+        assert_eq!(
+            resolve_root(some(""), some("/tmp/phonon-win-home")),
+            PathBuf::from("/tmp/phonon-win-home")
+        );
+        assert_eq!(
+            resolve_root(some("  "), some("/tmp/phonon-win-home")),
+            PathBuf::from("/tmp/phonon-win-home")
+        );
+        assert_eq!(resolve_root(some(""), None), default_root());
+        assert_eq!(resolve_root(None, None), default_root());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

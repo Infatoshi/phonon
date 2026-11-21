@@ -3,13 +3,17 @@
 //! Protocol (stdin/stdout, one JSON object per line):
 //!   {"cmd":"status"}
 //!   {"cmd":"transcribe","path":"/tmp/x.wav","id":"..."}
-//!   {"cmd":"polish","text":"...","id":"...","context":"<ocr>","app":{"bundle_id":"...","name":"...","url_host":"..."},"textbox":{...}}
+//!   {"cmd":"polish","text":"...","id":"...","context":"<ocr>","app":{"bundle_id":"...","name":"...","url_host":"..."},"textbox":{...},"screen_terms":["..."]}
 //!   {"cmd":"prewarm"}  — dictation started; no event in reply
 //!   {"cmd":"stream_start","id":"...","app":{...}} / {"cmd":"stream_chunk","id":"...","pcm16":"<base64>"} /
 //!   {"cmd":"stream_stop","id":"..."}  — live audio; with streaming refine a segment stream
 //!   {"cmd":"stream_finish","id":"..."}  — key up of a segment stream with all its audio sent:
 //!   the release transcription starts now; the `transcribe` that follows releases the result
-//!   {"cmd":"screen_context","id":"...","text":"..."}  — screen text for the open stream
+//!   {"cmd":"screen_context","id":"...","text":"...","screen_terms":["..."]}  — screen text for
+//!   the open stream; `screen_terms` (optional) are merged into the dictation's screen terms
+//!   {"cmd":"screen_terms","terms":["..."]}  — unfamiliar terms read off the screen at key down
+//!   for this dictation: favored by the ASR and listed in the refiner's envelope until the
+//!   dictation's polish or `dictation_end`; an empty list clears them
 //!   {"cmd":"stream_app","id":"...","app":{...}}  — the open stream's target app, once resolved
 //!   {"cmd":"reload_dictionary"}
 //!   {"cmd":"byok","base_url":"https://…/v1","model":"…","api_key":"…","timeout_ms":6000}
@@ -155,6 +159,11 @@ pub struct Engine {
     /// Screen text captured at key down for the open stream, so background commits are built
     /// from the same dictionary envelope as the final polish.
     stream_screen_text: Option<(String, String)>,
+    /// Unfamiliar terms read off the screen for the dictation under way (`screen_terms`),
+    /// normalized and capped at `data::MAX_SCREEN_TERMS`. Sent to the ASR as they change and
+    /// cleared (there too) when the dictation's polish goes out or it ends without one, so
+    /// they never reach the next dictation or a meeting span.
+    active_screen_terms: Vec<String>,
     /// Segment streams the bar finished at key up (`stream_finish`) before its `transcribe`
     /// with the WAV: the release ASR runs while the WAV is written, and the result goes out
     /// once the WAV's speech gate has spoken.
@@ -322,7 +331,9 @@ impl Engine {
         );
         let mut asr = AsrSidecar::spawn_with(root, stream_refine)?;
         let dictionary = data::DictionaryFile::load()?;
-        if let Err(error) = asr.set_terms(&dictionary.asr_terms()) {
+        if let Err(error) =
+            asr.set_term_entries(&dictionary.asr_terms(), &dictionary.asr_term_entries())
+        {
             eprintln!("phonon engine: ASR dictionary terms not sent: {error:#}");
         }
         let mut polish_config = data::polish_config()?;
@@ -355,6 +366,7 @@ impl Engine {
             stream_refine,
             segment_streams: HashMap::new(),
             stream_screen_text: None,
+            active_screen_terms: Vec::new(),
             finishing: HashMap::new(),
             stream_envelope: None,
             stream_category: None,
@@ -879,6 +891,8 @@ impl Engine {
         let Some(request) = self.meeting_spans.next(idle) else {
             return Vec::new();
         };
+        // a dictation's screen terms must never bias a meeting
+        self.clear_screen_terms();
         match self.asr.transcribe_span(
             &request.id,
             &request.chunks,
@@ -1119,9 +1133,11 @@ impl Engine {
         {
             return None; // a round that heard nothing new: the sidecar has this one already
         }
-        let input = self
-            .dictionary
-            .prepare_polish_input_with_context(&text, &screen);
+        let input = self.dictionary.prepare_polish_input_with_screen_terms(
+            &text,
+            &screen,
+            &self.active_screen_terms,
+        );
         let live = id.filter(|id| self.live_text_stream.as_deref() == Some(*id));
         let context = app_context::with_screen_text(
             app_context::with_writing_mode(
@@ -1142,7 +1158,10 @@ impl Engine {
 
     /// A reloaded dictionary; envelopes built from the old one are dropped.
     pub fn set_dictionary(&mut self, dictionary: data::DictionaryFile) {
-        if let Err(error) = self.asr.set_terms(&dictionary.asr_terms()) {
+        if let Err(error) = self
+            .asr
+            .set_term_entries(&dictionary.asr_terms(), &dictionary.asr_term_entries())
+        {
             eprintln!("phonon engine: ASR dictionary terms not sent: {error:#}");
         }
         self.dictionary = dictionary;
@@ -1158,9 +1177,60 @@ impl Engine {
             {
                 input.clone()
             }
-            _ => self
-                .dictionary
-                .prepare_polish_input_with_context(text, screen_text),
+            _ => self.dictionary.prepare_polish_input_with_screen_terms(
+                text,
+                screen_text,
+                &self.active_screen_terms,
+            ),
+        }
+    }
+
+    /// `{"cmd":"screen_terms"}`: replace the dictation's screen terms (an empty list clears
+    /// them) and hand them to the ASR at once, so the release decode already favors them.
+    pub fn set_screen_terms(&mut self, terms: &[String]) {
+        let terms = data::normalize_screen_terms(terms);
+        self.replace_screen_terms(terms, true);
+    }
+
+    /// Add `terms` to the dictation's screen terms (`screen_terms` on `screen_context` or
+    /// `polish`); `to_asr` sends the merged list to the ASR too.
+    pub fn add_screen_terms(&mut self, terms: &[String], to_asr: bool) {
+        if terms.is_empty() {
+            return;
+        }
+        let merged = data::normalize_screen_terms(
+            &self
+                .active_screen_terms
+                .iter()
+                .chain(terms)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        self.replace_screen_terms(merged, to_asr);
+    }
+
+    /// The dictation is over (its polish went out, or it ended without one): its screen
+    /// terms go, in the ASR too. Nothing is sent when there were none.
+    pub fn clear_screen_terms(&mut self) {
+        if !self.active_screen_terms.is_empty() {
+            self.replace_screen_terms(Vec::new(), true);
+        }
+    }
+
+    pub fn active_screen_terms(&self) -> &[String] {
+        &self.active_screen_terms
+    }
+
+    fn replace_screen_terms(&mut self, terms: Vec<String>, to_asr: bool) {
+        if terms != self.active_screen_terms {
+            // envelopes built with the old terms no longer match
+            self.stream_envelope = None;
+        }
+        self.active_screen_terms = terms;
+        if to_asr {
+            if let Err(error) = self.asr.set_screen_terms(&self.active_screen_terms) {
+                eprintln!("phonon engine: ASR screen terms not sent: {error:#}");
+            }
         }
     }
 
@@ -1233,7 +1303,14 @@ impl Engine {
         self.polish_requests.push(PolishRequest {
             id: id.map(str::to_string),
             source_text: text.to_string(),
-            screen_context_terms: self.dictionary.screen_confirmed_terms(text, screen_text),
+            screen_context_terms: data::normalize_screen_terms(
+                &self
+                    .dictionary
+                    .screen_confirmed_terms(text, screen_text)
+                    .into_iter()
+                    .chain(self.active_screen_terms.iter().cloned())
+                    .collect::<Vec<_>>(),
+            ),
             app,
             style,
             textbox,
@@ -1299,6 +1376,7 @@ impl Engine {
     /// that `prewarm` / `stream_start` took; nothing reaches the sidecars.
     pub fn dictation_end(&mut self) {
         self.dictation.key_up(Instant::now());
+        self.clear_screen_terms();
     }
 
     pub fn prewarm_polish(&mut self) -> Result<()> {
@@ -1699,12 +1777,17 @@ pub fn run_engine_serve() -> Result<()> {
                         let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
                         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
                         eng.stream_screen_context(id, text);
+                        eng.add_screen_terms(&screen_terms_field(&v, "screen_terms"), true);
                     }
+                    "screen_terms" => eng.set_screen_terms(&screen_terms_field(&v, "terms")),
                     "polish" => {
                         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
                         let context = v.get("context").and_then(|x| x.as_str()).unwrap_or("");
                         let id = v.get("id").and_then(|x| x.as_str());
-                        if let Err(e) = eng.polish_request(
+                        // the polish is the dictation's last step: its screen terms apply to it
+                        // and then go, so they never reach the next dictation
+                        eng.add_screen_terms(&screen_terms_field(&v, "screen_terms"), false);
+                        let outcome = eng.polish_request(
                             text,
                             context,
                             id,
@@ -1713,7 +1796,9 @@ pub fn run_engine_serve() -> Result<()> {
                             v.get("local_history")
                                 .and_then(|x| x.as_bool())
                                 .unwrap_or(false),
-                        ) {
+                        );
+                        eng.clear_screen_terms();
+                        if let Err(e) = outcome {
                             emit(&json!({"type":"error","id":id,"msg":format!("{e:#}")}));
                         }
                     }
@@ -1799,6 +1884,19 @@ pub fn run_engine_serve() -> Result<()> {
 }
 
 const STDIN_CLOSED: &str = "\u{0}stdin closed";
+
+/// A command's string array `field` (`screen_terms`), non-strings skipped; empty if absent.
+fn screen_terms_field(v: &serde_json::Value, field: &str) -> Vec<String> {
+    v.get(field)
+        .and_then(|x| x.as_array())
+        .map(|terms| {
+            terms
+                .iter()
+                .filter_map(|term| term.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 fn emit(v: &serde_json::Value) {
     // Not println!: that panics when the bar has already gone (a quit closes our stdout).
@@ -1915,6 +2013,17 @@ mod tests {
     };
     use super::{draft_json, draft_source, finish_correction, stream_commit_json, EngineEvent};
     use crate::app_context::AppCategory;
+
+    #[test]
+    fn screen_terms_are_read_from_commands_leniently() {
+        let v = serde_json::json!({"cmd":"screen_terms","terms":["cuBLAS", 3, "H100"]});
+        assert_eq!(
+            super::screen_terms_field(&v, "terms"),
+            vec!["cuBLAS", "H100"]
+        );
+        let polish = serde_json::json!({"cmd":"polish","text":"x"});
+        assert!(super::screen_terms_field(&polish, "screen_terms").is_empty());
+    }
     use crate::data::{DictionaryEntry, DictionaryFile};
     use serde_json::json;
     use std::collections::HashMap;

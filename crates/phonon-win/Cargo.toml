@@ -89,6 +89,8 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Registry",
+    # GetTickCount, the clock of LASTINPUTINFO, for the keyboard hook's watchdog (win/hook.rs)
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
     "Win32_UI_Input_KeyboardAndMouse",

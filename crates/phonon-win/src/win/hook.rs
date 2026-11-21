@@ -15,22 +15,40 @@
 //! have no Right Control: when the hook sees the Copilot key (it sends F23) and the
 //! user never chose a key, Phonon moves to Right Alt (or Ctrl+Space where Right Alt
 //! is AltGr) and says so.
+//!
+//! Windows drops a low-level hook without a word (a missed timeout, another app's
+//! hook installed in front, a session switch), so the hook is kept alive: it is
+//! re-installed whenever another app comes to the foreground and again 1.5 s
+//! later, and a 1 s watchdog (`watchdog_tick`) re-installs it when the session
+//! sees input the hook never did, and finishes a hold whose key-up was lost.
+//! The decisions live in `watchdog.rs`, tested on every platform.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{bail, Result};
 use phonon_hotkey::{Action, HoldKeyTapLatch};
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::SystemInformation::GetTickCount;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetKeyboardLayout, VkKeyScanExW, VK_CONTROL,
+    GetAsyncKeyState, GetKeyboardLayout, GetLastInputInfo, SendInput, VkKeyScanExW, INPUT,
+    INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, LASTINPUTINFO, VK_CONTROL,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, GetWindowThreadProcessId, SetWindowsHookExW,
-    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, WH_KEYBOARD_LL, WM_KEYDOWN,
-    WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, GetForegroundWindow, GetWindowThreadProcessId, KillTimer, SetTimer,
+    SetWindowsHookExW, SystemParametersInfoW, UnhookWindowsHookEx, EVENT_SYSTEM_FOREGROUND, HHOOK,
+    KBDLLHOOKSTRUCT, LLKHF_INJECTED, SPI_GETKEYBOARDDELAY, WH_KEYBOARD_LL, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+};
+
+use super::watchdog::{
+    is_altgr_synthetic_lctrl, needs_menu_bar_mask, repeat_delay_from_spi, tick_distance_u32,
+    HookWatchdog, PHONON_INJECTED_EXTRA_INFO, VK_MENU_MASK,
 };
 
 /// Virtual key codes Phonon can be bound to.
@@ -203,6 +221,45 @@ static COPILOT_SEEN: AtomicBool = AtomicBool::new(false);
 static COMBO: AtomicBool = AtomicBool::new(false);
 /// Whether the dictation key is down right now, so auto-repeat can be dropped.
 static HELD: AtomicBool = AtomicBool::new(false);
+/// `GetTickCount` at the hook's last callback, for the watchdog.
+static LAST_HOOK_TICK: AtomicU32 = AtomicU32::new(0);
+/// The last real key event the hook saw was the dictation key going down, so its
+/// auto-repeat should follow while it is held. Any other key ends a key's
+/// repeat, and a key the hook swallows never shows in `GetAsyncKeyState`; so this,
+/// not the system's key state, is what tells a held key from a lost key-up.
+static LAST_EVENT_WATCHED: AtomicBool = AtomicBool::new(false);
+static WIN_EVENT_HOOK: AtomicIsize = AtomicIsize::new(0);
+static TIMER: AtomicUsize = AtomicUsize::new(0);
+static REARM_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
+static CLOCK: OnceLock<Instant> = OnceLock::new();
+
+/// A delayed re-arm after a foreground change: Tauri 2 and raw-input apps show
+/// their window first and install their own hook right after.
+const FOREGROUND_REARM_DELAY_MS: u64 = 1_500;
+const WATCHDOG_PERIOD_MS: u32 = 1_000;
+/// The streak length at which a silent hook is worth a log line: a keyboard idle
+/// while only the mouse moves also looks silent, and one re-arm costs nothing.
+const LOGGED_STREAK: u32 = 2;
+
+/// The watchdog's state. It lives on the hook thread: the timer and the
+/// foreground event are delivered there by the message loop.
+struct Watch {
+    dog: HookWatchdog,
+    /// `LAST_HOOK_TICK` as of the previous tick.
+    seen_tick: u32,
+    rearm_at_ms: Option<u64>,
+    /// A "silent" line was written for the current streak.
+    logged: bool,
+}
+
+thread_local! {
+    static WATCH: RefCell<Option<Watch>> = const { RefCell::new(None) };
+}
+
+/// Milliseconds since the hook was installed.
+fn now_ms() -> u64 {
+    CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
 
 /// Install the hook. It must be installed from the thread that runs the message
 /// loop, and that loop must keep running.
@@ -222,17 +279,274 @@ pub fn install(watched: u32, sender: Sender<Action>) -> Result<()> {
     if handle.is_null() {
         bail!("SetWindowsHookExW failed; Phonon cannot see the dictation key");
     }
-    *HOOK.lock().unwrap() = handle as isize;
+    *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = handle as isize;
+
+    // Keeping the hook alive is best effort: without these Phonon works as before.
+    let now = now_ms();
+    WATCH.with(|watch| {
+        *watch.borrow_mut() = Some(Watch {
+            dog: HookWatchdog::new(now),
+            seen_tick: LAST_HOOK_TICK.load(Ordering::Relaxed),
+            rearm_at_ms: None,
+            logged: false,
+        })
+    });
+    let timer = unsafe {
+        SetTimer(
+            std::ptr::null_mut(),
+            0,
+            WATCHDOG_PERIOD_MS,
+            Some(watchdog_timer),
+        )
+    };
+    if timer == 0 {
+        eprintln!("phonon: could not start the keyboard hook's watchdog");
+    }
+    TIMER.store(timer, Ordering::SeqCst);
+    let events = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            std::ptr::null_mut(),
+            Some(foreground_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    if events.is_null() {
+        eprintln!(
+            "phonon: could not watch the foreground window; the hook re-arms on the watchdog only"
+        );
+    }
+    WIN_EVENT_HOOK.store(events as isize, Ordering::SeqCst);
     Ok(())
 }
 
 /// Remove the hook. Windows also removes it when the process exits.
 pub fn uninstall() {
-    let mut handle = HOOK.lock().unwrap();
+    let timer = TIMER.swap(0, Ordering::SeqCst);
+    if timer != 0 {
+        unsafe { KillTimer(std::ptr::null_mut(), timer) };
+    }
+    let events = WIN_EVENT_HOOK.swap(0, Ordering::SeqCst);
+    if events != 0 {
+        unsafe { UnhookWinEvent(events as HWINEVENTHOOK) };
+    }
+    let mut handle = HOOK.lock().unwrap_or_else(|e| e.into_inner());
     if *handle != 0 {
         unsafe { UnhookWindowsHookEx(*handle as HHOOK) };
         *handle = 0;
     }
+}
+
+/// Put a fresh hook at the front of the chain. The new one is installed before
+/// the old one goes, so there is no moment without a hook; if Windows refuses the
+/// new one, the old one stays. Runs on the hook thread only.
+fn rearm_hook() -> bool {
+    let fresh = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(proc), std::ptr::null_mut(), 0) };
+    if fresh.is_null() {
+        if !REARM_FAILURE_LOGGED.swap(true, Ordering::Relaxed) {
+            eprintln!("phonon: could not re-install the keyboard hook; keeping the current one");
+        }
+        return false;
+    }
+    let old = std::mem::replace(
+        &mut *HOOK.lock().unwrap_or_else(|e| e.into_inner()),
+        fresh as isize,
+    );
+    if old != 0 {
+        unsafe { UnhookWindowsHookEx(old as HHOOK) };
+    }
+    true
+}
+
+fn foreground_pid() -> u32 {
+    let window = unsafe { GetForegroundWindow() };
+    if window.is_null() {
+        return 0;
+    }
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    pid
+}
+
+/// Another app came to the front: it may have installed its own hook ahead of
+/// Phonon's. Re-arm now and once more shortly after.
+unsafe extern "system" fn foreground_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    window: HWND,
+    _object: i32,
+    _child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if event != EVENT_SYSTEM_FOREGROUND || window.is_null() {
+        return;
+    }
+    let mut pid = 0;
+    GetWindowThreadProcessId(window, &mut pid);
+    if pid == GetCurrentProcessId() {
+        return;
+    }
+    rearm_hook();
+    let due = now_ms() + FOREGROUND_REARM_DELAY_MS;
+    WATCH.with(|watch| {
+        if let Ok(mut watch) = watch.try_borrow_mut() {
+            if let Some(watch) = watch.as_mut() {
+                watch.rearm_at_ms = Some(due);
+            }
+        }
+    });
+}
+
+unsafe extern "system" fn watchdog_timer(_window: HWND, _message: u32, _id: usize, _time: u32) {
+    watchdog_tick();
+}
+
+/// What one watchdog tick found, for the log lines written after the state is let go.
+#[derive(Default)]
+struct Tick {
+    recovered_after: Option<u32>,
+    went_silent: bool,
+    heal: bool,
+}
+
+/// Every second on the hook thread: run a due foreground re-arm, re-arm a hook
+/// that is silent while the session has input, and finish a hold whose key-up
+/// never arrived.
+pub fn watchdog_tick() {
+    let now_tick = unsafe { GetTickCount() };
+    let now = now_ms();
+    let tick = WATCH.with(|watch| {
+        let mut tick = Tick::default();
+        let Ok(mut watch) = watch.try_borrow_mut() else {
+            return tick;
+        };
+        let Some(watch) = watch.as_mut() else {
+            return tick;
+        };
+
+        let hook_tick = LAST_HOOK_TICK.load(Ordering::Relaxed);
+        if hook_tick != watch.seen_tick {
+            watch.seen_tick = hook_tick;
+            let at = now.saturating_sub(u64::from(tick_distance_u32(now_tick, hook_tick)));
+            if watch.logged {
+                tick.recovered_after = Some(watch.dog.silent_streak());
+            }
+            watch.logged = false;
+            watch.dog.record_hook_event(at);
+        }
+
+        if watch.rearm_at_ms.is_some_and(|due| now >= due) {
+            watch.rearm_at_ms = None;
+            rearm_hook();
+        }
+
+        let mut input = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        if unsafe { GetLastInputInfo(&mut input) } != 0 {
+            let idle = u64::from(tick_distance_u32(now_tick, input.dwTime));
+            let last_input = now.saturating_sub(idle);
+            let own_front = foreground_pid() == unsafe { GetCurrentProcessId() };
+            if watch.dog.should_rearm(now, last_input, own_front) {
+                rearm_hook();
+                watch.dog.record_rearm(now);
+                if watch.dog.silent_streak() == LOGGED_STREAK && !watch.logged {
+                    watch.logged = true;
+                    tick.went_silent = true;
+                }
+            }
+        }
+
+        if HELD.load(Ordering::SeqCst) {
+            let watched = WATCHED.load(Ordering::Relaxed);
+            let vk = if watched == KEY_CTRL_SPACE {
+                VK_SPACE
+            } else {
+                watched
+            };
+            let async_down = unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0;
+            let maybe_down = async_down || !LAST_EVENT_WATCHED.load(Ordering::Relaxed);
+            tick.heal = HookWatchdog::should_heal_stuck_hold(
+                now,
+                true,
+                watch.dog.last_hook_ms(),
+                maybe_down,
+                keyboard_repeat_delay_ms(),
+            );
+        }
+        tick
+    });
+
+    if let Some(rearms) = tick.recovered_after {
+        eprintln!("phonon: keyboard hook answering again after {rearms} re-arms");
+    }
+    if tick.went_silent {
+        eprintln!("phonon: keyboard hook silent while the session has input; re-arming");
+    }
+    if tick.heal && heal_stuck_hold() {
+        eprintln!("phonon: the dictation key's release never arrived; finishing the dictation");
+    }
+}
+
+/// The user's keyboard repeat delay, in milliseconds.
+fn keyboard_repeat_delay_ms() -> u64 {
+    let mut level: u32 = 1;
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETKEYBOARDDELAY, 0, (&mut level as *mut u32).cast(), 0)
+    };
+    repeat_delay_from_spi(if ok != 0 { level } else { 1 })
+}
+
+/// Feed the latch the key-up it missed, as the hook would have.
+fn heal_stuck_hold() -> bool {
+    let Some(state) = STATE.get() else {
+        return false;
+    };
+    let Ok(mut state) = state.lock() else {
+        return false;
+    };
+    if !HELD.swap(false, Ordering::SeqCst) {
+        return false;
+    }
+    COMBO.store(false, Ordering::SeqCst);
+    LAST_EVENT_WATCHED.store(false, Ordering::Relaxed);
+    let now = state.started.elapsed().as_nanos() as u64;
+    let action = state.latch.key_up(now);
+    if action != Action::None {
+        let _ = state.sender.send(action);
+    }
+    true
+}
+
+/// Tap an unassigned key, tagged as Phonon's own, so a swallowed Alt or Win
+/// release does not open the focused window's menu bar or the Start menu and
+/// take the paste. Never called with the hook state locked.
+fn tap_menu_mask() {
+    let key = |up: bool| {
+        let mut input: INPUT = unsafe { std::mem::zeroed() };
+        input.r#type = INPUT_KEYBOARD;
+        input.Anonymous.ki = KEYBDINPUT {
+            wVk: VK_MENU_MASK,
+            wScan: 0,
+            dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+            time: 0,
+            dwExtraInfo: PHONON_INJECTED_EXTRA_INFO,
+        };
+        input
+    };
+    let events = [key(false), key(true)];
+    unsafe {
+        SendInput(
+            events.len() as u32,
+            events.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
 }
 
 /// Forget a latch, after something other than the key stopped the recording.
@@ -289,10 +603,19 @@ fn edge(watched: u32, vk: u32, down: bool, ctrl_down: bool, combo: bool) -> Edge
 }
 
 unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Proof of life for the watchdog. Nothing here may log or allocate.
+    LAST_HOOK_TICK.store(GetTickCount(), Ordering::Relaxed);
     if code < 0 {
         return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
     }
     let event = &*(lparam as *const KBDLLHOOKSTRUCT);
+    // Phonon's own menu-bar mask, and the Left Control that AltGr layouts put in
+    // front of Right Alt: neither is a key the user pressed.
+    if event.dwExtraInfo == PHONON_INJECTED_EXTRA_INFO
+        || is_altgr_synthetic_lctrl(event.vkCode, event.scanCode, event.flags)
+    {
+        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+    }
     let message = wparam as u32;
     let down = matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN);
     let up = matches!(message, WM_KEYUP | WM_SYSKEYUP);
@@ -307,25 +630,29 @@ unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
             super::tray::post_copilot_key();
         }
     }
-    let Some(state) = STATE.get() else {
-        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
-    };
-    let Ok(mut state) = state.lock() else {
-        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
-    };
     if injected || !(down || up) {
         return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
     }
+    let Some(state) = STATE.get() else {
+        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+    };
     let watched = WATCHED.load(Ordering::Relaxed);
     // The system's own key state, not one tracked here: a Control release that
     // happens while an administrator window has focus never reaches this hook,
     // and a stuck "held" would turn every Space into a dictation.
     let ctrl_down = GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000 != 0;
     let combo = COMBO.load(Ordering::SeqCst);
-    let now = state.started.elapsed().as_nanos() as u64;
-    let action = match edge(watched, event.vkCode, down, ctrl_down, combo) {
-        Edge::Ignore => return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam),
-        Edge::Down => {
+    let edge = edge(watched, event.vkCode, down, ctrl_down, combo);
+    LAST_EVENT_WATCHED.store(edge == Edge::Down, Ordering::Relaxed);
+    if edge == Edge::Ignore {
+        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+    }
+    {
+        let Ok(mut state) = state.lock() else {
+            return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+        };
+        let now = state.started.elapsed().as_nanos() as u64;
+        let action = if edge == Edge::Down {
             if watched == KEY_CTRL_SPACE {
                 COMBO.store(true, Ordering::SeqCst);
             }
@@ -336,17 +663,19 @@ unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
             } else {
                 None
             }
-        }
-        Edge::Up => {
+        } else {
             COMBO.store(false, Ordering::SeqCst);
             HELD.store(false, Ordering::SeqCst);
             Some(state.latch.key_up(now))
+        };
+        if let Some(action) = action {
+            if action != Action::None {
+                let _ = state.sender.send(action);
+            }
         }
-    };
-    if let Some(action) = action {
-        if action != Action::None {
-            let _ = state.sender.send(action);
-        }
+    }
+    if edge == Edge::Up && needs_menu_bar_mask(watched) {
+        tap_menu_mask();
     }
     // Swallow the key so the focused window never sees the dictation key.
     1

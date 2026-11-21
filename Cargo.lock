@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-asr"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-audio"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-cli"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2778,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-core"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "phonon-asr",
@@ -2790,11 +2790,11 @@ dependencies = [
 
 [[package]]
 name = "phonon-hotkey"
-version = "1.0.0"
+version = "1.5.0"
 
 [[package]]
 name = "phonon-llm"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "phonon-asr",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-mine"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2815,7 +2815,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-profile"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "phonon-llm",
@@ -2825,7 +2825,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-win"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "arboard",

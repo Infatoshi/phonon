@@ -43,6 +43,10 @@ import traceback
 from difflib import SequenceMatcher
 from typing import NamedTuple
 
+# The sidecar's own modules live inside the signed app bundle; a __pycache__
+# written next to them invalidates the bundle's code signature.
+sys.dont_write_bytecode = True
+
 try:  # run as sidecar/polish_server.py (sidecar dir on sys.path) or imported as a package
     from refiner_prompt import INSTRUCTION, VOCAB_PREFIX, system_prompt, user_turn
 except ImportError:

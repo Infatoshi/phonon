@@ -85,7 +85,7 @@ printf '%s (minimum macOS %s)\n' "$out_dir/pe" \
 mkdir -p "$out_dir/asr"
 # shellcheck disable=SC2086 # prefix_map is two flags
 clang++ -std=c++17 -O2 -mcpu=apple-m1 -fobjc-arc $prefix_map "$project_dir/engine/asr/pa.mm" -o "$out_dir/pa.new" \
-	-framework Metal -framework Foundation
+	-framework Metal -framework Foundation -framework Accelerate
 mv "$out_dir/pa.new" "$out_dir/pa"
 cp "$project_dir/kernels/metal/asr/pa.metal" "$project_dir/kernels/metal/asr/melfb.npy" "$out_dir/asr/"
 printf '%s (minimum macOS %s)\n' "$out_dir/pa" \

@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -341,6 +341,24 @@ impl AsrSidecar {
         self.send(json!({"cmd":"terms", "terms":terms}))
     }
 
+    /// `set_terms` with what each term may sound like:
+    /// `{"cmd":"terms","terms":[..],"entries":[{"term":..,"spoken_forms":[..]}]}`. Any
+    /// serializable entry works (phonon-core's `AsrTermEntry`); this crate does not depend
+    /// on phonon-core. A sidecar that knows only `terms` ignores `entries`.
+    pub fn set_term_entries<E: Serialize>(
+        &mut self,
+        terms: &[String],
+        entries: &[E],
+    ) -> Result<()> {
+        self.send(term_entries_command(terms, entries)?)
+    }
+
+    /// Unfamiliar terms read off the screen for the dictation under way, favored beside the
+    /// dictionary's; replaces the previous list, and an empty list clears it.
+    pub fn set_screen_terms(&mut self, terms: &[String]) -> Result<()> {
+        self.send(screen_terms_command(terms))
+    }
+
     pub fn transcribe(&mut self, path: &Path, id: Option<&str>) -> Result<()> {
         self.send(json!({"cmd":"transcribe", "path":path, "id":id}))
     }
@@ -397,6 +415,21 @@ impl AsrSidecar {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn term_entries_command<E: Serialize>(
+    terms: &[String],
+    entries: &[E],
+) -> Result<serde_json::Value> {
+    Ok(json!({
+        "cmd": "terms",
+        "terms": terms,
+        "entries": serde_json::to_value(entries).context("serialize ASR term entries")?,
+    }))
+}
+
+fn screen_terms_command(terms: &[String]) -> serde_json::Value {
+    json!({"cmd": "screen_terms", "terms": terms})
 }
 
 pub fn resolve_uv() -> Option<std::path::PathBuf> {
@@ -458,9 +491,50 @@ impl Drop for AsrSidecar {
 #[cfg(test)]
 mod tests {
     use super::{
-        asr_model_args, sidecar_lock, sidecar_run_args, Waker, ASR_MODEL_ID, ASR_MODEL_REVISION,
+        asr_model_args, screen_terms_command, sidecar_lock, sidecar_run_args, term_entries_command,
+        Waker, ASR_MODEL_ID, ASR_MODEL_REVISION,
     };
     use std::sync::mpsc;
+
+    #[test]
+    fn term_and_screen_term_commands_match_the_sidecar_wire() {
+        #[derive(serde::Serialize)]
+        struct Entry {
+            term: &'static str,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            spoken_forms: Vec<&'static str>,
+        }
+        let command = term_entries_command(
+            &["cuBLAS".to_string(), "CUDA".to_string()],
+            &[
+                Entry {
+                    term: "cuBLAS",
+                    spoken_forms: vec!["koo bloss"],
+                },
+                Entry {
+                    term: "CUDA",
+                    spoken_forms: vec![],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            command,
+            serde_json::json!({
+                "cmd": "terms",
+                "terms": ["cuBLAS", "CUDA"],
+                "entries": [{"term":"cuBLAS","spoken_forms":["koo bloss"]},{"term":"CUDA"}],
+            })
+        );
+        assert_eq!(
+            screen_terms_command(&["H100".to_string()]),
+            serde_json::json!({"cmd":"screen_terms","terms":["H100"]})
+        );
+        assert_eq!(
+            screen_terms_command(&[]),
+            serde_json::json!({"cmd":"screen_terms","terms":[]})
+        );
+    }
 
     /// sidecar/model_pins.json holds the hashes the sidecar checks; it must pin the same commit.
     #[test]

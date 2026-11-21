@@ -664,11 +664,41 @@ struct NativeUsageStats: Equatable {
     }
 }
 
+/// The app data directory (`~/Library/Application Support/Phonon`, or `PHONON_DATA_DIR`).
+enum AppData {
+    static var dataDirectory: URL { PhononDataPaths.supportDirectory() }
+}
+
 enum PhononDataPaths {
+    /// Env var that relocates the whole data directory (benchmarks, fixtures, tests).
+    static let overrideEnvironmentKey = "PHONON_DATA_DIR"
+
+    /// Pure resolver: a non-empty (after trimming) `PHONON_DATA_DIR` wins; `~` expands.
+    static func resolveSupportDirectory(
+        environment: [String: String], defaultBase: URL
+    ) -> URL {
+        if let raw = environment[overrideEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+        {
+            let expanded = (raw as NSString).expandingTildeInPath
+            return URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+        }
+        return defaultBase.appendingPathComponent("Phonon", isDirectory: true)
+    }
+
+    /// Whether `PHONON_DATA_DIR` relocates the data directory in this process.
+    static func isOverridden(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        !(environment[overrideEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
     static func supportDirectory(fileManager: FileManager = .default) -> URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("Phonon", isDirectory: true)
+        return resolveSupportDirectory(
+            environment: ProcessInfo.processInfo.environment, defaultBase: base)
     }
 
     static func settings(fileManager: FileManager = .default) -> URL {
@@ -784,8 +814,12 @@ final class NativeAppStore: ObservableObject {
         let support = supportDirectory
             ?? PhononDataPaths.supportDirectory(fileManager: fileManager)
         self.supportDirectory = support
+        // A `PHONON_DATA_DIR` store (benchmarks, fixtures) is isolated like an injected one:
+        // it must never overwrite the owner's real off-Library backup.
         self.mirrorDirectory = Self.mirrorDirectory(
-            explicit: mirrorDirectory, injectedSupport: supportDirectory, fileManager: fileManager)
+            explicit: mirrorDirectory,
+            injectedSupport: supportDirectory ?? (PhononDataPaths.isOverridden() ? support : nil),
+            fileManager: fileManager)
         reloadAll()
         mirrorManifest = PhononDataMirror.capture(
             from: support, mirror: self.mirrorDirectory, fileManager: fileManager)

@@ -84,6 +84,7 @@ class MetalParakeet:
         pa_dir=None,
         timeout_s=10.0,
         max_restarts=2,
+        rescore=None,
     ):
         """weights: the Parakeet snapshot's model.safetensors (pa converts it at startup) or an exported .bin;
         pa_dir: pa.metal and melfb.npy (default: the dev layout, the directory above bin/pa); rewrite: boosted
@@ -92,7 +93,20 @@ class MetalParakeet:
         A window over capacity is answered on the MLX model (loaded on first use). Transient failures (timeout
         under GPU contention, helper exit) answer that window on MLX and respawn the helper up to max_restarts
         consecutive times (re-sending any active dictionary); exceeding max_restarts latches Metal ASR off for
-        the rest of the session."""
+        the rest of the session. rescore (default: PHONON_ASR_RESCORE, on unless "0"): the greedy decode runs
+        unboosted and dictionary terms come from acoustic span rescoring after it (asr_terms); off: the in-decode
+        trie boosting."""
+        if rescore is None:
+            rescore = os.environ.get("PHONON_ASR_RESCORE", "1").strip() not in (
+                "0",
+                "false",
+                "off",
+                "",
+            )
+        self.rescore = bool(rescore)
+        self.entries, self.screen_terms = [], []
+        self.last_rescore = []  # per window: (heard text, term, score heard, score cand, replaced)
+        self._encode = None
         self.model = model  # LightModel (or a parakeet-mlx model): vocabulary, durations, time_ratio, fallback
         self.max_mel = max_mel  # 8192 mel frames = 81.9 s (encoder 1024 frames)
         self.gpu_mel = gpu_mel  # send the samples: pa computes get_logmel's log-mel on the GPU (melfb.npy)
@@ -143,21 +157,36 @@ class MetalParakeet:
             "_pa_env",
             "_max_restarts",
             "_consecutive_failures",
+            "rescore",
+            "entries",
+            "screen_terms",
+            "last_rescore",
+            "_encode",
         ):
             raise AttributeError(name)
         return getattr(self.model, name)
 
-    def set_terms(self, terms):
-        """Boost these dictionary terms (canonical spellings) from the next window on; an empty list turns boosting
-        off. Returns a line for the log. The MLX fallback does not boost."""
-        try:  # the sidecar dir on sys.path, or imported as a package
-            import asr_terms
-        except ImportError:
-            from . import asr_terms
-
-        terms = [t for t in dict.fromkeys(t.strip() for t in terms) if t]
+    def set_terms(self, terms, entries=None):
+        """Use these dictionary terms (canonical spellings) from the next window on; an empty list turns the
+        dictionary off. entries: the same terms with their spoken forms ({"term", "spoken_forms"} or VocabEntry);
+        terms missing from entries count as entries without spoken forms. Rescoring mode keeps them for the
+        after-decode rescoring (the helper's decode stays unboosted); otherwise the helper boosts them in-decode.
+        Returns a line for the log. The MLX fallback does not boost."""
+        asr_terms = _asr_terms()
+        terms = [t for t in dict.fromkeys(str(t).strip() for t in terms or ()) if t]
+        ents = [asr_terms._entry(e) for e in entries or ()]
+        ents = [e for e in ents if e.term]
+        known = {e.term.lower() for e in ents}
+        ents += [asr_terms.VocabEntry(t) for t in terms if t.lower() not in known]
         if self.dead:
             return "dictionary not applied: Metal ASR is off"
+        self.entries = ents
+        if self.rescore:
+            self.terms = terms or None
+            n = len(asr_terms.merge_vocabulary(ents))
+            if not ents:
+                return "dictionary rescoring off"
+            return f"dictionary rescoring {n} of {len(ents)} terms (acoustic span rescoring)"
         if self.p is None:
             self.p = self._spawn()
         flat = asr_terms.flat_trie(self.model.vocabulary, terms) if terms else None
@@ -178,6 +207,104 @@ class MetalParakeet:
         if not self.terms:
             return "dictionary boosting off"
         return f"dictionary boosting {len(terms)} terms ({len(words) * 4 // 1024} KB)"
+
+    def set_screen_terms(self, screen_terms):
+        """Terms read off the screen for the dictation under way: rescoring candidates beside the dictionary
+        until replaced or cleared ([]). Returns a line for the log."""
+        self.screen_terms = [
+            t for t in dict.fromkeys(str(t).strip() for t in screen_terms or ()) if t
+        ]
+        if not self.screen_terms:
+            return "screen terms cleared"
+        if not self.rescore:
+            return f"{len(self.screen_terms)} screen terms kept (rescoring is off: not used)"
+        return f"{len(self.screen_terms)} screen terms for this dictation"
+
+    def rescore_vocabulary(self):
+        """The rescoring vocabulary: the dictionary's entries and the screen terms within the ASR budget."""
+        return _asr_terms().merge_vocabulary(self.entries, self.screen_terms)
+
+    def rescore_spans(self, jobs, timeout_s=None):
+        """jobs: (f_start, f_end, prefix tokens, heard tokens, candidate tokens) over the last decoded window ->
+        [(log P(heard), log P(cand))] from pa (request 0xFFFFFFFE), or None when the helper is off or fails (a
+        failure counts as a failed window: the helper restarts or turns off)."""
+        if self.dead or self.p is None:
+            return None
+        jobs = list(jobs)
+        if not jobs:
+            return []
+        parts = [struct.pack("<2I", 0xFFFFFFFE, len(jobs))]
+        for f0, f1, prefix, heard, cand in jobs:
+            parts.append(struct.pack("<2I", int(f0), int(f1)))
+            for seq in (prefix, heard, cand):
+                seq = np.asarray(seq, dtype="<u4")
+                parts.append(struct.pack("<I", len(seq)) + seq.tobytes())
+        try:
+            self.p.stdin.write(b"".join(parts))
+            self.p.stdin.flush()
+            raw = self._read(4, first=True, timeout_s=timeout_s) + self._read(
+                8 * len(jobs) - 4
+            )
+        except Exception as ex:  # noqa: BLE001  (the helper exited, its pipe broke or it did not answer)
+            self._recover_or_off(f"rescore: {ex!r}", stuck=isinstance(ex, TimeoutError))
+            return None
+        sc = np.frombuffer(raw, dtype="<f4").reshape(len(jobs), 2)
+        return [(float(a), float(b)) for a, b in sc]
+
+    def rescore_rows(self, rows, n_frames):
+        """Dictionary terms into the greedy decode's rows: exact spoken forms first, then acoustic rescoring of the
+        spans that look like a term. -> [(row start, row end, text)], sorted, non-overlapping (the rows'
+        trailing punctuation stays outside); self.last_rescore keeps each rescored span's scores."""
+        self.last_rescore = []
+        vocab = self.rescore_vocabulary()
+        if not vocab or not rows:
+            return []
+        at = _asr_terms()
+        voc = self.model.vocabulary
+        words = at.align_words(
+            rows,
+            voc,
+            n_frames,
+            tuple(getattr(self.model, "durations", (0, 1, 2, 3, 4))),
+        )
+        reps = []
+        locked = set()
+        for r in at.apply_spoken_forms(words, vocab):
+            a, b = words[r.w_start], words[r.w_end - 1]
+            if b.t_end > a.t_start:
+                reps.append((a.t_start, b.t_end, r.text))
+                locked.update(range(r.w_start, r.w_end))
+        if self._encode is None:
+            enc, unk = at.bpe_encoder(voc)
+
+            def encode(text):  # no candidate for a spelling the vocabulary cannot write
+                ids = enc(text)
+                return [] if unk in ids else ids
+
+            self._encode = encode
+        cands = [
+            c
+            for c in at.find_rescore_candidates(
+                words, vocab, encode=self._encode, skip=locked
+            )
+            if c.cand and c.heard and c.f_end > c.f_start
+        ]
+        if cands:
+            toks = [r[0] for r in rows]
+            scores = self.rescore_spans(
+                [
+                    (c.f_start, c.f_end, toks[: c.t_start], c.heard, c.cand)
+                    for c in cands
+                ]
+            )
+            boost = at.boost_nats()
+            for c, sc in zip(cands, scores or ()):
+                ok = at.should_replace(sc[0], sc[1], len(c.cand), boost)
+                heard = " ".join(w.text for w in words[c.w_start : c.w_end])
+                self.last_rescore.append((heard, c.text, sc[0], sc[1], ok))
+                if ok:
+                    reps.append((c.t_start, c.t_end, c.text))
+        return sorted(reps)
 
     def warmup(self):
         """One short window: the Metal pipelines and the weight pages ready before the first dictation."""
@@ -332,9 +459,9 @@ class MetalParakeet:
         try:
             if self.p is None:
                 self.p = self._spawn()
-                if self.terms:
+                if self.terms and not self.rescore:
                     saved_terms = list(self.terms)
-                    self.set_terms(saved_terms)
+                    self.set_terms(saved_terms, entries=list(self.entries))
                     if self.dead:
                         return None
             wait_s = self._timeout_for(frames)
@@ -410,8 +537,15 @@ class MetalParakeet:
             )
             for t, d, s, c in rows
         ]
+        if self.rescore:
+            try:
+                reps = self.rescore_rows(rows, _encoder_frames(frames))
+            except Exception as ex:  # noqa: BLE001  (rescoring must never cost the window its transcript)
+                print(f"pa_client: rescoring skipped: {ex!r}", file=sys.stderr)
+                reps = []
+            hyp = _rewrite(hyp, reps, m.vocabulary)
         # committed terms take the dictionary spelling (tdt_decode detok)
-        if self.terms and self.rewrite != "none":
+        elif self.terms and self.rewrite != "none":
             keep = sorted(
                 (a, b, ci)
                 for a, b, ci, boosted in self.last_spans
@@ -434,3 +568,44 @@ class MetalParakeet:
                 prev = b
             hyp = out + hyp[prev:]
         return sentences_to_result(tokens_to_sentences(hyp, DecodingConfig().sentence))
+
+
+def _asr_terms():
+    try:  # the sidecar dir on sys.path, or imported as a package
+        import asr_terms
+    except ImportError:
+        from . import asr_terms
+    return asr_terms
+
+
+def _encoder_frames(mel_frames):
+    """The encoder frames of a window of mel_frames (three stride-2 subsamplings, as pa's sub_len)."""
+    t = mel_frames
+    for _ in range(3):
+        t = (t - 1) // 2 + 1
+    return t
+
+
+def _rewrite(hyp, reps, vocabulary):
+    """AlignedTokens with each (row start, row end, text) span as one token carrying the text (after a space when
+    its first piece starts a word), spanning the span's time, at its lowest confidence."""
+    from parakeet_mlx.alignment import AlignedToken
+
+    out, prev = [], 0
+    for a, b, text in sorted(reps):
+        if a < prev or b <= a or b > len(hyp):
+            continue
+        out += hyp[prev:a]
+        first = hyp[a]
+        lead = " " if vocabulary[first.id].startswith("▁") else ""
+        out.append(
+            AlignedToken(
+                first.id,
+                start=first.start,
+                duration=hyp[b - 1].start + hyp[b - 1].duration - first.start,
+                confidence=min(h.confidence for h in hyp[a:b]),
+                text=lead + text,
+            )
+        )
+        prev = b
+    return out + hyp[prev:]

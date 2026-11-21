@@ -104,3 +104,109 @@ def test_model_source_never_fetches_a_branch(monkeypatch):
     for revision in (None, "main", "a" * 40):  # no revision, a branch, a commit with no hashes
         with pytest.raises(ValueError):
             model_source(hub, revision)
+
+
+# ---- the dictionary commands: terms (with spoken-form entries) and this dictation's screen terms
+
+
+class _EntriesModel:
+    def __init__(self):
+        self.calls, self.screen = [], None
+
+    def set_terms(self, terms, entries=None):
+        self.calls.append((terms, entries))
+        return f"{len(terms)} terms"
+
+    def set_screen_terms(self, terms):
+        self.screen = terms
+        return f"{len(terms)} screen terms"
+
+
+class _TermsOnlyModel:
+    def __init__(self):
+        self.calls = []
+
+    def set_terms(self, terms):  # an older model or a stub: no entries argument
+        self.calls.append(terms)
+        return "ok"
+
+
+def test_terms_command_passes_entries_along():
+    from sidecar.asr_server import apply_terms
+
+    m = _EntriesModel()
+    entries = [{"term": "cuBLAS", "spoken_forms": ["koo blas"]}, {"term": "CUDA"}]
+    assert (
+        apply_terms(
+            m, {"cmd": "terms", "terms": ["cuBLAS", "CUDA"], "entries": entries}
+        )
+        == "2 terms"
+    )
+    assert m.calls == [(["cuBLAS", "CUDA"], entries)]
+    apply_terms(m, {"cmd": "terms", "terms": ["vLLM"]})  # no entries: the old call
+    assert m.calls[-1] == (["vLLM"], None)
+    apply_terms(m, {"cmd": "terms"})
+    assert m.calls[-1] == ([], None)
+
+
+def test_terms_command_falls_back_for_a_model_without_entries():
+    from sidecar.asr_server import apply_terms
+
+    m = _TermsOnlyModel()
+    assert (
+        apply_terms(
+            m,
+            {
+                "terms": ["cuBLAS"],
+                "entries": [{"term": "cuBLAS", "spoken_forms": ["x y"]}],
+            },
+        )
+        == "ok"
+    )
+    assert m.calls == [["cuBLAS"]]
+    assert "runs on MLX" in apply_terms(object(), {"terms": ["cuBLAS"]})
+
+
+def test_screen_terms_command():
+    from sidecar.asr_server import apply_screen_terms
+
+    m = _EntriesModel()
+    assert (
+        apply_screen_terms(m, {"cmd": "screen_terms", "terms": ["H100", "FluidAudio"]})
+        == "2 screen terms"
+    )
+    assert m.screen == ["H100", "FluidAudio"]
+    apply_screen_terms(m, {"cmd": "screen_terms", "terms": []})
+    assert m.screen == []
+    assert "runs on MLX" in apply_screen_terms(_TermsOnlyModel(), {"terms": ["H100"]})
+
+
+def test_commands_reach_a_real_metal_client(tmp_path):
+    """terms + entries + screen_terms through the server helpers into MetalParakeet's rescoring vocabulary"""
+    from sidecar.asr_server import apply_screen_terms, apply_terms
+    from sidecar.pa_client import MetalParakeet
+
+    fake = tmp_path / "pa"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nsys.stdin.buffer.read()\n")
+    fake.chmod(0o755)
+    model = types.SimpleNamespace(
+        vocabulary=["<unk>", "▁"] + [f"p{i}" for i in range(1022)]
+    )
+    m = MetalParakeet(model, weights=str(tmp_path / "w"), pa=str(fake), rescore=True)
+    note = apply_terms(
+        m,
+        {
+            "terms": ["cuBLAS"],
+            "entries": [{"term": "cuBLAS", "spoken_forms": ["koo blas"]}],
+        },
+    )
+    assert "rescoring 1 of 1" in note
+    apply_screen_terms(m, {"terms": ["Kneron"]})
+    assert [(e.term, e.spoken_forms, e.temporary) for e in m.rescore_vocabulary()] == [
+        ("Kneron", (), True),
+        ("cuBLAS", ("koo blas",), False),
+    ]
+    apply_screen_terms(m, {"terms": []})
+    assert [e.term for e in m.rescore_vocabulary()] == ["cuBLAS"]
+    m.p.kill()
+    m.p.wait()

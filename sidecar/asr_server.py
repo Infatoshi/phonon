@@ -323,6 +323,35 @@ def stream_transcriber(model, req: dict):
     return StreamTranscriber(transcribe_words, **settings)
 
 
+def _takes_entries(fn) -> bool:
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "entries" or p.kind is p.VAR_KEYWORD for p in params)
+
+
+def apply_terms(model, req: dict) -> str:
+    """`{"cmd": "terms", "terms": [...], "entries": [{"term", "spoken_forms"}]}` -> the model's dictionary (Metal
+    only); entries go along when the model's set_terms takes them. Returns the log line."""
+    if not hasattr(model, "set_terms"):
+        return "dictionary not applied: speech recognition runs on MLX"
+    terms = [str(t) for t in req.get("terms") or []]
+    entries = [e for e in req.get("entries") or [] if isinstance(e, dict | str)]
+    if entries and _takes_entries(model.set_terms):
+        return model.set_terms(terms, entries=entries)
+    return model.set_terms(terms)
+
+
+def apply_screen_terms(model, req: dict) -> str:
+    """`{"cmd": "screen_terms", "terms": [...]}`: this dictation's screen terms ([] clears them)."""
+    if not hasattr(model, "set_screen_terms"):
+        return "screen terms not applied: speech recognition runs on MLX"
+    return model.set_screen_terms([str(t) for t in req.get("terms") or []])
+
+
 def model_source(model_id: str, revision: str | None) -> str:
     """Where the Parakeet weights load from. An existing directory (the engine's PHONON_ASR_MODEL_DIR: a folder in
     the pinned snapshot's layout, config.json + model.safetensors + tokenizer files) is used as it is, revision
@@ -506,12 +535,18 @@ def main() -> None:
         # the user's dictionary for in-decode boosting (Metal only), from the engine
         if cmd == "terms":
             try:
-                if hasattr(model, "set_terms"):
-                    note = model.set_terms(req.get("terms") or [])
-                else:
-                    note = "dictionary not applied: speech recognition runs on MLX"
+                note = apply_terms(model, req)
             except Exception as e:  # noqa: BLE001  (a bad list must not take the sidecar down)
                 note = f"dictionary not applied: {e}"
+                traceback.print_exc(file=sys.stderr)
+            print(f"asr_server: {note}", file=sys.stderr, flush=True)
+            continue
+        # unfamiliar terms read off the screen, for the dictation under way (Metal rescoring only)
+        if cmd == "screen_terms":
+            try:
+                note = apply_screen_terms(model, req)
+            except Exception as e:  # noqa: BLE001
+                note = f"screen terms not applied: {e}"
                 traceback.print_exc(file=sys.stderr)
             print(f"asr_server: {note}", file=sys.stderr, flush=True)
             continue

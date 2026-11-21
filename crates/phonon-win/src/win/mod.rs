@@ -11,6 +11,7 @@ pub mod hook;
 pub mod inject;
 pub mod load;
 pub mod tray;
+pub mod watchdog;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -130,9 +131,8 @@ fn forward_keys(source: Receiver<Action>, sink: Sender<Event>) {
             // The indicator moves on the key itself, here on the forwarding thread, not after
             // the worker has opened the microphone: the press must be felt within a frame.
             // A key-up lost to a locked session (Windows skips low-level hooks on the secure desktop)
-            // leaves the dictation recording, as before; the indicator stays lit only while audio
-            // keeps arriving (`indicator::SILENT_LISTENING_LIMIT`). Phonon registers for no session
-            // notifications, so there is no lock signal to end it sooner.
+            // is healed by the hook's watchdog (`hook::watchdog_tick`): once the key's auto-repeat
+            // stops with no release seen, it sends the Stop the release would have.
             match action {
                 Action::Start => held = crate::indicator::press(),
                 Action::Stop => crate::indicator::release(held),

@@ -5,11 +5,16 @@
 //! phonon engine       # warm JSONL backend the app starts (hidden)
 //! phonon bench
 //! phonon doctor
+//! phonon meetings list|show|search
+//! phonon history
+//! phonon mcp          # read-only MCP server on stdio
 //! ```
 
 mod bench;
 mod data_cmd;
 mod doctor;
+mod mcp_cmd;
+mod search;
 mod transcript_cmd;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -107,9 +112,171 @@ enum Commands {
         #[arg(long)]
         meeting: Option<String>,
         /// Print JSON instead of text.
+        #[arg(long, conflicts_with_all = ["md", "srt", "vtt"])]
+        json: bool,
+        /// Only turns from this offset (mm:ss, h:mm:ss, 90, 90s, 1.5m).
+        #[arg(long)]
+        from: Option<String>,
+        /// Only turns up to this offset (same forms as --from).
+        #[arg(long)]
+        to: Option<String>,
+        /// Print Markdown.
+        #[arg(long, conflicts_with_all = ["srt", "vtt"])]
+        md: bool,
+        /// Print SubRip (.srt) subtitles.
+        #[arg(long, conflicts_with = "vtt")]
+        srt: bool,
+        /// Print WebVTT (.vtt) subtitles.
+        #[arg(long)]
+        vtt: bool,
+    },
+    /// List, show and search saved meeting transcripts (read-only).
+    Meetings {
+        #[command(subcommand)]
+        command: MeetingsCommands,
+    },
+    /// Show or search your dictation history (read-only).
+    History {
+        /// Only dictations at or after this time (3d, 36h, 90m, 2w, today, yesterday, YYYY-MM-DD, RFC3339, Unix time).
+        #[arg(long)]
+        since: Option<String>,
+        /// Only dictations at or before this time (same forms as --since).
+        #[arg(long)]
+        until: Option<String>,
+        /// Only dictations into this app (matches app name, bundle id or web host).
+        #[arg(long)]
+        app: Option<String>,
+        /// Only dictations containing this text (case-insensitive).
+        #[arg(long)]
+        grep: Option<String>,
+        /// Rank by relevance to this query ("quoted phrases" must match exactly).
+        #[arg(long)]
+        search: Option<String>,
+        /// Use the raw speech recognition text instead of the corrected text.
+        #[arg(long)]
+        raw: bool,
+        /// Most entries to print (default 50, max 10000).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
     },
+    /// Read-only MCP server over stdio for meeting transcripts and dictation history.
+    Mcp,
+}
+
+#[derive(Subcommand, Debug)]
+enum MeetingsCommands {
+    /// List meetings, newest first.
+    List {
+        /// Only meetings started at or after this time (3d, 36h, 90m, 2w, today, yesterday, YYYY-MM-DD, RFC3339, Unix time).
+        #[arg(long)]
+        since: Option<String>,
+        /// Only meetings started at or before this time (same forms as --since).
+        #[arg(long)]
+        until: Option<String>,
+        /// Most meetings to list (default 20, max 200).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one meeting transcript without transcribing anything.
+    Show {
+        /// `latest`, a meeting id, or an unambiguous id prefix (6+ characters).
+        #[arg(default_value = "latest")]
+        id: String,
+        /// Only turns from this offset (mm:ss, h:mm:ss, 90, 90s, 1.5m).
+        #[arg(long)]
+        from: Option<String>,
+        /// Only turns up to this offset (same forms as --from).
+        #[arg(long)]
+        to: Option<String>,
+        /// Print Markdown.
+        #[arg(long, conflicts_with_all = ["json", "srt", "vtt"])]
+        md: bool,
+        /// Print versioned JSON.
+        #[arg(long, conflicts_with_all = ["srt", "vtt"])]
+        json: bool,
+        /// Print SubRip (.srt) subtitles.
+        #[arg(long, conflicts_with = "vtt")]
+        srt: bool,
+        /// Print WebVTT (.vtt) subtitles.
+        #[arg(long)]
+        vtt: bool,
+    },
+    /// Search meeting transcripts by relevance ("quoted phrases" must match exactly).
+    Search {
+        /// Search query.
+        query: String,
+        /// Only meetings started at or after this time.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only meetings started at or before this time.
+        #[arg(long)]
+        until: Option<String>,
+        /// Most results (default 10, max 50).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn pick_format(md: bool, json: bool, srt: bool, vtt: bool) -> transcript_cmd::TranscriptFormat {
+    use transcript_cmd::TranscriptFormat;
+    if md {
+        TranscriptFormat::Markdown
+    } else if json {
+        TranscriptFormat::Json
+    } else if srt {
+        TranscriptFormat::Srt
+    } else if vtt {
+        TranscriptFormat::Vtt
+    } else {
+        TranscriptFormat::Text
+    }
+}
+
+fn run_meetings(command: MeetingsCommands) -> Result<()> {
+    match command {
+        MeetingsCommands::List {
+            since,
+            until,
+            limit,
+            json,
+        } => transcript_cmd::run_meetings_list(since.as_deref(), until.as_deref(), limit, json),
+        MeetingsCommands::Show {
+            id,
+            from,
+            to,
+            md,
+            json,
+            srt,
+            vtt,
+        } => transcript_cmd::run_meetings_show(
+            &id,
+            from.as_deref(),
+            to.as_deref(),
+            pick_format(md, json, srt, vtt),
+        ),
+        MeetingsCommands::Search {
+            query,
+            since,
+            until,
+            limit,
+            json,
+        } => transcript_cmd::run_meetings_search(
+            &query,
+            since.as_deref(),
+            until.as_deref(),
+            limit,
+            json,
+        ),
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -338,11 +505,49 @@ fn main() -> Result<()> {
             minutes,
             meeting,
             json,
-        } => transcript_cmd::run_transcript(transcript_cmd::TranscriptArgs {
-            minutes,
-            meeting,
+            from,
+            to,
+            md,
+            srt,
+            vtt,
+        } => {
+            let format = pick_format(md, false, srt, vtt);
+            transcript_cmd::run_transcript(transcript_cmd::TranscriptArgs {
+                minutes,
+                meeting,
+                json,
+                from: from
+                    .as_deref()
+                    .map(transcript_cmd::parse_offset_seconds)
+                    .transpose()?,
+                to: to
+                    .as_deref()
+                    .map(transcript_cmd::parse_offset_seconds)
+                    .transpose()?,
+                format: (format != transcript_cmd::TranscriptFormat::Text).then_some(format),
+            })
+        }
+        Commands::Meetings { command } => run_meetings(command),
+        Commands::History {
+            since,
+            until,
+            app,
+            grep,
+            search,
+            raw,
+            limit,
+            json,
+        } => transcript_cmd::run_history(transcript_cmd::HistoryArgs {
+            since,
+            until,
+            app,
+            grep,
+            search,
+            raw,
+            limit,
             json,
         }),
+        Commands::Mcp => mcp_cmd::run_mcp(),
     }
 }
 

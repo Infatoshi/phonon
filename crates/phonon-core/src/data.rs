@@ -34,6 +34,18 @@ impl DictionaryEntry {
     }
 }
 
+/// One term for the ASR sidecar to favor, with the ways it may be said
+/// (`{"cmd":"terms","entries":[{"term":..,"spoken_forms":[..]}]}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsrTermEntry {
+    pub term: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spoken_forms: Vec<String>,
+}
+
+/// Most unfamiliar screen terms one dictation carries (ASR biasing and the envelope).
+pub const MAX_SCREEN_TERMS: usize = 24;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DictionaryFile {
     pub schema_version: u32,
@@ -184,12 +196,71 @@ impl DictionaryFile {
             .collect()
     }
 
+    /// `asr_terms` with what each term may sound like (the ASR sidecar's `entries`): the
+    /// entry's spoken forms plus, for a replacement, the phrase it replaces. Same terms in
+    /// the same order as `asr_terms`; entries sharing a term pool their forms.
+    pub fn asr_term_entries(&self) -> Vec<AsrTermEntry> {
+        let mut out: Vec<AsrTermEntry> = Vec::new();
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for entry in &self.entries {
+            let term = entry.canonical().trim();
+            if term.is_empty() || is_ordinary_english(term) {
+                continue;
+            }
+            let slot = *index.entry(term.to_string()).or_insert_with(|| {
+                out.push(AsrTermEntry {
+                    term: term.to_string(),
+                    spoken_forms: Vec::new(),
+                });
+                out.len() - 1
+            });
+            let target = &mut out[slot];
+            let replaced = entry
+                .replacement
+                .as_ref()
+                .map(|_| entry.phrase.as_str())
+                .into_iter();
+            for form in entry
+                .spoken_forms
+                .iter()
+                .map(String::as_str)
+                .chain(replaced)
+            {
+                let form = form.trim();
+                if form.is_empty()
+                    || form.eq_ignore_ascii_case(&target.term)
+                    || target
+                        .spoken_forms
+                        .iter()
+                        .any(|seen| seen.eq_ignore_ascii_case(form))
+                {
+                    continue;
+                }
+                target.spoken_forms.push(form.to_string());
+            }
+        }
+        out
+    }
+
     pub fn prepare_polish_input(&self, transcript: &str) -> String {
         self.prepare_polish_input_with_context(transcript, "")
     }
 
     pub fn prepare_polish_input_with_context(&self, transcript: &str, screen_text: &str) -> String {
-        if self.entries.is_empty() {
+        self.prepare_polish_input_with_screen_terms(transcript, screen_text, &[])
+    }
+
+    /// The dictionary envelope, with `extra_screen_terms` (unfamiliar terms read off the
+    /// screen at key down, `extract_screen_terms`) added to `screen_confirmed_terms` even
+    /// when the dictionary does not hold them. Without extras this is exactly
+    /// `prepare_polish_input_with_context` as it always was.
+    pub fn prepare_polish_input_with_screen_terms(
+        &self,
+        transcript: &str,
+        screen_text: &str,
+        extra_screen_terms: &[String],
+    ) -> String {
+        if self.entries.is_empty() && extra_screen_terms.is_empty() {
             return transcript.to_string();
         }
         let likely_entries = self.relevant_entries(transcript);
@@ -224,6 +295,7 @@ impl DictionaryFile {
             .filter(|entry| contains_phrase(&normalized_screen, &normalize(entry.canonical())))
             .map(|entry| entry.canonical())
             .collect::<Vec<_>>();
+        let screen_terms = merge_screen_terms(&screen_terms, extra_screen_terms);
         let phonetic_matches = phonetic_matches
             .iter()
             .map(|(spoken, canonical)| format!("{spoken} => {canonical}"))
@@ -656,8 +728,23 @@ impl SettingsFile {
     }
 }
 
+/// `PHONON_DATA_DIR` when set and non-empty (an isolated data root for tests, demos and
+/// a second profile), else `~/Library/Application Support/Phonon`.
 pub fn app_support_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    app_support_dir_from(
+        std::env::var_os("PHONON_DATA_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn app_support_dir_from(
+    data_dir: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf> {
+    if let Some(dir) = data_dir.filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = home.context("HOME is not set")?;
     Ok(PathBuf::from(home)
         .join("Library")
         .join("Application Support")
@@ -930,6 +1017,179 @@ pub fn delete_recording(id: &str) -> Result<()> {
         bail!("recording not found: {id}");
     }
     fs::remove_dir_all(&directory).with_context(|| format!("delete {}", directory.display()))
+}
+
+/// Screen terms as one dictation keeps them: trimmed, empties dropped, the first spelling
+/// of each kept (case-insensitively), at most `MAX_SCREEN_TERMS`.
+pub fn normalize_screen_terms<S: AsRef<str>>(terms: &[S]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for term in terms {
+        let term = term.as_ref().trim();
+        if term.is_empty() || out.iter().any(|seen| seen.eq_ignore_ascii_case(term)) {
+            continue;
+        }
+        if out.len() >= MAX_SCREEN_TERMS {
+            break;
+        }
+        out.push(term.to_string());
+    }
+    out
+}
+
+/// The envelope's `screen_confirmed_terms`: the dictionary's own first, unchanged, then
+/// up to `MAX_SCREEN_TERMS` unfamiliar screen terms it does not already name.
+fn merge_screen_terms(dictionary_terms: &[&str], extras: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = dictionary_terms.iter().map(|t| t.to_string()).collect();
+    for term in normalize_screen_terms(extras) {
+        if !out.iter().any(|seen| seen.eq_ignore_ascii_case(&term)) {
+            out.push(term);
+        }
+    }
+    out
+}
+
+/// Interface words that sit on nearly every screen and name nothing the user said.
+const SCREEN_UI_LABELS: &[&str] = &[
+    "Recent", "Sidebar", "Settings", "Search", "Home", "File", "Edit", "View", "Window", "Help",
+    "New", "Open", "Save", "Close", "Share", "More", "Today", "INFO", "DEBUG", "ERROR", "WARN",
+    "TODO", "FIXME", "NOTE", "TRACE",
+];
+
+/// Two-letter capitals that are ordinary words in a shouted heading, not acronyms.
+const SCREEN_TWO_LETTER_WORDS: &[&str] = &[
+    "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "HE", "IF", "IN", "IS", "IT", "ME", "MY", "NO",
+    "OF", "OK", "ON", "OR", "PM", "SO", "TO", "UP", "US", "WE",
+];
+
+/// Suffixes that make a number a measurement, an ordinal or a time (`100ms`, `1080p`,
+/// `4K`, `2nd`, `9am`), never a name.
+const SCREEN_NUMBER_SUFFIXES: &[&str] = &[
+    "ms", "s", "us", "ns", "sec", "secs", "min", "mins", "h", "hr", "hrs", "d", "w", "wk", "mo",
+    "y", "yr", "yrs", "px", "pt", "em", "rem", "vh", "vw", "dpi", "ppi", "k", "m", "b", "g", "t",
+    "p", "i", "x", "kb", "mb", "gb", "tb", "kib", "mib", "gib", "tib", "bit", "bits", "kbps",
+    "mbps", "gbps", "hz", "khz", "mhz", "ghz", "fps", "mm", "cm", "km", "kg", "lb", "lbs", "ft",
+    "mi", "mph", "kph", "v", "mv", "kw", "mah", "wh", "kwh", "st", "nd", "rd", "th", "am", "pm",
+];
+
+/// Unfamiliar terms in `screen_text` worth biasing a dictation toward: CamelCase and
+/// mixed case (`cuBLAS`, `PyTorch`), 2-6 letter acronyms (`CUDA`), letter+digit
+/// identifiers (`H100`), hyphenated or underscored identifiers (`gpt-4o`, `max_tokens`)
+/// and capitalised names mid-sentence (`Infatoshi`). Interface labels, measurements,
+/// ordinals, times, hashes and ordinary English are dropped. Most frequent first, ties
+/// by first appearance; at most `max_terms`.
+pub fn extract_screen_terms(screen_text: &str, max_terms: usize) -> Vec<String> {
+    if max_terms == 0 {
+        return Vec::new();
+    }
+    // (spelling first seen, count, position first seen), by lowercase key
+    let mut found: Vec<(String, usize, usize)> = Vec::new();
+    let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut position = 0_usize;
+    for line in screen_text.lines() {
+        let mut sentence_start = true;
+        for chunk in line.split_whitespace() {
+            let ends_sentence = chunk
+                .trim_end_matches(['"', '\'', ')', ']', '\u{201d}', '\u{2019}'])
+                .ends_with(['.', '!', '?', ':']);
+            for token in chunk.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_')) {
+                let token = token.trim_matches(['-', '_']);
+                if token.is_empty() {
+                    continue;
+                }
+                if is_screen_term(token, sentence_start) {
+                    match by_key.get(&token.to_lowercase()) {
+                        Some(&slot) => found[slot].1 += 1,
+                        None => {
+                            by_key.insert(token.to_lowercase(), found.len());
+                            found.push((token.to_string(), 1, position));
+                        }
+                    }
+                }
+                sentence_start = false;
+                position += 1;
+            }
+            if ends_sentence {
+                sentence_start = true;
+            }
+        }
+    }
+    found.sort_by_key(|(_, count, first)| (Reverse(*count), *first));
+    found
+        .into_iter()
+        .take(max_terms)
+        .map(|(term, _, _)| term)
+        .collect()
+}
+
+fn is_screen_term(token: &str, sentence_start: bool) -> bool {
+    let length = token.chars().count();
+    if !(2..=64).contains(&length)
+        || !token.chars().any(char::is_alphabetic)
+        || SCREEN_UI_LABELS
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case(token))
+        || is_screen_number(token)
+        || is_hex_hash(token)
+    {
+        return false;
+    }
+    let has_digit = token.chars().any(|c| c.is_ascii_digit());
+    if token.contains('_') {
+        return true;
+    }
+    if token.contains('-') {
+        return has_digit
+            || token
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .any(|part| {
+                    capitalised_inside(part)
+                        || (part.chars().count() >= 2 && part.chars().all(char::is_uppercase))
+                        || !is_ordinary_english(part)
+                });
+    }
+    if has_digit {
+        return true;
+    }
+    if capitalised_inside(token) {
+        return true;
+    }
+    if token.chars().all(char::is_uppercase) {
+        return match length {
+            2 => !SCREEN_TWO_LETTER_WORDS.contains(&token),
+            3..=6 => !is_ordinary_english(token),
+            _ => false,
+        };
+    }
+    let mut chars = token.chars();
+    let capitalised = chars.next().is_some_and(char::is_uppercase) && chars.all(char::is_lowercase);
+    capitalised && !sentence_start && length >= 3 && !is_ordinary_english(token)
+}
+
+/// A number with a unit, ordinal or clock suffix (`100ms`, `1080p`, `2nd`, `9am`).
+fn is_screen_number(token: &str) -> bool {
+    if !token.starts_with(|c: char| c.is_ascii_digit()) {
+        return false;
+    }
+    let suffix = token.trim_start_matches(|c: char| c.is_ascii_digit());
+    suffix.chars().all(char::is_alphabetic)
+        && SCREEN_NUMBER_SUFFIXES
+            .iter()
+            .any(|unit| unit.eq_ignore_ascii_case(suffix))
+}
+
+/// A commit or object hash (`a1b2c3d`, `0xdeadbeef`).
+fn is_hex_hash(token: &str) -> bool {
+    let digits = token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"));
+    if let Some(digits) = digits {
+        return !digits.is_empty() && digits.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    token.len() >= 7
+        && token.chars().all(|c| c.is_ascii_hexdigit())
+        && token.chars().any(|c| c.is_ascii_digit())
+        && token.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 fn dictionary_key(entry: &DictionaryEntry) -> (String, Option<String>) {
@@ -1327,9 +1587,185 @@ mod local_refiner_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_transcript_payload, safe_polish_output, DictionaryEntry, DictionaryFile,
+        app_support_dir_from, extract_screen_terms, extract_transcript_payload,
+        normalize_screen_terms, safe_polish_output, AsrTermEntry, DictionaryEntry, DictionaryFile,
         SettingsFile,
     };
+
+    #[test]
+    fn phonon_data_dir_overrides_the_application_support_folder() {
+        assert_eq!(
+            app_support_dir_from(Some("/tmp/phonon-iso".into()), Some("/Users/x".into())).unwrap(),
+            std::path::PathBuf::from("/tmp/phonon-iso")
+        );
+        assert_eq!(
+            app_support_dir_from(Some("".into()), Some("/Users/x".into())).unwrap(),
+            std::path::PathBuf::from("/Users/x/Library/Application Support/Phonon")
+        );
+        assert_eq!(
+            app_support_dir_from(None, Some("/Users/x".into())).unwrap(),
+            std::path::PathBuf::from("/Users/x/Library/Application Support/Phonon")
+        );
+        assert!(app_support_dir_from(None, None).is_err());
+    }
+
+    #[test]
+    fn asr_term_entries_carry_spoken_forms_and_replaced_phrases() {
+        let mut phonon = entry("Phonon", None);
+        phonon.spoken_forms = vec!["phone on".into(), "Phonon".into(), "PHONE ON".into()];
+        let dictionary = DictionaryFile {
+            entries: vec![
+                phonon,
+                entry("koo bloss", Some("cuBLAS")),
+                entry("cue blas", Some("cuBLAS")),
+                entry("table", None),
+                entry("cublas", Some("cuBLAS")),
+            ],
+            ..Default::default()
+        };
+        let entries = dictionary.asr_term_entries();
+        assert_eq!(
+            entries,
+            vec![
+                AsrTermEntry {
+                    term: "Phonon".into(),
+                    spoken_forms: vec!["phone on".into()],
+                },
+                AsrTermEntry {
+                    term: "cuBLAS".into(),
+                    spoken_forms: vec!["koo bloss".into(), "cue blas".into()],
+                },
+            ]
+        );
+        let terms: Vec<String> = entries.iter().map(|e| e.term.clone()).collect();
+        assert_eq!(terms, dictionary.asr_terms());
+        let wire = serde_json::to_value(&entries).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!([
+                {"term":"Phonon","spoken_forms":["phone on"]},
+                {"term":"cuBLAS","spoken_forms":["koo bloss","cue blas"]}
+            ])
+        );
+        let bare = serde_json::to_value(AsrTermEntry {
+            term: "CUDA".into(),
+            spoken_forms: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(bare, serde_json::json!({"term":"CUDA"}));
+    }
+
+    #[test]
+    fn screen_terms_keep_identifiers_and_names_and_drop_noise() {
+        let screen = "File Edit View Window Help\n\
+            Recent Settings Search\n\
+            INFO loaded cuBLAS in 100ms at 1080p on the H100, commit a1b2c3d4e5\n\
+            The PyTorch build uses CUDA and max_tokens with gpt-4o on the 2nd try at 9am.\n\
+            Ask Infatoshi about cuBLAS. Today the well-known GPU is fine.\n\
+            TODO: OK THE IT";
+        let terms = extract_screen_terms(screen, 24);
+        for kept in [
+            "cuBLAS",
+            "H100",
+            "PyTorch",
+            "CUDA",
+            "max_tokens",
+            "gpt-4o",
+            "Infatoshi",
+            "GPU",
+        ] {
+            assert!(
+                terms.contains(&kept.to_string()),
+                "{kept} missing: {terms:?}"
+            );
+        }
+        for dropped in [
+            "File",
+            "Edit",
+            "Recent",
+            "Settings",
+            "INFO",
+            "100ms",
+            "1080p",
+            "a1b2c3d4e5",
+            "2nd",
+            "9am",
+            "Today",
+            "The",
+            "Ask",
+            "well-known",
+            "TODO",
+            "OK",
+            "THE",
+            "IT",
+            "loaded",
+        ] {
+            assert!(
+                !terms.contains(&dropped.to_string()),
+                "{dropped} kept: {terms:?}"
+            );
+        }
+        // most frequent first, then first appearance
+        assert_eq!(terms[0], "cuBLAS");
+        assert_eq!(terms[1], "H100");
+        assert_eq!(extract_screen_terms(screen, 2), vec!["cuBLAS", "H100"]);
+        assert!(extract_screen_terms(screen, 0).is_empty());
+        assert!(extract_screen_terms("", 10).is_empty());
+    }
+
+    #[test]
+    fn screen_terms_are_normalized_and_capped() {
+        let many: Vec<String> = (0..40).map(|i| format!("Term{i}")).collect();
+        assert_eq!(normalize_screen_terms(&many).len(), 24);
+        assert_eq!(
+            normalize_screen_terms(&[" cuBLAS ", "CUBLAS", "", "H100"]),
+            vec!["cuBLAS", "H100"]
+        );
+    }
+
+    #[test]
+    fn unfamiliar_screen_terms_reach_the_envelope_even_without_a_dictionary() {
+        let empty = DictionaryFile::default();
+        assert_eq!(
+            empty.prepare_polish_input_with_screen_terms("use koo bloss", "cuBLAS docs", &[]),
+            "use koo bloss"
+        );
+        let input = empty.prepare_polish_input_with_screen_terms(
+            "use koo bloss on the H one hundred",
+            "cuBLAS docs H100",
+            &["cuBLAS".into(), "H100".into(), "cublas".into()],
+        );
+        assert!(input.starts_with("<phonon_dictionary>\n"), "{input}");
+        assert!(
+            input.contains("screen_confirmed_terms: cuBLAS, H100\n"),
+            "{input}"
+        );
+        assert!(input.contains("<transcript>\nuse koo bloss on the H one hundred\n</transcript>"));
+
+        let dictionary = DictionaryFile {
+            entries: vec![entry("cuBLAS", None)],
+            ..Default::default()
+        };
+        let plain = dictionary
+            .prepare_polish_input_with_context("Use Kubloss here", "CUDA Toolkit cuBLAS docs");
+        assert_eq!(
+            plain,
+            dictionary.prepare_polish_input_with_screen_terms(
+                "Use Kubloss here",
+                "CUDA Toolkit cuBLAS docs",
+                &[]
+            )
+        );
+        let merged = dictionary.prepare_polish_input_with_screen_terms(
+            "Use Kubloss here",
+            "CUDA Toolkit cuBLAS docs",
+            &["CUBLAS".into(), "Toolkit".into(), "CUDA".into()],
+        );
+        assert!(
+            merged.contains("screen_confirmed_terms: cuBLAS, Toolkit, CUDA\n"),
+            "{merged}"
+        );
+    }
 
     fn entry(phrase: &str, replacement: Option<&str>) -> DictionaryEntry {
         DictionaryEntry {

@@ -1183,7 +1183,10 @@ struct LiveTextTrace {
     private var lastCard: [String] = []
 
     static func logURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if PhononDataPaths.isOverridden() {
+            return AppData.dataDirectory.appendingPathComponent("Logs/live.jsonl")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Phonon/live.jsonl")
     }
 

@@ -29,12 +29,9 @@ final class SingleInstanceLock {
     }
 
     static func acquire() -> SingleInstanceLock? {
-        guard
-            let base = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first
-        else { return nil }
-        let directory = base.appendingPathComponent("Phonon", isDirectory: true)
+        // `PHONON_DATA_DIR` moves the lock too, so an isolated benchmark instance can run
+        // beside the owner's app.
+        let directory = PhononDataPaths.supportDirectory()
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         return acquire(at: directory.appendingPathComponent("bar.lock"))
@@ -608,11 +605,7 @@ struct BarSettings: Decodable {
 
     private static func load() -> Self? {
         guard
-            let base = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first,
-            let data = try? Data(
-                contentsOf: base.appendingPathComponent("Phonon/settings.json")),
+            let data = try? Data(contentsOf: PhononDataPaths.settings()),
             let settings = try? JSONDecoder().decode(Self.self, from: data)
         else { return nil }
         return settings
@@ -631,12 +624,7 @@ struct BarSettings: Decodable {
     }
 
     static func setStreamingEnabled(_ enabled: Bool) {
-        guard
-            let base = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first
-        else { return }
-        let url = base.appendingPathComponent("Phonon/settings.json")
+        let url = PhononDataPaths.settings()
         guard
             let data = try? Data(contentsOf: url),
             var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -1340,7 +1328,10 @@ enum EngineLog {
     static let maxBytes = 5_000_000
 
     static var defaultURL: URL? {
-        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+        if PhononDataPaths.isOverridden() {
+            return AppData.dataDirectory.appendingPathComponent("Logs/engine.log")
+        }
+        return FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Logs/Phonon/engine.log")
     }
 
@@ -1595,8 +1586,9 @@ final class MicRecorder {
     }
 
     private func reselectDevice(reason: String) {
-        NSLog("phonon mic: reselect (\(reason))")
         pendingReselect = nil
+        guard fixtureURL == nil else { return }  // no device in use: nothing to reselect
+        NSLog("phonon mic: reselect (\(reason))")
         let capturing = isCapturing
         forgetDevice()
         guard Self.shouldRestartAfterReselect(primed: primed, capturing: capturing) else { return }
@@ -1664,7 +1656,7 @@ final class MicRecorder {
 
     /// Keep the CoreAudio graph alive so key-down only gates sample retention.
     func prewarm() {
-        guard !primed else { return }
+        guard !primed, fixtureURL == nil else { return }
         do {
             try ensureHardwareRunning()
             primed = true
@@ -1674,6 +1666,7 @@ final class MicRecorder {
     }
 
     func refreshPreferredDevice() {
+        guard fixtureURL == nil else { return }
         do {
             try ensureHardwareRunning()
             primed = true
@@ -1684,12 +1677,31 @@ final class MicRecorder {
 
     /// The input hardware is already up (Instant microphone, or a dictation just ran): `start` will not block on a
     /// hardware bring-up.
-    var hardwareRunning: Bool { configuredDeviceID != nil && engine.isRunning }
+    var hardwareRunning: Bool {
+        fixtureURL != nil || (configuredDeviceID != nil && engine.isRunning)
+    }
+
+    /// `PHONON_AUDIO_FIXTURE`: dictations record this WAV instead of the microphone, and no
+    /// audio device is ever opened.
+    private let fixtureURL = AudioFixtureConfig.current.fixtureURL
+    private var fixtureSamples: [Float]?
+    private var fixtureStreamer: AudioFixtureStreamer?
+    /// The fixture played to its end (main thread): the harness stops the dictation here.
+    var onFixtureFinished: (() -> Void)?
+    var usesAudioFixture: Bool { fixtureURL != nil }
 
     /// `fastStart`: stream the opening seconds in short chunks (`StreamChunkCadence`), so the first
     /// live word shows sooner; the live text card asks for it.
     func start(fastStart: Bool = false) throws {
-        try ensureHardwareRunning()
+        if fixtureURL == nil {
+            try ensureHardwareRunning()
+        } else if fixtureSamples == nil, let fixtureURL {
+            fixtureSamples = try AudioFixtureLoader.loadMono16kPCM(from: fixtureURL)
+            selectedDeviceName = "Audio fixture"
+            NSLog(
+                "phonon mic: audio fixture \(fixtureURL.lastPathComponent), "
+                    + "\(fixtureSamples?.count ?? 0) samples at 16 kHz")
+        }
         lock.lock()
         samples = CaptureBuffer()
         meter = 0
@@ -1702,6 +1714,18 @@ final class MicRecorder {
         streamFastStart = fastStart
         captureEnabled = true
         lock.unlock()
+        if let fixtureSamples {
+            fixtureStreamer?.stop()
+            let streamer = AudioFixtureStreamer(samples: fixtureSamples)
+            fixtureStreamer = streamer
+            streamer.start(
+                onChunk: { [weak self] chunk in
+                    self?.ingestMono(chunk, rate: AudioFixtureStreamer.sampleRate)
+                },
+                onFinished: { [weak self] in
+                    DispatchQueue.main.async { self?.onFixtureFinished?() }
+                })
+        }
     }
 
     /// Below this RMS (-90 dBFS) the input is digital silence: a muted, disconnected or
@@ -1846,6 +1870,14 @@ final class MicRecorder {
             let d = Double(s)
             sumSq += d * d
         }
+        ingestMono(chunk, rate: rate, sumSq: sumSq)
+    }
+
+    /// One mono buffer into the dictation (the mic tap, or an audio fixture's 10 ms chunk).
+    private func ingestMono(_ chunk: [Float], rate: Double, sumSq precomputed: Double? = nil) {
+        let frames = chunk.count
+        guard frames > 0 else { return }
+        let sumSq = precomputed ?? chunk.reduce(0.0) { $0 + Double($1) * Double($1) }
         let rms = sqrt(sumSq / Double(frames))
         let db = rms > 1e-9 ? 20.0 * log10(rms) : -60.0
         let norm = min(1, max(0, (db - (-55.0)) / 55.0))
@@ -1910,6 +1942,8 @@ final class MicRecorder {
     }
 
     func endCapture(keepHardwareWarm: Bool = true) {
+        fixtureStreamer?.stop()
+        fixtureStreamer = nil
         lock.lock()
         captureEnabled = false
         meter = 0
@@ -1940,11 +1974,7 @@ final class MicRecorder {
         // Require at least ~80ms so we don't ship a silent stub from a cold start.
         guard captured.seconds >= 0.08 else { return nil }
 
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!
-            .appendingPathComponent("Phonon", isDirectory: true)
-            .appendingPathComponent("Corpus", isDirectory: true)
+        let base = PhononDataPaths.corpus()
         let id = "bar_\(Int(Date().timeIntervalSince1970 * 1000))_\(ProcessInfo.processInfo.processIdentifier)"
         let directory = base.appendingPathComponent(id, isDirectory: true)
         try? FileManager.default.createDirectory(
@@ -2308,7 +2338,10 @@ final class E2ETrace {
 
 enum E2EProfileStore {
     static func logURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if PhononDataPaths.isOverridden() {
+            return AppData.dataDirectory.appendingPathComponent("Logs/e2e.jsonl")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Phonon/e2e.jsonl")
     }
 
@@ -2454,6 +2487,17 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var screenSwitchTasks: [Task<Void, Never>] = []
     private var screenSwitchTimer: Timer?
     private var screenWaitWork: DispatchWorkItem?
+    /// Terms read from the focused window's accessibility text at key-down
+    /// (`ScreenVocabulary.swift`), for this dictation only.
+    private var activeScreenTerms: [String] = []
+    /// The engine holds terms from this dictation and must be told to drop them.
+    private var screenTermsSent = false
+    private var screenVocabulary = ScreenVocabularySession()
+    /// Keeps the Ctrl+Space Carbon hotkey armed while another app holds Secure Event Input.
+    private let secureInput = SecureInputMonitor()
+    /// `PHONON_AUDIO_FIXTURE` / `PHONON_NO_PASTE` (headless benchmark harness).
+    private let audioFixture = AudioFixtureConfig.current
+    private var fixtureAutoStarted = false
     private var engineRestartWork: DispatchWorkItem?
     private var terminating = false
     private var activeWavPath: String?
@@ -2496,6 +2540,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         state.streamingPreviewEnabled = appStore.settings.streaming
         state.showWhenIdle = appStore.settings.showIdleCapsule
+        recorder.onFixtureFinished = { [weak self] in
+            guard let self, self.isRecording else { return }
+            self.stopDictation(source: "fixture")
+        }
         offerBackupRestoreIfNeeded()
         setupPanel()
         setupModelStartupWindow()
@@ -2535,6 +2583,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         startEngine()
         installToggleHandler()
         syncToggleHotKey()
+        startSecureInputMonitor()
         installHotkey()
         refreshStatusTitle()
         showIdle()
@@ -3076,6 +3125,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 pendingFinalPolish = nil
                 submitFinalPolish(pending.text, id: pending.id)
             }
+            startFixtureDictationIfNeeded()
         case "result":
             let kind = ev["kind"] as? String ?? ""
             let id = ev["id"] as? String
@@ -3116,6 +3166,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 if text.isEmpty {
                     // Empty ASR — don't hang the loader forever.
                     NSLog("phonon: empty ASR for \(pid)")
+                    clearScreenTerms()
                     processing = false
                     finishRecordingRetention()
                     if heldSeconds >= Self.notHeardMinSeconds {
@@ -3135,6 +3186,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     return
                 }
                 guard id == activeId else { return }
+                clearScreenTerms()
                 if e2eTrace?.passId == id {
                     e2eTrace?.polishResultNs = DispatchTime.now().uptimeNanoseconds
                     e2eTrace?.llmReportedWallMs = ev["latency_ms"] as? Double
@@ -3158,7 +3210,21 @@ final class AppController: NSObject, NSApplicationDelegate {
                     let editSnapshot = id.flatMap { editLearning.takeSnapshot(passID: $0) }
                     var insertionSucceeded = false
                     let target = insertionTarget ?? NSWorkspace.shared.frontmostApplication
-                    if let target,
+                    if audioFixture.noPaste {
+                        // Benchmark harness: no clipboard, no ⌘V; the text goes to a file.
+                        do {
+                            let url = try AudioFixtureConfig.writeOutput(
+                                final, directory: AppData.dataDirectory)
+                            insertionSucceeded = true
+                            if audioFixture.fixtureURL != nil {
+                                NSLog("phonon fixture output (\(url.path)): \(final)")
+                            } else {
+                                NSLog("phonon no-paste: \(final.count) characters to \(url.path)")
+                            }
+                        } catch {
+                            NSLog("phonon no-paste write failed: \(error.localizedDescription)")
+                        }
+                    } else if let target,
                         TextboxAccess.pasteHasNoTarget(
                             pid: target.processIdentifier, bundleID: target.bundleIdentifier)
                     {
@@ -3200,7 +3266,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                             self.hideLiveText()
                         }
                     }
-                    if insertionSucceeded, let editSnapshot, let id {
+                    if insertionSucceeded, !audioFixture.noPaste, let editSnapshot, let id {
                         editLearning.didPaste(
                             editSnapshot, passID: id, pasted: Typer.spaced(final),
                             record: appStore.settings.localHistory)
@@ -3490,6 +3556,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             earlierCardText = nil
         }
         editLearning.interrupt(reason: .nextDictation)
+        clearScreenTerms()  // nothing from the previous dictation carries over
         let ownPID = ProcessInfo.processInfo.processIdentifier
         if let frontmost = NSWorkspace.shared.frontmostApplication,
             frontmost.processIdentifier != ownPID
@@ -3616,6 +3683,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             ducker.stop()
             state.fadeOut()  // nothing was recorded: the lit light fades, no snap
             hideAfter(BarStages.fadeOutSeconds)
+            clearScreenTerms()
             NSLog("mic: \(error.localizedDescription)")
         }
     }
@@ -3694,6 +3762,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     )
                     // No WAV, so no transcribe: tell the engine the dictation is over.
                     self.engine.send(["cmd": "dictation_end", "id": id])
+                    self.clearScreenTerms()
                     // Stay visible briefly so it doesn't feel broken, then hide.
                     self.processing = false
                     self.state.fadeOut()  // nothing captured: the core fades
@@ -3759,6 +3828,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if case .micSilent = notPasted.current { notPasted.dismiss() }
         dictationTargetTask?.cancel()
         dropScreenContext()
+        clearScreenTerms()
         if streamActive {
             // Without stream_finish or a transcribe the engine emits no result for it; the
             // next stream_start replaces it.
@@ -3843,13 +3913,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         let textbox = appStore.settings.textboxContext ? dictationTextbox : nil
         let screen = screenCollection.text
         let history = appStore.settings.localHistory
+        let terms = activeScreenTerms
         run(
             earlier.add(
                 id: id, stage: stage, wavPath: path, polishSent: polishSent, engineReady: enginesReady,
                 polishCommand: { raw in
-                    PolishCommand.make(
+                    var command = PolishCommand.make(
                         text: raw, id: id, screenText: screen, target: target, textbox: textbox,
                         localHistory: history)
+                    if !terms.isEmpty { command["screen_terms"] = terms }
+                    return command
                 }))
     }
 
@@ -3931,6 +4004,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }.value
             guard let self, !Task.isCancelled, self.activeId == pass, let pass else { return }
             self.dictationTarget = target
+            self.startScreenVocabulary(target: target, pid: pid)
             if self.streamActive, self.isRecording, !target.enginePayload.isEmpty {
                 self.engine.send(["cmd": "stream_app", "id": pass, "app": target.enginePayload])
             }
@@ -3950,6 +4024,107 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    // MARK: Screen vocabulary
+
+    /// One bounded accessibility read of the dictation app's focused window, once its
+    /// target (and a browser's page) is known not to be private. Needs Accessibility only;
+    /// runs whether or not screen OCR (Screen Recording) is on.
+    private func startScreenVocabulary(target: DictationTarget, pid: pid_t?) {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        guard isRecording, let pid, !target.denied,
+            ScreenVocabularyReader.allows(
+                pid: pid, bundleID: target.bundleID,
+                denylist: appStore.settings.screenContextDenylist, ownPID: ownPID),
+            AXIsProcessTrusted()
+        else { return }
+        let token = screenVocabulary.begin()
+        let bundleID = target.bundleID
+        let denylist = appStore.settings.screenContextDenylist
+        let known = Set(
+            appStore.dictionaryEntries.flatMap { [$0.phrase] + ($0.replacement.map { [$0] } ?? []) })
+        Task { [weak self] in
+            let (terms, elapsedMs) = await Task.detached(priority: .userInitiated) {
+                let started = Date()
+                let text = ScreenVocabularyReader.readFocusedWindowText(
+                    pid: pid, bundleID: bundleID, denylist: denylist, ownPID: ownPID)
+                let terms = text.map { ScreenVocabularyExtractor.extract(from: $0, known: known) }
+                return (terms ?? [], Int(Date().timeIntervalSince(started) * 1_000))
+            }.value
+            self?.applyScreenTerms(terms, token: token, elapsedMs: elapsedMs)
+        }
+    }
+
+    private func applyScreenTerms(_ terms: [String], token: Int, elapsedMs: Int) {
+        // A read from a dictation that already ended, or was superseded, is dropped.
+        guard screenVocabulary.accept(token) else { return }
+        // Counts only: window text and terms never reach the log.
+        NSLog("phonon screen vocabulary: \(terms.count) terms in \(elapsedMs) ms")
+        guard !terms.isEmpty else { return }
+        activeScreenTerms = terms
+        screenTermsSent = true
+        engine.send(["cmd": "screen_terms", "terms": terms])
+    }
+
+    /// The dictation is over (pasted, cancelled, dropped, superseded): its terms must never
+    /// reach a meeting or the next dictation.
+    private func clearScreenTerms() {
+        screenVocabulary.cancel()
+        activeScreenTerms = []
+        guard screenTermsSent else { return }
+        screenTermsSent = false
+        engine.send(["cmd": "screen_terms", "terms": []])
+    }
+
+    /// `screen_terms` rides on `polish` and `screen_context` when there are any.
+    private func withScreenTerms(_ command: [String: Any]) -> [String: Any] {
+        guard !activeScreenTerms.isEmpty else { return command }
+        var command = command
+        command["screen_terms"] = activeScreenTerms
+        return command
+    }
+
+    // MARK: Secure input
+
+    private func startSecureInputMonitor() {
+        guard SecureInputMonitor.runsNormally else { return }
+        secureInput.shortcutMode = { [weak self] in self?.appStore.settings.shortcutMode ?? "" }
+        secureInput.onTransition = { [weak self] transition in
+            guard let self else { return }
+            switch transition {
+            case .register:
+                // Re-register from scratch: a registration made before secure input came on
+                // is replaced by a fresh one rather than trusted.
+                if let toggleHotKey = self.toggleHotKey {
+                    UnregisterEventHotKey(toggleHotKey)
+                    self.toggleHotKey = nil
+                }
+                self.syncToggleHotKey()
+            case .unregister:
+                // Back to the shortcut mode's own registration.
+                self.syncToggleHotKey()
+            case .none:
+                break
+            }
+        }
+        secureInput.onVerify = { [weak self] in
+            guard let self, self.toggleHotKey == nil else { return }
+            NSLog("phonon: Ctrl+Space hotkey missing under secure input; registering again")
+            self.syncToggleHotKey()
+        }
+        secureInput.start()
+    }
+
+    // MARK: Audio fixture
+
+    /// A fixture run is headless: once the engine is ready it dictates the fixture once,
+    /// and stops when the fixture ends.
+    private func startFixtureDictationIfNeeded() {
+        guard audioFixture.fixtureURL != nil, !fixtureAutoStarted, !isRecording else { return }
+        fixtureAutoStarted = true
+        NSLog("phonon: dictating audio fixture")
+        startDictation(source: "fixture")
     }
 
     // MARK: Screen context
@@ -4089,7 +4264,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let text = screenCollection.text
         guard !text.isEmpty, text != streamScreenTextSent else { return }
         streamScreenTextSent = text
-        engine.send(["cmd": "screen_context", "id": id, "text": text])
+        engine.send(withScreenTerms(["cmd": "screen_context", "id": id, "text": text]))
     }
 
     private func stopScreenSwitchWatch() {
@@ -4138,7 +4313,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         if e2eTrace?.passId == id {
             e2eTrace?.polishSubmittedNs = DispatchTime.now().uptimeNanoseconds
         }
-        engine.send(polishCommand(text: text, id: id, context: screenCollection.text))
+        engine.send(withScreenTerms(polishCommand(text: text, id: id, context: screenCollection.text)))
+        // The terms are in the correction now; a read finishing later is no use.
+        screenVocabulary.cancel()
     }
 
     private func polishCommand(text: String, id: String, context: String) -> [String: Any] {
@@ -4312,6 +4489,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if type == .keyDown {
             guard editKeyWatch.withLock({ $0 }) else { return }
             let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            guard Self.isChordKeyDown(keyCode: keyCode) else { return }
             let flags = event.flags
             Self.onMain {
                 self.editLearning.noteKey(
@@ -4330,12 +4508,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             // The Globe/fn key reports through this same tap as its own flag.
             // Require it to be the only modifier, so fn-qualified keys such as
             // the arrow cluster can never open a recording.
-            let onlyFn =
-                flags.contains(.maskSecondaryFn)
-                && !flags.contains(.maskAlternate)
-                && !flags.contains(.maskCommand)
-                && !flags.contains(.maskControl)
-                && !flags.contains(.maskShift)
+            let onlyFn = Self.globeHeld(
+                keyCode: keyCode, eventFlags: flags,
+                sessionFlags: { CGEventSource.flagsState(.combinedSessionState) })
             let eventNs = event.timestamp
             let callbackNs = DispatchTime.now().uptimeNanoseconds
             Self.onMain {
@@ -4352,7 +4527,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
                 if self.shortcutAllows(source: "fn") {
                     let edge = self.fnEdges.update(
-                        pressed: onlyFn, ownKey: keyCode == Self.functionKeyCode)
+                        pressed: onlyFn, ownKey: Self.isGlobeKeyCode(keyCode))
                     self.holdKey(edge, source: "fn", eventNs: eventNs, callbackNs: callbackNs)
                 } else {
                     self.fnEdges.reset()
@@ -4364,6 +4539,42 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// kVK_Function: the flags-changed event of the Globe/fn key itself.
     nonisolated static let functionKeyCode = 63
+    /// The Globe key as Karabiner-Elements' virtual keyboard (and some Apple keyboards) post
+    /// it: key code 179, as key-down/up and flags-changed events alongside the fn flag.
+    nonisolated static let globeKeyEventCode = 179
+
+    /// Either code is the Globe/fn key itself: its own press, never a chord key.
+    nonisolated static func isGlobeKeyCode(_ keyCode: Int) -> Bool {
+        keyCode == functionKeyCode || keyCode == globeKeyEventCode
+    }
+
+    /// Whether a key-down is a real keystroke (for edit learning or anything that reacts to
+    /// typing). The Globe key's own key-down (179 from Karabiner) is not: counting it made a
+    /// held Globe look like typing during a dictation.
+    nonisolated static func isChordKeyDown(keyCode: Int) -> Bool {
+        !isGlobeKeyCode(keyCode)
+    }
+
+    /// fn is the only modifier held: fn-qualified keys (the arrow cluster) never count.
+    nonisolated static func isOnlyFn(_ flags: CGEventFlags) -> Bool {
+        flags.contains(.maskSecondaryFn)
+            && !flags.contains(.maskAlternate)
+            && !flags.contains(.maskCommand)
+            && !flags.contains(.maskControl)
+            && !flags.contains(.maskShift)
+    }
+
+    /// Whether the Globe key reads as held after one flags-changed event. Karabiner's
+    /// virtual keyboard can post a key-code-179 event without the fn bit while Globe is
+    /// still down; taken at face value that ended a held dictation. For 179 the session's
+    /// live modifier state decides instead; every other key code keeps the event's flags.
+    nonisolated static func globeHeld(
+        keyCode: Int, eventFlags: CGEventFlags, sessionFlags: () -> CGEventFlags
+    ) -> Bool {
+        if isOnlyFn(eventFlags) { return true }
+        guard keyCode == globeKeyEventCode else { return false }
+        return isOnlyFn(sessionFlags())
+    }
 
     private func tapLatch(for source: String) -> HoldKeyTapLatch {
         source == "fn" ? fnTapLatch : optionTapLatch
@@ -4545,6 +4756,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetingCleaner.shutdown()
         engine.shutdown()
         recorder.stop(writeFile: false)
+        secureInput.stop()
         removeEventTap()
     }
 
