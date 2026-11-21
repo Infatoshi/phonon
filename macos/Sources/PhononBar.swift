@@ -1095,9 +1095,9 @@ struct PillView: View {
                 }
                 .frame(width: 80, height: 16, alignment: .bottom)
                 .opacity(state.capsuleVisible ? 1 : 0)
-                .animation(.easeOut(duration: 0.12), value: state.capsuleVisible)
+                .animation(.easeOut(duration: 0.09), value: state.capsuleVisible)
                 .animation(
-                    .spring(response: 0.14, dampingFraction: 0.88),
+                    .spring(response: 0.11, dampingFraction: 0.90),
                     value: size
                 )
         }

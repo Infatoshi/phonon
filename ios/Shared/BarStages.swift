@@ -41,9 +41,9 @@ struct BarLook: Equatable {
 }
 
 enum BarStages {
-    static let igniteSeconds = 0.14
-    static let gatherSeconds = 0.28
-    static let fadeOutSeconds = 0.16
+    static let igniteSeconds = 0.10
+    static let gatherSeconds = 0.22
+    static let fadeOutSeconds = 0.10
     static let wideWidth = 0.5
     static let coreWidth = 0.08
     /// Half-way through the gather progress (k = 0.5 -> width 0.29).
@@ -72,7 +72,7 @@ enum BarStages {
         return 1 - inv * inv * inv
     }
 
-    /// Quadratic ease-out pull used during fade-out so even a 30 ms dictation finishes gathering cleanly to the core.
+    /// Quadratic ease-out pull used during fade-out so even a 15 ms dictation finishes gathering cleanly to the core.
     static func fadePull(progress p: Double) -> Double {
         let u = min(1, max(0, p))
         let inv = 1 - u
@@ -114,15 +114,16 @@ enum BarStages {
             return BarLook(width: wideWidth - (wideWidth - coreWidth) * k, heat: heat, opacity: 0.5 + 0.5 * heat)
         case .fadeOut:
             let p = min(1, t / fadeOutSeconds)
+            // Ease-out extinguish: 75% of the glow is gone in the first half of the fade so fast 15-30 ms
+            // dictations feel crisp and never linger behind pasted text.
+            let remain = (1 - p) * (1 - p)
             if reduceMotion {
-                return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * (1 - p))
+                return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * remain)
             }
-            // Fast dictations finish well before gatherSeconds; pull cleanly into the tight core as it fades
-            // so the animation never cuts off mid-gather or fades a wide flat smear.
             let pull = fadePull(progress: p)
             let width = from.width + (coreWidth - from.width) * pull
             let heat = from.heat + (1 - from.heat) * pull
-            return BarLook(width: width, heat: heat, opacity: from.opacity * (1 - p))
+            return BarLook(width: width, heat: heat, opacity: from.opacity * remain)
         }
     }
 }

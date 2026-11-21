@@ -19,9 +19,9 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(BarStages.ignitedOpacity, 0.88, accuracy: 1e-9)
         XCTAssertEqual(BarStages.gatherStartOpacity, 0.65, accuracy: 1e-9)
         XCTAssertEqual(BarStages.halfGatherWidth, 0.29, accuracy: 1e-9)
-        XCTAssertEqual(BarStages.igniteSeconds, 0.14)
-        XCTAssertEqual(BarStages.gatherSeconds, 0.28)
-        XCTAssertEqual(BarStages.fadeOutSeconds, 0.16)
+        XCTAssertEqual(BarStages.igniteSeconds, 0.10)
+        XCTAssertEqual(BarStages.gatherSeconds, 0.22)
+        XCTAssertEqual(BarStages.fadeOutSeconds, 0.10)
         XCTAssertEqual(BarStages.wideWidth, 0.5)
         XCTAssertEqual(BarStages.coreWidth, 0.08)
     }
@@ -101,7 +101,7 @@ final class BarStagesTests: XCTestCase {
             XCTAssertLessThanOrEqual(f.opacity, held.opacity, "never brighter at \(t)")
         }
         XCTAssertEqual(look(.fadeOut, 0, from: held).opacity, 1, accuracy: 1e-9)
-        XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds / 2, from: held).opacity, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds / 2, from: held).opacity, 0.25, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds, from: held).opacity, 0, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, 1, from: held).rgba.a, 0, accuracy: 1e-9)
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
