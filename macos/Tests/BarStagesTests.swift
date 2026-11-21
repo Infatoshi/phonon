@@ -19,9 +19,9 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(BarStages.ignitedOpacity, 0.88, accuracy: 1e-9)
         XCTAssertEqual(BarStages.gatherStartOpacity, 0.65, accuracy: 1e-9)
         XCTAssertEqual(BarStages.halfGatherWidth, 0.29, accuracy: 1e-9)
-        XCTAssertEqual(BarStages.igniteSeconds, 0.18)
-        XCTAssertEqual(BarStages.gatherSeconds, 1.2)
-        XCTAssertEqual(BarStages.fadeOutSeconds, 0.2)
+        XCTAssertEqual(BarStages.igniteSeconds, 0.14)
+        XCTAssertEqual(BarStages.gatherSeconds, 0.28)
+        XCTAssertEqual(BarStages.fadeOutSeconds, 0.16)
         XCTAssertEqual(BarStages.wideWidth, 0.5)
         XCTAssertEqual(BarStages.coreWidth, 0.08)
     }
@@ -36,64 +36,87 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(look(.listening, 0, level: 0.3).opacity, BarStages.ignitedOpacity, accuracy: 1e-9)
     }
 
-    func testIgniteDecaysLinearlyToTheLiveLevelOverEighteenHundredthsOfASecond() {
+    func testIgniteDecaysLinearlyToTheLiveLevelOverIgniteSeconds() {
         let live = 0.3
         let dim = BarStages.dimOpacity, range = BarStages.energyOpacity
-        let settled = look(.listening, 0.18, level: live).opacity
+        let settled = look(.listening, BarStages.igniteSeconds, level: live).opacity
         XCTAssertEqual(settled, dim + range * live, accuracy: 1e-9)
-        let half = look(.listening, 0.09, level: live).opacity
+        let half = look(.listening, BarStages.igniteSeconds / 2, level: live).opacity
         XCTAssertEqual(half, dim + range * (live + (1 - live) * 0.5), accuracy: 1e-9)
         XCTAssertEqual(look(.listening, 5, level: live).opacity, settled, accuracy: 1e-9, "no ignite left later")
         // quiet: the floor of 0.08
         XCTAssertEqual(look(.listening, 5, level: 0).opacity, dim + range * BarStages.listeningFloor, accuracy: 1e-9)
     }
 
-    func testGatherReachesTheCoreAtOnePointTwoSecondsAndHolds() {
+    func testGatherReachesTheCoreQuicklyWithEaseOutAndHolds() {
         XCTAssertEqual(look(.processing, 0).width, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(look(.processing, 0.6).width, BarStages.halfGatherWidth, accuracy: 1e-9, "linear")
-        let core = look(.processing, 1.2)
+        // Cubic ease-out moves rapidly on fast 40 ms dictations instead of barely twitching.
+        let at40ms = look(.processing, 0.04)
+        XCTAssertLessThan(at40ms.width, 0.36, "visibly gathered within 40 ms")
+        XCTAssertGreaterThan(at40ms.heat, 0.5, "visibly warmed within 40 ms")
+        let atMid = look(.processing, BarStages.gatherSeconds / 2)
+        XCTAssertLessThan(atMid.width, BarStages.halfGatherWidth, "ease-out is past halfway at t/2")
+        let core = look(.processing, BarStages.gatherSeconds)
         XCTAssertEqual(core.width, 0.08, accuracy: 1e-9)
         XCTAssertEqual(core.heat, 1, accuracy: 1e-9)
         XCTAssertEqual(core.opacity, 1, accuracy: 1e-9)
-        for t in [1.3, 2.0, 10.0, 600.0] {
+        for t in [0.35, 1.0, 10.0, 600.0] {
             XCTAssertEqual(look(.processing, t), core, "held, no loop or breathing at \(t) s")
         }
         // it brightens as it gathers: base warm at 0.65 opacity, towards (227, 101, 29)
         XCTAssertEqual(look(.processing, 0).opacity, BarStages.gatherStartOpacity, accuracy: 1e-9)
-        XCTAssertLessThan(look(.processing, 0.3).opacity, look(.processing, 0.9).opacity)
+        XCTAssertLessThan(look(.processing, 0.04).opacity, look(.processing, 0.16).opacity)
         let c = core.rgba
         XCTAssertEqual(c.r * 255, 227, accuracy: 1e-6)
         XCTAssertEqual(c.g * 255, 101, accuracy: 1e-6)
         XCTAssertEqual(c.b * 255, 29, accuracy: 1e-6)
     }
 
-    func testFadeOutStartsFromWhereverTheGatherWas() {
+    func testFadeOutStartsContinuouslyAndFinishesGatheringFastDictations() {
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let processing = BarBeat.ignite(at: t0).processing(at: t0)
-        let early = processing.fadeOut(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false)
+        // A fast 40 ms dictation ends well before gatherSeconds.
+        let doneAt = t0.addingTimeInterval(0.04)
+        let early = processing.fadeOut(at: doneAt, level: 0.4, reduceMotion: false)
         XCTAssertEqual(early.stage, .fadeOut)
-        XCTAssertEqual(early.from.width, BarStages.halfGatherWidth, accuracy: 1e-9,
-                       "finished half way through the gather")
-        XCTAssertEqual(early.look(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false).width,
-                       BarStages.halfGatherWidth, accuracy: 1e-9, "continuous: no jump at the moment of the paste")
+        let expectedAtPaste = look(.processing, 0.04)
+        XCTAssertEqual(early.from.width, expectedAtPaste.width, accuracy: 1e-9)
+        XCTAssertEqual(early.look(at: doneAt, level: 0.4, reduceMotion: false).width,
+                       expectedAtPaste.width, accuracy: 1e-9, "continuous: no jump at the moment of the paste")
+        // As fadeOut runs, the light pulls inward cleanly to coreWidth while fading to 0.
+        let midFade = early.look(at: doneAt.addingTimeInterval(BarStages.fadeOutSeconds / 2), level: 0, reduceMotion: false)
+        XCTAssertLessThan(midFade.width, early.from.width, "keeps gathering inward during fade-out")
+        XCTAssertLessThan(midFade.opacity, early.from.opacity, "never flashes brighter")
+        let endFade = early.look(at: doneAt.addingTimeInterval(BarStages.fadeOutSeconds), level: 0, reduceMotion: false)
+        XCTAssertEqual(endFade.width, BarStages.coreWidth, accuracy: 1e-9, "arrives cleanly at tight core")
+        XCTAssertEqual(endFade.opacity, 0, accuracy: 1e-9)
     }
 
-    func testTheEndFadesTheCoreOverTwoTenthsWithNoPulse() {
+    func testTheEndFadesTheCoreWithNoPulse() {
         let held = look(.processing, 3)
-        for t in stride(from: 0.0, through: 0.5, by: 0.05) {
+        for t in stride(from: 0.0, through: 0.4, by: 0.04) {
             let f = look(.fadeOut, t, from: held)
             XCTAssertEqual(f.width, 0.08, accuracy: 1e-9, "the core does not spread at \(t)")
-            XCTAssertEqual(f.heat, held.heat, "no colour change at \(t)")
+            XCTAssertEqual(f.heat, held.heat, accuracy: 1e-9, "no colour change from held core at \(t)")
             XCTAssertLessThanOrEqual(f.opacity, held.opacity, "never brighter at \(t)")
         }
         XCTAssertEqual(look(.fadeOut, 0, from: held).opacity, 1, accuracy: 1e-9)
-        XCTAssertEqual(look(.fadeOut, 0.1, from: held).opacity, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(look(.fadeOut, 0.2, from: held).opacity, 0, accuracy: 1e-9)
+        XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds / 2, from: held).opacity, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds, from: held).opacity, 0, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, 1, from: held).rgba.a, 0, accuracy: 1e-9)
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let ended = BarBeat.ignite(at: t0).processing(at: t0).fadeOut(at: t0.addingTimeInterval(2), level: 0, reduceMotion: false)
         XCTAssertEqual(ended.stage, .fadeOut)
-        XCTAssertEqual(ended.settleSeconds(reduceMotion: false), 0.2)
+        XCTAssertEqual(ended.settleSeconds(reduceMotion: false), BarStages.fadeOutSeconds)
+    }
+
+    func testFadeOutImmediatelyTargetsIdleShellSize() {
+        let idle = PillView.shellSize(mode: .idle, beatStage: .rest, energy: 0, meetingRecording: false)
+        let fadeOut = PillView.shellSize(mode: .working, beatStage: .fadeOut, energy: 0.27, meetingRecording: false)
+        XCTAssertEqual(fadeOut, idle, "fade-out glides directly to idle size with no second-stage shrink jerk")
+        let meetingIdle = PillView.shellSize(mode: .idle, beatStage: .rest, energy: 0, meetingRecording: true)
+        let meetingFadeOut = PillView.shellSize(mode: .working, beatStage: .fadeOut, energy: 0.27, meetingRecording: true)
+        XCTAssertEqual(meetingFadeOut, meetingIdle)
     }
 
     func testReduceMotionNeverMovesTheWidth() {
@@ -219,24 +242,30 @@ final class BarStagesTests: XCTestCase {
     func testWritesStageStills() throws {
         guard let output = ProcessInfo.processInfo.environment["PHONON_RENDER_DIR"] else { return }
         let t0 = Date(timeIntervalSinceReferenceDate: 5000)
-        let shots: [(String, PillState.Mode, Double, Double)] = [
-            ("1-ignite-t0", .listening, 0, 0), ("2-listening-mid", .listening, 1, 0.5),
-            ("3-gather-0.6s", .working, 0.6, 0), ("4-gather-held", .working, 3, 0),
-            ("5-fade-0.1s", .working, 3.1, 0),
+        // Render a real fast 40 ms dictation (listening -> 40 ms gather -> fade-out converging to core -> rest).
+        let shots: [(String, PillState.Mode, Double, Double, Double?)] = [
+            ("1-ignite-t0", .listening, 0, 0, nil),
+            ("2-listening-mid", .listening, 1, 0.5, nil),
+            ("3-gather-40ms", .working, 0.04, 0, nil),
+            ("4-fast-fade-mid", .working, 0.12, 0, 0.04),
+            ("5-gather-held", .working, 0.4, 0, nil),
+            ("6-rest", .idle, 0.6, 0, nil),
         ]
-        for (name, mode, at, level) in shots {
+        for (name, mode, at, level, fadeAt) in shots {
             let pill = PillState()
             pill.mode = mode
             pill.level = level
-            pill.ignite(now: t0)
-            pill.reduceMotion = false
+            if mode != .idle {
+                pill.ignite(now: t0)
+                pill.reduceMotion = false
+            }
             if mode == .working {
                 pill.startProcessing(now: t0)
-                if name.hasPrefix("5") { pill.fadeOut(now: t0.addingTimeInterval(3)) }
+                if let fadeAt { pill.fadeOut(now: t0.addingTimeInterval(fadeAt)) }
             }
             let view = PillView(state: pill, fixedTime: t0.addingTimeInterval(at))
                 .frame(width: 120, height: 40)
-                .background(Color(white: 0.2))
+                .background(Color(white: 0.12))
                 .environment(\.colorScheme, .dark)
             let renderer = ImageRenderer(content: view)
             renderer.scale = 8

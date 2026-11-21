@@ -41,12 +41,12 @@ struct BarLook: Equatable {
 }
 
 enum BarStages {
-    static let igniteSeconds = 0.18
-    static let gatherSeconds = 1.2
-    static let fadeOutSeconds = 0.2
+    static let igniteSeconds = 0.14
+    static let gatherSeconds = 0.28
+    static let fadeOutSeconds = 0.16
     static let wideWidth = 0.5
     static let coreWidth = 0.08
-    /// Half-way through the gather (0.29).
+    /// Half-way through the gather progress (k = 0.5 -> width 0.29).
     static let halfGatherWidth = (wideWidth + coreWidth) / 2
     /// Reduce Motion (and Low Power Mode): the width never moves; every stage is this steady medium core.
     static let reducedWidth = 0.25
@@ -65,6 +65,20 @@ enum BarStages {
     static let baseColor = (r: 0.42, g: 0.12, b: 0.035)
     static let coreColor = (r: 227.0 / 255, g: 101.0 / 255, b: 29.0 / 255)
 
+    /// Cubic ease-out progress for gathering the light inward quickly on fast local dictations.
+    static func gatherProgress(elapsed: Double) -> Double {
+        let u = min(1, max(0, elapsed) / gatherSeconds)
+        let inv = 1 - u
+        return 1 - inv * inv * inv
+    }
+
+    /// Quadratic ease-out pull used during fade-out so even a 30 ms dictation finishes gathering cleanly to the core.
+    static func fadePull(progress p: Double) -> Double {
+        let u = min(1, max(0, p))
+        let inv = 1 - u
+        return 1 - inv * inv
+    }
+
     /// How long a stage draws before it settles (the clock can stop after this); nil means it never changes by itself.
     static func duration(of stage: BarStage, reduceMotion: Bool) -> Double? {
         switch stage {
@@ -76,7 +90,7 @@ enum BarStages {
     }
 
     /// The look `elapsed` seconds into `stage`. `level` is the smoothed voice level (0...1). `from` is the look at the
-    /// moment the fade-out began, so it fades from wherever the gather had got to.
+    /// moment the fade-out began, so it fades continuously from wherever the gather had got to.
     static func look(stage: BarStage, elapsed: Double, level: Double, reduceMotion: Bool = false,
                      from: BarLook = BarLook(width: coreWidth, heat: 1, opacity: 1)) -> BarLook {
         let t = max(0, elapsed)
@@ -95,12 +109,20 @@ enum BarStages {
             if reduceMotion {
                 return BarLook(width: reducedWidth, heat: reducedHeat, opacity: 0.5 + 0.5 * reducedHeat)
             }
-            let k = min(1, t / gatherSeconds)
+            let k = gatherProgress(elapsed: t)
             let heat = gatherStartHeat + (1 - gatherStartHeat) * k
             return BarLook(width: wideWidth - (wideWidth - coreWidth) * k, heat: heat, opacity: 0.5 + 0.5 * heat)
         case .fadeOut:
             let p = min(1, t / fadeOutSeconds)
-            return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * (1 - p))
+            if reduceMotion {
+                return BarLook(width: from.width, heat: from.heat, opacity: from.opacity * (1 - p))
+            }
+            // Fast dictations finish well before gatherSeconds; pull cleanly into the tight core as it fades
+            // so the animation never cuts off mid-gather or fades a wide flat smear.
+            let pull = fadePull(progress: p)
+            let width = from.width + (coreWidth - from.width) * pull
+            let heat = from.heat + (1 - from.heat) * pull
+            return BarLook(width: width, heat: heat, opacity: from.opacity * (1 - p))
         }
     }
 }

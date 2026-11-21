@@ -1052,14 +1052,14 @@ struct PillView: View {
     @State private var settledBeat: BarBeat?
 
     var body: some View {
-        // Idle and hidden draw nothing that changes over time, so the clock stops there: an unpaused timeline redrew
-        // the still capsule 30 times a second forever (about 5% of a core on an M4 Air, 2026-11-05). It also stops
-        // while the gathered core is held (processing, gather done) and after the fade-out, where the capsule goes idle.
+        // Idle, hidden, and the settled processing core pause the clock (0% idle CPU). While actively
+        // animating (ignite, listening, gather, fade-out) use native display refresh so 30–160 ms
+        // completions render smoothly instead of dropping to 1–4 frames at 30 Hz.
         let drawn = state.drawnBeat
         let heldCore = state.mode == .working && !state.meetingRecording && settledBeat == drawn
         return TimelineView(
             .animation(
-                minimumInterval: 1.0 / 30.0,
+                minimumInterval: nil,
                 paused: ((state.mode == .idle || state.mode == .hidden) && !state.meetingRecording) || heldCore)
         ) { context in
             // a stopped clock hands over a stale date; a held stage is at its end, so ask the time
@@ -1095,9 +1095,9 @@ struct PillView: View {
                 }
                 .frame(width: 80, height: 16, alignment: .bottom)
                 .opacity(state.capsuleVisible ? 1 : 0)
-                .animation(.easeOut(duration: 0.18), value: state.capsuleVisible)
+                .animation(.easeOut(duration: 0.12), value: state.capsuleVisible)
                 .animation(
-                    .spring(response: 0.22, dampingFraction: 0.86),
+                    .spring(response: 0.14, dampingFraction: 0.88),
                     value: size
                 )
         }
@@ -1161,7 +1161,9 @@ struct PillView: View {
     }
 
     private func glow(_ energy: Double) -> Double {
-        if state.mode == .idle { return state.meetingRecording ? 0.18 : 0 }
+        if state.mode == .idle || (state.mode == .working && state.beat.stage == .fadeOut) {
+            return state.meetingRecording ? 0.18 : 0
+        }
         return 0.22 + energy * 0.12
     }
 
@@ -1187,23 +1189,37 @@ struct PillView: View {
         }
     }
 
-    private func shellSize(energy: Double) -> CGSize {
-        switch state.mode {
+    /// Pure capsule shell size for `mode`, `beatStage`, `energy`, and `meetingRecording`.
+    /// When `beatStage == .fadeOut`, the shell immediately targets resting idle size so a fast
+    /// dictation glides back to rest in one continuous spring instead of two-step stuttering.
+    static func shellSize(
+        mode: PillState.Mode, beatStage: BarStage, energy: Double, meetingRecording: Bool
+    ) -> CGSize {
+        let idle = meetingRecording ? CGSize(width: 46, height: 12) : CGSize(width: 40, height: 8)
+        switch mode {
         case .hidden, .idle:
-            // Recording a meeting: slightly larger, so the light fits inside.
-            return state.meetingRecording
-                ? CGSize(width: 46, height: 12) : CGSize(width: 40, height: 8)
+            return idle
         case .listening:
             return CGSize(
                 width: 66 + 14 * energy,
                 height: 13 + 3 * energy
             )
         case .working:
+            if beatStage == .fadeOut { return idle }
             return CGSize(
                 width: 38 + 10 * energy,
                 height: 10 + 3 * energy
             )
         }
+    }
+
+    private func shellSize(energy: Double) -> CGSize {
+        Self.shellSize(
+            mode: state.mode,
+            beatStage: state.beat.stage,
+            energy: energy,
+            meetingRecording: state.meetingRecording
+        )
     }
 }
 

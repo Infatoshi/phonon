@@ -13,9 +13,9 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(BarStages.ignitedOpacity, 0.88, accuracy: 1e-9)
         XCTAssertEqual(BarStages.gatherStartOpacity, 0.65, accuracy: 1e-9)
         XCTAssertEqual(BarStages.halfGatherWidth, 0.29, accuracy: 1e-9)
-        XCTAssertEqual(BarStages.igniteSeconds, 0.18)
-        XCTAssertEqual(BarStages.gatherSeconds, 1.2)
-        XCTAssertEqual(BarStages.fadeOutSeconds, 0.2)
+        XCTAssertEqual(BarStages.igniteSeconds, 0.14)
+        XCTAssertEqual(BarStages.gatherSeconds, 0.28)
+        XCTAssertEqual(BarStages.fadeOutSeconds, 0.16)
         XCTAssertEqual(BarStages.wideWidth, 0.5)
         XCTAssertEqual(BarStages.coreWidth, 0.08)
     }
@@ -30,64 +30,75 @@ final class BarStagesTests: XCTestCase {
         XCTAssertEqual(look(.listening, 0, level: 0.3).opacity, BarStages.ignitedOpacity, accuracy: 1e-9)
     }
 
-    func testIgniteDecaysLinearlyToTheLiveLevelOverEighteenHundredthsOfASecond() {
+    func testIgniteDecaysLinearlyToTheLiveLevelOverIgniteSeconds() {
         let live = 0.3
         let dim = BarStages.dimOpacity, range = BarStages.energyOpacity
-        let settled = look(.listening, 0.18, level: live).opacity
+        let settled = look(.listening, BarStages.igniteSeconds, level: live).opacity
         XCTAssertEqual(settled, dim + range * live, accuracy: 1e-9)
-        let half = look(.listening, 0.09, level: live).opacity
+        let half = look(.listening, BarStages.igniteSeconds / 2, level: live).opacity
         XCTAssertEqual(half, dim + range * (live + (1 - live) * 0.5), accuracy: 1e-9)
         XCTAssertEqual(look(.listening, 5, level: live).opacity, settled, accuracy: 1e-9, "no ignite left later")
         // quiet: the floor of 0.08
         XCTAssertEqual(look(.listening, 5, level: 0).opacity, dim + range * BarStages.listeningFloor, accuracy: 1e-9)
     }
 
-    func testGatherReachesTheCoreAtOnePointTwoSecondsAndHolds() {
+    func testGatherReachesTheCoreQuicklyWithEaseOutAndHolds() {
         XCTAssertEqual(look(.processing, 0).width, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(look(.processing, 0.6).width, BarStages.halfGatherWidth, accuracy: 1e-9, "linear")
-        let core = look(.processing, 1.2)
+        let at40ms = look(.processing, 0.04)
+        XCTAssertLessThan(at40ms.width, 0.36, "visibly gathered within 40 ms")
+        XCTAssertGreaterThan(at40ms.heat, 0.5, "visibly warmed within 40 ms")
+        let atMid = look(.processing, BarStages.gatherSeconds / 2)
+        XCTAssertLessThan(atMid.width, BarStages.halfGatherWidth, "ease-out is past halfway at t/2")
+        let core = look(.processing, BarStages.gatherSeconds)
         XCTAssertEqual(core.width, 0.08, accuracy: 1e-9)
         XCTAssertEqual(core.heat, 1, accuracy: 1e-9)
         XCTAssertEqual(core.opacity, 1, accuracy: 1e-9)
-        for t in [1.3, 2.0, 10.0, 600.0] {
+        for t in [0.35, 1.0, 10.0, 600.0] {
             XCTAssertEqual(look(.processing, t), core, "held, no loop or breathing at \(t) s")
         }
         // it brightens as it gathers: base warm at 0.65 opacity, towards (227, 101, 29)
         XCTAssertEqual(look(.processing, 0).opacity, BarStages.gatherStartOpacity, accuracy: 1e-9)
-        XCTAssertLessThan(look(.processing, 0.3).opacity, look(.processing, 0.9).opacity)
+        XCTAssertLessThan(look(.processing, 0.04).opacity, look(.processing, 0.16).opacity)
         let c = core.rgba
         XCTAssertEqual(c.r * 255, 227, accuracy: 1e-6)
         XCTAssertEqual(c.g * 255, 101, accuracy: 1e-6)
         XCTAssertEqual(c.b * 255, 29, accuracy: 1e-6)
     }
 
-    func testFadeOutStartsFromWhereverTheGatherWas() {
+    func testFadeOutStartsContinuouslyAndFinishesGatheringFastDictations() {
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let processing = BarBeat.ignite(at: t0).processing(at: t0)
-        let early = processing.fadeOut(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false)
+        let doneAt = t0.addingTimeInterval(0.04)
+        let early = processing.fadeOut(at: doneAt, level: 0.4, reduceMotion: false)
         XCTAssertEqual(early.stage, .fadeOut)
-        XCTAssertEqual(early.from.width, BarStages.halfGatherWidth, accuracy: 1e-9,
-                       "finished half way through the gather")
-        XCTAssertEqual(early.look(at: t0.addingTimeInterval(0.6), level: 0.4, reduceMotion: false).width,
-                       BarStages.halfGatherWidth, accuracy: 1e-9, "continuous: no jump at the moment of the paste")
+        let expectedAtPaste = look(.processing, 0.04)
+        XCTAssertEqual(early.from.width, expectedAtPaste.width, accuracy: 1e-9)
+        XCTAssertEqual(early.look(at: doneAt, level: 0.4, reduceMotion: false).width,
+                       expectedAtPaste.width, accuracy: 1e-9, "continuous: no jump at the moment of the paste")
+        let midFade = early.look(at: doneAt.addingTimeInterval(BarStages.fadeOutSeconds / 2), level: 0, reduceMotion: false)
+        XCTAssertLessThan(midFade.width, early.from.width, "keeps gathering inward during fade-out")
+        XCTAssertLessThan(midFade.opacity, early.from.opacity, "never flashes brighter")
+        let endFade = early.look(at: doneAt.addingTimeInterval(BarStages.fadeOutSeconds), level: 0, reduceMotion: false)
+        XCTAssertEqual(endFade.width, BarStages.coreWidth, accuracy: 1e-9, "arrives cleanly at tight core")
+        XCTAssertEqual(endFade.opacity, 0, accuracy: 1e-9)
     }
 
-    func testTheEndFadesTheCoreOverTwoTenthsWithNoPulse() {
+    func testTheEndFadesTheCoreWithNoPulse() {
         let held = look(.processing, 3)
-        for t in stride(from: 0.0, through: 0.5, by: 0.05) {
+        for t in stride(from: 0.0, through: 0.4, by: 0.04) {
             let f = look(.fadeOut, t, from: held)
             XCTAssertEqual(f.width, 0.08, accuracy: 1e-9, "the core does not spread at \(t)")
-            XCTAssertEqual(f.heat, held.heat, "no colour change at \(t)")
+            XCTAssertEqual(f.heat, held.heat, accuracy: 1e-9, "no colour change from held core at \(t)")
             XCTAssertLessThanOrEqual(f.opacity, held.opacity, "never brighter at \(t)")
         }
         XCTAssertEqual(look(.fadeOut, 0, from: held).opacity, 1, accuracy: 1e-9)
-        XCTAssertEqual(look(.fadeOut, 0.1, from: held).opacity, 0.5, accuracy: 1e-9)
-        XCTAssertEqual(look(.fadeOut, 0.2, from: held).opacity, 0, accuracy: 1e-9)
+        XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds / 2, from: held).opacity, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(look(.fadeOut, BarStages.fadeOutSeconds, from: held).opacity, 0, accuracy: 1e-9)
         XCTAssertEqual(look(.fadeOut, 1, from: held).rgba.a, 0, accuracy: 1e-9)
         let t0 = Date(timeIntervalSinceReferenceDate: 1000)
         let ended = BarBeat.ignite(at: t0).processing(at: t0).fadeOut(at: t0.addingTimeInterval(2), level: 0, reduceMotion: false)
         XCTAssertEqual(ended.stage, .fadeOut)
-        XCTAssertEqual(ended.settleSeconds(reduceMotion: false), 0.2)
+        XCTAssertEqual(ended.settleSeconds(reduceMotion: false), BarStages.fadeOutSeconds)
     }
 
     func testReduceMotionNeverMovesTheWidth() {
