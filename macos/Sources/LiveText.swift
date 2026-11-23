@@ -549,6 +549,10 @@ final class LiveTextState: ObservableObject {
     /// Whether the card is on screen: words to show, or a voice heard while the key is held.
     var showsCard: Bool { !isEmpty || (awake && listening) }
 
+    /// Key is up with words on the card, and the final corrected text has not landed yet:
+    /// the card shows a small "spelling correction in progress" note under it.
+    var isCorrecting: Bool { !isEmpty && !listening && leaving == nil }
+
     /// The corrected words as they read once every effect settles.
     var correctedWords: [String] {
         items.flatMap { item -> [String] in
@@ -996,30 +1000,102 @@ struct LiveTextView: View {
         VStack(spacing: 0) {
             if state.showsCard {
                 if let fixedTime {
-                    LiveTextCard(frame: state.frame(at: fixedTime))
+                    LiveTextCard(
+                        frame: state.frame(at: fixedTime),
+                        sweep: state.isCorrecting ? LiveSweep.phase(at: fixedTime) : nil)
                 } else {
                     // Display rate while something moves; 60 Hz while only the dot follows
                     // the voice.
                     TimelineView(
                         .animation(
                             minimumInterval: state.animating ? nil : 1.0 / 60,
-                            paused: !state.animating && !state.listening)
+                            paused: !state.animating && !state.listening && !state.isCorrecting)
                     ) { context in
+                        let now = context.date.timeIntervalSinceReferenceDate
                         LiveTextCard(
-                            frame: state.frame(at: context.date.timeIntervalSinceReferenceDate))
+                            frame: state.frame(at: now),
+                            sweep: state.isCorrecting ? LiveSweep.phase(at: now) : nil)
                     }
+                }
+                if state.isCorrecting {
+                    CorrectionNote(animated: fixedTime == nil)
+                        .padding(.top, 6)
+                        .transition(.opacity)
                 }
             }
             Spacer(minLength: 0)
         }
+        .animation(.easeOut(duration: 0.15), value: state.isCorrecting)
         .padding(.top, LiveTextPanel.topMargin)
         .frame(width: LiveTextPanel.size.width, height: LiveTextPanel.size.height)
+    }
+}
+
+/// The light that sweeps across the card while the final spelling pass runs.
+enum LiveSweep {
+    /// Seconds for one pass, left edge to right edge.
+    static let period: TimeInterval = 1.3
+    /// Rest between passes, as a fraction of the cycle, so it reads as a pulse of work.
+    static let rest: Double = 0.15
+    static let bandWidth: CGFloat = 110
+
+    /// 0...1 across one pass; stays at 1 (band off the right edge) during the rest.
+    static func phase(at t: TimeInterval) -> Double {
+        let cycle = (t / period).truncatingRemainder(dividingBy: 1)
+        let moving = 1 - rest
+        return LiveTextMotion.ease(min(cycle / moving, 1))
+    }
+}
+
+/// "Spelling correction in progress", shown under the card while the final pass runs:
+/// a spinner and a bold amber-ringed pill, so it reads as work happening, not as a caption.
+struct CorrectionNote: View {
+    var animated = true
+
+    var body: some View {
+        if animated {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                label(time: context.date.timeIntervalSinceReferenceDate)
+            }
+        } else {
+            label(time: 0)
+        }
+    }
+
+    private func label(time: TimeInterval) -> some View {
+        let pulse = 0.5 + 0.5 * sin(time * 2 * .pi / 1.2)
+        return HStack(spacing: 7) {
+            Circle()
+                .trim(from: 0, to: 0.72)
+                .stroke(
+                    LiveRGB.dotLit.color,
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                )
+                .frame(width: 12, height: 12)
+                .rotationEffect(.degrees(time * 360 / 0.9))
+            Text("Correcting spelling…")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(LiveRGB.ink.color)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(LiveRGB(0x2a1608).color))
+        .overlay(
+            Capsule().strokeBorder(
+                LiveRGB.dotLit.color.opacity(0.55 + 0.35 * pulse), lineWidth: 1.2)
+        )
+        .shadow(color: LiveRGB.dotLit.color.opacity(0.18 + 0.22 * pulse), radius: 8)
+        .shadow(color: .black.opacity(0.5), radius: 6, y: 3)
     }
 }
 
 /// The card: top-anchored, one line tall at first, growing down to five lines.
 struct LiveTextCard: View {
     let frame: LiveTextFrame
+    /// While the final spelling pass runs: where the sweeping light is, 0 (left edge) to 1
+    /// (right edge). Nil when nothing is correcting.
+    var sweep: Double?
 
     var body: some View {
         let lineHeight = LiveTextMetrics.lineHeight
@@ -1053,8 +1129,39 @@ struct LiveTextCard: View {
             RoundedRectangle(cornerRadius: LiveTextMetrics.cornerRadius, style: .continuous)
                 .strokeBorder(LiveRGB(0x4a2a16).color, lineWidth: LiveTextMetrics.border)
         )
+        .overlay(sweepLight)
         .shadow(color: .black.opacity(0.67), radius: 12, y: 10)
         .opacity(frame.opacity)
+    }
+
+    /// A soft vertical band of warm light moving left to right over the text.
+    @ViewBuilder
+    private var sweepLight: some View {
+        if let sweep {
+            let band = LiveSweep.bandWidth
+            let x = -band + (LiveTextMetrics.cardWidth + band) * CGFloat(sweep)
+            RoundedRectangle(cornerRadius: LiveTextMetrics.cornerRadius, style: .continuous)
+                .fill(Color.clear)
+                .overlay(
+                    LinearGradient(
+                        stops: [
+                            .init(color: LiveRGB.glow.color.opacity(0), location: 0),
+                            .init(color: LiveRGB.glow.color.opacity(0.55), location: 0.5),
+                            .init(color: LiveRGB.glow.color.opacity(0), location: 1),
+                        ],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: band)
+                    .blendMode(.plusLighter)
+                    .offset(x: x + band / 2 - LiveTextMetrics.cardWidth / 2),
+                    alignment: .center
+                )
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: LiveTextMetrics.cornerRadius, style: .continuous)
+                )
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
