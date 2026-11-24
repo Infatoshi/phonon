@@ -1073,7 +1073,7 @@ struct CorrectionNote: View {
                 )
                 .frame(width: 12, height: 12)
                 .rotationEffect(.degrees(time * 360 / 0.9))
-            Text("Correcting spelling…")
+            Text("Improving spelling & formatting…")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(LiveRGB.ink.color)
                 .lineLimit(1)
