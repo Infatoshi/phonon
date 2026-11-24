@@ -386,3 +386,12 @@ def test_real_vocabulary_writes_the_candidates():
     encode, unk = asr_terms.bpe_encoder(v)
     for t in ("FluidAudio", "cuBLAS", "cue blast", "Kneron"):
         assert unk not in encode(t)
+
+
+def test_merge_vocabulary_unlimited_keeps_all_deduplicated_entries():
+    entries = [f"Term{i}" for i in range(120)]
+    screen = [f"Screen{i}" for i in range(10)]
+    merged = asr_terms.merge_vocabulary(entries, screen, max_terms=None)
+    assert len(merged) == 130
+    assert [e.term for e in merged[:10]] == screen
+    assert merged[-1].term == "Term119"

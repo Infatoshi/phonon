@@ -276,6 +276,8 @@ def merge_vocabulary(entries, screen_terms=(), max_terms=ASR_TERM_BUDGET):
             continue
         seen.add(k)
         screen.append(VocabEntry(t, (), True))
+    if max_terms is None:
+        return screen + [user[k] for k in order]
     half = max_terms // 2
     out = screen[:half] + [user[k] for k in order] + screen[half:]
     return out[:max_terms]
@@ -400,6 +402,45 @@ def _match_rank(span_text, span_norm, span_skel, form, form_norm, form_skel):
     return None
 
 
+_CANDIDATE_INDEX_CACHE = (None, None)
+
+
+def _candidate_index(entries):
+    """Build (or reuse) length-bucketed lookup tables for find_rescore_candidates."""
+    global _CANDIDATE_INDEX_CACHE
+    norm_entries = tuple(_entry(e) for e in (entries or ()))
+    if _CANDIDATE_INDEX_CACHE[0] == norm_entries:
+        return _CANDIDATE_INDEX_CACHE[1]
+    forms = []
+    by_norm = {}
+    by_norm_len = {}
+    by_skel_len = {}
+    for e in norm_entries:
+        if not e.spoken_forms and (
+            len(_alnum(e.term)) < 5 or common_word_collision(e.term)
+        ):
+            continue
+        term_lower = e.term.lower()
+        for f in (e.term, *e.spoken_forms):
+            fn = _alnum(f)
+            if len(fn) < 2:
+                continue
+            fk = consonant_skeleton(f)
+            fi = len(forms)
+            fn_set = frozenset(fn)
+            fk_set = frozenset(fk)
+            rec = (fi, f, f.lower(), fn, fn_set, fk, fk_set, e.term, term_lower)
+            forms.append(rec)
+            by_norm.setdefault(fn, []).append(rec)
+            if len(fn) >= 6:
+                by_norm_len.setdefault(len(fn), []).append(rec)
+            if len(fk) >= 5:
+                by_skel_len.setdefault(len(fk), []).append(rec)
+    index = (forms, by_norm, by_norm_len, by_skel_len)
+    _CANDIDATE_INDEX_CACHE = (norm_entries, index)
+    return index
+
+
 def find_rescore_candidates(words, entries, max_candidates=16, encode=None, skip=()):
     """Spans of 1-4 words (str or AlignedWord) that sound or spell close to a term or one of its spoken forms ->
     up to max_candidates non-overlapping RescoreCandidate (best match rank, then fewest edits, then longer span,
@@ -408,17 +449,7 @@ def find_rescore_candidates(words, entries, max_candidates=16, encode=None, skip
     encode (text -> token ids) gives the candidate tokens; skip: word indices already replaced. Entries that are
     ordinary English words or under 5 letters without spoken forms are not candidates."""
     words = [w if isinstance(w, AlignedWord) else AlignedWord(str(w)) for w in words]
-    forms = []
-    for e in entries or ():
-        e = _entry(e)
-        if not e.spoken_forms and (
-            len(_alnum(e.term)) < 5 or common_word_collision(e.term)
-        ):
-            continue
-        for f in (e.term, *e.spoken_forms):
-            fn = _alnum(f)
-            if len(fn) >= 2:
-                forms.append((f, fn, consonant_skeleton(f), e.term))
+    forms, by_norm, by_norm_len, by_skel_len = _candidate_index(entries)
     if not forms:
         return []
     skip = set(skip)
@@ -434,16 +465,67 @@ def find_rescore_candidates(words, entries, max_candidates=16, encode=None, skip
                 break
             cores = [_core(w.text).lower() for w in span]
             text = " ".join(_core(w.text) for w in span)
+            text_lower = text.lower()
             sn = _alnum(text)
+            sn_len = len(sn)
+            sn_set = frozenset(sn)
             sk = consonant_skeleton(text)
-            for fi, (f, fn, fk, term) in enumerate(forms):
-                if text.lower() == term.lower() or (
-                    n > 1 and term.lower() in cores
-                ):  # already the term, or a span around it (would swallow a neighbour)
+            sk_len = len(sk)
+            sk_set = frozenset(sk)
+            seen_fi = set()
+            # Rank 0: exact _alnum match
+            for rec in by_norm.get(sn, ()):
+                fi, f, f_lower, fn, _fn_set, fk, _fk_set, _term, term_lower = rec
+                if text_lower == term_lower or (n > 1 and term_lower in cores):
                     continue
-                r = _match_rank(text, sn, sk, f, fn, fk)
-                if r is not None:
-                    hits.append((r[0], r[1], -n, i, fi))
+                if text_lower == f_lower:
+                    continue
+                seen_fi.add(fi)
+                hits.append((0, 0, -n, i, fi))
+            # Rank 1: edit distance <= 2 for forms with len >= 6
+            if sn_len >= 4:
+                for flen in range(max(6, sn_len - 2), sn_len + 3):
+                    for rec in by_norm_len.get(flen, ()):
+                        fi, f, f_lower, fn, fn_set, fk, _fk_set, _term, term_lower = rec
+                        if fi in seen_fi:
+                            continue
+                        if len(sn_set - fn_set) > 2 or len(fn_set - sn_set) > 2:
+                            continue
+                        if text_lower == term_lower or (n > 1 and term_lower in cores):
+                            continue
+                        if text_lower == f_lower:
+                            continue
+                        if any(
+                            sn.endswith(suf) and sn[: -len(suf)] == fn
+                            for suf in INFLECTIONS
+                        ):
+                            continue
+                        d = levenshtein(sn, fn)
+                        if d <= 2:
+                            seen_fi.add(fi)
+                            hits.append((1, d, -n, i, fi))
+            # Rank 2: consonant skeleton edit distance <= 1 for forms with skeleton len >= 5
+            if sk_len >= 4:
+                for klen in range(max(5, sk_len - 1), sk_len + 2):
+                    for rec in by_skel_len.get(klen, ()):
+                        fi, f, f_lower, fn, _fn_set, fk, fk_set, _term, term_lower = rec
+                        if fi in seen_fi:
+                            continue
+                        if len(sk_set - fk_set) > 1 or len(fk_set - sk_set) > 1:
+                            continue
+                        if text_lower == term_lower or (n > 1 and term_lower in cores):
+                            continue
+                        if text_lower == f_lower:
+                            continue
+                        if any(
+                            sn.endswith(suf) and sn[: -len(suf)] == fn
+                            for suf in INFLECTIONS
+                        ):
+                            continue
+                        d = levenshtein(sk, fk)
+                        if d <= 1:
+                            seen_fi.add(fi)
+                            hits.append((2, d, -n, i, fi))
     hits.sort()
     used, out = set(), []
     cache = {}
@@ -453,7 +535,7 @@ def find_rescore_candidates(words, entries, max_candidates=16, encode=None, skip
         span = range(i, i - neg)
         if any(j in used for j in span):
             continue
-        f, _fn, _fk, term = forms[fi]
+        f, term = forms[fi][1], forms[fi][7]
         first, last = words[i], words[i - neg - 1]
         heard = (
             tuple(t for w in words[i : i - neg - 1] for t in w.all_tokens) + last.tokens

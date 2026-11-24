@@ -864,6 +864,7 @@ fn judge_run(
     steps: &[AlignmentStep],
     begin: usize,
     end: usize,
+    dictionary: &DictionaryFile,
 ) -> Result<(String, String), RunRejected> {
     let run = &steps[begin..=end];
     let heard: Vec<String> = run
@@ -925,10 +926,29 @@ fn judge_run(
     let starts_sentence = (begin..=end)
         .find(|index| steps[*index].edited.is_some())
         .is_some_and(|index| sentence_start(steps, index));
-    if let Some(why) = rejection(&term, &heard_as, capitalized_mid_sentence, starts_sentence) {
+    let known_entry = find_entry(dictionary, &term);
+    let known_in_dictionary = known_entry.is_some();
+    // Never reverse a known dictionary term (`FluidAudio` -> `offloaded`, `Phonon` -> `iphone`)
+    // into an ordinary or plain lowercase word.
+    if find_entry(dictionary, &heard_as).is_some()
+        && !known_in_dictionary
+        && term.chars().all(|c| !c.is_uppercase())
+    {
+        return Err(reject("reversed_dictionary_term", false));
+    }
+    if let Some(why) = rejection(
+        &term,
+        &heard_as,
+        capitalized_mid_sentence,
+        starts_sentence,
+        known_in_dictionary,
+    ) {
         return Err(reject(why, false));
     }
-    Ok((term, heard_as))
+    let canonical_term = known_entry
+        .map(|entry| entry.canonical().to_string())
+        .unwrap_or(term);
+    Ok((canonical_term, heard_as))
 }
 
 /// Mine each run for a term. Returns the casing steps of runs that turned
@@ -949,16 +969,16 @@ fn mine_word_runs(
         let trimmed = trim_run(steps, begin, end);
         let core = &steps[trimmed.0..=trimmed.1];
         let verdict = if trimmed == (begin, end) {
-            judge_run(steps, begin, end)
+            judge_run(steps, begin, end, dictionary)
         } else if core.iter().any(|s| s.word.is_word_edit())
             && core.iter().any(|s| s.edited.is_some())
         {
             // Only a core that no longer sounds like what was heard falls
             // back to the whole run; a core rejected as formatting (`fifty
             // k` to `50k`) stays rejected.
-            judge_run(steps, trimmed.0, trimmed.1).or_else(|core| {
+            judge_run(steps, trimmed.0, trimmed.1, dictionary).or_else(|core| {
                 if core.skipped.why == "meaning_change" {
-                    judge_run(steps, begin, end)
+                    judge_run(steps, begin, end, dictionary)
                 } else {
                     Err(core)
                 }
@@ -985,7 +1005,7 @@ fn mine_word_runs(
                 release: true,
             })
         } else {
-            judge_run(steps, begin, end)
+            judge_run(steps, begin, end, dictionary)
         };
         let (term, heard_as) = match verdict {
             Ok(found) => found,
@@ -1084,6 +1104,7 @@ fn rejection(
     heard_as: &str,
     capitalized_mid_sentence: bool,
     starts_sentence: bool,
+    known_in_dictionary: bool,
 ) -> Option<&'static str> {
     let words: Vec<&str> = term.split_whitespace().collect();
     if words.iter().all(|w| is_stopword(w)) {
@@ -1291,14 +1312,15 @@ fn rejection(
     if words.iter().any(|w| is_contraction(w)) {
         return Some("contraction");
     }
-    if !term_like(term) && !capitalized_mid_sentence {
+    if !term_like(term) && !capitalized_mid_sentence && !known_in_dictionary {
         return Some("ordinary_words");
     }
     // `demon` to `demo`, `speed` to `speedup`: one ordinary word respelled
     // into a close plain lowercase word is a typo fix or an inflection, not
     // a name the recognizer missed.
     let plain_lowercase = |word: &str| word.chars().all(|c| c.is_alphabetic() && c.is_lowercase());
-    if !term.contains(char::is_whitespace)
+    if !known_in_dictionary
+        && !term.contains(char::is_whitespace)
         && !heard_as.contains(char::is_whitespace)
         && plain_lowercase(term)
         && plain_lowercase(heard_as)
@@ -1497,19 +1519,70 @@ const UNITS: &[&str] = &[
     "TiB", "KiB", "Gbps", "Mbps", "W", "kW", "V", "mAh",
 ];
 
+/// Consonant skeleton for edit-learning similarity: preserves consonants
+/// separated by a vowel (`Neon` -> `nn`, not `n`) and treats silent word-initial
+/// `kn` (`Kneron` -> `nrn`) as `n`.
+fn similarity_key(value: &str) -> String {
+    let mut output = String::new();
+    for raw_word in data::normalize(value).split_whitespace() {
+        let word = raw_word.strip_prefix("kn").map_or(raw_word, |rest| {
+            // Only strip silent `k` before `n` (`kneron`, `knife`).
+            if rest.chars().next().is_some_and(|c| c.is_alphabetic()) {
+                &raw_word[1..]
+            } else {
+                raw_word
+            }
+        });
+        let mut previous = None;
+        for character in word.chars().filter(|c| c.is_alphanumeric()) {
+            let character = match character {
+                'c' | 'q' => 'k',
+                other => other,
+            };
+            if matches!(character, 'a' | 'e' | 'i' | 'o' | 'u' | 'y') {
+                // A vowel separates two real consonant sounds (`Neon` -> `nn`).
+                previous = None;
+                continue;
+            }
+            if previous != Some(character) {
+                output.push(character);
+            }
+            previous = Some(character);
+        }
+    }
+    output
+}
+
+fn first_vowel(value: &str) -> Option<char> {
+    value
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .filter(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+}
+
 /// A misheard term and its correction share most of their consonant
 /// skeleton; a change of mind (`Postgres` to `SQLite`) does not.
 fn sounds_alike(heard: &str, term: &str) -> bool {
-    let a = data::phonetic_key(&spoken_digits(heard));
-    let b = data::phonetic_key(&spoken_digits(term));
+    let heard_spoken = spoken_digits(heard);
+    let term_spoken = spoken_digits(term);
+    let a = similarity_key(&heard_spoken);
+    let b = similarity_key(&term_spoken);
     if a.is_empty() || b.is_empty() {
         return false;
     }
     let longest = a.chars().count().max(b.chars().count());
-    if longest <= 2 {
-        return a == b;
-    }
     let distance = data::levenshtein(&a, &b);
+    if longest <= 2 {
+        if a == b {
+            return true;
+        }
+        // Short vowel-initial terms like `OS` -> `Opus`: same leading vowel and
+        // consonant distance 1 (`s` vs `ps`).
+        return distance == 1
+            && first_vowel(&heard_spoken).is_some()
+            && first_vowel(&heard_spoken) == first_vowel(&term_spoken);
+    }
     distance <= 1 || distance * 2 <= longest
 }
 
@@ -2941,5 +3014,78 @@ mod tests {
         proposes("try Auto GPT now", "try Auto-GPT now", "Auto-GPT");
         let prefix = analyze("a multi GPU box", "a multi-GPU box", None, &empty());
         assert!(terms(&prefix).is_empty(), "{prefix:?}");
+    }
+
+    #[test]
+    fn learns_known_dictionary_lowercase_edits_and_phonetic_names_without_reversing_terms() {
+        let dictionary = DictionaryFile {
+            entries: vec![
+                DictionaryEntry {
+                    phrase: "Claude".into(),
+                    replacement: None,
+                    spoken_forms: Vec::new(),
+                    source: "test".into(),
+                    starred: false,
+                    usage_count: 0,
+                },
+                DictionaryEntry {
+                    phrase: "FluidAudio".into(),
+                    replacement: None,
+                    spoken_forms: Vec::new(),
+                    source: "test".into(),
+                    starred: false,
+                    usage_count: 0,
+                },
+                DictionaryEntry {
+                    phrase: "Phonon".into(),
+                    replacement: None,
+                    spoken_forms: Vec::new(),
+                    source: "test".into(),
+                    starred: false,
+                    usage_count: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        // Lowercase edit toward a known dictionary term teaches a spoken form on the canonical term.
+        let cloud = analyze(
+            "ask cloud to check the logs",
+            "ask claude to check the logs",
+            None,
+            &dictionary,
+        );
+        assert_eq!(
+            terms(&cloud),
+            vec![("Claude".into(), "cloud".into(), TermReason::Misheard)]
+        );
+        // Silent `kn` and short vowel-initial proper nouns sound alike.
+        let kneron = analyze(
+            "we tested Neon chips today",
+            "we tested kneron chips today",
+            None,
+            &empty(),
+        );
+        assert_eq!(
+            terms(&kneron),
+            vec![("kneron".into(), "Neon".into(), TermReason::Misheard)]
+        );
+        let opus = analyze(
+            "switch the agent to OS now",
+            "switch the agent to Opus now",
+            None,
+            &empty(),
+        );
+        assert_eq!(
+            terms(&opus),
+            vec![("Opus".into(), "OS".into(), TermReason::Misheard)]
+        );
+        // Reversing a dictionary term back to an ordinary lowercase word is never learned.
+        let reversed = analyze(
+            "we FluidAudio the task and checked Phonon",
+            "we offloaded the task and checked iphone",
+            None,
+            &dictionary,
+        );
+        assert!(terms(&reversed).is_empty(), "{reversed:?}");
     }
 }

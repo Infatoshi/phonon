@@ -1430,6 +1430,11 @@ impl Engine {
 fn update_recording_raw(recording_id: &str, raw_text: &str) -> Result<()> {
     let mut recording = data::load_recording_by_id(recording_id)?;
     recording.raw_transcript = raw_text.trim().to_string();
+    if !recording.raw_transcript.is_empty() {
+        // If ASR decoded real words, the clip contained speech even when the RMS gate
+        // was too conservative on a quiet mic.
+        recording.speech_detected = Some(true);
+    }
     data::save_recording(&recording)
 }
 

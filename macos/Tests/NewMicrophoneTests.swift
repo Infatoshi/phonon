@@ -51,6 +51,22 @@ final class NewMicrophoneTests: XCTestCase {
         XCTAssertEqual(scan.seen, [macBook.uid, yeti.uid, zoom.uid])
     }
 
+    func testEphemeralCoreAudioAggregatesAreNeverPersistedAndArePruned() {
+        let aggregate = AudioInputDevice(
+            id: 5, name: "CADefaultDeviceAggregate-1234-0", isDefault: false,
+            uid: "CADefaultDeviceAggregate-1234-0", isVirtual: true)
+        let first = NewMicrophonePolicy.scan(
+            devices: [macBook, aggregate], seen: nil, priorities: [])
+        XCTAssertEqual(first.seen, [macBook.uid])
+        XCTAssertTrue(first.newcomers.isEmpty)
+
+        let pruned = NewMicrophonePolicy.scan(
+            devices: [macBook, aggregate],
+            seen: [macBook.uid, "CADefaultDeviceAggregate-999-0"], priorities: [])
+        XCTAssertEqual(pruned.seen, [macBook.uid])
+        XCTAssertTrue(pruned.newcomers.isEmpty)
+    }
+
     func testDeviceWithoutUIDIsIgnored() {
         let nameless = AudioInputDevice(id: 9, name: "Mystery", isDefault: false)
         let scan = NewMicrophonePolicy.scan(devices: [nameless], seen: [], priorities: [])

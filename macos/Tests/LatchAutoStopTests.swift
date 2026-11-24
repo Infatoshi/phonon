@@ -101,6 +101,16 @@ final class LatchAutoStopTests: XCTestCase {
     func testTheLimitsAreTheChosenDefaults() {
         XCTAssertEqual(LatchAutoStop.noSpeechSeconds, 8)
         XCTAssertEqual(LatchAutoStop.silenceAfterSpeechSeconds, 60)
+        XCTAssertEqual(LatchAutoStop.maxDurationSeconds, 600)
         XCTAssertLessThan(LatchAutoStop.noSpeechSeconds, LatchAutoStop.silenceAfterSpeechSeconds)
+        XCTAssertLessThan(LatchAutoStop.silenceAfterSpeechSeconds, LatchAutoStop.maxDurationSeconds)
+    }
+
+    func testMaxDurationCapsAnAccidentalLatchEvenWithContinuousNoise() {
+        var stop = LatchAutoStop(startedAt: 0)
+        speak(&stop, from: 1, seconds: 1)
+        speak(&stop, from: 599, seconds: 0.5)
+        XCTAssertEqual(stop.decision(at: 599.9), .keepRecording)
+        XCTAssertEqual(stop.decision(at: LatchAutoStop.maxDurationSeconds), .commit)
     }
 }

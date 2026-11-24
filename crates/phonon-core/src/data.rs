@@ -182,15 +182,41 @@ impl DictionaryFile {
         matches.into_iter().map(|(entry, _)| entry).collect()
     }
 
+    /// Entries ordered by starred first, then highest usage count, keeping file order on ties.
+    fn asr_ordered_entries(&self) -> Vec<&DictionaryEntry> {
+        let mut entries: Vec<&DictionaryEntry> = self.entries.iter().collect();
+        entries.sort_by(|a, b| {
+            b.starred
+                .cmp(&a.starred)
+                .then_with(|| b.usage_count.cmp(&a.usage_count))
+        });
+        entries
+    }
+
+    /// Ordinary single lowercase English words (`table`, `feed`) are skipped for ASR boosting;
+    /// capitalized proper nouns (`Tetra`, `Claude`, `Claude Code`, `Opus`, `Codex`) and entries
+    /// with explicit spoken forms or replacements are kept, matching `sidecar/asr_terms.py`.
+    fn include_in_asr(entry: &DictionaryEntry) -> bool {
+        let term = entry.canonical().trim();
+        if term.is_empty() {
+            return false;
+        }
+        if !entry.spoken_forms.is_empty() || entry.replacement.is_some() {
+            return true;
+        }
+        let plain_lowercase_word =
+            term.chars().all(|character| character.is_alphabetic() && character.is_lowercase());
+        !(plain_lowercase_word && is_ordinary_english(term))
+    }
+
     /// The written forms speech recognition boosts (the ASR sidecar's `terms`): each
-    /// entry's canonical spelling once, minus ordinary English, which the recognizer
-    /// already spells right and which a boost could only insert where it was not said.
+    /// entry's canonical spelling once, minus plain lowercase ordinary English words.
     pub fn asr_terms(&self) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
-        self.entries
-            .iter()
+        self.asr_ordered_entries()
+            .into_iter()
+            .filter(|entry| Self::include_in_asr(entry))
             .map(|entry| entry.canonical().trim())
-            .filter(|term| !term.is_empty() && !is_ordinary_english(term))
             .filter(|term| seen.insert(term.to_string()))
             .map(str::to_string)
             .collect()
@@ -202,11 +228,11 @@ impl DictionaryFile {
     pub fn asr_term_entries(&self) -> Vec<AsrTermEntry> {
         let mut out: Vec<AsrTermEntry> = Vec::new();
         let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for entry in &self.entries {
-            let term = entry.canonical().trim();
-            if term.is_empty() || is_ordinary_english(term) {
+        for entry in self.asr_ordered_entries() {
+            if !Self::include_in_asr(entry) {
                 continue;
             }
+            let term = entry.canonical().trim();
             let slot = *index.entry(term.to_string()).or_insert_with(|| {
                 out.push(AsrTermEntry {
                     term: term.to_string(),
@@ -400,6 +426,21 @@ impl DictionaryFile {
                     continue;
                 }
                 if is_ordinary_english(&spoken) {
+                    continue;
+                }
+                // Dropping leading vowels collapses unrelated words (`offloaded` -> `FluidAudio`,
+                // `overdid` -> `Verda`, `iphone` -> `Phonon`). Require leading vowel/consonant
+                // parity between what was heard and the canonical term.
+                if starts_with_vowel(&spoken) != starts_with_vowel(canonical) {
+                    continue;
+                }
+                // Short all-caps acronyms (`MCP`, `SDK`) share 3-consonant skeletons with much
+                // longer lowercase words (`memcopy` -> `MCP`). Only match them on spaced letters
+                // or similarly short tokens, never on a single long word.
+                if window_len == 1
+                    && is_short_acronym(canonical)
+                    && spoken.chars().count() >= canonical.chars().count() + 2
+                {
                     continue;
                 }
                 // A word the recognizer capitalised inside (`iPhone`, `macOS`)
@@ -1351,13 +1392,39 @@ fn is_real_word(word: &str) -> bool {
 
 fn is_ordinary_english_word(words: &std::collections::HashSet<String>, word: &str) -> bool {
     let word = word.to_lowercase();
+    if is_ordinary_english_stem(words, &word) {
+        return true;
+    }
+    // Common English prefixes omitted from the 1934 word list (`offload`, `offloaded`,
+    // `overdid`, `preloaded`, `autosave`).
+    for prefix in [
+        "counter", "inter", "super", "multi", "under", "cross", "over", "auto", "anti", "semi",
+        "down", "back", "fore", "self", "off", "out", "pre", "non", "sub", "mis", "dis", "mid",
+    ] {
+        if let Some(rest) = word.strip_prefix(prefix) {
+            if rest.len() >= 3 && is_ordinary_english_stem(words, rest) {
+                return true;
+            }
+        }
+    }
+    for prefix in ["un", "re", "de", "up", "co"] {
+        if let Some(rest) = word.strip_prefix(prefix) {
+            if rest.len() >= 4 && is_ordinary_english_stem(words, rest) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_ordinary_english_stem(words: &std::collections::HashSet<String>, word: &str) -> bool {
     if word.chars().count() <= 2 {
         // The list leaves out `a`, `i`, `at` and their kin, which would
         // otherwise read as exotic and license a guess. A token this short
         // carries too little sound to overrule what the recognizer heard.
         return true;
     }
-    if words.contains(&word) {
+    if words.contains(word) {
         return true;
     }
     for suffix in ["s", "es", "ed", "d", "ing", "ly", "er", "ers", "est"] {
@@ -1387,6 +1454,24 @@ fn is_ordinary_english_word(words: &std::collections::HashSet<String>, word: &st
         }
     }
     false
+}
+
+pub(crate) fn starts_with_vowel(value: &str) -> bool {
+    value
+        .chars()
+        .find(|character| character.is_alphanumeric())
+        .is_some_and(|character| {
+            matches!(
+                character.to_ascii_lowercase(),
+                'a' | 'e' | 'i' | 'o' | 'u'
+            )
+        })
+}
+
+fn is_short_acronym(value: &str) -> bool {
+    let trimmed = value.trim();
+    let len = trimmed.chars().count();
+    (2..=4).contains(&len) && trimmed.chars().all(|character| character.is_ascii_uppercase())
 }
 
 /// Whether two canonical spellings are the same term written differently, which
@@ -2227,5 +2312,49 @@ mod tests {
         assert!(input.contains(
             "<transcript>\nDo you know the difference between cuBLAS and cuDNN?\n</transcript>"
         ));
+    }
+
+    #[test]
+    fn phonetic_matching_protects_prefixed_english_leading_vowels_and_acronyms() {
+        let dictionary = DictionaryFile {
+            entries: vec![
+                entry("FluidAudio", None),
+                entry("Verda", None),
+                entry("MCP", None),
+                entry("Phonon", None),
+            ],
+            ..Default::default()
+        };
+        let transcript =
+            "I offloaded the job, overdid the memcopy, and checked my iphone after offload.";
+        let prepared = dictionary.prepare_polish_input(transcript);
+        assert!(
+            prepared.contains(transcript),
+            "ordinary or unrelated words were corrupted: {prepared}"
+        );
+        assert!(!prepared.contains("=> FluidAudio"), "{prepared}");
+        assert!(!prepared.contains("=> Verda"), "{prepared}");
+        assert!(!prepared.contains("=> MCP"), "{prepared}");
+        assert!(!prepared.contains("=> Phonon"), "{prepared}");
+    }
+
+    #[test]
+    fn asr_term_entries_prioritize_starred_and_usage_count() {
+        let mut starred = entry("ZetaTerm", None);
+        starred.starred = true;
+        let mut popular = entry("Tetra", None);
+        popular.usage_count = 76;
+        let plain = entry("AlphaTerm", None);
+        let dictionary = DictionaryFile {
+            entries: vec![plain, popular, starred],
+            ..Default::default()
+        };
+        let terms = dictionary.asr_terms();
+        assert_eq!(terms, vec!["ZetaTerm", "Tetra", "AlphaTerm"]);
+        let entries = dictionary.asr_term_entries();
+        assert_eq!(
+            entries.iter().map(|e| e.term.as_str()).collect::<Vec<_>>(),
+            vec!["ZetaTerm", "Tetra", "AlphaTerm"]
+        );
     }
 }

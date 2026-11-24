@@ -542,6 +542,9 @@ struct LatchAutoStop {
     /// for tens of seconds, and a commit pastes into whatever is focused, so this is a full
     /// minute; someone who has walked away still gets their words committed.
     static let silenceAfterSpeechSeconds: TimeInterval = 60
+    /// Hard ceiling for a latched dictation even when background room noise keeps tripping
+    /// the voice detector, so an accidental latch never runs indefinitely.
+    static let maxDurationSeconds: TimeInterval = 600
     /// Voice this long without a break counts as speech: about a syllable, and longer than
     /// a keystroke. Time, not a count of readings, because the meter's rate follows the
     /// device's buffer size.
@@ -577,6 +580,9 @@ struct LatchAutoStop {
     }
 
     func decision(at now: TimeInterval) -> Decision {
+        if now - startedAt >= Self.maxDurationSeconds {
+            return lastSpeechAt != nil ? .commit : .discard
+        }
         // Voice that has just begun and not yet lasted `speechRunSeconds` holds a limit
         // off, so talking right at the limit is not cut. Only while readings keep
         // arriving: a mic that stopped mid-voice must not hold it off for ever.
@@ -1272,6 +1278,11 @@ final class PillPanel: NSPanel {
 /// Both players are decoded once at launch. Building them on the keypress would
 /// put file I/O on the path the capsule is trying to open in a few milliseconds.
 final class CueSounds {
+    /// Blank mic capture during the active energy window of `record_start.wav` (95% of its
+    /// energy finishes by 289 ms) so speaker-to-mic bleed does not trigger ASR hallucinations
+    /// or trip `VoiceDetector` when sound feedback is enabled (GitHub #84).
+    static let startCaptureBlankSeconds: TimeInterval = 0.35
+
     private let start: AVAudioPlayer?
     private let stop: AVAudioPlayer?
 
@@ -1553,6 +1564,8 @@ final class MicRecorder {
     private var streamedFrames = 0
     private var streamFastStart = false
     private var captureEnabled = false
+    /// System uptime until which captured buffers are dropped to avoid recording the start chime.
+    private var cueBlankUntil: TimeInterval = 0
     private var configuredDeviceID: AudioDeviceID?
     private(set) var wavPath: String?
     private(set) var selectedDeviceName = "Resolving…"
@@ -1706,9 +1719,37 @@ final class MicRecorder {
     var onFixtureFinished: (() -> Void)?
     var usesAudioFixture: Bool { fixtureURL != nil }
 
+    /// Whether a buffer arriving at `now` falls inside the start-cue blanking window.
+    static func shouldBlankCue(now: TimeInterval, until: TimeInterval) -> Bool {
+        until > 0 && now < until
+    }
+
+    /// Rebind the active input device mid-dictation when CoreAudio starts delivering digital
+    /// silence (e.g. after sleep/wake or device switch), keeping capture enabled.
+    @discardableResult
+    func reselectSilentDevice() -> Bool {
+        guard fixtureURL == nil, isCapturing else { return false }
+        NSLog("phonon mic: digital silence on \(selectedDeviceName); resetting input device")
+        forgetDevice()
+        do {
+            try ensureHardwareRunning()
+            lock.lock()
+            capturedFrames = 0
+            capturedSeconds = 0
+            peakRms = 0
+            lock.unlock()
+            return true
+        } catch {
+            NSLog("phonon mic: silent-device reset failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// `fastStart`: stream the opening seconds in short chunks (`StreamChunkCadence`), so the first
     /// live word shows sooner; the live text card asks for it.
-    func start(fastStart: Bool = false) throws {
+    /// `cueBlankUntil`: system uptime until which mic buffers are dropped to keep the start cue
+    /// out of captured audio (ignored when replaying an audio fixture).
+    func start(fastStart: Bool = false, cueBlankUntil: TimeInterval = 0) throws {
         if fixtureURL == nil {
             try ensureHardwareRunning()
         } else if fixtureSamples == nil, let fixtureURL {
@@ -1728,6 +1769,7 @@ final class MicRecorder {
         streamSamples.removeAll(keepingCapacity: true)
         streamedFrames = 0
         streamFastStart = fastStart
+        self.cueBlankUntil = fixtureURL == nil ? cueBlankUntil : 0
         captureEnabled = true
         lock.unlock()
         if let fixtureSamples {
@@ -1901,6 +1943,13 @@ final class MicRecorder {
         guard captureEnabled else {
             lock.unlock()
             return
+        }
+        if cueBlankUntil > 0 {
+            if Self.shouldBlankCue(now: ProcessInfo.processInfo.systemUptime, until: cueBlankUntil) {
+                lock.unlock()
+                return
+            }
+            cueBlankUntil = 0
         }
         meter = 0.18 * meter + 0.82 * norm
         meterFrame += 1
@@ -2405,6 +2454,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// How long the key was held for the dictation being finished.
     private var heldSeconds: TimeInterval = 0
     private var micSilenceCheck: DispatchWorkItem?
+    private var micSilenceResetAttempted = false
     /// Digital silence for this long while held shows the mic warning.
     static let micSilenceSeconds: TimeInterval = 1.5
     /// An empty result from a hold at least this long says "didn't hear anything"; a
@@ -2419,6 +2469,18 @@ final class AppController: NSObject, NSApplicationDelegate {
             !recorder.capturedAnything
             || recorder.capturedOnlySilence(atLeast: Self.micSilenceSeconds)
         if silent {
+            if !micSilenceResetAttempted {
+                micSilenceResetAttempted = true
+                if recorder.reselectSilentDevice() {
+                    updateMicrophoneStatus()
+                    micSilenceCheck?.cancel()
+                    let recheck = DispatchWorkItem { [weak self] in self?.checkMicSilence() }
+                    micSilenceCheck = recheck
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + Self.micSilenceSeconds + 0.3, execute: recheck)
+                    return
+                }
+            }
             if notPasted.current == nil {
                 notPasted.show(.micSilent(mic: recorder.selectedDeviceName), stays: true)
             }
@@ -3630,7 +3692,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else {
             startScreenContext(enabled: wantScreen)
         }
-        if appStore.settings.soundFeedback { cues.playStart() }
+        let cueBlankUntil: TimeInterval
+        if appStore.settings.soundFeedback {
+            cues.playStart()
+            cueBlankUntil =
+                ProcessInfo.processInfo.systemUptime + CueSounds.startCaptureBlankSeconds
+        } else {
+            cueBlankUntil = 0
+        }
         ducker.start(appStore.settings.backgroundAudio)
         showListening()
         e2eTrace?.panelShownNs = DispatchTime.now().uptimeNanoseconds
@@ -3652,6 +3721,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         }
         recordingStartedAt = Date()
+        micSilenceResetAttempted = false
         voiceDetector = VoiceDetector()
         stopLatchAutoStop()
         toggleLatched = false
@@ -3683,7 +3753,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         // mic captures nothing until its hardware start returns, which this precedes by one panel commit.
         if !recorder.hardwareRunning { flushPanelBeforeColdMicStart() }
         do {
-            try recorder.start(fastStart: liveTextPass)
+            try recorder.start(fastStart: liveTextPass, cueBlankUntil: cueBlankUntil)
             meetings.dictationStarted()
             updateMicrophoneStatus()
             e2eTrace?.recordingStartedNs = DispatchTime.now().uptimeNanoseconds
@@ -3740,6 +3810,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             streamActive = false
         }
 
+        // Close capture before playing the stop chime so it cannot bleed into the WAV tail.
+        recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
+        meetings.dictationEnded()
+        e2eTrace?.captureEndedNs = DispatchTime.now().uptimeNanoseconds
+        let captured = recorder.takeSamples()
+
         // Instant fireball on key-up.
         if appStore.settings.soundFeedback { cues.playStop() }
         showWorking()
@@ -3749,10 +3825,6 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         }
 
-        recorder.endCapture(keepHardwareWarm: appStore.settings.instantMic)
-        meetings.dictationEnded()
-        e2eTrace?.captureEndedNs = DispatchTime.now().uptimeNanoseconds
-        let captured = recorder.takeSamples()
         let id = activeId ?? "p\(pass)"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in

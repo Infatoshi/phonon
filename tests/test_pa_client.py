@@ -470,3 +470,15 @@ def test_rewrite_merges_each_span_into_one_token(monkeypatch):
     assert (
         pa_client._encoder_frames(102) == 13
     )  # 1 s of audio: 102 mel frames -> 13 encoder frames
+
+
+def test_rescore_mode_keeps_full_dictionary_without_64_term_cutoff(fake_pa, tmp_path):
+    m = rescorer(tmp_path)
+    terms = [f"CustomTerm{i:03d}" for i in range(120)]
+    note = m.set_terms(terms)
+    assert "rescoring 120 of 120 terms" in note
+    m.set_screen_terms(["ScreenAlpha", "ScreenBeta"])
+    voc = m.rescore_vocabulary()
+    assert len(voc) == 122
+    assert voc[-1].term == "CustomTerm119"
+    m.close()

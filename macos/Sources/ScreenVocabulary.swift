@@ -15,9 +15,26 @@ enum ScreenVocabularyExtractor {
 
     /// UI chrome and log labels that are on nearly every screen and are never what was said.
     static let stoplist: Set<String> = [
-        "recent", "sidebar", "settings", "search", "home", "file", "edit", "view", "window",
-        "help", "new", "open", "save", "close", "share", "more", "today", "info", "debug",
-        "error", "warn", "todo", "fixme", "note", "trace",
+        "recent", "sidebar", "settings", "search", "home", "file", "files", "edit", "view",
+        "window", "windows", "help", "new", "open", "save", "close", "share", "more", "today",
+        "info", "debug", "error", "warn", "todo", "fixme", "note", "trace",
+        // Status, deck, chat and editor chrome (e.g. Lapis, Slack, Chrome, terminals).
+        "quiet", "connected", "disconnected", "target", "drafter", "output", "input", "working",
+        "tldr", "top", "find", "back", "push", "all", "personal", "ready", "idle", "status",
+        "details", "summary", "preview", "history", "messages", "terminal", "console", "actions",
+        "options", "profile", "account", "general", "advanced", "default", "auto", "manual",
+        "none", "done", "cancel", "submit", "send", "copy", "paste", "delete", "clear", "refresh",
+        "loading", "waiting", "thinking", "next", "previous", "hide", "show", "start", "stop",
+        "run", "build", "test", "check", "folder", "folders", "tab", "tabs", "panel", "running",
+        "active", "menu", "overview", "you", "high", "low", "medium", "fast", "slow", "enable",
+        "enabled", "disable", "disabled", "off", "on", "yes", "no", "ok", "okay", "add", "remove",
+        "create", "update", "reset", "retry", "continue", "skip", "dismiss", "accept", "reject",
+        "allow", "deny", "mute", "unmute", "pin", "unpin", "expand", "collapse", "filter", "sort",
+        "export", "import", "download", "upload", "sync", "synced", "offline", "online", "unread",
+        "pinned", "draft", "drafts", "inbox", "sent", "archive", "trash", "spam", "reply",
+        "forward", "thread", "threads", "channel", "channels", "direct", "workspace", "project",
+        "projects", "branch", "commit", "diff", "logs", "prompt", "response", "session",
+        "sessions",
     ]
 
     /// Suffixes that make a leading number a measurement (`100ms`, `1080p`, `16gb`).

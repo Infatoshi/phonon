@@ -183,7 +183,7 @@ class MetalParakeet:
         self.entries = ents
         if self.rescore:
             self.terms = terms or None
-            n = len(asr_terms.merge_vocabulary(ents))
+            n = len(asr_terms.merge_vocabulary(ents, max_terms=None))
             if not ents:
                 return "dictionary rescoring off"
             return f"dictionary rescoring {n} of {len(ents)} terms (acoustic span rescoring)"
@@ -221,8 +221,12 @@ class MetalParakeet:
         return f"{len(self.screen_terms)} screen terms for this dictation"
 
     def rescore_vocabulary(self):
-        """The rescoring vocabulary: the dictionary's entries and the screen terms within the ASR budget."""
-        return _asr_terms().merge_vocabulary(self.entries, self.screen_terms)
+        """The rescoring vocabulary: all deduplicated dictionary entries and this dictation's screen terms.
+        Post-greedy candidate matching is pure Python and caps acoustic rescoring at max_candidates per window,
+        so no alphabetical dictionary truncation is needed."""
+        return _asr_terms().merge_vocabulary(
+            self.entries, self.screen_terms, max_terms=None
+        )
 
     def rescore_spans(self, jobs, timeout_s=None):
         """jobs: (f_start, f_end, prefix tokens, heard tokens, candidate tokens) over the last decoded window ->
@@ -533,7 +537,11 @@ class MetalParakeet:
                 start=s * tr,
                 duration=m.durations[d] * tr,
                 confidence=c,
-                text=tokenizer.decode([t], m.vocabulary),
+                text=(
+                    ""
+                    if 0 <= t < len(m.vocabulary) and m.vocabulary[t] == "<unk>"
+                    else tokenizer.decode([t], m.vocabulary)
+                ),
             )
             for t, d, s, c in rows
         ]

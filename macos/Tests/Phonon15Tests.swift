@@ -46,9 +46,18 @@ final class ScreenVocabularyExtractorTests: XCTestCase {
 
     func testUIChromeAndLogLabelsDropped() {
         let terms = extract(
-            "a Recent Sidebar Settings Search Home File Edit View Window Help New Open Save Close Share More Today INFO DEBUG ERROR WARN TODO FIXME NOTE TRACE Groq"
+            "a Recent Sidebar Settings Search Home File Edit View Window Help New Open Save Close Share More Today INFO DEBUG ERROR WARN TODO FIXME NOTE TRACE Quiet Connected Target Drafter Output Working TLDR Groq"
         )
         XCTAssertEqual(terms, ["Groq"])
+    }
+
+    func testCueBlankWindowGatesStartChimeOnlyWhileActive() {
+        XCTAssertFalse(MicRecorder.shouldBlankCue(now: 10.0, until: 0))
+        XCTAssertTrue(MicRecorder.shouldBlankCue(now: 10.0, until: 10.35))
+        XCTAssertTrue(MicRecorder.shouldBlankCue(now: 10.34, until: 10.35))
+        XCTAssertFalse(MicRecorder.shouldBlankCue(now: 10.35, until: 10.35))
+        XCTAssertFalse(MicRecorder.shouldBlankCue(now: 10.5, until: 10.35))
+        XCTAssertEqual(CueSounds.startCaptureBlankSeconds, 0.35, accuracy: 1e-6)
     }
 
     func testUnitSuffixedNumbersDropped() {

@@ -21,6 +21,9 @@ pub const NO_SPEECH_SECONDS: f64 = 8.0;
 /// tens of seconds, and a commit pastes into whatever is focused, so this is a full minute;
 /// someone who has walked away still gets their words committed.
 pub const SILENCE_AFTER_SPEECH_SECONDS: f64 = 60.0;
+/// Hard ceiling for a latched dictation even when background room noise keeps tripping the voice
+/// detector, so an accidental latch never runs indefinitely.
+pub const MAX_DURATION_SECONDS: f64 = 600.0;
 /// Voice this long without a break counts as speech: about a syllable, and longer than a
 /// keystroke. Time, not a count of readings, because the reading rate follows the device.
 pub const SPEECH_RUN_SECONDS: f64 = 0.15;
@@ -80,6 +83,13 @@ impl LatchAutoStop {
     }
 
     pub fn decision(&self, now: f64) -> Decision {
+        if now - self.started_at >= MAX_DURATION_SECONDS {
+            return if self.last_speech_at.is_some() {
+                Decision::Commit
+            } else {
+                Decision::Discard
+            };
+        }
         if self.voice_since.is_some()
             && self
                 .last_voice_at
@@ -453,5 +463,14 @@ mod tests {
         // The same recordings, latched, would have stopped.
         assert_eq!(silent.decision(true, 20.0), Decision::Discard);
         assert_eq!(spoke.decision(true, 71.0), Decision::Commit);
+    }
+
+    #[test]
+    fn max_duration_caps_an_accidental_latch_even_with_continuous_noise() {
+        let mut stop = LatchAutoStop::new(0.0);
+        speak(&mut stop, 1.0, 1.0);
+        speak(&mut stop, 599.0, 0.5);
+        assert_eq!(stop.decision(599.9), Decision::KeepRecording);
+        assert_eq!(stop.decision(MAX_DURATION_SECONDS), Decision::Commit);
     }
 }

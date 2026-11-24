@@ -72,18 +72,24 @@ enum NewMicrophonePolicy {
         let newcomers: [AudioInputDevice]
     }
 
+    /// Ephemeral CoreAudio per-process aggregates (`CADefaultDeviceAggregate-<pid>-0`) get a fresh
+    /// UID every time any app opens an aggregate stream. Never persist them into `seen`.
+    static func isEphemeralUID(_ uid: String) -> Bool {
+        uid.hasPrefix("CADefaultDeviceAggregate-")
+    }
+
     /// Compare what is connected with what has been seen. With no seen set yet
     /// (first launch with this feature) everything present is recorded and
     /// nothing is asked. Virtual and aggregate inputs, and devices a ranked name
     /// already matches, become seen without a question.
     static func scan(devices: [AudioInputDevice], seen: [String]?, priorities: [String]) -> Scan {
-        let present = devices.filter { !$0.uid.isEmpty }
+        let present = devices.filter { !$0.uid.isEmpty && !isEphemeralUID($0.uid) }
         guard let seen else {
             var seeded: [String] = []
             for device in present where !seeded.contains(device.uid) { seeded.append(device.uid) }
             return Scan(seen: seeded, newcomers: [])
         }
-        var updated = seen
+        var updated = seen.filter { !isEphemeralUID($0) }
         var newcomers: [AudioInputDevice] = []
         for device in present where !updated.contains(device.uid) {
             updated.append(device.uid)

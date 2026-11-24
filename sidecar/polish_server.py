@@ -74,7 +74,7 @@ ENGINE_CONTEXT_TOKENS = 2 * STREAM_CONTEXT_TOKENS
 # below which the part's spoken text is used instead.
 SPLIT_MIN_WORDS = 16
 TRANSCRIPT_PATTERN = re.compile(r"<transcript>(.*?)</transcript>", re.DOTALL)
-LEAKED_MARKER_PATTERN = re.compile(r"<\|?/?(?:channel|turn|think)\|?>?")
+LEAKED_MARKER_PATTERN = re.compile(r"<\|?/?(?:channel|turn|think)\|?>?|<unk>")
 
 # The speaker profile (SPEC, "User vocabulary onboarding", step 5). Both files
 # are optional; when present they are appended to the system prompt once, at

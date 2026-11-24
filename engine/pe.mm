@@ -2296,7 +2296,7 @@ int main(int argc, char ** argv) {
             std::thread reader([&] {
                 std::string l;
                 while (std::getline(std::cin, l)) {
-                    if (l.find("\"cancel\"") != std::string::npos) E.s_cancel = true;
+                    if (read_str(l, "\"op\"") == "cancel") E.s_cancel = true;
                     { std::lock_guard<std::mutex> g(mu); q.push_back(l); }
                     cv.notify_one();
                 }
@@ -2330,6 +2330,7 @@ int main(int argc, char ** argv) {
                         continue;
                     }
                     if (op == "open") {
+                        E.s_cancel = false;
                         const std::vector<int> p = read_ints(line, "\"prefix\"");
                         if (p.empty() || (int) p.size() + 16 > CTX) { err("prefix empty or too long"); continue; }
                         const int s = E.session_open(p);
