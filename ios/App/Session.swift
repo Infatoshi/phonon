@@ -421,6 +421,7 @@ final class Session: ObservableObject {
         guard let url = Self.modelURL else { return }
         refinerStatus = "Self-test running"
         let cases = Self.selftestCases
+        let existingRefiner = self.refiner
         refineQueue.async {
             var rows: [[String: Any]] = []
             let t0 = Date()
@@ -436,7 +437,7 @@ final class Session: ObservableObject {
             let before = Self.threadPriorities()
             // shortlist-head experiment: --model NAME loads Documents/NAME (the product always loads refiner.gguf)
             let path = arg("--model").map { url.deletingLastPathComponent().appendingPathComponent($0).path } ?? url.path
-            guard let r = self.refiner ?? Refiner(path: path, threads: threads, persistentPool: usePool) else {
+            guard let r = existingRefiner ?? Refiner(path: path, threads: threads, persistentPool: usePool) else {
                 DispatchQueue.main.async { self.refinerStatus = "Self-test: model failed to load" }
                 return
             }

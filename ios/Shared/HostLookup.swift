@@ -71,10 +71,10 @@ enum HostLookup {
         return knownApps[name]
     }
 
-    /// pid -> bundle id through RunningBoard's RBSProcessHandle (private), looked up at runtime. Returns the id (nil
-    /// when refused) and why, for the log. Callable from the keyboard and the app; each is refused or not by its own
-    /// sandbox.
+    /// pid -> bundle id through RunningBoard's RBSProcessHandle (private), looked up at runtime when
+    /// PHONON_PRIVATE_RETURN is enabled. Disabled in App Store / Release builds (Guideline 2.5.1).
     static func bundleForPid(_ pid: pid_t) -> (String?, String) {
+        #if PHONON_PRIVATE_RETURN
         guard let idCls = NSClassFromString("RBSProcessIdentifier") as AnyObject?,
               let hCls = NSClassFromString("RBSProcessHandle") as AnyObject? else { return (nil, "rbs:nocls") }
         let mk = NSSelectorFromString("identifierWithPid:")
@@ -93,6 +93,9 @@ enum HostLookup {
             if let id = handle.value(forKeyPath: path) as? String, id.contains(".") { return (id, "rbs:\(path)") }
         }
         return (nil, "rbs:noid")
+        #else
+        return (nil, "disabled")
+        #endif
     }
 }
 

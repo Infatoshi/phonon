@@ -13,7 +13,7 @@ settings:
     DEVELOPMENT_TEAM: ${PHONON_TEAM_ID}
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.5.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   # Parakeet TDT v2 on CoreML (Apache-2.0); the app's recognizer, same model as the Mac
@@ -59,10 +59,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: sh.phonon.ios
         TARGETED_DEVICE_FAMILY: "1"
         INFOPLIST_KEY_CFBundleDisplayName: Phonon
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Phonon
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIBackgroundModes: [audio]
         NSMicrophoneUsageDescription: Phonon listens while you hold the keyboard's mic button and turns your speech into text on this iPhone.
@@ -171,6 +175,9 @@ targets:
       path: Keyboard/Info.plist
       properties:
         CFBundleDisplayName: Phonon
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
         NSExtension:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController

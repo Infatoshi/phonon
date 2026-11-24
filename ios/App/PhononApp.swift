@@ -23,6 +23,7 @@ struct PhononApp: App {
             .tint(Ember.ember)
             .task {
                 if args.contains("--selftest") { session.selftest() }
+                #if PHONON_PRIVATE_RETURN
                 if args.contains("--probe-return") {
                     BackToCaller.probe()
                     if args.contains("--probe-open") {  // open Settings by bundle id, as the return does for a host
@@ -34,6 +35,7 @@ struct PhononApp: App {
                         BackToCaller.logProbe(["event": "probe_open_after", "state": UIApplication.shared.applicationState.rawValue])
                     }
                 }
+                #endif
             }
             .onOpenURL { url in
                 // the keyboard opens phonon://start when the session is not running: start the mic, then go straight
@@ -82,12 +84,10 @@ final class SourceSceneDelegate: NSObject, UIWindowSceneDelegate {
     }
 }
 
-/// When another app opens Phonon, iOS shows a "◀ App" breadcrumb in the status bar. Public API has no way to follow
-/// it, so this sends the breadcrumb's own action (UIKit private: _systemNavigationAction, iOS 14+), checked at runtime.
-/// Returns false when it is unavailable; the caller then shows a hint to tap the breadcrumb.
-/// App Store review risk: private UIKit selector. Fine for TestFlight/dev builds; revisit before a store release.
-/// Fallback when the breadcrumb action is refused: reopen the host by bundle id (LSApplicationWorkspace, private).
-/// Every step is logged to Documents/return.jsonl so a device test shows which path worked.
+/// When another app opens Phonon, iOS shows a "◀ App" breadcrumb in the status bar. Public API has no way to trigger
+/// it programmatically, so in App Store / Release builds `go(_:)` returns `false` cleanly and the UI shows the native
+/// breadcrumb-tap instruction. Private-API auto-return is strictly gated behind `PHONON_PRIVATE_RETURN` (never set in
+/// `project.yml`).
 enum BackToCaller {
     struct Target {
         var bundle: String?
@@ -102,6 +102,15 @@ enum BackToCaller {
         return id
     }
 
+    /// The sourceApplication of the newest phonon://start, with when it arrived.
+    nonisolated(unsafe) private static var source: (id: String?, at: Double)?
+
+    static func recordSource(_ id: String?, from: String) {
+        source = (id, Date().timeIntervalSince1970)
+        log(["event": "source", "from": from, "source": id ?? "nil"])
+    }
+
+    #if PHONON_PRIVATE_RETURN
     /// The breadcrumb action as UIKit announced it (UIApplicationSystemNavigationActionChangedNotification, private):
     /// it can arrive after onOpenURL and be cleared again by the time the app polls for it.
     @MainActor private static var announced: NSObject?
@@ -111,14 +120,6 @@ enum BackToCaller {
         let key = NSSelectorFromString("_systemNavigationAction")
         guard app.responds(to: key) else { return nil }
         return app.perform(key)?.takeUnretainedValue() as? NSObject
-    }
-
-    /// The sourceApplication of the newest phonon://start, with when it arrived.
-    nonisolated(unsafe) private static var source: (id: String?, at: Double)?
-
-    static func recordSource(_ id: String?, from: String) {
-        source = (id, Date().timeIntervalSince1970)
-        log(["event": "source", "from": from, "source": id ?? "nil"])
     }
 
     /// Call once at launch.
@@ -258,6 +259,25 @@ enum BackToCaller {
         typealias F = @convention(c) (AnyObject, Selector, NSString) -> Bool
         return unsafeBitCast(ws.method(for: open), to: F.self)(ws, open, bundle as NSString)
     }
+    #else
+    @MainActor static func observe() {}
+
+    @MainActor static func capture(hint: HostLookup.Hint) -> Target {
+        var t = capture(host: hint.host, via: hint.via)
+        if t.bundle == nil, let src = source, Date().timeIntervalSince1970 - src.at < 5, let id = valid(src.id) {
+            t.bundle = id
+        }
+        return t
+    }
+
+    @MainActor static func capture(host: String?, via: String? = nil) -> Target {
+        Target(bundle: valid(host))
+    }
+
+    @MainActor static func go(_ target: Target) async -> Bool {
+        false
+    }
+    #endif
 
     private static func log(_ row: [String: Any]) {
         var row = row
@@ -418,8 +438,9 @@ struct HomeView: View {
             SetupRow(n: 2, title: "Allow Full Access", detail: "Lets the keyboard talk to this app. Nothing leaves your iPhone.",
                      done: fullAccess, action: (fullAccess || !keyboardAdded) ? nil : ("Open Settings", openSettings))
             SetupRow(n: 3, title: "Speech model", detail: session.parakeetReady ? "Parakeet, on device"
-                        : (session.running ? session.asrStatus.replacingOccurrences(of: "Speech model: ", with: "")
-                            : "Downloads once (0.6 GB) when you start Phonon"),
+                        : (session.running || session.asrStatus.hasPrefix("Speech model: downloading")
+                            ? session.asrStatus.replacingOccurrences(of: "Speech model: ", with: "")
+                            : "Downloads once (442 MB) when you start Phonon"),
                      done: session.parakeetReady, action: nil)
         }
     }

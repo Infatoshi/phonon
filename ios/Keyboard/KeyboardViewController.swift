@@ -176,13 +176,10 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         model.status = "Open the Phonon app and tap Start"
     }
 
-    /// The app the user is typing in, from UIKit private API: UIViewController's _hostApplicationBundleIdentifier
-    /// (present in iOS 26.5 and 26.7.1 UIKitCore), then the older _hostBundleID (iOS 26.3 and earlier).
-    /// Returns the id (nil when neither answers) and which selector answered, for the app's return log.
-    /// On the iOS 26.7.1 device both selectors answer nil (via=none on every real dictation, 2026-11-06), so the
-    /// fallback reads the host's audit token (_hostAuditToken, private) and asks Security for its code-signing
-    /// identifier, which is the bundle id for App Store apps. `via` also carries a short probe trail for the log.
+    /// Host app lookup using private UIKit/Security/RunningBoard selectors is disabled in App Store / Release builds
+    /// (Guideline 2.5.1) and strictly gated behind `PHONON_PRIVATE_RETURN` (never set in `project.yml`).
     private func hostBundleID() -> (String?, String) {
+        #if PHONON_PRIVATE_RETURN
         var trail: [String] = []
         for name in ["_hostApplicationBundleIdentifier", "_hostBundleID"] {
             let sel = NSSelectorFromString(name)
@@ -249,8 +246,12 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         while let vc = c, chain.count < 4 { chain.append(String(describing: type(of: vc))); c = vc.parent }
         trail.append("chain=" + chain.joined(separator: ">"))
         return (nil, "none|" + trail.joined(separator: "|"))
+        #else
+        return (nil, "disabled")
+        #endif
     }
 
+    #if PHONON_PRIVATE_RETURN
     /// pid -> bundle id (RunningBoard), then proc_pidpath's ".app" folder name as a last hint (that is the app's name,
     /// not its id, so it is only logged). Each step reports why it failed.
     private static func bundleForPid(_ pid: pid_t) -> (String?, String) {
@@ -288,6 +289,7 @@ final class KeyboardViewController: UIInputViewController, KeyboardHost {
         }
         return (sig as String, "ok")
     }
+    #endif
 
     func micDown() {
         if IPC.sessionAlive {

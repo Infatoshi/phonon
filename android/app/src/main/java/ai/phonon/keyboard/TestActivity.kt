@@ -5,17 +5,20 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
+import android.view.WindowInsets
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -60,15 +63,19 @@ class TestActivity : Activity() {
     }
 
     override fun onCreate(b: Bundle?) {
+        requestWindowFeature(Window.FEATURE_NO_TITLE)
         super.onCreate(b)
-        actionBar?.hide()
         c = Palette((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }
+        val baseLeft = px(18)
+        val baseTop = px(8)
+        val baseRight = px(18)
+        val baseBottom = px(32)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(px(18), px(8), px(18), px(32))
+            setPadding(baseLeft, baseTop, baseRight, baseBottom)
         }
         root.addView(header())
 
@@ -116,15 +123,52 @@ class TestActivity : Activity() {
             addView(cellular)
         }, gap())
 
-        val scroll = ScrollView(this).apply { addView(root); setBackgroundColor(c.window) }
-        // targetSdk 35 draws edge to edge, and without the inset frame the first rows sat under the status bar
-        setContentView(FrameLayout(this).apply {
-            fitsSystemWindows = true
+        val scroll = ScrollView(this).apply {
+            addView(root)
             setBackgroundColor(c.window)
-            addView(scroll)
-        })
+            clipToPadding = false
+        }
+        // Edge-to-edge on API 29-35: apply system bar, display cutout, and IME insets directly to scroll content
+        // instead of legacy fitsSystemWindows so status bar icons sit cleanly unobstructed.
+        scroll.setOnApplyWindowInsetsListener { _, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                val ime = insets.getInsets(WindowInsets.Type.ime())
+                root.setPadding(
+                    baseLeft + bars.left,
+                    baseTop + bars.top,
+                    baseRight + bars.right,
+                    baseBottom + maxOf(bars.bottom, ime.bottom)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                root.setPadding(
+                    baseLeft + insets.systemWindowInsetLeft,
+                    baseTop + insets.systemWindowInsetTop,
+                    baseRight + insets.systemWindowInsetRight,
+                    baseBottom + insets.systemWindowInsetBottom
+                )
+            }
+            insets
+        }
+        setContentView(scroll)
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        }
+        @Suppress("DEPRECATION")
+        if (Build.VERSION.SDK_INT < 35) {
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+        }
         window.decorView.setBackgroundColor(c.window)
         lightSystemBars()
+        scroll.requestApplyInsets()
         ModelFetch.addListener(onModels)
         ModelFetch.start(this)
     }

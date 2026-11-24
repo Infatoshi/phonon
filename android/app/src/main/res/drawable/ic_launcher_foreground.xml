@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Warm ember glow centered inside the 66dp adaptive icon safe zone -->
+    <path android:pathData="M 54,28.05 A 28.47,28.47 0 1,0 54,84.98 A 28.47,28.47 0 1,0 54,28.05 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="28.05"
+                android:endX="54"
+                android:endY="84.98">
+                <item android:offset="0.0" android:color="#EBFF611C" />
+                <item android:offset="0.5" android:color="#29A61F06" />
+                <item android:offset="1.0" android:color="#00A61F06" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Warm cream Phonon Bezier wave matching scripts/make-app-icon.swift -->
+    <path
+        android:pathData="M 36.42,54.84 C 44.79,36.42 63.21,73.26 71.58,54.84"
+        android:strokeColor="#FFD6B3"
+        android:strokeWidth="6.28"
+        android:strokeLineCap="round" />
+</vector>

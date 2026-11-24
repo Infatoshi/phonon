@@ -1,11 +1,13 @@
 package ai.phonon.keyboard
 
 import android.app.Activity
+import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -26,9 +28,13 @@ class DictionaryActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         dict = Dictionary.load(filesDir) { null }
+        val baseLeft = dp(20f)
+        val baseTop = dp(12f)
+        val baseRight = dp(20f)
+        val baseBottom = dp(20f)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20f), dp(12f), dp(20f), dp(20f))
+            setPadding(baseLeft, baseTop, baseRight, baseBottom)
         }
         root.addView(TextView(this).apply {
             text = "Words Phonon should spell your way, like names and technical terms. For a word it keeps " +
@@ -68,9 +74,31 @@ class DictionaryActivity : Activity() {
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(12f), 0, 0) }
         root.addView(ScrollView(this).apply { addView(list) },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        // targetSdk 35 draws edge to edge: the frame takes the system bar insets as padding, the column keeps its own
-        setContentView(android.widget.FrameLayout(this).apply { fitsSystemWindows = true; addView(root) })
+        // Apply system bar, display cutout, and IME insets directly instead of legacy fitsSystemWindows.
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                val ime = insets.getInsets(WindowInsets.Type.ime())
+                v.setPadding(
+                    baseLeft + bars.left,
+                    baseTop + bars.top,
+                    baseRight + bars.right,
+                    baseBottom + maxOf(bars.bottom, ime.bottom)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                v.setPadding(
+                    baseLeft + insets.systemWindowInsetLeft,
+                    baseTop + insets.systemWindowInsetTop,
+                    baseRight + insets.systemWindowInsetRight,
+                    baseBottom + insets.systemWindowInsetBottom
+                )
+            }
+            insets
+        }
+        setContentView(root)
         lightSystemBars()
+        root.requestApplyInsets()
         render()
     }
 

@@ -11,8 +11,8 @@ android {
         applicationId = "ai.phonon.keyboard"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.2-beta.1"
+        versionCode = 3
+        versionName = "1.5.0"
         // x86_64 for the emulator, arm64-v8a for phones (the CMake file sets each ABI's CPU flags)
         ndk { abiFilters += listOf("x86_64", "arm64-v8a") }
         // androidTest/RefinerBenchTest: the refiner benchmark on a real phone (Firebase Test Lab)

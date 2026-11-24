@@ -44,6 +44,12 @@ final class HostLookupTests: XCTestCase {
         XCTAssertNil(HostLookup.processName(pid: -5))
     }
 
+    func testPrivatePidLookupIsDisabledInReleaseAndDefaultBuilds() {
+        let (bundle, reason) = HostLookup.bundleForPid(getpid())
+        XCTAssertNil(bundle)
+        XCTAssertEqual(reason, "disabled")
+    }
+
     func testStartWishResumesOnlyWhenFreshAndAlive() {
         let t = 1_000_000.0
         XCTAssertTrue(PendingStart.shouldResume(wantedAt: t, now: t + 5, alive: true))
