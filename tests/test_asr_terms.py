@@ -185,7 +185,7 @@ def test_spoken_forms_replace_longest_span_first():
         asr_terms.VocabEntry("FluidAudio", ("fluid audio",)),
         asr_terms.VocabEntry("FluidAudioKit", ("fluid audio kit",)),
     ]
-    words = "use Fluid audio kit and fluid audio.".split()
+    words = ["use", "Fluid", "audio", "kit", "and", "fluid", "audio."]
     reps = asr_terms.apply_spoken_forms(words, entries)
     assert reps == [
         asr_terms.Replacement(1, 4, "FluidAudioKit"),
@@ -204,11 +204,11 @@ def test_spoken_forms_ties_go_to_the_earliest_and_never_split():
         asr_terms.VocabEntry("cuBLAS", ("cue blast",)),
         asr_terms.VocabEntry("Liftoff", ("blast off",)),
     ]
-    assert asr_terms.apply_spoken_forms("cue blast off".split(), entries) == [
+    assert asr_terms.apply_spoken_forms(["cue", "blast", "off"], entries) == [
         asr_terms.Replacement(0, 2, "cuBLAS")
     ]
     entries.append(asr_terms.VocabEntry("CBO", ("cue blast off",)))
-    assert asr_terms.apply_spoken_forms("cue blast off".split(), entries) == [
+    assert asr_terms.apply_spoken_forms(["cue", "blast", "off"], entries) == [
         asr_terms.Replacement(0, 3, "CBO")
     ]
 
@@ -245,17 +245,17 @@ def test_candidates_from_letters_edits_and_sounds():
     E = asr_terms.VocabEntry
     # the same letters across words
     c = asr_terms.find_rescore_candidates(
-        "I use fluid audio daily".split(), [E("FluidAudio")]
+        ["I", "use", "fluid", "audio", "daily"], [E("FluidAudio")]
     )
     assert [(x.w_start, x.w_end, x.text, x.form) for x in c] == [
         (2, 4, "FluidAudio", "FluidAudio")
     ]
     # within 2 edits of a 6+ letter term
-    c = asr_terms.find_rescore_candidates("ran neuron models".split(), [E("Kneron")])
+    c = asr_terms.find_rescore_candidates(["ran", "neuron", "models"], [E("Kneron")])
     assert [(x.w_start, x.w_end, x.text) for x in c] == [(1, 2, "Kneron")]
     # consonant skeleton within one edit of a spoken form; the tightest span wins over a longer one
     c = asr_terms.find_rescore_candidates(
-        "switched to QBlast now".split(), [E("cuBLAS", ("cue blast",))]
+        ["switched", "to", "QBlast", "now"], [E("cuBLAS", ("cue blast",))]
     )
     assert [(x.w_start, x.w_end, x.text, x.form) for x in c] == [
         (2, 3, "cuBLAS", "cue blast")
@@ -279,14 +279,14 @@ def test_candidate_skips():
     assert find(["see", "fluid.audio"], [E("FluidAudio")]) == []  # URL-ish
     assert find(["fluid", "audio/x"], [E("FluidAudio")]) == []
     assert (
-        find("a b c d e".split(), [E("abcde12")]) == []
+        find(["a", "b", "c", "d", "e"], [E("abcde12")]) == []
     )  # 5 words: past the 4-word limit
     assert [
-        (x.w_start, x.w_end) for x in find("ab cd ef g".split(), [E("abcdefg")])
+        (x.w_start, x.w_end) for x in find(["ab", "cd", "ef", "g"], [E("abcdefg")])
     ] == [(0, 4)]
-    assert find("fluid audio".split(), [E("FluidAudio")], skip={1}) == []
+    assert find(["fluid", "audio"], [E("FluidAudio")], skip={1}) == []
     assert (
-        find("validate with Pydantic".split(), [E("Pydantic")]) == []
+        find(["validate", "with", "Pydantic"], [E("Pydantic")]) == []
     )  # never swallow a neighbour
 
 
@@ -329,7 +329,7 @@ def test_candidates_are_capped_and_carry_tokens_and_frames():
 
 def test_align_words_frames():
     v = rich_vocabulary()
-    rows, words = aligned("ab cd.", v)
+    _rows, words = aligned("ab cd.", v)
     # rows: ▁ a b ▁ c d . at frames 0..6
     assert [(w.text, w.t_start, w.t_end, w.f_start, w.f_end) for w in words] == [
         ("ab", 0, 3, 0, 3),

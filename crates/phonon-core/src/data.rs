@@ -204,8 +204,9 @@ impl DictionaryFile {
         if !entry.spoken_forms.is_empty() || entry.replacement.is_some() {
             return true;
         }
-        let plain_lowercase_word =
-            term.chars().all(|character| character.is_alphabetic() && character.is_lowercase());
+        let plain_lowercase_word = term
+            .chars()
+            .all(|character| character.is_alphabetic() && character.is_lowercase());
         !(plain_lowercase_word && is_ordinary_english(term))
     }
 
@@ -1461,17 +1462,17 @@ pub(crate) fn starts_with_vowel(value: &str) -> bool {
         .chars()
         .find(|character| character.is_alphanumeric())
         .is_some_and(|character| {
-            matches!(
-                character.to_ascii_lowercase(),
-                'a' | 'e' | 'i' | 'o' | 'u'
-            )
+            matches!(character.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')
         })
 }
 
 fn is_short_acronym(value: &str) -> bool {
     let trimmed = value.trim();
     let len = trimmed.chars().count();
-    (2..=4).contains(&len) && trimmed.chars().all(|character| character.is_ascii_uppercase())
+    (2..=4).contains(&len)
+        && trimmed
+            .chars()
+            .all(|character| character.is_ascii_uppercase())
 }
 
 /// Whether two canonical spellings are the same term written differently, which

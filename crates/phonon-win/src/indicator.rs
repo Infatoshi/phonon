@@ -655,7 +655,11 @@ mod tests {
         assert!((from_strength - PROCESSING_STRENGTH).abs() < EPS);
         let first = m.frame(1.02, 0.5, false).unwrap();
         assert!((first.half_width - WIDE_WIDTH).abs() < EPS);
-        assert!(m.frame(1.02 + f64::from(DROP_SECONDS), 0.5, false).is_none() && m.is_rest());
+        assert!(
+            m.frame(1.02 + f64::from(DROP_SECONDS), 0.5, false)
+                .is_none()
+                && m.is_rest()
+        );
     }
 
     #[test]
@@ -673,10 +677,7 @@ mod tests {
             let f = m.frame(t, 0.5, false).unwrap();
             assert_eq!(f.heat, 0.0, "no colour change");
             assert!(f.strength <= first.strength, "never brighter");
-            assert!(
-                (f.half_width - WIDE_WIDTH).abs() < EPS,
-                "width stays full"
-            );
+            assert!((f.half_width - WIDE_WIDTH).abs() < EPS, "width stays full");
         }
         let mid = look(m.stage().unwrap(), DROP_SECONDS / 2.0, 0.5, false);
         assert!((mid.strength - PROCESSING_STRENGTH * 0.25).abs() < EPS);
@@ -709,7 +710,10 @@ mod tests {
             let mut m = Machine::default();
             let a = m.press(0.0);
             m.release(a, 1.0);
-            assert!(!m.moving(1.0, reduced), "steady processing does not repaint");
+            assert!(
+                !m.moving(1.0, reduced),
+                "steady processing does not repaint"
+            );
             m.dropped(a, 2.0, 0.5, reduced);
             let s = m.stage().unwrap();
             for t in [0.0, 0.05, 0.09] {
