@@ -31,9 +31,8 @@ pub const BASE: [f32; 3] = [107.0, 31.0, 9.0];
 
 pub const IGNITE_SECONDS: f32 = 0.10;
 pub const DROP_SECONDS: f32 = 0.10;
-pub const WIDE_WIDTH: f32 = 0.5;
 /// Width never moves in either normal or reduced-motion mode.
-pub const REDUCED_WIDTH: f32 = WIDE_WIDTH;
+pub const WIDE_WIDTH: f32 = 0.5;
 pub const LEVEL_FLOOR: f32 = 0.08;
 
 /// Listening's light is this opaque over black in silence...
