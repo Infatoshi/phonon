@@ -4,8 +4,9 @@
 //! from a uinput virtual keyboard, which every compositor and X server treats as
 //! real hardware. The clipboard goes through arboard (Wayland data-control where
 //! the compositor offers it, otherwise X11, which GNOME and KDE bridge to their
-//! Wayland clipboard). The previous clipboard text is put back afterwards, unless
-//! settings.json `clipboard_after_paste` is "dictation", which leaves the dictation there.
+//! Wayland clipboard). The dictation stays on the clipboard by default, or the
+//! previous clipboard text is put back when settings.json `clipboard_after_paste`
+//! is "restore".
 //!
 //! The paste key is Shift-Insert, not Control-V, with the text on both the
 //! clipboard and the primary selection. GTK, Qt, Firefox, Chromium and Electron

@@ -1,8 +1,8 @@
 //! Put finished text into whatever window has focus.
 //!
-//! The clipboard and Control-V, as on macOS; the previous clipboard text is put
-//! back afterwards, unless settings.json `clipboard_after_paste` is "dictation",
-//! which leaves the dictation there. Nothing is typed key by key: Windows 11's
+//! The clipboard and Control-V, as on macOS; the dictation stays on the
+//! clipboard by default, or the previous clipboard text is put back when
+//! settings.json `clipboard_after_paste` is "restore". Nothing is typed key by key: Windows 11's
 //! Notepad turns typed key events into "Can ??????", repeats and gaps
 //! (2026-11-05 and 2026-11-12), while the same text pasted arrives intact. When
 //! the clipboard cannot be used, the caller keeps the text for the user.

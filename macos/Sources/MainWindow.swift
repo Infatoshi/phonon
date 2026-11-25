@@ -1974,12 +1974,12 @@ struct PermissionSummary: View {
     }
 }
 
-/// First run only. Both switches retain data, so neither is on until asked.
+/// First run only. Both switches default on; the user can turn either off here.
 struct PrivacyChoiceView: View {
     @ObservedObject var store: NativeAppStore
     let onDone: () -> Void
-    @State private var localHistory = false
-    @State private var screenContext = false
+    @State private var localHistory = true
+    @State private var screenContext = true
     @State private var clipboard = ClipboardAfterPaste.dictation
     /// Remember per app unless chosen otherwise: Continue without touching it is the skip.
     @State private var meetingMode = MeetingMode.standard
@@ -2000,7 +2000,7 @@ struct PrivacyChoiceView: View {
             Text("What Phonon may keep")
                 .font(.title2.bold())
             Text(
-                "Dictation runs entirely on this Mac either way. These two features store or read more than the transcript, so they start off."
+                "Dictation runs entirely on this Mac either way. Both stay on this Mac; turn either off if you prefer."
             )
             .foregroundStyle(.secondary)
 

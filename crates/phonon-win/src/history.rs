@@ -1,7 +1,7 @@
 //! Local dictation history, the Windows and Linux counterpart of the Mac's
 //! `local_history` setting.
 //!
-//! Off by default, as on the Mac since settings schema 2. The switch is
+//! On by default, matching the Mac. The switch is
 //! `local_history` in settings.json (settings.rs); `history.txt`, the one-word
 //! file before it, is read when that key is absent. When it is off Phonon keeps
 //! no transcript and no recording (see `keep_wav`).
@@ -341,31 +341,31 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_defaults_off_and_round_trips() {
+    fn the_switch_defaults_on_and_round_trips() {
         let root = scratch("switch");
         assert!(
-            !enabled_in(&root),
-            "no file means off, as on a new Mac install"
+            enabled_in(&root),
+            "no file means on, matching a new Mac install"
         );
-        set_enabled_in(&root, true).unwrap();
-        assert!(enabled_in(&root));
         set_enabled_in(&root, false).unwrap();
         assert!(!enabled_in(&root));
+        set_enabled_in(&root, true).unwrap();
+        assert!(enabled_in(&root));
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_switch_lives_in_settings_and_falls_back_to_history_txt() {
         let root = scratch("switch-legacy");
-        fs::write(root.join(SWITCH_FILE), "on\n").unwrap();
+        fs::write(root.join(SWITCH_FILE), "off\n").unwrap();
         assert!(
-            enabled_in(&root),
+            !enabled_in(&root),
             "an old install's history.txt still counts"
         );
-        set_enabled_in(&root, false).unwrap();
-        assert!(!enabled_in(&root), "settings.json wins once written");
+        set_enabled_in(&root, true).unwrap();
+        assert!(enabled_in(&root), "settings.json wins once written");
         let raw = fs::read_to_string(root.join(crate::settings::FILE)).unwrap();
-        assert!(raw.contains("\"local_history\": false"), "{raw}");
+        assert!(raw.contains("\"local_history\": true"), "{raw}");
         let _ = fs::remove_dir_all(&root);
     }
 

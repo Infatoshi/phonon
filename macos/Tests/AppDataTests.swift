@@ -37,20 +37,56 @@ final class AppDataTests: XCTestCase {
         XCTAssertFalse(saved.screenContext)
     }
 
-    func testFreshInstallKeepsRetainingFeaturesOffUntilAsked() throws {
+    func testFreshInstallDefaultsMatchPortablePreferencesAndPreserveOnboarding() throws {
         let store = NativeAppStore(supportDirectory: directory)
-        XCTAssertFalse(store.settings.localHistory)
-        XCTAssertFalse(store.settings.screenContext)
-        XCTAssertTrue(store.needsPrivacyChoice)
+        let s = store.settings
+        XCTAssertEqual(s.schemaVersion, NativeSettings.currentSchemaVersion)
+        XCTAssertEqual(s.backgroundAudio, .lower)
+        XCTAssertEqual(s.clipboardAfterPaste, .dictation)
+        XCTAssertTrue(s.checkForUpdates)
+        XCTAssertTrue(s.editLearning)
+        XCTAssertEqual(s.historyRetentionDays, NativeSettings.keepRecordingsForever)
+        XCTAssertTrue(s.instantMic)
+        XCTAssertFalse(s.liveText)
+        XCTAssertEqual(s.liveTextStyle, .fade)
+        XCTAssertTrue(s.localHistory)
+        XCTAssertTrue(s.meetingCapture)
+        XCTAssertEqual(s.meetingMode, .perApp)
+        XCTAssertTrue(s.screenContext)
         XCTAssertEqual(
-            store.settings.historyRetentionDays, NativeSettings.keepRecordingsForever)
+            s.screenContextDenylist,
+            ["org.whispersystems.signal-desktop", "com.hnc.Discord", "discord.com"])
+        XCTAssertEqual(s.shortcutMode, "fn")
+        XCTAssertTrue(s.showIdleCapsule)
+        XCTAssertTrue(s.showInDock)
+        XCTAssertFalse(s.soundFeedback)
+        XCTAssertTrue(s.streaming)
+        XCTAssertFalse(s.textboxContext)
+        XCTAssertEqual(s.writingStyle, .app)
 
-        store.recordPrivacyChoice(localHistory: true, screenContext: false)
+        // Hardware, runtime, and first-run consent state stay clean on a fresh install.
+        XCTAssertTrue(s.microphonePriority.isEmpty)
+        XCTAssertNil(s.microphonesSeen)
+        XCTAssertEqual(s.updateAnnounced, "")
+        XCTAssertTrue(s.meetingRules.rules.isEmpty)
+        XCTAssertTrue(store.needsPrivacyChoice)
+        XCTAssertFalse(s.meetingQuestionsAsked)
+
+        // Legacy meeting compatibility keys are present on first write.
+        let raw = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: directory.appendingPathComponent("settings.json")))
+                as? [String: Any])
+        XCTAssertEqual(raw["meeting_capture"] as? Bool, true)
+        XCTAssertEqual(raw["meeting_auto_start"] as? Bool, false)
+
+        // Opting out in the first-run choice persists explicit false values.
+        store.recordPrivacyChoice(localHistory: false, screenContext: false)
         XCTAssertFalse(store.needsPrivacyChoice)
         let saved = try JSONDecoder().decode(
             NativeSettings.self,
             from: Data(contentsOf: directory.appendingPathComponent("settings.json")))
-        XCTAssertTrue(saved.localHistory)
+        XCTAssertFalse(saved.localHistory)
         XCTAssertFalse(saved.screenContext)
         XCTAssertEqual(saved.schemaVersion, NativeSettings.currentSchemaVersion)
     }

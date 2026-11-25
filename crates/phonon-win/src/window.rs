@@ -689,8 +689,8 @@ impl App {
             root,
             page,
             shortcut: settings::DEFAULT_SHORTCUT.into(),
-            clipboard: ClipboardAfterPaste::Restore,
-            history_on: false,
+            clipboard: ClipboardAfterPaste::Dictation,
+            history_on: true,
             retention: 0,
             login: false,
             engine: None,
@@ -950,7 +950,7 @@ impl App {
                     .selected_text(clipboard_label(app.clipboard))
                     .width(200.0)
                     .show_ui(ui, |ui| {
-                        for rule in [ClipboardAfterPaste::Restore, ClipboardAfterPaste::Dictation] {
+                        for rule in [ClipboardAfterPaste::Dictation, ClipboardAfterPaste::Restore] {
                             ui.selectable_value(&mut picked, rule, clipboard_label(rule));
                         }
                     });

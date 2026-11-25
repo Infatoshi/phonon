@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATA_SCHEMA_VERSION: u32 = 1;
+/// Matches `NativeSettings.currentSchemaVersion` in `macos/Sources/AppData.swift`.
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DictionaryEntry {
@@ -678,7 +680,7 @@ pub struct SettingsFile {
 impl Default for SettingsFile {
     fn default() -> Self {
         Self {
-            schema_version: DATA_SCHEMA_VERSION,
+            schema_version: SETTINGS_SCHEMA_VERSION,
             streaming: true,
             local_history: true,
             screen_context: true,
@@ -2091,6 +2093,27 @@ mod tests {
         assert_eq!(dictionary.merge([entry("vLLM", None)]), 1);
         assert_eq!(dictionary.merge([entry("VLLM", None)]), 0);
         assert_eq!(dictionary.entries.len(), 1);
+    }
+
+    #[test]
+    fn default_settings_match_portable_defaults_without_hardware_state() {
+        let settings = SettingsFile::default();
+        assert_eq!(settings.schema_version, super::SETTINGS_SCHEMA_VERSION);
+        assert!(settings.streaming);
+        assert!(settings.local_history);
+        assert!(settings.screen_context);
+        assert!(settings.microphone_priority.is_empty());
+        assert!(settings.instant_mic);
+        assert_eq!(settings.shortcut_mode, "fn");
+        assert!(settings.competitor_quit_muted.is_empty());
+        assert!(!settings.profile_prefix);
+        assert!(settings.edit_learning);
+        assert_eq!(settings.stream_refine, None);
+        assert!(!settings.live_text);
+        assert_eq!(settings.live_text_style, "fade");
+        assert!(!settings.number_pass);
+        assert!(settings.style_preferences.is_empty());
+        assert!(settings.extra.is_empty());
     }
 
     #[test]

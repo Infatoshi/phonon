@@ -77,10 +77,9 @@ pub const RETENTION_CHOICES: [u32; 4] = [0, 7, 30, 90];
 /// settings.json `clipboard_after_paste`, the Mac's values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardAfterPaste {
-    /// The dictation stays on the clipboard.
+    /// The dictation stays on the clipboard. The default, matching the Mac.
     Dictation,
-    /// What was copied before comes back once the paste has landed. The
-    /// Windows and Linux default, as before this setting existed.
+    /// What was copied before comes back once the paste has landed.
     Restore,
 }
 
@@ -196,12 +195,12 @@ impl Settings {
         }
     }
 
-    /// Local history; off unless turned on, as on the Mac.
+    /// Local history; on by default, matching the Mac.
     pub fn local_history(&self) -> bool {
         match self.map.get(LOCAL_HISTORY) {
             Some(Value::Bool(on)) => *on,
-            Some(_) => false,
-            None => self.legacy_history.unwrap_or(false),
+            Some(_) => true,
+            None => self.legacy_history.unwrap_or(true),
         }
     }
 
@@ -214,11 +213,11 @@ impl Settings {
             .unwrap_or(0)
     }
 
-    /// What the clipboard holds after a paste; `Restore` unless set.
+    /// What the clipboard holds after a paste; `Dictation` unless set, matching the Mac.
     pub fn clipboard_after_paste(&self) -> ClipboardAfterPaste {
         self.string(CLIPBOARD_AFTER_PASTE)
             .and_then(ClipboardAfterPaste::parse)
-            .unwrap_or(ClipboardAfterPaste::Restore)
+            .unwrap_or(ClipboardAfterPaste::Dictation)
     }
 
     /// Which compute paths correction may use; `Auto` unless set to a known value.
@@ -353,9 +352,9 @@ mod tests {
         let s = Settings::load_in(&root);
         assert_eq!(s.shortcut(), None);
         assert_eq!(s.writing_style(), "minimal");
-        assert!(!s.local_history());
+        assert!(s.local_history());
         assert_eq!(s.history_retention_days(), 0);
-        assert_eq!(s.clipboard_after_paste(), ClipboardAfterPaste::Restore);
+        assert_eq!(s.clipboard_after_paste(), ClipboardAfterPaste::Dictation);
         assert_eq!(s.launch_at_login(), None);
         assert!(!root.join(FILE).exists(), "reading writes nothing");
         let _ = std::fs::remove_dir_all(&root);
@@ -366,24 +365,24 @@ mod tests {
         let root = scratch("round");
         set_in(&root, SHORTCUT_MODE, "capslock".into()).unwrap();
         set_in(&root, WRITING_STYLE, "formal".into()).unwrap();
-        set_in(&root, LOCAL_HISTORY, true.into()).unwrap();
+        set_in(&root, LOCAL_HISTORY, false.into()).unwrap();
         set_in(&root, HISTORY_RETENTION_DAYS, 30.into()).unwrap();
-        set_in(&root, CLIPBOARD_AFTER_PASTE, "dictation".into()).unwrap();
+        set_in(&root, CLIPBOARD_AFTER_PASTE, "restore".into()).unwrap();
         set_in(&root, LAUNCH_AT_LOGIN, false.into()).unwrap();
         let s = Settings::load_in(&root);
         assert_eq!(s.shortcut().as_deref(), Some("capslock"));
         assert_eq!(s.writing_style(), "formal");
-        assert!(s.local_history());
+        assert!(!s.local_history());
         assert_eq!(s.history_retention_days(), 30);
-        assert_eq!(s.clipboard_after_paste(), ClipboardAfterPaste::Dictation);
+        assert_eq!(s.clipboard_after_paste(), ClipboardAfterPaste::Restore);
         assert_eq!(s.launch_at_login(), Some(false));
         let raw: Value =
             serde_json::from_str(&std::fs::read_to_string(root.join(FILE)).unwrap()).unwrap();
         assert_eq!(raw["shortcut_mode"], "capslock");
         assert_eq!(raw["writing_style"], "formal");
-        assert_eq!(raw["local_history"], true);
+        assert_eq!(raw["local_history"], false);
         assert_eq!(raw["history_retention_days"], 30);
-        assert_eq!(raw["clipboard_after_paste"], "dictation");
+        assert_eq!(raw["clipboard_after_paste"], "restore");
         assert_eq!(raw["launch_at_login"], false);
         // no staging file left behind
         let names: Vec<_> = std::fs::read_dir(&root)
@@ -444,9 +443,9 @@ mod tests {
         let s = Settings::load_in(&root);
         // the Mac's "follow the app" is not available here: minimal
         assert_eq!(s.writing_style(), "minimal");
-        assert!(!s.local_history());
+        assert!(s.local_history());
         assert_eq!(s.history_retention_days(), 0);
-        assert_eq!(s.clipboard_after_paste(), ClipboardAfterPaste::Restore);
+        assert_eq!(s.clipboard_after_paste(), ClipboardAfterPaste::Dictation);
         assert_eq!(s.shortcut(), None);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -458,22 +457,22 @@ mod tests {
         let s = Settings::load_in(&root);
         assert_eq!(s.shortcut().as_deref(), Some("f13"));
         assert_eq!(s.writing_style(), "minimal");
-        assert!(!s.local_history());
+        assert!(s.local_history());
 
         std::fs::write(root.join(LEGACY_MODE), "Casual\n").unwrap();
         assert_eq!(Settings::load_in(&root).writing_style(), "casual");
 
-        std::fs::write(root.join(LEGACY_HISTORY), "on\n").unwrap();
-        assert!(Settings::load_in(&root).local_history());
+        std::fs::write(root.join(LEGACY_HISTORY), "off\n").unwrap();
+        assert!(!Settings::load_in(&root).local_history());
         assert!(
             !root.join(FILE).exists(),
             "migration reads, it does not write"
         );
 
         // a key in settings.json wins over its legacy file; other keys still fall back
-        set_in(&root, LOCAL_HISTORY, false.into()).unwrap();
+        set_in(&root, LOCAL_HISTORY, true.into()).unwrap();
         let s = Settings::load_in(&root);
-        assert!(!s.local_history());
+        assert!(s.local_history());
         assert_eq!(s.writing_style(), "casual");
         assert_eq!(s.shortcut().as_deref(), Some("f13"));
         set_in(&root, SHORTCUT_MODE, "rightalt".into()).unwrap();

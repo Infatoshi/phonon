@@ -129,8 +129,8 @@ struct NativeSettings: Codable, Equatable {
     init(
         schemaVersion: Int = NativeSettings.currentSchemaVersion,
         streaming: Bool = true,
-        localHistory: Bool = false,
-        screenContext: Bool = false,
+        localHistory: Bool = true,
+        screenContext: Bool = true,
         microphonePriority: [String] = [],
         microphonesSeen: [String]? = nil,
         instantMic: Bool = true,
@@ -203,12 +203,9 @@ struct NativeSettings: Codable, Equatable {
         let storedSchema = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         schemaVersion = storedSchema
         streaming = try values.decodeIfPresent(Bool.self, forKey: .streaming) ?? true
-        // Before schema 2 both defaulted to on, so an absent key on an existing
-        // install means the owner was running with it enabled.
-        let legacyDefault = storedSchema < 2
-        localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? legacyDefault
-        screenContext =
-            try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? legacyDefault
+        // Both default on for fresh installs; an explicit false in settings.json stays false.
+        localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? true
+        screenContext = try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? true
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
             ?? []
         microphonesSeen = try? values.decodeIfPresent([String].self, forKey: .microphonesSeen)
@@ -217,9 +214,9 @@ struct NativeSettings: Codable, Equatable {
         // cue on every press is intrusive, so nobody gets one by default.
         soundFeedback = try values.decodeIfPresent(Bool.self, forKey: .soundFeedback) ?? false
         shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "fn"
-        // An existing install already chose these in Settings; do not re-prompt.
+        // An existing schema 1 install already chose these in Settings; do not re-prompt.
         privacyChoiceMade =
-            try values.decodeIfPresent(Bool.self, forKey: .privacyChoiceMade) ?? legacyDefault
+            try values.decodeIfPresent(Bool.self, forKey: .privacyChoiceMade) ?? (storedSchema < 2)
         historyRetentionDays =
             try values.decodeIfPresent(Int.self, forKey: .historyRetentionDays)
             ?? NativeSettings.keepRecordingsForever
@@ -1488,7 +1485,7 @@ final class NativeAppStore: ObservableObject {
             var fresh = NativeSettings()
             fresh.microphonePriority = Self.defaultMicrophonePriority()
             settings = fresh
-            try? writeJSON(settings, to: url)
+            try? writeSettingsKeepingUnknownKeys(settings)
             return
         }
         settings = decoded
