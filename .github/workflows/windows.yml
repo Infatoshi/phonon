@@ -110,7 +110,7 @@ jobs:
 
   linux:
     name: Linux build, unit tests, and end-to-end
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       # Override the Windows job default; keep weights out of the checkout.
