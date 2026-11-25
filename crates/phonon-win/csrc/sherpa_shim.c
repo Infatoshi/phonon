@@ -52,9 +52,10 @@ int phonon_asr_bind(phonon_lookup lookup) {
   return 0;
 }
 
-// The same settings the sherpa-onnx-offline command line used (nemo_transducer, greedy, CPU).
+// The same settings the sherpa-onnx-offline command line used (nemo_transducer, greedy, CPU). `provider` is
+// "cpu" or "cpu:<session config file>" (sherpa-onnx reads ONNX Runtime session options from that file).
 const void *phonon_asr_create(const char *encoder, const char *decoder, const char *joiner, const char *tokens,
-                              int threads) {
+                              int threads, const char *provider) {
   SherpaOnnxOfflineRecognizerConfig c;
   memset(&c, 0, sizeof c);
   c.feat_config.sample_rate = 16000;
@@ -64,7 +65,7 @@ const void *phonon_asr_create(const char *encoder, const char *decoder, const ch
   c.model_config.transducer.joiner = joiner;
   c.model_config.tokens = tokens;
   c.model_config.num_threads = threads;
-  c.model_config.provider = "cpu";
+  c.model_config.provider = provider ? provider : "cpu";
   c.model_config.model_type = "nemo_transducer";
   c.decoding_method = "greedy_search";
   c.max_active_paths = 4;
