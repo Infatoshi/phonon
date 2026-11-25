@@ -37,8 +37,9 @@ Maintainer: Phonon <https://github.com/Infatoshi/phonon/issues>
 Homepage: https://github.com/Infatoshi/phonon
 Section: utils
 Priority: optional
-Depends: libc6 (>= $GLIBC), pipewire-bin | pulseaudio-utils | alsa-utils
-Recommends: libnotify-bin, gnome-shell-extension-appindicator, libegl1 | libgl1, libxkbcommon-x11-0, libxcursor1, libxi6, libwayland-egl1
+Depends: libc6 (>= $GLIBC), libgomp1, pipewire-bin | pulseaudio-utils | alsa-utils
+Recommends: libnotify-bin, libegl1 | libgl1, libxkbcommon-x11-0, libxcursor1, libxi6, libwayland-egl1
+Suggests: gnome-shell-extension-appindicator
 Description: Local dictation: hold Right Ctrl, speak, and the text appears where you type
  Speech recognition (Parakeet) and correction (Phonon's refiner) run on this computer's CPU.
  About 1.6 GB of models download on first start; everything after that is offline.
